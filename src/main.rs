@@ -73,12 +73,17 @@ fn handle_docker_command(docker_command: String, args: Vec<String>) {
     // Default URL prefix for your registry
     let registry_url = "localhost:3000";
 
+    println!("🐳 Executing Docker command: {}", docker_command);
+    println!("📦 Arguments: {}", args.join(" "));
+
     // Transform arguments, adding the registry URL for specific commands like "push" or "pull"
     let transformed_args: Vec<String> = args
         .into_iter()
         .map(|arg| {
             if arg.contains(':') && (docker_command == "push" || docker_command == "pull") {
-                format!("{}/{}", registry_url, arg)
+                let modified_arg = format!("{}/{}", registry_url, arg);
+                println!("🌐 Modifying image path to: {}", modified_arg);
+                modified_arg
             } else {
                 arg
             }
@@ -86,22 +91,31 @@ fn handle_docker_command(docker_command: String, args: Vec<String>) {
         .collect();
 
     // Execute the transformed Docker command
+    println!("🚀 Running docker {} {}...", docker_command, transformed_args.join(" "));
     let output = Command::new("docker")
-        .arg(docker_command)
+        .arg(docker_command.clone())
         .args(transformed_args)
         .output();
 
     match output {
         Ok(output) => {
             if !output.stdout.is_empty() {
+                println!("📝 Command Output:");
                 println!("{}", String::from_utf8_lossy(&output.stdout));
             }
             if !output.stderr.is_empty() {
+                eprintln!("❗ Command Error Output:");
                 eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+            }
+            
+            if output.status.success() {
+                println!("✅ Docker command completed successfully!");
+            } else {
+                eprintln!("❌ Docker command failed with exit code: {}", output.status.code().unwrap_or(-1));
             }
         }
         Err(error) => {
-            eprintln!("Failed to execute docker command: {}", error);
+            eprintln!("🚨 Failed to execute docker command: {}", error);
         }
     }
 }
@@ -133,7 +147,7 @@ async fn handle_create_docker_space(name: String) -> Result<(), Box<dyn std::err
         .await?;
     
     println!("⏳ Waiting for transaction to be finalized...");
-    let in_block = progress.wait_for_finalized_success().await?;
+    let _ = progress.wait_for_finalized_success().await?;
     
     println!("✅ Successfully created Docker space!");
     println!("📦 Space Name: {}", name);
