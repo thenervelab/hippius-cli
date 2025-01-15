@@ -5,6 +5,7 @@ use dotenv::dotenv;
 use std::env;
 use subxt::tx::PairSigner;
 use sp_core::{Pair, sr25519};
+use chrono;
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -60,7 +61,7 @@ async fn main() {
             match entity_type {
                 EntityType::Docker => {
                     if let Err(e) = handle_create_docker_space(name).await {
-                        eprintln!("Error creating Docker space: {}", e);
+                        eprintln!("❌ Error creating Docker space: {}", e);
                         std::process::exit(1);
                     }
                 }
