@@ -107,33 +107,36 @@ fn handle_docker_command(docker_command: String, args: Vec<String>) {
 }
 
 async fn handle_create_docker_space(name: String) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🚀 Initializing Docker space creation for: {}", name);
+    
     let url = env::var("SUBSTRATE_NODE_URL")
-    .unwrap_or_else(|_| "ws://127.0.0.1:9944".to_string());
-
-    // Try different configurations
+        .unwrap_or_else(|_| "ws://127.0.0.1:9944".to_string());
+    
+    println!("🌐 Connecting to Substrate node at: {}", url);
     let api = OnlineClient::<PolkadotConfig>::from_url(&url).await?;
-
-    // Load the seed phrase from the environment
+    
+    println!("🔑 Preparing transaction signer...");
     let seed_phrase = env::var("SUBSTRATE_SEED_PHRASE")
-        .unwrap_or_else(|_| "//".to_string());
+        .unwrap_or_else(|_| "brick end genuine caution author bulk school rose trap ramp garden milk".to_string());
 
     let pair = sr25519::Pair::from_string(seed_phrase.as_str(), None)
         .map_err(|e| format!("Failed to create pair: {:?}", e))?;
 
-    // Create a PairSigner using the sp_core pair
     let signer = PairSigner::new(pair);
+    
+    println!("📤 Submitting transaction to create Docker space...");
+    let tx = custom_runtime::tx().container_registry().create_space(name.clone().into_bytes());
 
-    // Call the extrinsic to create a space
-    let tx = custom_runtime::tx().container_registry().create_space(name.into_bytes()); // Example extrinsic, replace with the actual one
-
-    api
+    let progress = api
         .tx()
         .sign_and_submit_then_watch_default(&tx, &signer)
-        .await?
-        .wait_for_finalized_success()
         .await?;
-
-    println!("successfully created space!");  
+    
+    println!("⏳ Waiting for transaction to be finalized...");
+    let in_block = progress.wait_for_finalized_success().await?;
+    
+    println!("✅ Successfully created Docker space!");
+    println!("📦 Space Name: {}", name);
 
     Ok(())
 }
