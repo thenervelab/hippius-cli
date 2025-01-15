@@ -5,14 +5,14 @@ use dotenv::dotenv;
 use std::env;
 use subxt::tx::PairSigner;
 use sp_core::{Pair, sr25519};
-use chrono;
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
 
 /// A CLI for interacting with the Hippius Docker Registry and Substrate Chain
 #[derive(Parser)]
-#[command(name = "hippius-cli")]
+#[command(name = "hippius-cli", about = "A CLI for managing Docker registries and interacting with a Substrate blockchain.")]
+#[command(author, version, about, long_about = None)]
 struct Cli {
     /// The subcommand to run (e.g., "docker" or "create")
     #[command(subcommand)]
@@ -21,30 +21,31 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Docker command interface
+    /// Execute Docker commands like push or pull with registry transformations.
     Docker {
-        /// The Docker subcommand (e.g., "push")
-        #[arg()]
+        /// The Docker subcommand (e.g., "push" or "pull").
+        #[arg(help = "Specify the Docker command to execute (e.g., push, pull).")]
         docker_command: String,
 
-        /// Arguments for the Docker command (e.g., "repo1/image2:latest")
-        #[arg()]
+        /// Arguments for the Docker command (e.g., "repo1/image2:latest").
+        #[arg(help = "Specify additional arguments for the Docker command.")]
         args: Vec<String>,
     },
-    /// Create a new Docker space in Substrate
+    /// Create a new Docker space on the Substrate chain.
     Create {
-        /// The type of entity to create (must be "docker")
-        #[arg(value_enum)]
+        /// The type of entity to create (must be "docker").
+        #[arg(value_enum, help = "Specify the entity type to create. Currently, only 'docker' is supported.")]
         entity_type: EntityType,
 
-        /// The name of the space to create
-        #[arg()]
+        /// The name of the space to create.
+        #[arg(help = "Specify the name of the Docker space to create.")]
         name: String,
     },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum EntityType {
+    /// Docker space.
     Docker,
 }
 
@@ -132,7 +133,7 @@ async fn handle_create_docker_space(name: String) -> Result<(), Box<dyn std::err
     
     println!("🔑 Preparing transaction signer...");
     let seed_phrase = env::var("SUBSTRATE_SEED_PHRASE")
-        .unwrap_or_else(|_| "brick end genuine caution author bulk school rose trap ramp garden milk".to_string());
+        .unwrap_or_else(|_| "//Alice".to_string());
 
     let pair = sr25519::Pair::from_string(seed_phrase.as_str(), None)
         .map_err(|e| format!("Failed to create pair: {:?}", e))?;
