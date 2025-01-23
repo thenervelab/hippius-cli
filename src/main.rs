@@ -41,12 +41,35 @@ enum Commands {
         #[arg(help = "Specify the name of the Docker space to create.")]
         name: String,
     },
+    /// Manage Virtual Machines
+    Vm {
+        /// The VM management command
+        #[arg(value_enum, help = "Specify the VM management command")]
+        vm_command: VmCommand,
+
+        /// The name of the VM
+        #[arg(help = "Specify the name of the VM")]
+        name: String,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum EntityType {
     /// Docker space.
     Docker,
+}
+
+#[derive(Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum VmCommand {
+    /// Boot a VM
+    Boot,
+    /// Reboot a VM
+    Reboot,
+    /// Stop a VM
+    Stop,
+    /// Delete a VM
+    Delete,
 }
 
 #[tokio::main]
@@ -67,6 +90,9 @@ async fn main() {
                     }
                 }
             }
+        }
+        Commands::Vm { vm_command, name } => {
+            handle_vm_command(vm_command, name);
         }
     }
 }
@@ -155,4 +181,45 @@ async fn handle_create_docker_space(name: String) -> Result<(), Box<dyn std::err
     println!("📦 Space Name: {}", name);
 
     Ok(())
+}
+
+fn handle_vm_command(vm_command: VmCommand, name: String) {
+    let base_url = "http://localhost:3030";
+    let endpoint = match vm_command {
+        VmCommand::Boot => "boot-vm",
+        VmCommand::Reboot => "reboot-vm",
+        VmCommand::Stop => "stop-vm",
+        VmCommand::Delete => "delete-vm",
+    };
+
+    let url = format!("{}/{}/{}", base_url, endpoint, name);
+    println!("🖥️  Executing VM command: {:?} for VM: {:?}", vm_command, name);
+    
+    let output = Command::new("curl")
+        .arg("-X")
+        .arg("GET")
+        .arg(&url)
+        .output();
+
+    match output {
+        Ok(output) => {
+            if !output.stdout.is_empty() {
+                println!("📝 Command Output:");
+                println!("{}", String::from_utf8_lossy(&output.stdout));
+            }
+            if !output.stderr.is_empty() {
+                eprintln!("❗ Command Error Output:");
+                eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+            }
+            
+            if output.status.success() {
+                println!("✅ VM command completed successfully!");
+            } else {
+                eprintln!("❌ VM command failed with exit code: {}", output.status.code().unwrap_or(-1));
+            }
+        }
+        Err(error) => {
+            eprintln!("🚨 Failed to execute curl command: {}", error);
+        }
+    }
 }
