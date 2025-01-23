@@ -90,7 +90,7 @@ async fn main() {
             }
         }
         Commands::Vm { vm_command, name } => {
-            handle_vm_command(vm_command, name);
+            handle_vm_command(vm_command, name).await;
         }
     }
 }
@@ -149,20 +149,7 @@ fn handle_docker_command(docker_command: String, args: Vec<String>) {
 async fn handle_create_docker_space(name: String) -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Initializing Docker space creation for: {}", name);
     
-    let url = env::var("SUBSTRATE_NODE_URL")
-        .unwrap_or_else(|_| "ws://127.0.0.1:9944".to_string());
-    
-    println!("🌐 Connecting to Substrate node at: {}", url);
-    let api = OnlineClient::<PolkadotConfig>::from_url(&url).await?;
-    
-    println!("🔑 Preparing transaction signer...");
-    let seed_phrase = env::var("SUBSTRATE_SEED_PHRASE")
-        .unwrap_or_else(|_| "//Alice".to_string());
-
-    let pair = sr25519::Pair::from_string(seed_phrase.as_str(), None)
-        .map_err(|e| format!("Failed to create pair: {:?}", e))?;
-
-    let signer = PairSigner::new(pair);
+    let (api, signer) = setup_substrate_client().await?;
     
     println!("📤 Submitting transaction to create Docker space...");
     let tx = custom_runtime::tx().container_registry().create_space(name.clone().into_bytes());
@@ -181,42 +168,110 @@ async fn handle_create_docker_space(name: String) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-fn handle_vm_command(vm_command: VmCommand, name: String) {
-    let base_url = "http://localhost:3030";
-    let endpoint = match vm_command {
-        VmCommand::Boot => "boot-vm",
-        VmCommand::Stop => "stop-vm",
-        VmCommand::Delete => "delete-vm",
-    };
-
-    let url = format!("{}/{}/{}", base_url, endpoint, name);
-    println!("🖥️  Executing VM command: {:?} for VM: {:?}", vm_command, name);
+async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairSigner<PolkadotConfig, sr25519::Pair>), Box<dyn std::error::Error>> {
+    let url = env::var("SUBSTRATE_NODE_URL")
+        .unwrap_or_else(|_| "ws://127.0.0.1:9944".to_string());
     
-    let output = Command::new("curl")
-        .arg("-X")
-        .arg("GET")
-        .arg(&url)
-        .output();
+    println!("🌐 Connecting to Substrate node at: {}", url);
+    let api = OnlineClient::<PolkadotConfig>::from_url(&url).await?;
+    
+    println!("🔑 Preparing transaction signer...");
+    let seed_phrase = env::var("SUBSTRATE_SEED_PHRASE")
+        .unwrap_or_else(|_| "//Alice".to_string());
 
-    match output {
-        Ok(output) => {
-            if !output.stdout.is_empty() {
-                println!("📝 Command Output:");
-                println!("{}", String::from_utf8_lossy(&output.stdout));
+    let pair = sr25519::Pair::from_string(seed_phrase.as_str(), None)
+        .map_err(|e| format!("Failed to create pair: {:?}", e))?;
+
+    let signer = PairSigner::new(pair);
+
+    Ok((api, signer))
+}
+
+async fn handle_request_boot(name: String) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🚀 Initializing Boot Request For Minner: {}", name);
+    
+    let (api, signer) = setup_substrate_client().await?;
+    
+    println!("📤 Submitting transaction to request boot...");
+    let tx = custom_runtime::tx().marketplace().request_compute_boot();
+
+    let progress = api
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, &signer)
+        .await?;
+    
+    println!("⏳ Waiting for transaction to be finalized...");
+    let _ = progress.wait_for_finalized_success().await?;
+    
+    println!("✅ Successfully requested boot!");
+    println!("📦 Space Name: {}", name);
+
+    Ok(())
+}
+
+async fn handle_request_delete(name: String) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🚀 Initializing Delete Request For Minner: {}", name);
+    
+    let (api, signer) = setup_substrate_client().await?;
+    
+    println!("📤 Submitting transaction to request delete...");
+    let tx = custom_runtime::tx().marketplace().request_compute_delete();
+
+    let progress = api
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, &signer)
+        .await?;
+    
+    println!("⏳ Waiting for transaction to be finalized...");
+    let _ = progress.wait_for_finalized_success().await?;
+    
+    println!("✅ Successfully requested delete!");
+    println!("📦 Space Name: {}", name);
+
+    Ok(())
+}
+
+async fn handle_request_stop(name: String) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🚀 Initializing Stop Request For Minner: {}", name);
+    
+    let (api, signer) = setup_substrate_client().await?;
+    
+    println!("📤 Submitting transaction to request stop...");
+    let tx = custom_runtime::tx().marketplace().request_compute_stop();
+
+    let progress = api
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, &signer)
+        .await?;
+    
+    println!("⏳ Waiting for transaction to be finalized...");
+    let _ = progress.wait_for_finalized_success().await?;
+    
+    println!("✅ Successfully requested stop!");
+    println!("📦 Space Name: {}", name);
+
+    Ok(())
+}
+
+async fn handle_vm_command(vm_command: VmCommand, name: String) {
+    match vm_command {
+        VmCommand::Boot => {
+            // Call the new handle_request_boot function
+            if let Err(e) = handle_request_boot(name).await {
+                eprintln!("❌ Failed to stop VM: {}", e);
             }
-            if !output.stderr.is_empty() {
-                eprintln!("❗ Command Error Output:");
-                eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+        },
+        VmCommand::Stop => {
+            // Call the new handle_request_stop function
+            if let Err(e) = handle_request_stop(name).await {
+                eprintln!("❌ Failed to stop VM: {}", e);
             }
-            
-            if output.status.success() {
-                println!("✅ VM command completed successfully!");
-            } else {
-                eprintln!("❌ VM command failed with exit code: {}", output.status.code().unwrap_or(-1));
+        },
+        VmCommand::Delete => {
+            // Call the new handle_request_delete function
+            if let Err(e) = handle_request_delete(name).await {
+                eprintln!("❌ Failed to delete VM: {}", e);
             }
-        }
-        Err(error) => {
-            eprintln!("🚨 Failed to execute curl command: {}", error);
         }
     }
 }
