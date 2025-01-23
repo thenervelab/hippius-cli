@@ -64,8 +64,6 @@ enum EntityType {
 enum VmCommand {
     /// Boot a VM
     Boot,
-    /// Reboot a VM
-    Reboot,
     /// Stop a VM
     Stop,
     /// Delete a VM
@@ -187,7 +185,6 @@ fn handle_vm_command(vm_command: VmCommand, name: String) {
     let base_url = "http://localhost:3030";
     let endpoint = match vm_command {
         VmCommand::Boot => "boot-vm",
-        VmCommand::Reboot => "reboot-vm",
         VmCommand::Stop => "stop-vm",
         VmCommand::Delete => "delete-vm",
     };
