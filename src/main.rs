@@ -82,6 +82,16 @@ enum Commands {
         #[arg(long, help = "Optional account to pay for the plan")]
         pay_for: Option<String>,
     },
+    /// Storage operations for pinning and unpinning files
+    Storage {
+        /// The storage operation to perform
+        #[arg(value_enum, help = "Specify the storage operation")]
+        storage_command: StorageCommand,
+
+        /// File hash(es) to pin or unpin
+        #[arg(help = "File hash(es) to pin or unpin")]
+        file_hashes: Vec<String>,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -107,6 +117,14 @@ enum VmCommand {
 enum BuyType {
     /// Purchase a plan
     Plan,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum StorageCommand {
+    /// Pin files to storage
+    Pin,
+    /// Unpin a specific file
+    Unpin,
 }
 
 #[tokio::main]
@@ -147,6 +165,17 @@ async fn main() {
                 pay_for
             ).await {
                 eprintln!("❌ Failed to purchase plan: {}", e);
+            }
+        }
+        Commands::Storage { 
+            storage_command, 
+            file_hashes 
+        } => {
+            if let Err(e) = handle_storage_command(
+                storage_command, 
+                file_hashes
+            ).await {
+                eprintln!("❌ Failed to perform storage operation: {}", e);
             }
         }
     }
@@ -234,7 +263,7 @@ async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairS
     
     println!("🔑 Preparing transaction signer...");
     let seed_phrase = env::var("SUBSTRATE_SEED_PHRASE")
-        .unwrap_or_else(|_| "//Alice".to_string());
+        .unwrap_or_else(|_| "brick end genuine caution author bulk school rose trap ramp garden milk".to_string());
 
     let pair = sr25519::Pair::from_string(seed_phrase.as_str(), None)
         .map_err(|e| format!("Failed to create pair: {:?}", e))?;
@@ -401,6 +430,67 @@ async fn handle_purchase_plan(
     
     println!("✅ Successfully purchased plan!");
     println!("🆔 Plan ID: {:?}", plan_id);
+
+    Ok(())
+}
+
+async fn handle_storage_command(
+    storage_command: StorageCommand, 
+    file_hashes: Vec<String>
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🗄️ Initiating Storage Operation");
+    
+    let (api, signer) = setup_substrate_client().await?;
+    
+    match storage_command {
+        StorageCommand::Pin => {
+
+            // Convert file hashes to Vec<Vec<u8>>
+            let parsed_file_hashes: Vec<Vec<u8>> = file_hashes
+                .into_iter()
+                .map(|hash| hash.into_bytes())
+                .collect();
+
+            println!("📌 Submitting transaction to pin files...");
+            let tx = custom_runtime::tx()
+                .marketplace()
+                .storage_request(parsed_file_hashes);
+
+            let progress = api
+                .tx()
+                .sign_and_submit_then_watch_default(&tx, &signer)
+                .await?;
+            
+            println!("⏳ Waiting for transaction to be finalized...");
+            let _ = progress.wait_for_finalized_success().await?;
+            
+            println!("✅ Successfully pinned files!");
+        },
+        StorageCommand::Unpin => {
+            // Ensure only one file hash is provided for unpinning
+            if file_hashes.len() != 1 {
+                return Err("Unpin operation requires exactly one file hash".into());
+            }
+
+            // Convert file hash to the required format
+            let file_hash = file_hashes[0].clone();
+
+            println!("🔓 Submitting transaction to unpin file...");
+            let tx = custom_runtime::tx()
+                .marketplace()
+                .storage_unpin_request(file_hash.into());
+
+            let progress = api
+                .tx()
+                .sign_and_submit_then_watch_default(&tx, &signer)
+                .await?;
+            
+            println!("⏳ Waiting for transaction to be finalized...");
+            let _ = progress.wait_for_finalized_success().await?;
+            
+            println!("✅ Successfully unpinned file!");
+        }
+    }
 
     Ok(())
 }
