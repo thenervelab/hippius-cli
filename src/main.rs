@@ -92,6 +92,8 @@ enum Commands {
         #[arg(help = "File hash(es) to pin or unpin")]
         file_hashes: Vec<String>,
     },
+    /// List available OS disk images from the marketplace
+    ListImages,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -128,18 +130,19 @@ enum StorageCommand {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
+    
     let cli = Cli::parse();
-
-    match cli.command {
+    
+    match &cli.command {
         Commands::Docker { docker_command, args } => {
-            handle_docker_command(docker_command, args);
+            handle_docker_command(docker_command.clone(), args.clone());
         }
         Commands::Create { entity_type, name } => {
             match entity_type {
                 EntityType::Docker => {
-                    if let Err(e) = handle_create_docker_space(name).await {
+                    if let Err(e) = handle_create_docker_space(name.clone()).await {
                         eprintln!("❌ Error creating Docker space: {}", e);
                         std::process::exit(1);
                     }
@@ -147,7 +150,7 @@ async fn main() {
             }
         }
         Commands::Vm { vm_command, name, plan_id } => {
-            handle_vm_command(vm_command, name, plan_id).await;
+            handle_vm_command(vm_command.clone(), name.clone(), plan_id.clone()).await;
         }
         Commands::Buy { 
             buy_type: BuyType::Plan, 
@@ -158,11 +161,11 @@ async fn main() {
             pay_for 
         } => {
             if let Err(e) = handle_purchase_plan(
-                plan_id, 
-                location_id, 
-                image_name, 
-                cloud_init_cid, 
-                pay_for
+                plan_id.clone(), 
+                location_id.clone(), 
+                image_name.clone(), 
+                cloud_init_cid.clone(), 
+                pay_for.clone()
             ).await {
                 eprintln!("❌ Failed to purchase plan: {}", e);
             }
@@ -172,13 +175,18 @@ async fn main() {
             file_hashes 
         } => {
             if let Err(e) = handle_storage_command(
-                storage_command, 
-                file_hashes
+                storage_command.clone(), 
+                file_hashes.clone()
             ).await {
                 eprintln!("❌ Failed to perform storage operation: {}", e);
             }
         }
+        Commands::ListImages => {
+            handle_list_images().await?;
+        }
     }
+    
+    Ok(())
 }
 
 fn handle_docker_command(docker_command: String, args: Vec<String>) {
@@ -492,5 +500,56 @@ async fn handle_storage_command(
         }
     }
 
+    Ok(())
+}
+
+async fn handle_list_images() -> Result<(), Box<dyn std::error::Error>> {
+    println!("🖼️  Fetching Available OS Disk Images...");
+    
+    let (api, _) = setup_substrate_client().await?;
+    
+    // Build a dynamic storage query for OS disk image URLs
+    let storage_query = subxt::dynamic::storage("Marketplace", "OSDiskImageUrls", vec![]);
+    
+    // Fetch storage entries
+    let mut results = api.storage().at_latest().await?.iter(storage_query).await?;
+    
+    let mut image_list = Vec::new();
+    
+    // Iterate through results
+    while let Some(Ok(kv)) = results.next().await {
+        // Convert keys and values to bytes
+        let os_name_bytes = kv.key_bytes[kv.key_bytes.len() - 32..].to_vec();
+        
+        // Attempt to convert value to a string or byte vector
+        let url_str = kv.value.to_value()?;
+
+        // while let Some(Ok(kv)) = results.next().await {
+        //     println!("Keys decoded: {:?}", kv.keys);
+        //     println!("Key: 0x{}", hex::encode(&kv.key_bytes));
+        //     println!("Value: {:?}", kv.value.to_value()?);
+        // }
+        
+        // Convert bytes to strings
+        let os_name = String::from_utf8_lossy(&os_name_bytes).into_owned();
+        // let url = String::from_utf8_lossy(&url_str).into_owned();
+        
+        // Optional: Add a filter to ensure valid URLs
+        if !os_name.is_empty() {
+            image_list.push((os_name, url_str));
+        }
+    }
+    
+    if image_list.is_empty() {
+        println!("No OS disk images found in the marketplace.");
+        return Ok(());
+    }
+    
+    println!("Available OS Disk Images:");
+    println!("--------------------");
+    for (os_name, url) in image_list {
+        println!("OS: {:<10} | URL: {}", os_name, url);
+    }
+    
     Ok(())
 }
