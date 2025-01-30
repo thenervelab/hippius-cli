@@ -5,6 +5,7 @@ use dotenv::dotenv;
 use std::env;
 use subxt::tx::PairSigner;
 use sp_core::{Pair, sr25519};
+use subxt::utils::H256;
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -50,6 +51,36 @@ enum Commands {
         /// The name of the VM
         #[arg(help = "Specify the name of the VM")]
         name: String,
+
+        /// The plan ID for the VM operation
+        #[arg(help = "Specify the plan ID for the VM operation")]
+        plan_id: H256,
+    },
+    /// Purchase a plan in the marketplace
+    Buy {
+        /// The type of item to buy
+        #[arg(value_enum, help = "Specify the type of item to buy")]
+        buy_type: BuyType,
+
+        /// The plan ID to purchase
+        #[arg(help = "Specify the plan ID to purchase")]
+        plan_id: H256,
+
+        /// Optional location ID
+        #[arg(long, help = "Optional location ID")]
+        location_id: Option<u32>,
+
+        /// Selected image name
+        #[arg(long, help = "Name of the selected image")]
+        image_name: String,
+
+        /// Optional cloud init CID
+        #[arg(long, help = "Optional cloud init CID")]
+        cloud_init_cid: Option<String>,
+
+        /// Optional account to pay for the plan
+        #[arg(long, help = "Optional account to pay for the plan")]
+        pay_for: Option<String>,
     },
 }
 
@@ -68,6 +99,14 @@ enum VmCommand {
     Stop,
     /// Delete a VM
     Delete,
+    /// Reboot a VM
+    Reboot
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum BuyType {
+    /// Purchase a plan
+    Plan,
 }
 
 #[tokio::main]
@@ -89,8 +128,26 @@ async fn main() {
                 }
             }
         }
-        Commands::Vm { vm_command, name } => {
-            handle_vm_command(vm_command, name).await;
+        Commands::Vm { vm_command, name, plan_id } => {
+            handle_vm_command(vm_command, name, plan_id).await;
+        }
+        Commands::Buy { 
+            buy_type: BuyType::Plan, 
+            plan_id, 
+            location_id, 
+            image_name, 
+            cloud_init_cid, 
+            pay_for 
+        } => {
+            if let Err(e) = handle_purchase_plan(
+                plan_id, 
+                location_id, 
+                image_name, 
+                cloud_init_cid, 
+                pay_for
+            ).await {
+                eprintln!("❌ Failed to purchase plan: {}", e);
+            }
         }
     }
 }
@@ -187,13 +244,36 @@ async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairS
     Ok((api, signer))
 }
 
-async fn handle_request_boot(name: String) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_request_boot(name: String, plan_id: H256) -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Initializing Boot Request For Minner: {}", name);
     
     let (api, signer) = setup_substrate_client().await?;
     
     println!("📤 Submitting transaction to request boot...");
-    let tx = custom_runtime::tx().marketplace().request_compute_boot();
+    let tx = custom_runtime::tx().compute().request_compute_boot(plan_id);
+
+    let progress = api
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, &signer)
+        .await?;
+    
+    println!("⏳ Waiting for transaction to be finalized...");
+    let _ = progress.wait_for_finalized_success().await?;
+    
+    println!("✅ Successfully requested boot!");
+    println!("📦 Space Name: {}", name);
+    println!("🆔 Plan ID: {:?}", plan_id);
+
+    Ok(())
+}
+
+async fn handle_request_reboot(name: String, plan_id: H256) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🚀 Initializing Boot Request For Minner: {}", name);
+    
+    let (api, signer) = setup_substrate_client().await?;
+    
+    println!("📤 Submitting transaction to request boot...");
+    let tx = custom_runtime::tx().compute().request_compute_reboot(plan_id);
 
     let progress = api
         .tx()
@@ -209,13 +289,13 @@ async fn handle_request_boot(name: String) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-async fn handle_request_delete(name: String) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_request_delete(name: String, plan_id: H256) -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Initializing Delete Request For Minner: {}", name);
     
     let (api, signer) = setup_substrate_client().await?;
     
     println!("📤 Submitting transaction to request delete...");
-    let tx = custom_runtime::tx().marketplace().request_compute_delete();
+    let tx = custom_runtime::tx().compute().request_compute_delete(plan_id);
 
     let progress = api
         .tx()
@@ -231,13 +311,13 @@ async fn handle_request_delete(name: String) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-async fn handle_request_stop(name: String) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_request_stop(name: String, plan_id: H256) -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Initializing Stop Request For Minner: {}", name);
     
     let (api, signer) = setup_substrate_client().await?;
     
     println!("📤 Submitting transaction to request stop...");
-    let tx = custom_runtime::tx().marketplace().request_compute_stop();
+    let tx = custom_runtime::tx().compute().request_compute_stop(plan_id);
 
     let progress = api
         .tx()
@@ -253,25 +333,74 @@ async fn handle_request_stop(name: String) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-async fn handle_vm_command(vm_command: VmCommand, name: String) {
+async fn handle_vm_command(vm_command: VmCommand, name: String, plan_id: H256) {
     match vm_command {
         VmCommand::Boot => {
-            // Call the new handle_request_boot function
-            if let Err(e) = handle_request_boot(name).await {
+            // Call the new handle_request_boot function with plan_id
+            if let Err(e) = handle_request_boot(name, plan_id).await {
                 eprintln!("❌ Failed to stop VM: {}", e);
             }
         },
         VmCommand::Stop => {
             // Call the new handle_request_stop function
-            if let Err(e) = handle_request_stop(name).await {
+            if let Err(e) = handle_request_stop(name, plan_id).await {
                 eprintln!("❌ Failed to stop VM: {}", e);
             }
         },
         VmCommand::Delete => {
             // Call the new handle_request_delete function
-            if let Err(e) = handle_request_delete(name).await {
+            if let Err(e) = handle_request_delete(name, plan_id).await {
                 eprintln!("❌ Failed to delete VM: {}", e);
+            }
+        },
+        VmCommand::Reboot => {
+            // Call the new handle_request_reboot function
+            if let Err(e) = handle_request_reboot(name, plan_id).await {
+                eprintln!("❌ Failed to reboot VM: {}", e);
             }
         }
     }
+}
+
+async fn handle_purchase_plan(
+    plan_id: H256, 
+    location_id: Option<u32>, 
+    image_name: String, 
+    cloud_init_cid: Option<String>, 
+    _pay_for: Option<String>
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🛒 Initiating Plan Purchase");
+    
+    let (api, signer) = setup_substrate_client().await?;
+    
+    // Convert inputs to required types
+    let image_name_bytes = image_name.into_bytes();
+    let cloud_init_cid_bytes = cloud_init_cid.map(|cid| cid.into_bytes());
+    
+    // Convert pay_for to AccountId if provided
+    let pay_for_account: Option<_> = None;
+
+    println!("📤 Submitting transaction to purchase plan...");
+    let tx = custom_runtime::tx()
+        .marketplace()
+        .purchase_plan(
+            plan_id, 
+            location_id, 
+            image_name_bytes, 
+            cloud_init_cid_bytes, 
+            pay_for_account
+        );
+
+    let progress = api
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, &signer)
+        .await?;
+    
+    println!("⏳ Waiting for transaction to be finalized...");
+    let _ = progress.wait_for_finalized_success().await?;
+    
+    println!("✅ Successfully purchased plan!");
+    println!("🆔 Plan ID: {:?}", plan_id);
+
+    Ok(())
 }
