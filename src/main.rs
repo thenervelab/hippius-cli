@@ -152,7 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Vm { vm_command, name, plan_id } => {
             handle_vm_command(vm_command.clone(), name.clone(), plan_id.clone()).await;
         }
-        Commands::Buy { 
+        Commands::BuyCompute { 
             buy_type: BuyType::Plan, 
             plan_id, 
             location_id, 
@@ -160,7 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cloud_init_cid, 
             pay_for 
         } => {
-            if let Err(e) = handle_purchase_plan(
+            if let Err(e) = handle_purchase_compute_plan(
                 plan_id.clone(), 
                 location_id.clone(), 
                 image_name.clone(), 
@@ -399,7 +399,7 @@ async fn handle_vm_command(vm_command: VmCommand, name: String, plan_id: H256) {
     }
 }
 
-async fn handle_purchase_plan(
+async fn handle_purchase_compute_plan(
     plan_id: H256, 
     location_id: Option<u32>, 
     image_name: String, 
@@ -522,21 +522,20 @@ async fn handle_list_images() -> Result<(), Box<dyn std::error::Error>> {
         let os_name_bytes = kv.key_bytes[kv.key_bytes.len() - 32..].to_vec();
         
         // Attempt to convert value to a string or byte vector
-        let url_str = kv.value.to_value()?;
-
-        // while let Some(Ok(kv)) = results.next().await {
-        //     println!("Keys decoded: {:?}", kv.keys);
-        //     println!("Key: 0x{}", hex::encode(&kv.key_bytes));
-        //     println!("Value: {:?}", kv.value.to_value()?);
-        // }
+        let url_str = kv.value;
         
         // Convert bytes to strings
         let os_name = String::from_utf8_lossy(&os_name_bytes).into_owned();
-        // let url = String::from_utf8_lossy(&url_str).into_owned();
         
+        // Convert to string, handling different possible representations
+        let url = match url_str.as_bytes() {
+            Some(bytes) => String::from_utf8_lossy(bytes).to_string(),
+            None => format!("{:?}", url_str), // Fallback for non-byte values
+        };
+
         // Optional: Add a filter to ensure valid URLs
-        if !os_name.is_empty() {
-            image_list.push((os_name, url_str));
+        if !os_name.is_empty() && !url.is_empty() {
+            image_list.push((os_name, url));
         }
     }
     
