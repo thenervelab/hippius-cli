@@ -6,6 +6,7 @@ use std::env;
 use subxt::tx::PairSigner;
 use sp_core::{Pair, sr25519};
 use subxt::utils::H256;
+use sp_core::Encode;
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -57,7 +58,7 @@ enum Commands {
         plan_id: H256,
     },
     /// Purchase a plan in the marketplace
-    Buy {
+    BuyCompute {
         /// The type of item to buy
         #[arg(value_enum, help = "Specify the type of item to buy")]
         buy_type: BuyType,
@@ -94,6 +95,8 @@ enum Commands {
     },
     /// List available OS disk images from the marketplace
     ListImages,
+    /// Query free credits for signer's account
+    GetCredits,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -184,6 +187,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::ListImages => {
             handle_list_images().await?;
         }
+        Commands::GetCredits => {
+            handle_get_credits().await?;
+        }
     }
     
     Ok(())
@@ -271,7 +277,7 @@ async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairS
     
     println!("🔑 Preparing transaction signer...");
     let seed_phrase = env::var("SUBSTRATE_SEED_PHRASE")
-        .unwrap_or_else(|_| "//Alice".to_string());
+        .unwrap_or_else(|_| "brick end genuine caution author bulk school rose trap ramp garden milk".to_string());
 
     let pair = sr25519::Pair::from_string(seed_phrase.as_str(), None)
         .map_err(|e| format!("Failed to create pair: {:?}", e))?;
@@ -521,18 +527,13 @@ async fn handle_list_images() -> Result<(), Box<dyn std::error::Error>> {
         // Convert keys and values to bytes
         let os_name_bytes = kv.key_bytes[kv.key_bytes.len() - 32..].to_vec();
         
-        // Attempt to convert value to a string or byte vector
-        let url_str = kv.value;
+        // Attempt to decode the value into a Vec<u8>
+        let url_bytes: Vec<u8> = kv.value.as_type()?;
         
         // Convert bytes to strings
         let os_name = String::from_utf8_lossy(&os_name_bytes).into_owned();
+        let url = String::from_utf8_lossy(&url_bytes).into_owned();
         
-        // Convert to string, handling different possible representations
-        let url = match url_str.as_bytes() {
-            Some(bytes) => String::from_utf8_lossy(bytes).to_string(),
-            None => format!("{:?}", url_str), // Fallback for non-byte values
-        };
-
         // Optional: Add a filter to ensure valid URLs
         if !os_name.is_empty() && !url.is_empty() {
             image_list.push((os_name, url));
@@ -550,5 +551,40 @@ async fn handle_list_images() -> Result<(), Box<dyn std::error::Error>> {
         println!("OS: {:<10} | URL: {}", os_name, url);
     }
     
+    Ok(())
+}
+
+/// Query free credits for signer's account
+async fn handle_get_credits() -> Result<(), Box<dyn std::error::Error>> {
+    println!("💰 Querying Free Credits...");
+
+    let (api, signer) = setup_substrate_client().await?;
+
+    // Use signer's account ID directly
+    let target_account = subxt::dynamic::Value::from_bytes(&signer.account_id().encode());
+
+    // Build a dynamic storage query for free credits
+    let storage_query = subxt::dynamic::storage("Credits", "FreeCredits", vec![target_account]);
+
+    // Fetch the credits value
+    let credits_result = api.storage().at_latest().await?.fetch(&storage_query).await;
+
+    match credits_result {
+        Ok(Some(credits_value)) => {
+            // Convert credits value to u128
+            let credits: u128 = credits_value.as_type().unwrap_or(0);
+
+            println!("✅ Free Credits:");
+            println!("🔢 Amount: {}", credits);
+        }
+        Ok(None) => {
+            println!("❌ No credits found for the account.");
+        }
+        Err(e) => {
+            eprintln!("🚨 Error querying credits: {}", e);
+            return Err(e.into());
+        }
+    }
+
     Ok(())
 }
