@@ -7,6 +7,8 @@ use subxt::tx::PairSigner;
 use sp_core::{Pair, sr25519};
 use subxt::utils::H256;
 use sp_core::Encode;
+use reqwest;
+use serde_json;
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -97,6 +99,16 @@ enum Commands {
     ListImages,
     /// Query free credits for signer's account
     GetCredits,
+    /// Insert a key
+    InsertKey {
+        /// The seed phrase for the key
+        #[arg(help = "Specify the seed phrase for the key")]
+        seed_phrase: String,
+
+        /// The public key to insert
+        #[arg(help = "Specify the public key to insert")]
+        public_key: String,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -189,6 +201,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::GetCredits => {
             handle_get_credits().await?;
+        }
+        Commands::InsertKey { seed_phrase, public_key } => {
+            handle_insert_key(seed_phrase.to_string(), public_key.to_string()).await?;
         }
     }
     
@@ -584,6 +599,43 @@ async fn handle_get_credits() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("🚨 Error querying credits: {}", e);
             return Err(e.into());
         }
+    }
+
+    Ok(())
+}
+
+async fn handle_insert_key(seed_phrase: String, public_key: String) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🔑 Inserting key to local node...");
+
+    // Prepare the JSON-RPC request payload
+    let client = reqwest::Client::new();
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "author_insertKey",
+        "params": [
+            "hips",  // Hardcoded key type
+            seed_phrase,
+            public_key
+        ]
+    });
+
+    // Send the request to the local node
+    let response = client
+        .post("http://localhost:9944")
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to send request: {}", e))?;
+
+    // Check the response
+    if response.status().is_success() {
+        let response_text = response.text().await?;
+        println!("✅ Key insertion response: {}", response_text);
+        println!("🔑 Key inserted successfully!");
+    } else {
+        return Err(format!("Failed to insert key. Status: {}", response.status()).into());
     }
 
     Ok(())
