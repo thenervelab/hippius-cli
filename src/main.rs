@@ -9,6 +9,10 @@ use subxt::utils::H256;
 use sp_core::Encode;
 use reqwest;
 use serde_json;
+use crate::custom_runtime::runtime_types::pallet_registration::types::NodeInfo;
+use subxt::utils::AccountId32;
+use sp_core::crypto::Ss58Codec; // Import Ss58Codec trait
+
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -109,6 +113,14 @@ enum Commands {
         #[arg(help = "Specify the public key to insert")]
         public_key: String,
     },
+    /// Get information about your registered node
+    GetNodeInfo,
+    /// Miner-related operations
+    Miner {
+        /// The miner operation to perform
+        #[arg(value_enum, help = "Specify the miner operation")]
+        miner_command: MinerCommand,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -142,6 +154,14 @@ enum StorageCommand {
     Pin,
     /// Unpin a specific file
     Unpin,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum MinerCommand {
+    /// Fetch compute-related information
+    Compute,
+    /// Fetch storage-related information
+    Storage,
 }
 
 #[tokio::main]
@@ -204,6 +224,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::InsertKey { seed_phrase, public_key } => {
             handle_insert_key(seed_phrase.to_string(), public_key.to_string()).await?;
+        }
+        Commands::GetNodeInfo => {
+            handle_query_my_node().await?;
+        }
+        Commands::Miner { miner_command } => {
+            match miner_command {
+                MinerCommand::Compute => {
+                    if let Err(e) = handle_compute_infos().await {
+                        eprintln!("❌ Error fetching compute information: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                MinerCommand::Storage => {
+                    if let Err(e) = handle_storage_infos().await {
+                        eprintln!("❌ Error fetching storage information: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
         }
     }
     
@@ -285,14 +324,14 @@ async fn handle_create_docker_space(name: String) -> Result<(), Box<dyn std::err
 
 async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairSigner<PolkadotConfig, sr25519::Pair>), Box<dyn std::error::Error>> {
     let url = env::var("SUBSTRATE_NODE_URL")
-        .unwrap_or_else(|_| "ws://127.0.0.1:9944".to_string());
+        .unwrap_or_else(|_| "wss://testnet.hippius.com".to_string());
     
     println!("🌐 Connecting to Substrate node at: {}", url);
     let api = OnlineClient::<PolkadotConfig>::from_url(&url).await?;
     
     println!("🔑 Preparing transaction signer...");
     let seed_phrase = env::var("SUBSTRATE_SEED_PHRASE")
-        .unwrap_or_else(|_| "//Alice".to_string());
+        .unwrap_or_else(|_| "//ALICE".to_string());
 
     let pair = sr25519::Pair::from_string(seed_phrase.as_str(), None)
         .map_err(|e| format!("Failed to create pair: {:?}", e))?;
@@ -637,6 +676,208 @@ async fn handle_insert_key(seed_phrase: String, public_key: String) -> Result<()
     } else {
         return Err(format!("Failed to insert key. Status: {}", response.status()).into());
     }
+
+    Ok(())
+}
+
+
+/// Query and print node information where the signer is the owner
+async fn handle_query_my_node() -> Result<(), Box<dyn std::error::Error>> {
+    println!("🔍 Querying Node Registration for Your Node...");
+
+    let (api, signer) = setup_substrate_client().await?;
+
+    // Get the signer's account ID
+    let signer_account_id = signer.account_id();
+
+    // Build a dynamic storage query for the NodeRegistration map
+    let storage_query = subxt::dynamic::storage("Registration", "NodeRegistration", vec![]);
+
+    // Fetch all entries from the NodeRegistration map
+    let mut results = api.storage().at_latest().await?.iter(storage_query).await?;
+
+    let mut found = false;
+
+    // Iterate through the results
+    while let Some(Ok(kv)) = results.next().await {
+        // Decode the value into the expected type
+        let node_info: Option<NodeInfo<u32, AccountId32>> = kv.value.as_type()?;
+
+        if let Some(node_info) = node_info {
+            // Check if the owner matches the signer's account ID
+            if node_info.owner == *signer_account_id {
+                println!("✅ Your Node Information:");
+                println!("------------------------");
+
+                // Convert Vec<u8> fields to strings
+                let node_id = String::from_utf8(node_info.node_id).unwrap_or_else(|_| "Invalid UTF-8".to_string());
+                let node_type = node_info.node_type;
+                let ipfs_node_id = node_info.ipfs_node_id
+                    .map(|id| String::from_utf8(id).unwrap_or_else(|_| "Invalid UTF-8".to_string()))
+                    .unwrap_or_else(|| "None".to_string());
+                let status = node_info.status;
+
+                // Convert AccountId32 to SS58 address
+                let owner= node_info.owner;
+                println!("Node ID: {}", node_id);
+                println!("Node Type: {:?}", node_type);
+                println!("IPFS Node ID: {}", ipfs_node_id);
+                println!("Status: {:?}", status);
+                println!("Registered At: {}", node_info.registered_at);
+                println!("Owner: {:?}", owner);
+                println!("------------------------");
+
+                found = true;
+                break; // Exit the loop once the node is found
+            }
+        }
+    }
+
+    if !found {
+        println!("❌ Your node is not registered yet.");
+    }
+
+    Ok(())
+}
+
+/// Fetch and display compute-related information
+async fn handle_compute_infos() -> Result<(), Box<dyn std::error::Error>> {
+    println!("🔍 Querying Node Registration for Your Node...");
+
+    let (api, signer) = setup_substrate_client().await?;
+
+    // Get the signer's account ID
+    let signer_account_id = signer.account_id();
+
+    // Build a dynamic storage query for the NodeRegistration map
+    let storage_query = subxt::dynamic::storage("Registration", "NodeRegistration", vec![]);
+
+    // Fetch all entries from the NodeRegistration map
+    let mut results = api.storage().at_latest().await?.iter(storage_query).await?;
+
+    let mut found = false;
+
+    // Iterate through the results
+    while let Some(Ok(kv)) = results.next().await {
+        // Decode the value into the expected type
+        let node_info: Option<NodeInfo<u32, AccountId32>> = kv.value.as_type()?;
+
+        if let Some(node_info) = node_info {
+            // Check if the owner matches the signer's account ID
+            if node_info.owner == *signer_account_id {
+                println!("✅ Your Node Information:");
+                println!("------------------------");
+
+                // Convert Vec<u8> fields to strings
+                let node_id = String::from_utf8(node_info.node_id).unwrap_or_else(|_| "Invalid UTF-8".to_string());
+                let node_type = node_info.node_type;
+                let ipfs_node_id = node_info.ipfs_node_id
+                    .map(|id| String::from_utf8(id).unwrap_or_else(|_| "Invalid UTF-8".to_string()))
+                    .unwrap_or_else(|| "None".to_string());
+                let status = node_info.status;
+
+                // Convert AccountId32 to SS58 address
+                let owner= node_info.owner;
+                println!("Node ID: {}", node_id);
+                println!("Node Type: {:?}", node_type);
+                println!("IPFS Node ID: {}", ipfs_node_id);
+                println!("Status: {:?}", status);
+                println!("Registered At: {}", node_info.registered_at);
+                println!("Owner: {:?}", owner);
+                println!("------------------------");
+
+                found = true;
+                break; // Exit the loop once the node is found
+            }
+        }
+    }
+
+    if !found {
+        println!("❌ Your node is not registered yet.");
+    }
+
+    println!("🖥️ Fetching Compute Information...");
+
+    // Fetch libvirt version
+    let libvirt_version = Command::new("libvirtd")
+        .arg("--version")
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .unwrap_or_else(|_| "Not installed".to_string());
+    println!("📦 Libvirt Version: {}", libvirt_version);
+
+    Ok(())
+}
+
+
+/// Fetch and display storage-related information
+async fn handle_storage_infos() -> Result<(), Box<dyn std::error::Error>> {
+
+    println!("🔍 Querying Node Registration for Your Node...");
+
+    let (api, signer) = setup_substrate_client().await?;
+
+    // Get the signer's account ID
+    let signer_account_id = signer.account_id();
+
+    // Build a dynamic storage query for the NodeRegistration map
+    let storage_query = subxt::dynamic::storage("Registration", "NodeRegistration", vec![]);
+
+    // Fetch all entries from the NodeRegistration map
+    let mut results = api.storage().at_latest().await?.iter(storage_query).await?;
+
+    let mut found = false;
+
+    // Iterate through the results
+    while let Some(Ok(kv)) = results.next().await {
+        // Decode the value into the expected type
+        let node_info: Option<NodeInfo<u32, AccountId32>> = kv.value.as_type()?;
+
+        if let Some(node_info) = node_info {
+            // Check if the owner matches the signer's account ID
+            if node_info.owner == *signer_account_id {
+                println!("✅ Your Node Information:");
+                println!("------------------------");
+
+                // Convert Vec<u8> fields to strings
+                let node_id = String::from_utf8(node_info.node_id).unwrap_or_else(|_| "Invalid UTF-8".to_string());
+                let node_type = node_info.node_type;
+                let ipfs_node_id = node_info.ipfs_node_id
+                    .map(|id| String::from_utf8(id).unwrap_or_else(|_| "Invalid UTF-8".to_string()))
+                    .unwrap_or_else(|| "None".to_string());
+                let status = node_info.status;
+
+                // Convert AccountId32 to SS58 address
+                let owner= node_info.owner;
+                println!("Node ID: {}", node_id);
+                println!("Node Type: {:?}", node_type);
+                println!("IPFS Node ID: {}", ipfs_node_id);
+                println!("Status: {:?}", status);
+                println!("Registered At: {}", node_info.registered_at);
+                println!("Owner: {:?}", owner);
+                println!("------------------------");
+
+                found = true;
+                break; // Exit the loop once the node is found
+            }
+        }
+    }
+
+    if !found {
+        println!("❌ Your node is not registered yet.");
+    }
+
+
+    println!("💽 Fetching Storage Information...");
+
+    // Fetch IPFS version
+    let ipfs_version = Command::new("ipfs")
+        .arg("--version")
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .unwrap_or_else(|_| "Not installed".to_string());
+    println!("📦 IPFS Version of your node is : {}", ipfs_version);
+
 
     Ok(())
 }
