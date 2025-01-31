@@ -33,10 +33,10 @@ enum Commands {
         args: Vec<String>,
     },
     /// Create a new Docker space on the Substrate chain.
-    Create {
+    CreateSpace {
         /// The type of entity to create (must be "docker").
         #[arg(value_enum, help = "Specify the entity type to create. Currently, only 'docker' is supported.")]
-        entity_type: EntityType,
+        space_type: SpaceType,
 
         /// The name of the space to create.
         #[arg(help = "Specify the name of the Docker space to create.")]
@@ -97,7 +97,7 @@ enum Commands {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-enum EntityType {
+enum SpaceType {
     /// Docker space.
     Docker,
 }
@@ -139,9 +139,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Docker { docker_command, args } => {
             handle_docker_command(docker_command.clone(), args.clone());
         }
-        Commands::Create { entity_type, name } => {
-            match entity_type {
-                EntityType::Docker => {
+        Commands::CreateSpace { space_type, name } => {
+            match space_type {
+                SpaceType::Docker => {
                     if let Err(e) = handle_create_docker_space(name.clone()).await {
                         eprintln!("❌ Error creating Docker space: {}", e);
                         std::process::exit(1);
