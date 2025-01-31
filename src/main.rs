@@ -162,6 +162,12 @@ enum MinerCommand {
     Compute,
     /// Fetch storage-related information
     Storage,
+    /// Get registration requirements for a Compute Miner
+    RegisterComputeMiner,
+    /// Get registration requirements for a Storage Miner
+    RegisterStorageMiner,
+    /// Get registration requirements for a Validator
+    RegisterValidator,
 }
 
 #[tokio::main]
@@ -239,6 +245,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 MinerCommand::Storage => {
                     if let Err(e) = handle_storage_infos().await {
                         eprintln!("❌ Error fetching storage information: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                MinerCommand::RegisterComputeMiner => {
+                    if let Err(e) = handle_register_compute_miner_info().await {
+                        eprintln!("❌ Error displaying compute miner registration info: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                MinerCommand::RegisterStorageMiner => {
+                    if let Err(e) = handle_register_storage_miner_info().await {
+                        eprintln!("❌ Error displaying storage miner registration info: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                MinerCommand::RegisterValidator => {
+                    if let Err(e) = handle_register_validator_info().await {
+                        eprintln!("❌ Error displaying validator registration info: {}", e);
                         std::process::exit(1);
                     }
                 }
@@ -879,5 +903,89 @@ async fn handle_storage_infos() -> Result<(), Box<dyn std::error::Error>> {
     println!("📦 IPFS Version of your node is : {}", ipfs_version);
 
 
+    Ok(())
+}
+
+/// Display registration requirements for a Compute Miner
+async fn handle_register_compute_miner_info() -> Result<(), Box<dyn std::error::Error>> {
+    println!("🖥️ Compute Miner Node Registration Requirements:");
+    println!("------------------------------------------------");
+    println!("1. Node Type: ComputeMiner");
+    println!("2. Required Information:");
+    println!("   a. Node ID: A unique identifier for your compute node");
+    println!("      - Recommended format: Cryptographically secure hash or UUID");
+    println!("      - Example: 'compute-node-01' or a SHA256 hash");
+    println!("   b. IPFS Node ID (Optional):");
+    println!("      - If you're running an IPFS node alongside your compute node");
+    println!("      - Can be retrieved using `ipfs id` command");
+    println!("\n🔧 Technical Recommendations:");
+    println!("- Ensure your node meets minimum compute requirements");
+    println!("- Have a stable internet connection");
+    println!("- Recommended Hardware:");
+    println!("  * CPU: 4+ cores");
+    println!("  * RAM: 16+ GB");
+    println!("  * Storage: 256+ GB SSD");
+    println!("  * Network: 100+ Mbps bandwidth");
+    
+    println!("\n📝 Example Registration Command:");
+    println!("`hippius-cli register-node --type ComputeMiner --node-id <your-unique-node-id>`");
+    
+    Ok(())
+}
+
+/// Display registration requirements for a Storage Miner
+async fn handle_register_storage_miner_info() -> Result<(), Box<dyn std::error::Error>> {
+    println!("💽 Storage Miner Node Registration Requirements:");
+    println!("------------------------------------------------");
+    println!("1. Node Type: StorageMiner");
+    println!("2. Required Information:");
+    println!("   a. Node ID: A unique identifier for your storage node");
+    println!("      - Recommended format: Cryptographically secure hash or UUID");
+    println!("      - Example: 'storage-node-01' or a SHA256 hash");
+    println!("   b. IPFS Node ID (Recommended):");
+    println!("      - Retrieve using `ipfs id` command");
+    println!("      - Helps in distributed storage network integration");
+    
+    println!("\n🔧 Technical Recommendations:");
+    println!("- High-capacity, reliable storage infrastructure");
+    println!("- Recommended Hardware:");
+    println!("  * Storage: 10+ TB HDD/SSD");
+    println!("  * CPU: 4+ cores");
+    println!("  * RAM: 16+ GB");
+    println!("  * Network: 100+ Mbps bandwidth, stable connection");
+    
+    println!("\n📝 Example Registration Command:");
+    println!("`hippius-cli register-node --type StorageMiner --node-id <your-unique-node-id> --ipfs-node-id <optional-ipfs-node-id>`");
+    
+    Ok(())
+}
+
+/// Display registration requirements for a Validator
+async fn handle_register_validator_info() -> Result<(), Box<dyn std::error::Error>> {
+    println!("🛡️ Validator Node Registration Requirements:");
+    println!("------------------------------------------------");
+    println!("1. Node Type: Validator");
+    println!("2. Required Information:");
+    println!("   a. Node ID: A unique identifier for your validator node");
+    println!("      - Recommended format: Cryptographically secure hash or UUID");
+    println!("      - Example: 'validator-node-01' or a SHA256 hash");
+    
+    println!("\n🔧 Technical Recommendations:");
+    println!("- High uptime and reliability");
+    println!("- Secure and well-maintained infrastructure");
+    println!("- Recommended Hardware:");
+    println!("  * CPU: 8+ cores, high single-thread performance");
+    println!("  * RAM: 32+ GB");
+    println!("  * Storage: 1+ TB SSD (NVMe preferred)");
+    println!("  * Network: 1+ Gbps bandwidth, low latency");
+    
+    println!("\n🔐 Additional Requirements:");
+    println!("- Sufficient stake to be elected as a validator");
+    println!("- Running a full node with latest chain state");
+    println!("- Secure key management");
+    
+    println!("\n📝 Example Registration Command:");
+    println!("`hippius-cli register-node --type Validator --node-id <your-unique-node-id>`");
+    
     Ok(())
 }
