@@ -11,7 +11,8 @@ use reqwest;
 use serde_json;
 use crate::custom_runtime::runtime_types::pallet_registration::types::NodeInfo;
 use subxt::utils::AccountId32;
-use sp_core::crypto::Ss58Codec; // Import Ss58Codec trait
+// use sp_core::crypto::Ss58Codec; // Import Ss58Codec trait
+use crate::custom_runtime::runtime_types::pallet_compute::types::MinerComputeRequest;
 
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
@@ -120,6 +121,12 @@ enum Commands {
         /// The miner operation to perform
         #[arg(value_enum, help = "Specify the miner operation")]
         miner_command: MinerCommand,
+    },
+    /// Get VNC port for a specific miner
+    GetVncPort {
+        /// The miner ID to query
+        #[arg(help = "Specify the miner ID to retrieve VNC port")]
+        miner_id: String,
     },
 }
 
@@ -268,6 +275,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        Commands::GetVncPort { miner_id } => {
+            if let Err(e) = handle_get_vnc_port(miner_id.clone()).await {
+                eprintln!("❌ Failed to get VNC port: {}", e);
+            }
+        }
     }
     
     Ok(())
@@ -355,7 +367,7 @@ async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairS
     
     println!("🔑 Preparing transaction signer...");
     let seed_phrase = env::var("SUBSTRATE_SEED_PHRASE")
-        .unwrap_or_else(|_| "//ALICE".to_string());
+        .unwrap_or_else(|_| "brick end genuine caution author bulk school rose trap ramp garden milk".to_string());
 
     let pair = sr25519::Pair::from_string(seed_phrase.as_str(), None)
         .map_err(|e| format!("Failed to create pair: {:?}", e))?;
@@ -987,5 +999,50 @@ async fn handle_register_validator_info() -> Result<(), Box<dyn std::error::Erro
     println!("\n📝 Example Registration Command:");
     println!("`hippius-cli register-node --type Validator --node-id <your-unique-node-id>`");
     
+    Ok(())
+}
+
+async fn handle_get_vnc_port(miner_id: String) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🔍 Querying VNC Port for Miner: {}",miner_id);
+
+    let (api, _) = setup_substrate_client().await?;
+
+    // Build a dynamic storage query for MinnerComputeRequests
+    let storage_query = subxt::dynamic::storage("Compute", "MinerComputeRequests", vec![
+        subxt::dynamic::Value::from_bytes(&miner_id.as_bytes().to_vec())
+    ]);
+
+    // Fetch the compute request for the specific miner
+    let compute_request_result = api.storage().at_latest().await?.fetch(&storage_query).await;
+
+    match compute_request_result {
+        Ok(Some(request_value)) => {
+            // Decode the MinerComputeRequest struct
+            let compute_request: MinerComputeRequest<u32, H256> = request_value.as_type()?;
+
+            println!("✅ Compute Request for Miner {}:", miner_id);
+            
+            // Handle VNC port with pattern matching
+            match compute_request.vnc_port {
+                Some(port) => println!("🚪 VNC Port: {}", port),
+                None => println!("❌ No VNC port assigned"),
+            }
+
+            println!("📋 Additional Request Details:");
+            println!("   Job ID: {:?}", compute_request.job_id);
+            println!("   Request ID: {}", compute_request.request_id);
+            println!("   Plan ID: {:?}", compute_request.plan_id);
+            println!("   Created At: {}", compute_request.created_at);
+            println!("   Fulfilled: {}", compute_request.fullfilled);
+        }
+        Ok(None) => {
+            println!("❌ No compute request found for Miner: {}", miner_id);
+        }
+        Err(e) => {
+            eprintln!("🚨 Error querying compute request: {}", e);
+            return Err(e.into());
+        }
+    }
+
     Ok(())
 }
