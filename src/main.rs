@@ -124,9 +124,9 @@ enum Commands {
     },
     /// Get VNC port for a specific miner
     GetVncPort {
-        /// The miner ID to query
-        #[arg(help = "Specify the miner ID to retrieve VNC port")]
-        miner_id: String,
+        /// The ID of the miner to query
+        #[arg(long = "miner-id", help = "Specify the ID of the miner to query")]
+        miner_id: Option<String>,
     },
 }
 
@@ -845,7 +845,6 @@ async fn handle_compute_infos() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-
 /// Fetch and display storage-related information
 async fn handle_storage_infos() -> Result<(), Box<dyn std::error::Error>> {
 
@@ -1002,45 +1001,73 @@ async fn handle_register_validator_info() -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-async fn handle_get_vnc_port(miner_id: String) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🔍 Querying VNC Port for Miner: {}",miner_id);
+async fn handle_get_vnc_port(miner_id: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🔍 Querying VNC Ports{}", 
+        miner_id.as_ref().map_or_else(|| " for All Miners".to_string(), |id| format!(" for Miner: {}", id)));
 
     let (api, _) = setup_substrate_client().await?;
 
-    // Build a dynamic storage query for MinnerComputeRequests
-    let storage_query = subxt::dynamic::storage("Compute", "MinerComputeRequests", vec![
-        subxt::dynamic::Value::from_bytes(&miner_id.as_bytes().to_vec())
-    ]);
+    // If a specific miner ID is provided, create a targeted storage query
+    let storage_query = match &miner_id {
+        Some(id) => {
+            let miner_id_bytes = id.as_bytes().to_vec();
+            subxt::dynamic::storage("Compute", "MinerComputeRequests", vec![
+                subxt::dynamic::Value::from_bytes(&miner_id_bytes)
+            ])
+        },
+        None => subxt::dynamic::storage("Compute", "MinerComputeRequests", vec![])
+    };
 
-    // Fetch the compute request for the specific miner
-    let compute_request_result = api.storage().at_latest().await?.fetch(&storage_query).await;
+    // Fetch entries from the MinerComputeRequests map
+    let mut results = api.storage().at_latest().await?.iter(storage_query).await?;
 
-    match compute_request_result {
-        Ok(Some(request_value)) => {
-            // Decode the MinerComputeRequest struct
-            let compute_request: MinerComputeRequest<u32, H256> = request_value.as_type()?;
+    let mut found_any = false;
 
-            println!("✅ Compute Request for Miner {}:", miner_id);
-            
+    // Iterate through the results
+    while let Some(Ok(kv)) = results.next().await {
+        // Decode the value as a Vec<MinerComputeRequest>
+        let compute_requests: Vec<MinerComputeRequest<u32, H256>> = match kv.value.as_type() {
+            Ok(requests) => requests,
+            Err(e) => {
+                eprintln!("🚨 Error decoding MinerComputeRequests: {}", e);
+                continue; // Skip this entry and continue with next
+            }
+        };
+
+        // If we got here, we found at least one request
+        found_any = true;
+
+        // Iterate through each compute request for this miner
+        for (index, compute_request) in compute_requests.into_iter().enumerate() {
+            println!("✅ Compute Request #{} Details:", index + 1);
+
             // Handle VNC port with pattern matching
             match compute_request.vnc_port {
                 Some(port) => println!("🚪 VNC Port: {}", port),
                 None => println!("❌ No VNC port assigned"),
             }
 
+            println!("");
+            println!("------------------------");
             println!("📋 Additional Request Details:");
-            println!("   Job ID: {:?}", compute_request.job_id);
+            println!("   Miner Account ID: {:?}", String::from_utf8_lossy(&compute_request.miner_account_id));
+            println!("   Job ID: {:?}", compute_request.job_id.map(|id| String::from_utf8_lossy(&id).to_string()));
             println!("   Request ID: {}", compute_request.request_id);
             println!("   Plan ID: {:?}", compute_request.plan_id);
-            println!("   Created At: {}", compute_request.created_at);
-            println!("   Fulfilled: {}", compute_request.fullfilled);
+            println!("------------------------");
         }
-        Ok(None) => {
-            println!("❌ No compute request found for Miner: {}", miner_id);
+
+        // If a specific miner ID was provided, we can break after the first iteration
+        if miner_id.is_some() {
+            break;
         }
-        Err(e) => {
-            eprintln!("🚨 Error querying compute request: {}", e);
-            return Err(e.into());
+    }
+
+    if !found_any {
+        if let Some(id) = miner_id {
+            println!("❌ No compute requests found for Miner: {}", id);
+        } else {
+            println!("❌ No compute requests found");
         }
     }
 
