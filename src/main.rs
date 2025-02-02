@@ -11,9 +11,8 @@ use reqwest;
 use serde_json;
 use crate::custom_runtime::runtime_types::pallet_registration::types::NodeInfo;
 use subxt::utils::AccountId32;
-// use sp_core::crypto::Ss58Codec; // Import Ss58Codec trait
 use crate::custom_runtime::runtime_types::pallet_compute::types::MinerComputeRequest;
-
+use crate::custom_runtime::registration::calls::types::register_node::NodeType;
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -128,6 +127,20 @@ enum Commands {
         #[arg(long = "miner-id", help = "Specify the ID of the miner to query")]
         miner_id: Option<String>,
     },
+    /// Register a new node
+    RegisterNode {
+        /// Type of the node to register
+        #[arg(long, help = "Type of node to register (Validator, ComputeMiner, StorageMiner)")]
+        node_type: CliNodeType,
+
+        /// Node ID (typically a peer ID)
+        #[arg(long, help = "Node ID (e.g., libp2p peer ID)")]
+        node_id: String,
+
+        /// Optional IPFS Node ID (required for Miner nodes)
+        #[arg(long, help = "IPFS Node ID (required for Miner nodes)")]
+        ipfs_node_id: Option<String>,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -175,6 +188,16 @@ enum MinerCommand {
     RegisterStorageMiner,
     /// Get registration requirements for a Validator
     RegisterValidator,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
+enum CliNodeType {
+    /// Validator node
+    Validator,
+    /// Compute miner node
+    ComputeMiner,
+    /// Storage miner node
+    StorageMiner,
 }
 
 #[tokio::main]
@@ -280,6 +303,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("❌ Failed to get VNC port: {}", e);
             }
         }
+        Commands::RegisterNode { node_type, node_id, ipfs_node_id } => {
+            if let Err(e) = handle_register_node(*node_type, node_id.clone(), ipfs_node_id.clone()).await {
+                eprintln!("❌ Failed to register node: {}", e);
+            }
+        }
     }
     
     Ok(())
@@ -360,7 +388,7 @@ async fn handle_create_docker_space(name: String) -> Result<(), Box<dyn std::err
 
 async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairSigner<PolkadotConfig, sr25519::Pair>), Box<dyn std::error::Error>> {
     let url = env::var("SUBSTRATE_NODE_URL")
-        .unwrap_or_else(|_| "wss://testnet.hippius.com".to_string());
+        .unwrap_or_else(|_| "ws://127.0.0.1:9944".to_string());
     
     println!("🌐 Connecting to Substrate node at: {}", url);
     let api = OnlineClient::<PolkadotConfig>::from_url(&url).await?;
@@ -1070,6 +1098,35 @@ async fn handle_get_vnc_port(miner_id: Option<String>) -> Result<(), Box<dyn std
             println!("❌ No compute requests found");
         }
     }
+
+    Ok(())
+}
+
+async fn handle_register_node(node_type: CliNodeType, node_id: String, ipfs_node_id: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🚀 Initializing Node Registration for: {}", node_id);
+    
+    let (api, signer) = setup_substrate_client().await?;
+    
+    // Convert CliNodeType to runtime NodeType
+    let runtime_node_type = match node_type {
+        CliNodeType::Validator => NodeType::Validator,
+        CliNodeType::ComputeMiner => NodeType::ComputeMiner,
+        CliNodeType::StorageMiner => NodeType::StorageMiner,
+    };
+    
+    println!("📤 Submitting transaction to register node...");
+    let tx = custom_runtime::tx().registration().register_node(runtime_node_type, node_id.clone().into_bytes(), ipfs_node_id.map(|id| id.into_bytes()));
+
+    let progress = api
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, &signer)
+        .await?;
+    
+    println!("⏳ Waiting for transaction to be finalized...");
+    let _ = progress.wait_for_finalized_success().await?;
+    
+    println!("✅ Successfully registered node!");
+    println!("📦 Node ID: {}", node_id);
 
     Ok(())
 }
