@@ -14,10 +14,10 @@ use subxt::utils::AccountId32;
 use crate::custom_runtime::runtime_types::pallet_compute::types::MinerComputeRequest;
 use crate::custom_runtime::registration::calls::types::register_node::NodeType;
 use crate::custom_runtime::runtime_types::pallet_rankings::types::NodeRankings;
-use sp_core::crypto::Ss58Codec; // For SS58 encoding
+use sp_core::crypto::Ss58Codec; // For SS58 encoding]
+use crate::custom_runtime::runtime_types::frame_support::PalletId;
 use std::fs;
 use std::path::Path;
-
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -1187,32 +1187,47 @@ async fn handle_get_rankings(node_type: CliNodeType, node_id: String) -> Result<
                             println!("  Estimated Reward: 0 (Validators do not receive direct rewards)");
                         },
                         CliNodeType::ComputeMiner => {
-                            // Assume a total pool of 1000 tokens for compute miners
-                            // 40% of total pool goes to compute miners
-                            let total_pool = 1000u128;
-                            let compute_pool = total_pool * 40 / 100;
-                            
-                            let estimated_reward = if total_weight > 0 {
-                                (ranking.weight as u128 * compute_pool) / total_weight
-                            } else {
-                                0
+
+                            let ranking_pallet_id = PalletId(*b"ranking2");
+
+                            // Fetch balance of the pallet
+                            match query_pallet_balance(&api, ranking_pallet_id).await {
+                                Ok(balance) => {
+                                    println!("💰 Ranking Pallet Balance: {} tokens", balance);
+                                    let estimated_reward = if total_weight > 0 {
+                                        (ranking.weight as u128 * balance) / total_weight
+                                    } else {
+                                        0
+                                    };
+                                    
+                                    println!("  Estimated Reward: {} tokens", estimated_reward);
+                                },
+                                Err(e) => {
+                                    println!(" Estimated Reward: 0 ");
+                                },
                             };
                             
-                            println!("  Estimated Reward: {} tokens", estimated_reward);
+
                         },
                         CliNodeType::StorageMiner => {
-                            // Assume a total pool of 1000 tokens for storage miners
-                            // 60% of total pool goes to storage miners
-                            let total_pool = 1000u128;
-                            let storage_pool = total_pool * 60 / 100;
-                            
-                            let estimated_reward = if total_weight > 0 {
-                                (ranking.weight as u128 * storage_pool) / total_weight
-                            } else {
-                                0
+                            let ranking_pallet_id = PalletId(*b"ranking1");
+
+                            // Fetch balance of the pallet
+                            match query_pallet_balance(&api, ranking_pallet_id).await {
+                                Ok(balance) => {
+                                    println!("💰 Ranking Pallet Balance: {} tokens", balance);
+                                    let estimated_reward = if total_weight > 0 {
+                                        (ranking.weight as u128 * balance) / total_weight
+                                    } else {
+                                        0
+                                    };
+                                    
+                                    println!("  Estimated Reward: {} tokens", estimated_reward);
+                                },
+                                Err(e) => {
+                                    println!(" Estimated Reward: 0 ");
+                                },
                             };
-                            
-                            println!("  Estimated Reward: {} tokens", estimated_reward);
                         }
                     }
 
@@ -1236,6 +1251,44 @@ async fn handle_get_rankings(node_type: CliNodeType, node_id: String) -> Result<
     }
 
     Ok(())
+}
+
+/// Function to query the free balance of a pallet's account
+async fn query_pallet_balance(
+    api: &OnlineClient<PolkadotConfig>, 
+    pallet_id: PalletId
+) -> Result<u128, Box<dyn std::error::Error>> {
+    // Manually convert PalletId to AccountId32
+    let account_id: AccountId32 = {
+        let mut account_id_bytes = [0u8; 32];
+        account_id_bytes[0..8].copy_from_slice(&pallet_id.0);
+        AccountId32::from(account_id_bytes)
+    };
+
+    // Build a dynamic storage query for account balance
+    let target_account = subxt::dynamic::Value::from_bytes(&account_id.encode());
+    let balance_query = subxt::dynamic::storage("System", "Account", vec![target_account]);
+
+    // Fetch the balance value
+    let balance_result = api.storage().at_latest().await?.fetch(&balance_query).await;
+
+    match balance_result {
+        Ok(Some(balance_value)) => {
+            // Convert balance value to u128
+            let balance: u128 = balance_value.as_type().unwrap_or(0);
+
+            println!("💰 Pallet Balance: {} tokens", balance);
+            Ok(balance)
+        }
+        Ok(None) => {
+            println!("❌ No balance found for the pallet account.");
+            Err("No balance found".into())
+        }
+        Err(e) => {
+            eprintln!("🚨 Error querying pallet balance: {}", e);
+            Err(e.into())
+        }
+    }
 }
 
 async fn handle_register_node(node_type: CliNodeType, node_id: String, ipfs_node_id: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
