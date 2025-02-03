@@ -13,6 +13,7 @@ use crate::custom_runtime::runtime_types::pallet_registration::types::NodeInfo;
 use subxt::utils::AccountId32;
 use crate::custom_runtime::runtime_types::pallet_compute::types::MinerComputeRequest;
 use crate::custom_runtime::registration::calls::types::register_node::NodeType;
+use crate::custom_runtime::runtime_types::pallet_rankings::types::NodeRankings;
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -126,6 +127,16 @@ enum Commands {
         /// The ID of the miner to query
         #[arg(long = "miner-id", help = "Specify the ID of the miner to query")]
         miner_id: Option<String>,
+    },
+    /// Get rankings for a specific miner
+    GetRankings {
+        /// Type of the node to register
+        #[arg(long, help = "Type of node to register (Validator, ComputeMiner, StorageMiner)")]
+        node_type: CliNodeType,
+
+        /// Node ID (typically a peer ID)
+        #[arg(long, help = "Node ID (e.g., libp2p peer ID)")]
+        node_id: String,
     },
     /// Register a new node
     RegisterNode {
@@ -301,6 +312,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::GetVncPort { miner_id } => {
             if let Err(e) = handle_get_vnc_port(miner_id.clone()).await {
                 eprintln!("❌ Failed to get VNC port: {}", e);
+            }
+        }
+        Commands::GetRankings { node_type, node_id } => {
+            if let Err(e) = handle_get_rankings(*node_type, node_id.clone()).await {
+                eprintln!("❌ Failed to get rankings: {}", e);
             }
         }
         Commands::RegisterNode { node_type, node_id, ipfs_node_id } => {
@@ -1102,8 +1118,76 @@ async fn handle_get_vnc_port(miner_id: Option<String>) -> Result<(), Box<dyn std
     Ok(())
 }
 
+async fn handle_get_rankings(node_type: CliNodeType, node_id: String) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🏆 Fetching Rankings for Miner: {} ({:?})", node_id, node_type);
+
+    let (api, _) = setup_substrate_client().await?;
+
+    // Determine the appropriate storage query based on node type
+    let storage_query = match node_type {
+        CliNodeType::Validator => {
+            println!("Querying Validator Rankings...");
+            subxt::dynamic::storage("RankingValidators", "RankedList", vec![])
+        },
+        CliNodeType::StorageMiner => {
+            println!("Querying Storage Miner Rankings...");
+            subxt::dynamic::storage("RankingStorage", "RankedList", vec![])
+        },
+        CliNodeType::ComputeMiner => {
+            println!("Querying Compute Miner Rankings...");
+            subxt::dynamic::storage("RankingCompute", "RankedList", vec![])
+        },
+    };
+
+    // Fetch the ranked list
+    let ranked_list_result = api.storage().at_latest().await?.fetch(&storage_query).await;
+
+    match ranked_list_result {
+        Ok(Some(list)) => {
+            // Attempt to decode the list of node rankings
+            let node_rankings: Vec<NodeRankings<u32>> = list.as_type()?;
+            
+            println!("\n📊 Rankings for {:?} Nodes:", node_type);
+            println!("------------------------");
+
+            // Convert the input node_id to Vec<u8> for comparison
+            let target_node_id = node_id.as_bytes().to_vec();
+
+            // Iterate through the rankings and find the matching node
+            let mut found = false;
+            for (index, ranking) in node_rankings.iter().enumerate() {
+                if ranking.node_id == target_node_id {
+                    println!("Rank #{}: ", index + 1);
+                    println!("  Node ID: {}", String::from_utf8_lossy(&ranking.node_id));
+                    println!("  Node SS58 Address: {}", String::from_utf8_lossy(&ranking.node_ss58_address));
+                    println!("  Node Type: {:?}", ranking.node_type);
+                    println!("  Weight: {}", ranking.weight);
+                    println!("  Last Updated: {}", ranking.last_updated);
+                    println!("  Active: {}", ranking.is_active);
+                    println!("------------------------");
+                    found = true;
+                    break; // Exit the loop once the matching node is found
+                }
+            }
+
+            if !found {
+                println!("❌ No rankings found for the specified node ID: {}", node_id);
+            }
+        },
+        Ok(None) => {
+            println!("No rankings found for {:?} nodes.", node_type);
+        },
+        Err(e) => {
+            eprintln!("🚨 Error querying rankings: {}", e);
+            return Err(e.into());
+        }
+    }
+
+    Ok(())
+}
+
 async fn handle_register_node(node_type: CliNodeType, node_id: String, ipfs_node_id: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🚀 Initializing Node Registration for: {}", node_id);
+    println!("🚀 Initializing Node Registration for: {} ", node_id);
     
     let (api, signer) = setup_substrate_client().await?;
     
