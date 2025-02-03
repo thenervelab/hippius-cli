@@ -14,10 +14,12 @@ use subxt::utils::AccountId32;
 use crate::custom_runtime::runtime_types::pallet_compute::types::MinerComputeRequest;
 use crate::custom_runtime::registration::calls::types::register_node::NodeType;
 use crate::custom_runtime::runtime_types::pallet_rankings::types::NodeRankings;
-use sp_core::crypto::Ss58Codec; // For SS58 encoding]
+use sp_core::crypto::Ss58Codec; // For SS58 encoding
 use crate::custom_runtime::runtime_types::frame_support::PalletId;
 use std::fs;
 use std::path::Path;
+// use subxt::utils::AccountId32;
+
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -416,7 +418,7 @@ async fn handle_create_docker_space(name: String) -> Result<(), Box<dyn std::err
 
 async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairSigner<PolkadotConfig, sr25519::Pair>), Box<dyn std::error::Error>> {
     let url = env::var("SUBSTRATE_NODE_URL")
-        .unwrap_or_else(|_| "wss://testnet.hippius.com".to_string());
+        .unwrap_or_else(|_| "ws://127.0.0.1:9944".to_string());
     
     println!("🌐 Connecting to Substrate node at: {}", url);
     let api = OnlineClient::<PolkadotConfig>::from_url(&url).await?;
@@ -722,10 +724,10 @@ async fn handle_get_credits() -> Result<(), Box<dyn std::error::Error>> {
 
             println!("✅ Free Credits:");
             println!("🔢 Amount: {}", credits);
-        }
+        },
         Ok(None) => {
             println!("❌ No credits found for the account.");
-        }
+        },
         Err(e) => {
             eprintln!("🚨 Error querying credits: {}", e);
             return Err(e.into());
@@ -1135,6 +1137,19 @@ async fn handle_get_rankings(node_type: CliNodeType, node_id: String) -> Result<
 
     let (api, _) = setup_substrate_client().await?;
 
+
+    let ranking_pallet_id = PalletId(*b"ranking2");
+
+    // Fetch balance of the pallet
+    match query_pallet_balance(&api, ranking_pallet_id).await {
+        Ok(balance) => {
+            println!("💰 Ranking Pallet Balance: {} tokens", balance);
+        },
+        Err(_e) => {
+            println!(" Estimated Reward: 0 ");
+        },
+    };
+
     // Determine the appropriate storage query based on node type
     let storage_query = match node_type {
         CliNodeType::Validator => {
@@ -1202,7 +1217,7 @@ async fn handle_get_rankings(node_type: CliNodeType, node_id: String) -> Result<
                                     
                                     println!("  Estimated Reward: {} tokens", estimated_reward);
                                 },
-                                Err(e) => {
+                                Err(_e) => {
                                     println!(" Estimated Reward: 0 ");
                                 },
                             };
@@ -1224,7 +1239,7 @@ async fn handle_get_rankings(node_type: CliNodeType, node_id: String) -> Result<
                                     
                                     println!("  Estimated Reward: {} tokens", estimated_reward);
                                 },
-                                Err(e) => {
+                                Err(_e) => {
                                     println!(" Estimated Reward: 0 ");
                                 },
                             };
@@ -1253,36 +1268,67 @@ async fn handle_get_rankings(node_type: CliNodeType, node_id: String) -> Result<
     Ok(())
 }
 
+use codec::Decode; // Import the Decode trait
+use subxt::dynamic; // Ensure this import is present
+
 /// Function to query the free balance of a pallet's account
 async fn query_pallet_balance(
     api: &OnlineClient<PolkadotConfig>, 
-    pallet_id: PalletId
+    _pallet_id: PalletId
 ) -> Result<u128, Box<dyn std::error::Error>> {
-    // Manually convert PalletId to AccountId32
-    let account_id: AccountId32 = {
-        let mut account_id_bytes = [0u8; 32];
-        account_id_bytes[0..8].copy_from_slice(&pallet_id.0);
-        AccountId32::from(account_id_bytes)
-    };
+    // Manually create AccountId32 from the known address
+    let account_id_bytes: [u8; 32] = hex::decode("5EYCAe5j7t7RXEmC8rYDo9i4Z6tWLWf1SbncYcPTkRreCc58")
+        .map_err(|e| format!("Failed to decode hex address: {:?}", e))?
+        .try_into()
+        .map_err(|_| "Invalid address length")?;
+    
+    let account_id = AccountId32::from(account_id_bytes);
 
     // Build a dynamic storage query for account balance
-    let target_account = subxt::dynamic::Value::from_bytes(&account_id.encode());
-    let balance_query = subxt::dynamic::storage("System", "Account", vec![target_account]);
+    let target_account = dynamic::Value::from_bytes(&account_id.encode());
+    let balance_query = dynamic::storage("System", "Account", vec![target_account]);
 
     // Fetch the balance value
     let balance_result = api.storage().at_latest().await?.fetch(&balance_query).await;
 
     match balance_result {
         Ok(Some(balance_value)) => {
-            // Convert balance value to u128
-            let balance: u128 = balance_value.as_type().unwrap_or(0);
+            // Attempt to extract balance using raw encoding
+            let encoded_balance = balance_value.encoded();
+            
+            // Manually decode the balance
+            #[derive(codec::Decode)]
+            struct AccountInfo {
+                nonce: u32,
+                consumers: u32,
+                providers: u32,
+                sufficients: u32,
+                data: AccountData,
+            }
 
-            println!("💰 Pallet Balance: {} tokens", balance);
-            Ok(balance)
+            #[derive(codec::Decode)]
+            struct AccountData {
+                free: u128,
+                reserved: u128,
+                misc_frozen: u128,
+                fee_frozen: u128,
+            }
+
+            match AccountInfo::decode(&mut &encoded_balance[..]) { // Use a slice directly here
+                Ok(account_info) => {
+                    let free_balance = account_info.data.free;
+                    println!("💰 Pallet Balance: {} tokens", free_balance);
+                    Ok(free_balance)
+                }
+                Err(e) => {
+                    eprintln!("🚨 Failed to decode account info: {:?}", e);
+                    Err("Failed to decode account balance".into())
+                }
+            }
         }
         Ok(None) => {
-            println!("❌ No balance found for the pallet account.");
-            Err("No balance found".into())
+            println!("❌ No balance found for the account");
+            Ok(0)
         }
         Err(e) => {
             eprintln!("🚨 Error querying pallet balance: {}", e);
@@ -1290,6 +1336,7 @@ async fn query_pallet_balance(
         }
     }
 }
+
 
 async fn handle_register_node(node_type: CliNodeType, node_id: String, ipfs_node_id: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Initializing Node Registration for: {} ", node_id);

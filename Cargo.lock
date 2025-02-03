@@ -3445,6 +3445,7 @@ dependencies = [
  "clap",
  "dotenv",
  "hex",
+ "parity-scale-codec",
  "reqwest",
  "serde_json",
  "sp-core",
