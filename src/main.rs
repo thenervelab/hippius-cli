@@ -14,6 +14,10 @@ use subxt::utils::AccountId32;
 use crate::custom_runtime::runtime_types::pallet_compute::types::MinerComputeRequest;
 use crate::custom_runtime::registration::calls::types::register_node::NodeType;
 use crate::custom_runtime::runtime_types::pallet_rankings::types::NodeRankings;
+use sp_core::crypto::Ss58Codec; // For SS58 encoding
+use std::fs;
+use std::path::Path;
+
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -152,6 +156,8 @@ enum Commands {
         #[arg(long, help = "IPFS Node ID (required for Miner nodes)")]
         ipfs_node_id: Option<String>,
     },
+    /// Generate a new Sr25519 keypair for Substrate
+    GenerateKeys,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -322,6 +328,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::RegisterNode { node_type, node_id, ipfs_node_id } => {
             if let Err(e) = handle_register_node(*node_type, node_id.clone(), ipfs_node_id.clone()).await {
                 eprintln!("❌ Failed to register node: {}", e);
+            }
+        }
+        Commands::GenerateKeys => {
+            if let Err(e) = handle_generate_keys().await {
+                eprintln!("❌ Failed to generate keys: {}", e);
+                std::process::exit(1);
             }
         }
     }
@@ -1147,11 +1159,14 @@ async fn handle_get_rankings(node_type: CliNodeType, node_id: String) -> Result<
             // Attempt to decode the list of node rankings
             let node_rankings: Vec<NodeRankings<u32>> = list.as_type()?;
             
-            println!("\n📊 Rankings for {:?} Nodes:", node_type);
+            println!("\n📊 Rankings for {:?} Node:", node_type);
             println!("------------------------");
 
             // Convert the input node_id to Vec<u8> for comparison
             let target_node_id = node_id.as_bytes().to_vec();
+
+            // Calculate total weight for normalization
+            let total_weight: u128 = node_rankings.iter().map(|r| r.weight as u128).sum();
 
             // Iterate through the rankings and find the matching node
             let mut found = false;
@@ -1162,8 +1177,45 @@ async fn handle_get_rankings(node_type: CliNodeType, node_id: String) -> Result<
                     println!("  Node SS58 Address: {}", String::from_utf8_lossy(&ranking.node_ss58_address));
                     println!("  Node Type: {:?}", ranking.node_type);
                     println!("  Weight: {}", ranking.weight);
+                    println!("  Node Ranking: {}", ranking.rank);
                     println!("  Last Updated: {}", ranking.last_updated);
                     println!("  Active: {}", ranking.is_active);
+
+                    // Reward estimation logic
+                    match node_type {
+                        CliNodeType::Validator => {
+                            println!("  Estimated Reward: 0 (Validators do not receive direct rewards)");
+                        },
+                        CliNodeType::ComputeMiner => {
+                            // Assume a total pool of 1000 tokens for compute miners
+                            // 40% of total pool goes to compute miners
+                            let total_pool = 1000u128;
+                            let compute_pool = total_pool * 40 / 100;
+                            
+                            let estimated_reward = if total_weight > 0 {
+                                (ranking.weight as u128 * compute_pool) / total_weight
+                            } else {
+                                0
+                            };
+                            
+                            println!("  Estimated Reward: {} tokens", estimated_reward);
+                        },
+                        CliNodeType::StorageMiner => {
+                            // Assume a total pool of 1000 tokens for storage miners
+                            // 60% of total pool goes to storage miners
+                            let total_pool = 1000u128;
+                            let storage_pool = total_pool * 60 / 100;
+                            
+                            let estimated_reward = if total_weight > 0 {
+                                (ranking.weight as u128 * storage_pool) / total_weight
+                            } else {
+                                0
+                            };
+                            
+                            println!("  Estimated Reward: {} tokens", estimated_reward);
+                        }
+                    }
+
                     println!("------------------------");
                     found = true;
                     break; // Exit the loop once the matching node is found
@@ -1211,6 +1263,36 @@ async fn handle_register_node(node_type: CliNodeType, node_id: String, ipfs_node
     
     println!("✅ Successfully registered node!");
     println!("📦 Node ID: {}", node_id);
+
+    Ok(())
+}
+
+async fn handle_generate_keys() -> Result<(), Box<dyn std::error::Error>> {
+    // Hardcoded keypair directory
+    let keypair_dir = "/home/faiz/hippius/chains/hippius-testnet/keystore";
+
+    // Ensure directory exists
+    fs::create_dir_all(keypair_dir)?;
+
+    // Generate a new Sr25519 keypair
+    let (pair, seed) = sr25519::Pair::generate();
+
+    // Serialize keypair components
+    let public_key = pair.public();
+    let public_key_ss58 = public_key.to_ss58check(); // Convert public key to SS58 format
+
+    // Prepare file paths
+    let public_key_path = Path::new(keypair_dir).join("public_key.ss58");
+    let seed_path = Path::new(keypair_dir).join("seed.bin");
+
+    // Write public key and seed to files
+    fs::write(&public_key_path, &public_key_ss58)?;
+    fs::write(&seed_path, &seed)?; // Save seed as raw binary
+
+    println!("🔑 Keypair Generated Successfully!");
+    println!("📁 Keypair Directory: {}", keypair_dir);
+    println!("📄 Public Key Path: {}", public_key_path.display());
+    println!("📄 Seed Path: {}", seed_path.display());
 
     Ok(())
 }

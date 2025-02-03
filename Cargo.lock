@@ -3444,6 +3444,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dotenv",
+ "hex",
  "reqwest",
  "serde_json",
  "sp-core",
