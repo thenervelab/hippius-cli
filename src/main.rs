@@ -14,12 +14,11 @@ use subxt::utils::AccountId32;
 use crate::custom_runtime::runtime_types::pallet_compute::types::MinerComputeRequest;
 use crate::custom_runtime::registration::calls::types::register_node::NodeType;
 use crate::custom_runtime::runtime_types::pallet_rankings::types::NodeRankings;
-use sp_core::crypto::Ss58Codec; // For SS58 encoding
-use crate::custom_runtime::runtime_types::frame_support::PalletId;
+use sp_core::crypto::Ss58Codec;
 use std::fs;
 use std::path::Path;
-// use subxt::utils::AccountId32;
-
+use codec::Decode;
+use subxt::dynamic;
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -418,7 +417,7 @@ async fn handle_create_docker_space(name: String) -> Result<(), Box<dyn std::err
 
 async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairSigner<PolkadotConfig, sr25519::Pair>), Box<dyn std::error::Error>> {
     let url = env::var("SUBSTRATE_NODE_URL")
-        .unwrap_or_else(|_| "ws://127.0.0.1:9944".to_string());
+        .unwrap_or_else(|_| "wss://testnet.hippius.com".to_string());
     
     println!("🌐 Connecting to Substrate node at: {}", url);
     let api = OnlineClient::<PolkadotConfig>::from_url(&url).await?;
@@ -1137,19 +1136,6 @@ async fn handle_get_rankings(node_type: CliNodeType, node_id: String) -> Result<
 
     let (api, _) = setup_substrate_client().await?;
 
-
-    let ranking_pallet_id = PalletId(*b"ranking2");
-
-    // Fetch balance of the pallet
-    match query_pallet_balance(&api, ranking_pallet_id).await {
-        Ok(balance) => {
-            println!("💰 Ranking Pallet Balance: {} tokens", balance);
-        },
-        Err(_e) => {
-            println!(" Estimated Reward: 0 ");
-        },
-    };
-
     // Determine the appropriate storage query based on node type
     let storage_query = match node_type {
         CliNodeType::Validator => {
@@ -1202,11 +1188,8 @@ async fn handle_get_rankings(node_type: CliNodeType, node_id: String) -> Result<
                             println!("  Estimated Reward: 0 (Validators do not receive direct rewards)");
                         },
                         CliNodeType::ComputeMiner => {
-
-                            let ranking_pallet_id = PalletId(*b"ranking2");
-
                             // Fetch balance of the pallet
-                            match query_pallet_balance(&api, ranking_pallet_id).await {
+                            match query_pallet_balance(&api, 2).await {
                                 Ok(balance) => {
                                     println!("💰 Ranking Pallet Balance: {} tokens", balance);
                                     let estimated_reward = if total_weight > 0 {
@@ -1225,10 +1208,8 @@ async fn handle_get_rankings(node_type: CliNodeType, node_id: String) -> Result<
 
                         },
                         CliNodeType::StorageMiner => {
-                            let ranking_pallet_id = PalletId(*b"ranking1");
-
                             // Fetch balance of the pallet
-                            match query_pallet_balance(&api, ranking_pallet_id).await {
+                            match query_pallet_balance(&api, 1).await {
                                 Ok(balance) => {
                                     println!("💰 Ranking Pallet Balance: {} tokens", balance);
                                     let estimated_reward = if total_weight > 0 {
@@ -1268,73 +1249,97 @@ async fn handle_get_rankings(node_type: CliNodeType, node_id: String) -> Result<
     Ok(())
 }
 
-use codec::Decode; // Import the Decode trait
-use subxt::dynamic; // Ensure this import is present
+#[derive(codec::Decode)]
+struct AccountInfo {
+    nonce: u32,
+    consumers: u32,
+    providers: u32,
+    sufficients: u32,
+    data: AccountData,
+}
 
-/// Function to query the free balance of a pallet's account
+#[derive(codec::Decode)]
+struct AccountData {
+    free: u128,
+    reserved: u128,
+    frozen: u128,  // Corrected field name
+    flags: u128,   // Added missing field
+}
+
+
 async fn query_pallet_balance(
     api: &OnlineClient<PolkadotConfig>, 
-    _pallet_id: PalletId
+    pallet_id: u128
 ) -> Result<u128, Box<dyn std::error::Error>> {
-    // Manually create AccountId32 from the known address
-    let account_id_bytes: [u8; 32] = hex::decode("5EYCAe5j7t7RXEmC8rYDo9i4Z6tWLWf1SbncYcPTkRreCc58")
-        .map_err(|e| format!("Failed to decode hex address: {:?}", e))?
-        .try_into()
-        .map_err(|_| "Invalid address length")?;
+
+    // compute Ranking Pallet Balance
+    if pallet_id == 2 {
+        let account_id: AccountId32 = "5EYCAe5j7t7RXEmC8rYDo9i4Z6tWLWf1SbncYcPTkRreCc58"
+        .parse()
+        .map_err(|e| format!("Invalid SS58 address: {:?}", e))?;
+
+        let target_account = dynamic::Value::from(account_id.encode());
+        let balance_query = dynamic::storage("System", "Account", vec![target_account]);
     
-    let account_id = AccountId32::from(account_id_bytes);
-
-    // Build a dynamic storage query for account balance
-    let target_account = dynamic::Value::from_bytes(&account_id.encode());
-    let balance_query = dynamic::storage("System", "Account", vec![target_account]);
-
-    // Fetch the balance value
-    let balance_result = api.storage().at_latest().await?.fetch(&balance_query).await;
-
-    match balance_result {
-        Ok(Some(balance_value)) => {
-            // Attempt to extract balance using raw encoding
-            let encoded_balance = balance_value.encoded();
-            
-            // Manually decode the balance
-            #[derive(codec::Decode)]
-            struct AccountInfo {
-                nonce: u32,
-                consumers: u32,
-                providers: u32,
-                sufficients: u32,
-                data: AccountData,
-            }
-
-            #[derive(codec::Decode)]
-            struct AccountData {
-                free: u128,
-                reserved: u128,
-                misc_frozen: u128,
-                fee_frozen: u128,
-            }
-
-            match AccountInfo::decode(&mut &encoded_balance[..]) { // Use a slice directly here
-                Ok(account_info) => {
-                    let free_balance = account_info.data.free;
-                    println!("💰 Pallet Balance: {} tokens", free_balance);
-                    Ok(free_balance)
-                }
-                Err(e) => {
-                    eprintln!("🚨 Failed to decode account info: {:?}", e);
-                    Err("Failed to decode account balance".into())
+        let balance_result = api.storage().at_latest().await?.fetch(&balance_query).await;
+    
+        match balance_result {
+            Ok(Some(balance_value)) => {
+                match AccountInfo::decode(&mut &balance_value.encoded()[..]) {
+                    Ok(account_info) => {
+                        let free_balance = account_info.data.free;
+                        Ok(free_balance)
+                    }
+                    Err(e) => {
+                        eprintln!("🚨 Failed to decode account info: {:?}", e);
+                        Err("Failed to decode account balance".into())
+                    }
                 }
             }
-        }
-        Ok(None) => {
-            println!("❌ No balance found for the account");
-            Ok(0)
-        }
-        Err(e) => {
-            eprintln!("🚨 Error querying pallet balance: {}", e);
-            Err(e.into())
+            Ok(None) => {
+                println!("❌ No balance found for the account");
+                Ok(0)
+            }
+            Err(e) => {
+                eprintln!("🚨 Error querying pallet balance: {}", e);
+                Err(e.into())
+            }
         }
     }
+    else{
+        let account_id: AccountId32 = "5EYCAe5j7t7RXEmC8qLjtLHVtXsw8pj56jCBZEZZM7x5ETVJ"
+        .parse()
+        .map_err(|e| format!("Invalid SS58 address: {:?}", e))?;
+
+        let target_account = dynamic::Value::from(account_id.encode());
+        let balance_query = dynamic::storage("System", "Account", vec![target_account]);
+    
+        let balance_result = api.storage().at_latest().await?.fetch(&balance_query).await;
+    
+        match balance_result {
+            Ok(Some(balance_value)) => {
+                match AccountInfo::decode(&mut &balance_value.encoded()[..]) {
+                    Ok(account_info) => {
+                        let free_balance = account_info.data.free;
+                        Ok(free_balance)
+                    }
+                    Err(e) => {
+                        eprintln!("🚨 Failed to decode account info: {:?}", e);
+                        Err("Failed to decode account balance".into())
+                    }
+                }
+            }
+            Ok(None) => {
+                println!("❌ No balance found for the account");
+                Ok(0)
+            }
+            Err(e) => {
+                eprintln!("🚨 Error querying pallet balance: {}", e);
+                Err(e.into())
+            }
+        }
+    }
+
 }
 
 
