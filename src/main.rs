@@ -14,6 +14,7 @@ use subxt::utils::AccountId32;
 use crate::custom_runtime::runtime_types::pallet_compute::types::MinerComputeRequest;
 use crate::custom_runtime::registration::calls::types::register_node::NodeType;
 use crate::custom_runtime::runtime_types::pallet_rankings::types::NodeRankings;
+use crate::custom_runtime::runtime_types::pallet_marketplace::types::FileInput;
 use sp_core::crypto::Ss58Codec;
 use std::fs;
 use std::path::Path;
@@ -101,9 +102,12 @@ enum Commands {
         #[arg(value_enum, help = "Specify the storage operation")]
         storage_command: StorageCommand,
 
-        /// File hash(es) to pin or unpin
-        #[arg(help = "File hash(es) to pin or unpin")]
-        file_hashes: Vec<String>,
+        /// File hash and VM name
+        #[arg(help = "File hash and VM name")]
+        file_hash: String,
+        /// VM name
+        #[arg(help = "VM name")]
+        vm_name: String,
     },
     /// List available OS disk images from the marketplace
     ListImages,
@@ -218,6 +222,7 @@ enum CliNodeType {
     StorageMiner,
 }
 
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
@@ -261,11 +266,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Storage { 
             storage_command, 
-            file_hashes 
+            file_hash,
+            vm_name
         } => {
             if let Err(e) = handle_storage_command(
                 storage_command.clone(), 
-                file_hashes.clone()
+                file_hash.clone(), 
+                vm_name.clone()
             ).await {
                 eprintln!("❌ Failed to perform storage operation: {}", e);
             }
@@ -597,7 +604,8 @@ async fn handle_purchase_compute_plan(
 
 async fn handle_storage_command(
     storage_command: StorageCommand, 
-    file_hashes: Vec<String>
+    file_hash: String,
+    vm_name: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("🗄️ Initiating Storage Operation");
     
@@ -605,17 +613,16 @@ async fn handle_storage_command(
     
     match storage_command {
         StorageCommand::Pin => {
-
-            // Convert file hashes to Vec<Vec<u8>>
-            let parsed_file_hashes: Vec<Vec<u8>> = file_hashes
-                .into_iter()
-                .map(|hash| hash.into_bytes())
-                .collect();
+            // Create FileInput with file hash and VM name
+            let file_input = FileInput {
+                file_hash: file_hash.as_bytes().to_vec(),
+                file_name: vm_name.as_bytes().to_vec(),
+            };
 
             println!("📌 Submitting transaction to pin files...");
             let tx = custom_runtime::tx()
                 .marketplace()
-                .storage_request(parsed_file_hashes);
+                .storage_request(vec![file_input]); 
 
             let progress = api
                 .tx()
@@ -628,18 +635,10 @@ async fn handle_storage_command(
             println!("✅ Successfully pinned files!");
         },
         StorageCommand::Unpin => {
-            // Ensure only one file hash is provided for unpinning
-            if file_hashes.len() != 1 {
-                return Err("Unpin operation requires exactly one file hash".into());
-            }
-
-            // Convert file hash to the required format
-            let file_hash = file_hashes[0].clone();
-
             println!("🔓 Submitting transaction to unpin file...");
             let tx = custom_runtime::tx()
                 .marketplace()
-                .storage_unpin_request(file_hash.into());
+                .storage_unpin_request(file_hash.clone().into());
 
             let progress = api
                 .tx()
