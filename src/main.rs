@@ -15,6 +15,7 @@ use crate::custom_runtime::runtime_types::pallet_compute::types::MinerComputeReq
 use crate::custom_runtime::registration::calls::types::register_node::NodeType;
 use crate::custom_runtime::runtime_types::pallet_rankings::types::NodeRankings;
 use crate::custom_runtime::runtime_types::pallet_marketplace::types::FileInput;
+use crate::custom_runtime::runtime_types::pallet_credits::pallet::LockedCredit;
 use sp_core::crypto::Ss58Codec;
 use std::fs;
 use std::path::Path;
@@ -169,6 +170,8 @@ enum Commands {
         #[arg(help = "Specify the amount of credits to lock")]
         amount: u128,
     },
+    /// List locked credits for the current account
+    ListLockedCredits
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -356,6 +359,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
+        Commands::ListLockedCredits => {
+            if let Err(e) = handle_list_locked_credits().await {
+                eprintln!("❌ Failed to list locked credits: {}", e);
+                std::process::exit(1);
+            }
+        }
     }
     
     Ok(())
@@ -443,7 +452,7 @@ async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairS
     
     println!("🔑 Preparing transaction signer...");
     let seed_phrase = env::var("SUBSTRATE_SEED_PHRASE")
-        .unwrap_or_else(|_| "brick end genuine caution author bulk school rose trap ramp garden milk".to_string());
+        .unwrap_or_else(|_| "//Alice".to_string());
 
     let pair = sr25519::Pair::from_string(seed_phrase.as_str(), None)
         .map_err(|e| format!("Failed to create pair: {:?}", e))?;
@@ -1413,8 +1422,6 @@ async fn handle_generate_keys() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-
-
 async fn handle_lock_credits(amount: u128) -> Result<(), Box<dyn std::error::Error>> {
     let (api, signer) = setup_substrate_client().await?;
 
@@ -1431,5 +1438,60 @@ async fn handle_lock_credits(amount: u128) -> Result<(), Box<dyn std::error::Err
     
     println!("✅ Successfully locked {} credits!", amount);
     
+    Ok(())
+}
+
+async fn handle_list_locked_credits() -> Result<(), Box<dyn std::error::Error>> {
+    println!("🔒 Fetching Locked Credits...");
+
+    let (api, signer) = setup_substrate_client().await?;
+
+    // Get the signer's account ID
+    let signer_account_id = signer.account_id();
+
+    // Build a dynamic storage query for LockedCredits
+    let storage_query = subxt::dynamic::storage("Credits", "LockedCredits", vec![
+        subxt::dynamic::Value::from_bytes(&signer_account_id.encode())
+    ]);
+
+    // Fetch the locked credits
+    let locked_credits_result = api.storage().at_latest().await?.fetch(&storage_query).await;
+
+    match locked_credits_result {
+        Ok(Some(credits_value)) => {
+            // Decode the locked credits
+            let locked_credits: Vec<LockedCredit<AccountId32, u32>> = credits_value.as_type()?;
+
+            if locked_credits.is_empty() {
+                println!("❌ No locked credits found for your account.");
+                return Ok(());
+            }
+
+            println!("🏦 Locked Credits:");
+            println!("------------------------");
+            for (index, credit) in locked_credits.iter().enumerate() {
+                println!("Lock #{}", index + 1);
+                println!("  Amount Locked: {}", credit.amount_locked);
+                println!("  Created At Block: {}", credit.created_at);
+                println!("  Lock ID: {}", credit.id);
+                println!("  Fulfilled: {}", credit.is_fulfilled);
+                if let Some(tx_hash) = &credit.tx_hash {
+                    println!("  Transaction Hash: {}", String::from_utf8_lossy(tx_hash));
+                }
+                println!("------------------------");
+            }
+
+            let total_locked: u128 = locked_credits.iter().map(|c| c.amount_locked).sum();
+            println!("💰 Total Locked Credits: {}", total_locked);
+        },
+        Ok(None) => {
+            println!("❌ No locked credits found for your account.");
+        },
+        Err(e) => {
+            eprintln!("🚨 Error querying locked credits: {}", e);
+            return Err(e.into());
+        }
+    }
+
     Ok(())
 }
