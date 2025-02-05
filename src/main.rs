@@ -163,6 +163,12 @@ enum Commands {
     },
     /// Generate a new Sr25519 keypair for Substrate
     GenerateKeys,
+    /// Lock credits for a specific account
+    LockCredits {
+        /// The amount of credits to lock
+        #[arg(help = "Specify the amount of credits to lock")]
+        amount: u128,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -344,6 +350,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
+        Commands::LockCredits { amount } => {
+            if let Err(e) = handle_lock_credits(*amount).await {
+                eprintln!("❌ Failed to lock credits: {}", e);
+                std::process::exit(1);
+            }
+        }
     }
     
     Ok(())
@@ -431,7 +443,7 @@ async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairS
     
     println!("🔑 Preparing transaction signer...");
     let seed_phrase = env::var("SUBSTRATE_SEED_PHRASE")
-        .unwrap_or_else(|_| "//Alice".to_string());
+        .unwrap_or_else(|_| "brick end genuine caution author bulk school rose trap ramp garden milk".to_string());
 
     let pair = sr25519::Pair::from_string(seed_phrase.as_str(), None)
         .map_err(|e| format!("Failed to create pair: {:?}", e))?;
@@ -1398,5 +1410,26 @@ async fn handle_generate_keys() -> Result<(), Box<dyn std::error::Error>> {
     println!("📄 Public Key Path: {}", public_key_path.display());
     println!("📄 Seed Path: {}", seed_path.display());
 
+    Ok(())
+}
+
+
+
+async fn handle_lock_credits(amount: u128) -> Result<(), Box<dyn std::error::Error>> {
+    let (api, signer) = setup_substrate_client().await?;
+
+    println!("📤 Submitting transaction to lock credits...");
+    let tx = custom_runtime::tx().credits().lock_credits(amount);
+    
+    let progress = api
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, &signer)
+        .await?;
+    
+    println!("⏳ Waiting for transaction to be finalized...");
+    let _ = progress.wait_for_finalized_success().await?;
+    
+    println!("✅ Successfully locked {} credits!", amount);
+    
     Ok(())
 }
