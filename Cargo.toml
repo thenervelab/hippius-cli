@@ -17,7 +17,7 @@ section = "utils"
 priority = "optional"
 assets = [
     ["target/release/hipc", "usr/bin/", "755"],
-    ["README.md", "usr/share/doc/hipc/README.md", "644"],
+    ["readme.md", "usr/share/doc/hipc/readme.md", "644"],
 ]
 
 [dependencies]
