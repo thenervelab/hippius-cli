@@ -81,6 +81,45 @@ hippius-cli register-node --node-type ComputeMiner --node-id my-compute-node
 
 ---
 
+## Release Process
+
+### Creating a New Release
+
+1. Update version in `Cargo.toml`:
+```toml
+[package]
+version = "X.Y.Z"  # Update this version
+```
+
+2. Create and push a new tag:
+```bash
+# Update version
+VERSION="X.Y.Z"
+
+# Create commit
+git add Cargo.toml
+git commit -m "chore: bump version to ${VERSION}"
+
+# Create and push tag
+git tag -a "v${VERSION}" -m "Release version ${VERSION}"
+git push origin main "v${VERSION}"
+```
+
+This will trigger the GitHub Actions workflow that:
+1. Creates a new GitHub release
+2. Builds and uploads:
+   - macOS binary (x86_64-apple-darwin)
+   - Linux binary (x86_64-unknown-linux-gnu)
+   - Debian package (.deb)
+
+### Release Artifacts
+Each release includes:
+- `hipc-X.Y.Z-x86_64-apple-darwin.tar.gz`: macOS binary
+- `hipc-X.Y.Z-x86_64-unknown-linux-gnu.tar.gz`: Linux binary
+- `hipc_X.Y.Z_amd64.deb`: Debian package
+
+---
+
 ## Installation
 
 ### Using Package Managers
