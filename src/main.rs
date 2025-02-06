@@ -23,6 +23,8 @@ use std::path::Path;
 use codec::Decode;
 use subxt::dynamic;
 use csv::ReaderBuilder;
+use crate::custom_runtime::runtime_types::pallet_compute::types::ComputeRequest;
+// use crate::custom_runtime::runtime_types::pallet_marketplace::types::{ComputeRequest, ComputeRequestStatus, ImageMetadata};
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -182,6 +184,8 @@ enum Commands {
     },
     /// List all available marketplace plans
     ListPlans,
+    /// List all compute requests (VMs) for the current user
+    ListVms,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -380,6 +384,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::ListPlans => {
             handle_list_plans().await?;
+        }
+        Commands::ListVms => {
+            handle_list_vms().await?;
         }
     }
     
@@ -1611,6 +1618,77 @@ async fn handle_list_plans() -> Result<(), Box<dyn std::error::Error>> {
         println!("⚠️ No plans found in the marketplace.");
     } else {
         println!("✅ Total Plans Found: {}", plan_count);
+    }
+
+    Ok(())
+}
+
+async fn handle_list_vms() -> Result<(), Box<dyn std::error::Error>> {
+    println!("🖥️  Fetching Compute Requests for Current User");
+
+    let (api, signer) = setup_substrate_client().await?;
+
+    // Get the current user's account ID and convert to SS58 string
+    let account_id = signer.account_id();
+
+    // Build a dynamic storage query for compute requests
+    let storage_query = subxt::dynamic::storage("Compute", "ComputeRequests", vec![
+        subxt::dynamic::Value::from(account_id.encode())
+    ]);
+    
+    // Fetch storage entries
+    let storage_client = api.storage().at_latest().await?;
+    let compute_requests_result = storage_client.fetch(&storage_query).await;
+
+    match compute_requests_result {
+        Ok(Some(value)) => {
+            // Decode the compute requests for the user
+            let compute_requests: Vec<ComputeRequest<AccountId32, u32, H256>> = value.as_type()?;
+
+            if compute_requests.is_empty() {
+                println!("⚠️ No compute requests found for the current user.");
+                return Ok(());
+            }
+
+            println!("🔢 Total Compute Requests: {}", compute_requests.len());
+            
+            for (index, request) in compute_requests.iter().enumerate() {
+                // Convert byte vectors to strings for display
+                let image_name = String::from_utf8_lossy(&request.selected_image.name).to_string();
+                let image_url = String::from_utf8_lossy(&request.selected_image.image_url).to_string();
+                let plan_description = String::from_utf8_lossy(&request.plan_technical_description).to_string();
+                
+                // Convert cloud init CID to string if present
+                let cloud_init_cid = request.cloud_init_cid
+                    .as_ref()
+                    .map(|cid| String::from_utf8_lossy(cid).to_string())
+                    .unwrap_or_else(|| "Not specified".to_string());
+
+                println!("\n🖥️ Compute Request #{}", index + 1);
+                println!("  Request ID: {}", request.request_id);
+                println!("  Status: {:?}", request.status);
+                println!("  Plan ID: {:?}", request.plan_id);
+                println!("  Plan Description: {}", plan_description);
+                println!("  Image Name: {}", image_name);
+                println!("  Image URL: {}", image_url);
+                println!("  Created At: Block {}", request.created_at);
+                println!("  Last Charged At: {}", 
+                    request.last_charged_at
+                        .map(|block| block.to_string())
+                        .unwrap_or_else(|| "Never".to_string())
+                );
+                println!("  Is Assigned: {}", request.is_assigned);
+                println!("  Cloud Init CID: {}", cloud_init_cid);
+                println!("---");
+            }
+        },
+        Ok(None) => {
+            println!("⚠️ No compute requests found for the current user.");
+        },
+        Err(e) => {
+            eprintln!("❌ Error fetching compute requests: {}", e);
+            return Err(e.into());
+        }
     }
 
     Ok(())
