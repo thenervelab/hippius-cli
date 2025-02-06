@@ -21,6 +21,7 @@ use std::fs;
 use std::path::Path;
 use codec::Decode;
 use subxt::dynamic;
+use csv::ReaderBuilder;
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -171,7 +172,13 @@ enum Commands {
         amount: u128,
     },
     /// List locked credits for the current account
-    ListLockedCredits
+    ListLockedCredits,
+    /// Upload multiple files from a CSV file
+    BulkUpload {
+        /// Path to the CSV file containing file CIDs and names
+        #[arg(short, long)]
+        csv_path: String,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -365,6 +372,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
+        Commands::BulkUpload { csv_path } => {
+            handle_bulk_upload(csv_path).await?;
+        }
     }
     
     Ok(())
@@ -445,14 +455,14 @@ async fn handle_create_docker_space(name: String) -> Result<(), Box<dyn std::err
 
 async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairSigner<PolkadotConfig, sr25519::Pair>), Box<dyn std::error::Error>> {
     let url = env::var("SUBSTRATE_NODE_URL")
-        .unwrap_or_else(|_| "wss://testnet.hippius.com".to_string());
+        .unwrap_or_else(|_| "ws://127.0.0.1:9944".to_string());
     
     println!("🌐 Connecting to Substrate node at: {}", url);
     let api = OnlineClient::<PolkadotConfig>::from_url(&url).await?;
     
     println!("🔑 Preparing transaction signer...");
     let seed_phrase = env::var("SUBSTRATE_SEED_PHRASE")
-        .unwrap_or_else(|_| "//Alice".to_string());
+        .unwrap_or_else(|_| "brick end genuine caution author bulk school rose trap ramp garden milk".to_string());
 
     let pair = sr25519::Pair::from_string(seed_phrase.as_str(), None)
         .map_err(|e| format!("Failed to create pair: {:?}", e))?;
@@ -1491,6 +1501,65 @@ async fn handle_list_locked_credits() -> Result<(), Box<dyn std::error::Error>> 
             eprintln!("🚨 Error querying locked credits: {}", e);
             return Err(e.into());
         }
+    }
+
+    Ok(())
+}
+
+async fn handle_bulk_upload(csv_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🗄️ Initiating Bulk File Upload from CSV: {}", csv_path);
+
+    // Validate CSV file exists
+    if !Path::new(csv_path).exists() {
+        return Err(format!("CSV file not found: {}", csv_path).into());
+    }
+
+    // Create a CSV reader
+    let mut rdr = ReaderBuilder::new()
+        .has_headers(true)
+        .from_path(csv_path)?;
+
+    // Prepare file inputs
+    let mut file_inputs = Vec::new();
+
+    // Iterate through CSV records
+    for result in rdr.records() {
+        let record = result?;
+        
+        // Assume CSV has two columns: file CID and file name
+        if record.len() != 2 {
+            return Err("CSV must have exactly two columns: file CID and file name".into());
+        }
+
+        let file_hash = record[0].to_string();
+        let vm_name = record[1].to_string();
+
+        file_inputs.push(FileInput {
+            file_hash: file_hash.as_bytes().to_vec(),
+            file_name: vm_name.as_bytes().to_vec(),
+        });
+    }
+
+    // Perform bulk upload
+    if !file_inputs.is_empty() {
+        let (api, signer) = setup_substrate_client().await?;
+
+        println!("📌 Submitting transaction to pin files...");
+        let tx = custom_runtime::tx()
+            .marketplace()
+            .storage_request(file_inputs); 
+
+        let progress = api
+            .tx()
+            .sign_and_submit_then_watch_default(&tx, &signer)
+            .await?;
+        
+        println!("⏳ Waiting for transaction to be finalized...");
+        let _ = progress.wait_for_finalized_success().await?;
+        
+        println!("✅ Successfully pinned files!");
+    } else {
+        println!("⚠️ No files found in the CSV to upload.");
     }
 
     Ok(())
