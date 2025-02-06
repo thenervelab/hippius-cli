@@ -1,8 +1,10 @@
 # Hippius CLI
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Latest Release](https://img.shields.io/github/v/release/thenervelab/hippius-cli)](https://github.com/thenervelab/hippius-cli/releases/latest)
 A Rust-based Command-Line Interface (CLI) for managing Docker registries, compute resources, storage, and node operations on a Substrate/IPFS-based blockchain.
 
 ## Overview
-The `hippius-cli` tool provides a comprehensive set of commands for interacting with a decentralized infrastructure, including:
+The `hipc` tool provides a comprehensive set of commands for interacting with a decentralized infrastructure, including:
 - Docker registry management
 - Compute resource provisioning
 - Storage operations
@@ -81,27 +83,56 @@ hippius-cli register-node --node-type ComputeMiner --node-id my-compute-node
 
 ## Installation
 
-### Step 1: Clone the Repository
+### Using Package Managers
+
+#### macOS (Homebrew)
 ```bash
-git clone <repository-url>
-cd hippius-relay-cli
+# Install
+brew install thenervelab/tap/hipc
+
+# Upgrade
+brew upgrade hipc
 ```
 
-### Step 2: Build the CLI
+#### Ubuntu/Debian
+Download the latest .deb package from the [releases page](https://github.com/thenervelab/hippius-cli/releases) and install:
 ```bash
-cargo build --release
+sudo dpkg -i hipc_<version>_amd64.deb
 ```
 
-### Step 3: Install the CLI
-Move the binary to a directory in your `PATH`:
+### Building from Source
+
+1. Clone the repository:
 ```bash
-sudo cp target/release/hippius-cli /usr/local/bin
+git clone https://github.com/thenervelab/hippius-cli.git
+cd hippius-cli
 ```
 
-Verify the installation:
+2. Build and install:
 ```bash
-hippius-cli --help
+cargo install --path .
 ```
+
+## Development
+
+### Updating Homebrew Formula
+After a new release is created:
+
+1. Download the release tarballs:
+```bash
+# Download macOS and Linux tarballs
+curl -LO https://github.com/thenervelab/hippius-cli/releases/download/v<version>/hipc-<version>-x86_64-apple-darwin.tar.gz
+curl -LO https://github.com/thenervelab/hippius-cli/releases/download/v<version>/hipc-<version>-x86_64-unknown-linux-gnu.tar.gz
+```
+
+2. Generate SHA256 checksums:
+```bash
+shasum -a 256 hipc-<version>-x86_64-apple-darwin.tar.gz
+shasum -a 256 hipc-<version>-x86_64-unknown-linux-gnu.tar.gz
+```
+
+3. Update the SHA256 checksums in `.github/homebrew/hipc.rb`
+4. Commit and push the changes to the repository
 
 ---
 
