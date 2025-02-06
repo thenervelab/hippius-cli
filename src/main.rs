@@ -24,7 +24,6 @@ use codec::Decode;
 use subxt::dynamic;
 use csv::ReaderBuilder;
 use crate::custom_runtime::runtime_types::pallet_compute::types::ComputeRequest;
-// use crate::custom_runtime::runtime_types::pallet_marketplace::types::{ComputeRequest, ComputeRequestStatus, ImageMetadata};
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -186,6 +185,8 @@ enum Commands {
     ListPlans,
     /// List all compute requests (VMs) for the current user
     ListVms,
+    /// List all IPFS file storage requests for the current user
+    ListIpfsFiles,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -388,6 +389,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::ListVms => {
             handle_list_vms().await?;
         }
+        Commands::ListIpfsFiles => {
+            handle_list_ipfs_files().await?;
+        }
     }
     
     Ok(())
@@ -475,7 +479,7 @@ async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairS
     
     println!("🔑 Preparing transaction signer...");
     let seed_phrase = env::var("SUBSTRATE_SEED_PHRASE")
-        .unwrap_or_else(|_| "//ALICE".to_string());
+        .unwrap_or_else(|_| "//Alice".to_string());
 
     let pair = sr25519::Pair::from_string(seed_phrase.as_str(), None)
         .map_err(|e| format!("Failed to create pair: {:?}", e))?;
@@ -1687,6 +1691,55 @@ async fn handle_list_vms() -> Result<(), Box<dyn std::error::Error>> {
         },
         Err(e) => {
             eprintln!("❌ Error fetching compute requests: {}", e);
+            return Err(e.into());
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_list_ipfs_files() -> Result<(), Box<dyn std::error::Error>> {
+    println!("📦 Fetching IPFS File Hashes for Current User");
+
+    let (api, signer) = setup_substrate_client().await?;
+
+    // Get the current user's account ID
+    let account_id = signer.account_id();
+
+    // Build a dynamic storage query for user file hashes
+    let storage_query = subxt::dynamic::storage("Marketplace", "UserFileHashes", vec![
+        subxt::dynamic::Value::from(account_id.encode())
+    ]);
+    
+    // Fetch storage entries
+    let storage_client = api.storage().at_latest().await?;
+    let file_hashes_result = storage_client.fetch(&storage_query).await;
+
+    match file_hashes_result {
+        Ok(Some(value)) => {
+            // Decode the file hashes for the user
+            let file_hashes: Vec<Vec<u8>> = value.as_type()?;
+
+            if file_hashes.is_empty() {
+                println!("⚠️ No file hashes found for the current user.");
+                return Ok(());
+            }
+
+            println!("🔢 Total File Hashes: {}", file_hashes.len());
+            
+            for (index, file_hash) in file_hashes.iter().enumerate() {
+                // Convert file hash to string for display
+                let file_hash_str = String::from_utf8_lossy(file_hash).to_string();
+
+                println!("\n📄 File Hash #{}", index + 1);
+                println!("  {}", file_hash_str);
+            }
+        },
+        Ok(None) => {
+            println!("⚠️ No file hashes found for the current user.");
+        },
+        Err(e) => {
+            eprintln!("❌ Error fetching file hashes: {}", e);
             return Err(e.into());
         }
     }
