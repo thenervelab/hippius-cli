@@ -475,7 +475,7 @@ async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairS
     
     println!("🔑 Preparing transaction signer...");
     let seed_phrase = env::var("SUBSTRATE_SEED_PHRASE")
-        .unwrap_or_else(|_| "brick end genuine caution author bulk school rose trap ramp garden milk".to_string());
+        .unwrap_or_else(|_| "//ALICE".to_string());
 
     let pair = sr25519::Pair::from_string(seed_phrase.as_str(), None)
         .map_err(|e| format!("Failed to create pair: {:?}", e))?;
