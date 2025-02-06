@@ -17,6 +17,7 @@ use crate::custom_runtime::runtime_types::pallet_rankings::types::NodeRankings;
 use crate::custom_runtime::runtime_types::pallet_marketplace::types::FileInput;
 use crate::custom_runtime::runtime_types::pallet_credits::pallet::LockedCredit;
 use sp_core::crypto::Ss58Codec;
+use crate::custom_runtime::runtime_types::pallet_marketplace::types::Plan;
 use std::fs;
 use std::path::Path;
 use codec::Decode;
@@ -179,6 +180,8 @@ enum Commands {
         #[arg(short, long)]
         csv_path: String,
     },
+    /// List all available marketplace plans
+    ListPlans,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -374,6 +377,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::BulkUpload { csv_path } => {
             handle_bulk_upload(csv_path).await?;
+        }
+        Commands::ListPlans => {
+            handle_list_plans().await?;
         }
     }
     
@@ -1560,6 +1566,51 @@ async fn handle_bulk_upload(csv_path: &str) -> Result<(), Box<dyn std::error::Er
         println!("✅ Successfully pinned files!");
     } else {
         println!("⚠️ No files found in the CSV to upload.");
+    }
+
+    Ok(())
+}
+
+async fn handle_list_plans() -> Result<(), Box<dyn std::error::Error>> {
+    println!("📋 Fetching Available Marketplace Plans");
+
+    let (api, _) = setup_substrate_client().await?;
+
+    // Build a dynamic storage query for plans
+    let storage_query = subxt::dynamic::storage("Marketplace", "Plans", vec![]);
+    
+    // Fetch storage entries
+    let mut results = api.storage().at_latest().await?.iter(storage_query).await?;
+    
+    let mut plan_count = 0;
+    
+    // Iterate through results
+    while let Some(Ok(kv)) = results.next().await {
+        // Decode the plan from the value
+        let plan: Plan<H256> = kv.value.as_type()?;
+        
+        // Convert byte vectors to strings for display
+        let plan_name = String::from_utf8_lossy(&plan.plan_name).to_string();
+        let plan_description = String::from_utf8_lossy(&plan.plan_description).to_string();
+        let plan_technical_description = String::from_utf8_lossy(&plan.plan_technical_description).to_string();
+
+        // Print plan details
+        println!("Plan Details:");
+        println!("  ID: {:?}", plan.id);
+        println!("  Name: {}", plan_name);
+        println!("  Description: {}", plan_description);
+        println!("  Technical Description: {}", plan_technical_description);
+        println!("  Price: {} tokens", plan.price);
+        println!("  Suspended: {}", if plan.is_suspended { "Yes" } else { "No" });
+        println!("---");
+
+        plan_count += 1;
+    }
+
+    if plan_count == 0 {
+        println!("⚠️ No plans found in the marketplace.");
+    } else {
+        println!("✅ Total Plans Found: {}", plan_count);
     }
 
     Ok(())
