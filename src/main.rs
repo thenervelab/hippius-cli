@@ -16,6 +16,7 @@ use crate::custom_runtime::registration::calls::types::register_node::NodeType;
 use crate::custom_runtime::runtime_types::pallet_rankings::types::NodeRankings;
 use crate::custom_runtime::runtime_types::pallet_marketplace::types::FileInput;
 use crate::custom_runtime::runtime_types::pallet_credits::pallet::LockedCredit;
+use crate::custom_runtime::runtime_types::pallet_credits::pallet::LockPeriod;
 use sp_core::crypto::Ss58Codec;
 use crate::custom_runtime::runtime_types::pallet_marketplace::types::Plan;
 use std::fs;
@@ -187,6 +188,10 @@ enum Commands {
     ListVms,
     /// List all IPFS file storage requests for the current user
     ListIpfsFiles,
+    /// Fetch the current lock period from Credits pallet
+    GetCurrentLockPeriod,
+    /// Fetch the minimum lock amount from Credits pallet
+    GetMinLockAmount,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -392,6 +397,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::ListIpfsFiles => {
             handle_list_ipfs_files().await?;
         }
+        Commands::GetCurrentLockPeriod => {
+            handle_get_current_lock_period().await?;
+        }
+        Commands::GetMinLockAmount => {
+            handle_get_min_lock_amount().await?;
+        }
     }
     
     Ok(())
@@ -479,7 +490,7 @@ async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairS
     
     println!("🔑 Preparing transaction signer...");
     let seed_phrase = env::var("SUBSTRATE_SEED_PHRASE")
-        .unwrap_or_else(|_| "//Alice".to_string());
+        .unwrap_or_else(|_| "brick end genuine caution author bulk school rose trap ramp garden milk".to_string());
 
     let pair = sr25519::Pair::from_string(seed_phrase.as_str(), None)
         .map_err(|e| format!("Failed to create pair: {:?}", e))?;
@@ -1653,7 +1664,7 @@ async fn handle_list_vms() -> Result<(), Box<dyn std::error::Error>> {
                 println!("⚠️ No compute requests found for the current user.");
                 return Ok(());
             }
-
+            
             println!("🔢 Total Compute Requests: {}", compute_requests.len());
             
             for (index, request) in compute_requests.iter().enumerate() {
@@ -1740,6 +1751,69 @@ async fn handle_list_ipfs_files() -> Result<(), Box<dyn std::error::Error>> {
         },
         Err(e) => {
             eprintln!("❌ Error fetching file hashes: {}", e);
+            return Err(e.into());
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_get_current_lock_period() -> Result<(), Box<dyn std::error::Error>> {
+    println!("🕒 Fetching Current Lock Period...");
+
+    let (api, _) = setup_substrate_client().await?;
+
+    // Build a dynamic storage query for CurrentLockPeriod
+    let storage_query = subxt::dynamic::storage("Credits", "CurrentLockPeriod", vec![]);
+
+    // Fetch the current lock period
+    let lock_period_result = api.storage().at_latest().await?.fetch(&storage_query).await;
+
+    match lock_period_result {
+        Ok(Some(lock_period_value)) => {
+            // Attempt to decode the lock period
+            let lock_period: LockPeriod<u32> = lock_period_value.as_type()?;
+
+            println!("✅ Current Lock Period Details:");
+            println!("  Start Block: {}", lock_period.start_block);
+            println!("  End Block: {}", lock_period.end_block);
+        },
+        Ok(None) => {
+            println!("❌ No current lock period found.");
+        },
+        Err(e) => {
+            eprintln!("🚨 Error querying current lock period: {}", e);
+            return Err(e.into());
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_get_min_lock_amount() -> Result<(), Box<dyn std::error::Error>> {
+    println!("💰 Fetching Minimum Lock Amount...");
+
+    let (api, _) = setup_substrate_client().await?;
+
+    // Build a dynamic storage query for MinLockAmount
+    let storage_query = subxt::dynamic::storage("Credits", "MinLockAmount", vec![]);
+
+    // Fetch the minimum lock amount
+    let min_lock_amount_result = api.storage().at_latest().await?.fetch(&storage_query).await;
+
+    match min_lock_amount_result {
+        Ok(Some(min_lock_amount_value)) => {
+            // Attempt to decode the minimum lock amount
+            let min_lock_amount: u128 = min_lock_amount_value.as_type()?;
+
+            println!("✅ Minimum Lock Amount:");
+            println!("  Amount: {}", min_lock_amount);
+        },
+        Ok(None) => {
+            println!("❌ No minimum lock amount found.");
+        },
+        Err(e) => {
+            eprintln!("🚨 Error querying minimum lock amount: {}", e);
             return Err(e.into());
         }
     }
