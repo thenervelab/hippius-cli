@@ -10,15 +10,16 @@ use sp_core::Encode;
 use reqwest;
 use serde_json;
 use crate::custom_runtime::runtime_types::pallet_registration::types::NodeInfo;
-use subxt::utils::AccountId32;
+
 use crate::custom_runtime::runtime_types::pallet_compute::types::MinerComputeRequest;
 use crate::custom_runtime::registration::calls::types::register_node::NodeType;
 use crate::custom_runtime::runtime_types::pallet_rankings::types::NodeRankings;
 use crate::custom_runtime::runtime_types::pallet_marketplace::types::FileInput;
 use crate::custom_runtime::runtime_types::pallet_credits::pallet::LockedCredit;
 use crate::custom_runtime::runtime_types::pallet_credits::pallet::LockPeriod;
-use sp_core::crypto::Ss58Codec;
 use crate::custom_runtime::runtime_types::pallet_marketplace::types::Plan;
+use sp_core::crypto::Ss58Codec;
+use subxt::utils::AccountId32;
 use std::fs;
 use std::path::Path;
 use codec::Decode;
@@ -161,6 +162,10 @@ enum Commands {
         /// Node ID (typically a peer ID)
         #[arg(long, help = "Node ID (e.g., libp2p peer ID)")]
         node_id: String,
+
+        /// Optional flag to pay for registration in credits
+        #[arg(long, help = "Pay for node registration using credits")]
+        pay_in_credits: bool,
 
         /// Optional IPFS Node ID (required for Miner nodes)
         #[arg(long, help = "IPFS Node ID (required for Miner nodes)")]
@@ -362,8 +367,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("❌ Failed to get rankings: {}", e);
             }
         }
-        Commands::RegisterNode { node_type, node_id, ipfs_node_id } => {
-            if let Err(e) = handle_register_node(*node_type, node_id.clone(), ipfs_node_id.clone()).await {
+        Commands::RegisterNode { node_type, node_id, pay_in_credits, ipfs_node_id } => {
+            if let Err(e) = handle_register_node(*node_type, node_id.clone(), *pay_in_credits, ipfs_node_id.clone()).await {
                 eprintln!("❌ Failed to register node: {}", e);
             }
         }
@@ -1400,8 +1405,7 @@ async fn query_pallet_balance(
 
 }
 
-
-async fn handle_register_node(node_type: CliNodeType, node_id: String, ipfs_node_id: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_register_node(node_type: CliNodeType, node_id: String, pay_in_credits: bool, ipfs_node_id: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Initializing Node Registration for: {} ", node_id);
     
     let (api, signer) = setup_substrate_client().await?;
@@ -1414,7 +1418,7 @@ async fn handle_register_node(node_type: CliNodeType, node_id: String, ipfs_node
     };
     
     println!("📤 Submitting transaction to register node...");
-    let tx = custom_runtime::tx().registration().register_node(runtime_node_type, node_id.clone().into_bytes(), ipfs_node_id.map(|id| id.into_bytes()));
+    let tx = custom_runtime::tx().registration().register_node(runtime_node_type, node_id.clone().into_bytes(), pay_in_credits, ipfs_node_id.map(|id| id.into_bytes()));
 
     let progress = api
         .tx()
