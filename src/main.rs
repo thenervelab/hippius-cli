@@ -101,6 +101,10 @@ enum Commands {
         /// Optional account to pay for the plan
         #[arg(long, help = "Optional account to pay for the plan")]
         pay_for: Option<String>,
+
+        /// Optional miner ID
+        #[arg(long, help = "Optional miner ID")]
+        miner_id: Option<String>,
     },
     /// Storage operations for pinning and unpinning files
     Storage {
@@ -286,14 +290,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             location_id, 
             image_name, 
             cloud_init_cid, 
-            pay_for 
+            pay_for, 
+            miner_id 
         } => {
             if let Err(e) = handle_purchase_compute_plan(
                 plan_id.clone(), 
                 location_id.clone(), 
                 image_name.clone(), 
                 cloud_init_cid.clone(), 
-                pay_for.clone()
+                pay_for.clone(),
+                miner_id.clone()
             ).await {
                 eprintln!("❌ Failed to purchase plan: {}", e);
             }
@@ -628,7 +634,8 @@ async fn handle_purchase_compute_plan(
     location_id: Option<u32>, 
     image_name: String, 
     cloud_init_cid: Option<String>, 
-    _pay_for: Option<String>
+    _pay_for: Option<String>,
+    miner_id: Option<String>
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("🛒 Initiating Plan Purchase");
     
@@ -641,6 +648,9 @@ async fn handle_purchase_compute_plan(
     // Convert pay_for to AccountId if provided
     let pay_for_account: Option<_> = None;
 
+    // Convert miner_id to bytes if provided
+    let miner_id_bytes = miner_id.map(|id| id.into_bytes());
+
     println!("📤 Submitting transaction to purchase plan...");
     let tx = custom_runtime::tx()
         .marketplace()
@@ -649,7 +659,8 @@ async fn handle_purchase_compute_plan(
             location_id, 
             image_name_bytes, 
             cloud_init_cid_bytes, 
-            pay_for_account
+            pay_for_account,
+            miner_id_bytes
         );
 
     let progress = api
