@@ -488,7 +488,7 @@ async fn handle_create_docker_space(name: String) -> Result<(), Box<dyn std::err
 
 async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairSigner<PolkadotConfig, sr25519::Pair>), Box<dyn std::error::Error>> {
     let url = env::var("SUBSTRATE_NODE_URL")
-        .unwrap_or_else(|_| "ws://127.0.0.1:9944".to_string());
+        .unwrap_or_else(|_| "wss://testnet.hippius.com".to_string());
     
     println!("🌐 Connecting to Substrate node at: {}", url);
     let api = OnlineClient::<PolkadotConfig>::from_url(&url).await?;
