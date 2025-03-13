@@ -204,7 +204,6 @@ enum CliNodeType {
     StorageMiner,
 }
 
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
@@ -344,7 +343,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     Ok(())
 }
-
 
 async fn handle_withdraw(amount: u32) -> Result<(), Box<dyn std::error::Error>> {
     println!("💰 Initiating usStake of amount: {}", amount);

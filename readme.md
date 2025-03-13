@@ -1,12 +1,11 @@
 # Hippius CLI
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Latest Release](https://img.shields.io/github/v/release/thenervelab/hippius-cli)](https://github.com/thenervelab/hippius-cli/releases/latest)
-A Rust-based Command-Line Interface (CLI) for managing Docker registries, compute resources, storage, and node operations on a Substrate/IPFS-based blockchain.
+A Rust-based Command-Line Interface (CLI) for Ipfs and s3 storage, referral and node operations on Hippius blockchain.
 
 ## Overview
 The `hipc` tool provides a comprehensive set of commands for interacting with a decentralized infrastructure, including:
 - Docker registry management
-- Compute resource provisioning
 - Storage operations
 - Marketplace interactions
 - Node registration and management
@@ -17,8 +16,6 @@ The `hipc` tool provides a comprehensive set of commands for interacting with a 
 # Pin files to storage
 hippius-cli storage pin <file-hash1> <file-hash2>
 
-# Register a compute miner node
-hippius-cli register-node --node-type ComputeMiner --node-id my-compute-node
 ```
 
 ---
@@ -31,17 +28,14 @@ hippius-cli register-node --node-type ComputeMiner --node-id my-compute-node
 - **Node Management**
   - Register different node types:
     - Validator
-    - Compute Miner
     - Storage Miner
   - Query node information
   - View node registration requirements
 
 - **Miner Operations**
-  - Fetch compute and storage information
   - Check miner registration requirements
 
 - **Marketplace Interactions**
-  - Browse and purchase compute plans
   - Discover available resources
   - Check account credits
 
@@ -92,11 +86,6 @@ hippius-cli register-node --node-type ComputeMiner --node-id my-compute-node
   hippius-cli register-node --node-type Validator --node-id my-validator-node
   ```
 
-- **Register a Compute Miner node**
-  ```bash
-  hippius-cli register-node --node-type ComputeMiner --node-id my-compute-node --ipfs-node-id <optional-ipfs-node-id>
-  ```
-
 - **Register a Storage Miner node**
   ```bash
   hippius-cli register-node --node-type StorageMiner --node-id my-storage-node --ipfs-node-id <optional-ipfs-node-id>
@@ -108,19 +97,9 @@ hippius-cli register-node --node-type ComputeMiner --node-id my-compute-node
   ```
 
 ### Miner Operations
-- **Fetch compute-related information**
-  ```bash
-  hippius-cli miner compute
-  ```
-
 - **Fetch storage-related information**
   ```bash
   hippius-cli miner storage
-  ```
-
-- **Get compute miner registration requirements**
-  ```bash
-  hippius-cli miner register-compute-miner
   ```
 
 - **Get storage miner registration requirements**
@@ -180,6 +159,3 @@ Configure your CLI by setting environment variables:
 
 ## Contributing
 Contributions are welcome! Please submit pull requests or open issues on the project's repository.
-
-## License
-[Specify your project's license]
