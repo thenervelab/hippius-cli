@@ -264,10 +264,15 @@ enum AccountCommands {
         #[arg(help = "Specify the amount to stake")]
         amount: u128,
     },
-    /// Stake funds in a different manner (usStake)
+    /// UnStake funds in a different manner 
     UnStake {
         #[arg(help = "Specify the amount to stake in USDT or similar currency")]
         amount: u128,
+    },
+    /// Withdraw funds in a different manner 
+    Withdraw {
+        #[arg(help = "Specify the amount to withdraw")]
+        amount: u32,
     },
 }
 
@@ -468,12 +473,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         eprintln!("❌ Failed to unStake funds: {}", e);
                     }
                 }
+                AccountCommands::Withdraw { amount } => {
+                    if let Err(e) = handle_withdraw(*amount).await {
+                        eprintln!("❌ Failed to withdraw funds: {}", e);
+                    }
+                }
             }
         }
     }
     
     Ok(())
 }
+
+
+async fn handle_withdraw(amount: u32) -> Result<(), Box<dyn std::error::Error>> {
+    println!("💰 Initiating usStake of amount: {}", amount);
+    
+    let (api, signer) = setup_substrate_client().await?;
+
+    // Create the usStake transaction
+    let tx = custom_runtime::tx()
+        .staking()
+        .withdraw_unbonded(amount); // Specify the amount to stake
+
+    let progress = api
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, &signer)
+        .await?;
+
+    println!("⏳ Waiting for transaction to be finalized...");
+    let _ = progress.wait_for_finalized_success().await?;
+    
+    println!("✅ Successfully withdrew amount: {}", amount);
+    Ok(())
+}
+
+
 
 async fn handle_un_stake(amount: u128) -> Result<(), Box<dyn std::error::Error>> {
     println!("💰 Initiating usStake of amount: {}", amount);
