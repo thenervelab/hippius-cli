@@ -180,6 +180,3 @@ Configure your CLI by setting environment variables:
 
 ## Contributing
 Contributions are welcome! Please submit pull requests or open issues on the project's repository.
-
-## License
-[Specify your project's license]
