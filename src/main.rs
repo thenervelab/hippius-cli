@@ -205,6 +205,11 @@ enum Commands {
     GetCurrentLockPeriod,
     /// Fetch the minimum lock amount from Credits pallet
     GetMinLockAmount,
+    /// Transfer funds from one account to another
+    Account {
+        #[command(subcommand)]
+        account_command: AccountCommands,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -238,6 +243,21 @@ enum StorageCommand {
     Pin,
     /// Unpin a specific file
     Unpin,
+}
+
+
+#[derive(Subcommand)]
+enum AccountCommands {
+    /// Transfer funds from one account to another
+    Transfer {
+        /// The account ID to transfer funds to
+        #[arg(help = "Specify the account ID to transfer funds to")]
+        account_id: AccountId32,
+
+        /// The amount of funds to transfer
+        #[arg(help = "Specify the amount of funds to transfer")]
+        amount: u128,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -419,6 +439,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::GetMinLockAmount => {
             handle_get_min_lock_amount().await?;
+        }
+        Commands::Account { account_command } => {
+            match account_command {
+                AccountCommands::Transfer { account_id, amount } => {
+                    if let Err(e) = handle_transfer(account_id.clone(), *amount).await {
+                        eprintln!("❌ Failed to transfer funds: {}", e);
+                    }
+                }
+            }
         }
     }
     
@@ -1723,6 +1752,28 @@ async fn handle_list_vms() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    Ok(())
+}
+
+async fn handle_transfer(account_id: AccountId32, amount: u128) -> Result<(), Box<dyn std::error::Error>> {
+    println!("💸 Initiating transfer to account: {}", account_id);
+    
+    let (api, signer) = setup_substrate_client().await?;
+
+    // Create the transfer transaction
+    let tx = custom_runtime::tx()
+        .balances()
+        .transfer_keep_alive(subxt::utils::MultiAddress::Id(account_id.clone()), amount); // Specify the amount to transfer
+
+    let progress = api
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, &signer)
+        .await?;
+
+    println!("⏳ Waiting for transaction to be finalized...");
+    let _ = progress.wait_for_finalized_success().await?;
+    
+    println!("✅ Successfully transferred funds to account: {}", account_id);
     Ok(())
 }
 
