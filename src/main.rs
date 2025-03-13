@@ -17,6 +17,7 @@ use crate::custom_runtime::runtime_types::pallet_marketplace::types::FileInput;
 use crate::custom_runtime::runtime_types::pallet_credits::types::LockedCredit;
 use crate::custom_runtime::runtime_types::pallet_credits::types::LockPeriod;
 use crate::custom_runtime::runtime_types::pallet_marketplace::types::Plan;
+use crate::custom_runtime::runtime_types::pallet_staking::RewardDestination::Staked;
 use sp_core::crypto::Ss58Codec;
 use subxt::utils::AccountId32;
 use std::fs;
@@ -258,6 +259,16 @@ enum AccountCommands {
         #[arg(help = "Specify the amount of funds to transfer")]
         amount: u128,
     },
+    Stake {
+        /// The amount of funds to stake
+        #[arg(help = "Specify the amount to stake")]
+        amount: u128,
+    },
+    /// Stake funds in a different manner (usStake)
+    UnStake {
+        #[arg(help = "Specify the amount to stake in USDT or similar currency")]
+        amount: u128,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -447,10 +458,64 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         eprintln!("❌ Failed to transfer funds: {}", e);
                     }
                 }
+                AccountCommands::Stake { amount } => {
+                    if let Err(e) = handle_stake(*amount).await {
+                        eprintln!("❌ Failed to stake funds: {}", e);
+                    }
+                }
+                AccountCommands::UnStake { amount } => {
+                    if let Err(e) = handle_un_stake(*amount).await {
+                        eprintln!("❌ Failed to unStake funds: {}", e);
+                    }
+                }
             }
         }
     }
     
+    Ok(())
+}
+
+async fn handle_un_stake(amount: u128) -> Result<(), Box<dyn std::error::Error>> {
+    println!("💰 Initiating usStake of amount: {}", amount);
+    
+    let (api, signer) = setup_substrate_client().await?;
+
+    // Create the usStake transaction
+    let tx = custom_runtime::tx()
+        .staking()
+        .unbond(amount); // Specify the amount to stake
+
+    let progress = api
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, &signer)
+        .await?;
+
+    println!("⏳ Waiting for transaction to be finalized...");
+    let _ = progress.wait_for_finalized_success().await?;
+    
+    println!("✅ Successfully usStaked amount: {}", amount);
+    Ok(())
+}
+
+async fn handle_stake(amount: u128) -> Result<(), Box<dyn std::error::Error>> {
+    println!("💰 Initiating stake of amount: {}", amount);
+    
+    let (api, signer) = setup_substrate_client().await?;
+
+    // Create the stake transaction
+    let tx = custom_runtime::tx()
+        .staking()
+        .bond(amount, Staked); // Specify the amount to stake
+
+    let progress = api
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, &signer)
+        .await?;
+
+    println!("⏳ Waiting for transaction to be finalized...");
+    let _ = progress.wait_for_finalized_success().await?;
+    
+    println!("✅ Successfully staked amount: {}", amount);
     Ok(())
 }
 
