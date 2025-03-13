@@ -82,12 +82,6 @@ enum Commands {
         #[arg(value_enum, help = "Specify the miner operation")]
         miner_command: MinerCommand,
     },
-    // /// Get VNC port for a specific miner
-    // GetVncPort {
-    //     /// The ID of the miner to query
-    //     #[arg(long = "miner-id", help = "Specify the ID of the miner to query")]
-    //     miner_id: Option<String>,
-    // },
     /// Get rankings for a specific miner
     GetRankings {
         /// Type of the node to register
@@ -279,11 +273,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        // Commands::GetVncPort { miner_id } => {
-        //     if let Err(e) = handle_get_vnc_port(miner_id.clone()).await {
-        //         eprintln!("❌ Failed to get VNC port: {}", e);
-        //     }
-        // }
         Commands::GetRankings { node_type, node_id } => {
             if let Err(e) = handle_get_rankings(*node_type, node_id.clone()).await {
                 eprintln!("❌ Failed to get rankings: {}", e);
@@ -1109,79 +1098,6 @@ async fn handle_register_validator_info() -> Result<(), Box<dyn std::error::Erro
     
     Ok(())
 }
-
-// async fn handle_get_vnc_port(miner_id: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
-//     println!("🔍 Querying VNC Ports{}", 
-//         miner_id.as_ref().map_or_else(|| " for All Miners".to_string(), |id| format!(" for Miner: {}", id)));
-
-//     let (api, _) = setup_substrate_client().await?;
-
-//     // If a specific miner ID is provided, create a targeted storage query
-//     let storage_query = match &miner_id {
-//         Some(id) => {
-//             let miner_id_bytes = id.as_bytes().to_vec();
-//             subxt::dynamic::storage("Compute", "MinerComputeRequests", vec![
-//                 subxt::dynamic::Value::from_bytes(&miner_id_bytes)
-//             ])
-//         },
-//         None => subxt::dynamic::storage("Compute", "MinerComputeRequests", vec![])
-//     };
-
-//     // Fetch entries from the MinerComputeRequests map
-//     let mut results = api.storage().at_latest().await?.iter(storage_query).await?;
-
-//     let mut found_any = false;
-
-//     // Iterate through the results
-//     while let Some(Ok(kv)) = results.next().await {
-//         // Decode the value as a Vec<MinerComputeRequest>
-//         let compute_requests: Vec<MinerComputeRequest<u32, H256, AccountId32>> = match kv.value.as_type() {
-//             Ok(requests) => requests,
-//             Err(e) => {
-//                 eprintln!("🚨 Error decoding MinerComputeRequests: {}", e);
-//                 continue; // Skip this entry and continue with next
-//             }
-//         };
-
-//         // If we got here, we found at least one request
-//         found_any = true;
-
-//         // Iterate through each compute request for this miner
-//         for (index, compute_request) in compute_requests.into_iter().enumerate() {
-//             println!("✅ Compute Request #{} Details:", index + 1);
-
-//             // Handle VNC port with pattern matching
-//             match compute_request.vnc_port {
-//                 Some(port) => println!("🚪 VNC Port: {}", port),
-//                 None => println!("❌ No VNC port assigned"),
-//             }
-
-//             println!("");
-//             println!("------------------------");
-//             println!("📋 Additional Request Details:");
-//             println!("   Miner Account ID: {:?}", String::from_utf8_lossy(&compute_request.miner_account_id.0.to_vec()));
-//             println!("   Job ID: {:?}", compute_request.job_id.map(|id| String::from_utf8_lossy(&id).to_string()));
-//             println!("   Request ID: {}", compute_request.request_id);
-//             println!("   Plan ID: {:?}", compute_request.plan_id);
-//             println!("------------------------");
-//         }
-
-//         // If a specific miner ID was provided, we can break after the first iteration
-//         if miner_id.is_some() {
-//             break;
-//         }
-//     }
-
-//     if !found_any {
-//         if let Some(id) = miner_id {
-//             println!("❌ No compute requests found for Miner: {}", id);
-//         } else {
-//             println!("❌ No compute requests found");
-//         }
-//     }
-
-//     Ok(())
-// }
 
 async fn handle_get_rankings(node_type: CliNodeType, node_id: String) -> Result<(), Box<dyn std::error::Error>> {
     println!("🏆 Fetching Rankings for Miner: {} ({:?})", node_id, node_type);

@@ -14,18 +14,6 @@ The `hipc` tool provides a comprehensive set of commands for interacting with a 
 
 ### Quick Examples
 ```bash
-# Push a Docker image to the registry
-hippius-cli docker push repo1/image2:latest
-
-# Create a Docker space
-hippius-cli create-space docker --name my-space
-
-# Purchase a compute plan
-hippius-cli buy-compute plan --plan-id <plan-hash> --image-name ubuntu-22.04
-
-# Manage virtual machines
-hippius-cli vm boot --name my-vm --plan-id <plan-hash>
-
 # Pin files to storage
 hippius-cli storage pin <file-hash1> <file-hash2>
 
@@ -36,18 +24,6 @@ hippius-cli register-node --node-type ComputeMiner --node-id my-compute-node
 ---
 
 ## Features
-- **Docker Registry**
-  - Simplified Docker commands (`push`, `pull`)
-  - Automatic URL mapping to custom registry
-  - Create Docker spaces on blockchain
-
-- **Compute Resources**
-  - Purchase compute plans
-  - Manage Virtual Machines (VM)
-    - Boot, stop, delete, reboot VMs
-  - List available OS disk images
-  - Get VNC ports for miners
-
 - **Storage Operations**
   - Pin and unpin files
   - Decentralized file storage management
@@ -81,201 +57,113 @@ hippius-cli register-node --node-type ComputeMiner --node-id my-compute-node
 
 ---
 
-## Release Process
-
-### Creating a New Release
-
-1. Update version in `Cargo.toml`:
-```toml
-[package]
-version = "X.Y.Z"  # Update this version
-```
-
-2. Create and push a new tag:
-```bash
-# Update version
-VERSION="X.Y.Z"
-
-# Create commit
-git add Cargo.toml
-git commit -m "chore: bump version to ${VERSION}"
-
-# Create and push tag
-git tag -a "v${VERSION}" -m "Release version ${VERSION}"
-git push origin main "v${VERSION}"
-```
-
-This will trigger the GitHub Actions workflow that:
-1. Creates a new GitHub release
-2. Builds and uploads:
-   - macOS binary (x86_64-apple-darwin)
-   - Linux binary (x86_64-unknown-linux-gnu)
-   - Debian package (.deb)
-
-### Release Artifacts
-Each release includes:
-- `hipc-X.Y.Z-x86_64-apple-darwin.tar.gz`: macOS binary
-- `hipc-X.Y.Z-x86_64-unknown-linux-gnu.tar.gz`: Linux binary
-- `hipc_X.Y.Z_amd64.deb`: Debian package
-
----
-
 ## Installation
 
-### Using Package Managers
+# Clone the repository
+ git clone https://github.com/thenervelab/hippius-cli.git
+ cd hippius-cli
 
-#### macOS (Homebrew)
-```bash
-# Install
-brew install thenervelab/tap/hipc
+# Build and install
+ cargo install --path .
 
-# Upgrade
-brew upgrade hipc
-```
-
-#### Ubuntu/Debian
-Download the latest .deb package from the [releases page](https://github.com/thenervelab/hippius-cli/releases) and install:
-```bash
-sudo dpkg -i hipc_<version>_amd64.deb
-```
-
-### Building from Source
-
-1. Clone the repository:
-```bash
-git clone https://github.com/thenervelab/hippius-cli.git
-cd hippius-cli
-```
-
-2. Build and install:
-```bash
-cargo install --path .
-```
-
-## Development
-
-### Updating Homebrew Formula
-After a new release is created:
-
-1. Download the release tarballs:
-```bash
-# Download macOS and Linux tarballs
-curl -LO https://github.com/thenervelab/hippius-cli/releases/download/v<version>/hipc-<version>-x86_64-apple-darwin.tar.gz
-curl -LO https://github.com/thenervelab/hippius-cli/releases/download/v<version>/hipc-<version>-x86_64-unknown-linux-gnu.tar.gz
-```
-
-2. Generate SHA256 checksums:
-```bash
-shasum -a 256 hipc-<version>-x86_64-apple-darwin.tar.gz
-shasum -a 256 hipc-<version>-x86_64-unknown-linux-gnu.tar.gz
-```
-
-3. Update the SHA256 checksums in `.github/homebrew/hipc.rb`
-4. Commit and push the changes to the repository
+# Move the binary to a location in your PATH
+ cp target/release/hippius-cli /usr/local/bin/
 
 ---
 
 ## Detailed Usage
 
-### Docker Commands
-```bash
-# Push an image to the registry
-hippius-cli docker push repo1/image2:latest
-
-# Pull an image from the registry
-hippius-cli docker pull repo1/image2:latest
-```
-
-### Create Docker Space
-```bash
-# Create a Docker space
-hippius-cli create-space docker --name my-space
-```
-
-### Compute Plan Management
-```bash
-# Purchase a compute plan
-hippius-cli buy-compute plan --plan-id <plan-hash> \
-    --image-name ubuntu-22.04 \
-    --location-id 1 \
-    --cloud-init-cid <optional-cloud-init-cid>
-
-# List available OS images
-hippius-cli list-images
-```
-
-### Virtual Machine Management
-```bash
-# Boot a VM
-hippius-cli vm boot --name my-vm --plan-id <plan-hash>
-
-# Stop a VM
-hippius-cli vm stop --name my-vm --plan-id <plan-hash>
-
-# Delete a VM
-hippius-cli vm delete --name my-vm --plan-id <plan-hash>
-
-# Reboot a VM
-hippius-cli vm reboot --name my-vm --plan-id <plan-hash>
-```
+## Available Commands
 
 ### Storage Operations
-```bash
-# Pin files to storage
-hippius-cli storage pin <file-hash1> <file-hash2>
+- **Pin files to storage**
+  ```bash
+  hippius-cli storage pin <file-hash1> <file-hash2>
+  ```
 
-# Unpin a file from storage
-hippius-cli storage unpin <file-hash>
-```
+- **Unpin a file from storage**
+  ```bash
+  hippius-cli storage unpin <file-hash>
+  ```
 
-### Node Registration
-```bash
-# Register a Validator node
-hippius-cli register-node --node-type Validator --node-id my-validator-node
+### Node Management
+- **Register a Validator node**
+  ```bash
+  hippius-cli register-node --node-type Validator --node-id my-validator-node
+  ```
 
-# Register a Compute Miner node
-hippius-cli register-node --node-type ComputeMiner \
-    --node-id my-compute-node \
-    --ipfs-node-id <optional-ipfs-node-id>
+- **Register a Compute Miner node**
+  ```bash
+  hippius-cli register-node --node-type ComputeMiner --node-id my-compute-node --ipfs-node-id <optional-ipfs-node-id>
+  ```
 
-# Register a Storage Miner node
-hippius-cli register-node --node-type StorageMiner \
-    --node-id my-storage-node \
-    --ipfs-node-id <optional-ipfs-node-id>
+- **Register a Storage Miner node**
+  ```bash
+  hippius-cli register-node --node-type StorageMiner --node-id my-storage-node --ipfs-node-id <optional-ipfs-node-id>
+  ```
 
-# Get information about your registered node
-hippius-cli get-node-info
-```
+- **Get information about your registered node**
+  ```bash
+  hippius-cli get-node-info
+  ```
 
 ### Miner Operations
-```bash
-# Fetch compute-related information
-hippius-cli miner compute
+- **Fetch compute-related information**
+  ```bash
+  hippius-cli miner compute
+  ```
 
-# Fetch storage-related information
-hippius-cli miner storage
+- **Fetch storage-related information**
+  ```bash
+  hippius-cli miner storage
+  ```
 
-# Get compute miner registration requirements
-hippius-cli miner register-compute-miner
+- **Get compute miner registration requirements**
+  ```bash
+  hippius-cli miner register-compute-miner
+  ```
 
-# Get storage miner registration requirements
-hippius-cli miner register-storage-miner
+- **Get storage miner registration requirements**
+  ```bash
+  hippius-cli miner register-storage-miner
+  ```
 
-# Get validator registration requirements
-hippius-cli miner register-validator
-```
+- **Get validator registration requirements**
+  ```bash
+  hippius-cli miner register-validator
+  ```
+
+### Account Operations
+- **Transfer funds from one account to another**
+  ```bash
+  hippius-cli account transfer --account-id <account_id> --amount <amount>
+  ```
+
+- **Stake funds**
+  ```bash
+  hippius-cli account stake --amount <amount>
+  ```
+
+- **Unstake funds**
+  ```bash
+  hippius-cli account unStake --amount <amount>
+  ```
+
+- **Withdraw funds**
+  ```bash
+  hippius-cli account withdraw --amount <amount>
+  ```
 
 ### Other Utilities
-```bash
-# Check free credits for your account
-hippius-cli get-credits
+- **Check free credits for your account**
+  ```bash
+  hippius-cli get-credits
+  ```
 
-# Get VNC port for a miner
-hippius-cli get-vnc-port [--miner-id <optional-miner-id>]
-
-# Insert a key to the local node
-hippius-cli insert-key --seed-phrase <seed-phrase> --public-key <public-key>
-```
+- **Insert a key to the local node**
+  ```bash
+  hippius-cli insert-key --seed-phrase <seed-phrase> --public-key <public-key>
+  ```
 
 ---
 
