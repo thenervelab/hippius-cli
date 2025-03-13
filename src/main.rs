@@ -25,7 +25,7 @@ use std::path::Path;
 use codec::Decode;
 use subxt::dynamic;
 use csv::ReaderBuilder;
-use crate::custom_runtime::runtime_types::pallet_compute::types::ComputeRequest;
+// use crate::custom_runtime::runtime_types::pallet_compute::types::ComputeRequest;
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -42,70 +42,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Execute Docker commands like push or pull with registry transformations.
-    Docker {
-        /// The Docker subcommand (e.g., "push" or "pull").
-        #[arg(help = "Specify the Docker command to execute (e.g., push, pull).")]
-        docker_command: String,
-
-        /// Arguments for the Docker command (e.g., "repo1/image2:latest").
-        #[arg(help = "Specify additional arguments for the Docker command.")]
-        args: Vec<String>,
-    },
-    /// Create a new Docker space on the Substrate chain.
-    CreateSpace {
-        /// The type of entity to create (must be "docker").
-        #[arg(value_enum, help = "Specify the entity type to create. Currently, only 'docker' is supported.")]
-        space_type: SpaceType,
-
-        /// The name of the space to create.
-        #[arg(help = "Specify the name of the Docker space to create.")]
-        name: String,
-    },
-    /// Manage Virtual Machines
-    Vm {
-        /// The VM management command
-        #[arg(value_enum, help = "Specify the VM management command")]
-        vm_command: VmCommand,
-
-        /// The name of the VM
-        #[arg(help = "Specify the name of the VM")]
-        name: String,
-
-        /// The plan ID for the VM operation
-        #[arg(help = "Specify the plan ID for the VM operation")]
-        plan_id: H256,
-    },
-    /// Purchase a plan in the marketplace
-    BuyCompute {
-        /// The type of item to buy
-        #[arg(value_enum, help = "Specify the type of item to buy")]
-        buy_type: BuyType,
-
-        /// The plan ID to purchase
-        #[arg(help = "Specify the plan ID to purchase")]
-        plan_id: H256,
-
-        /// Optional location ID
-        #[arg(long, help = "Optional location ID")]
-        location_id: Option<u32>,
-
-        /// Selected image name
-        #[arg(long, help = "Name of the selected image")]
-        image_name: String,
-
-        /// Optional cloud init CID
-        #[arg(long, help = "Optional cloud init CID")]
-        cloud_init_cid: Option<String>,
-
-        /// Optional account to pay for the plan
-        #[arg(long, help = "Optional account to pay for the plan")]
-        pay_for: Option<String>,
-
-        /// Optional miner ID
-        #[arg(long, help = "Optional miner ID")]
-        miner_id: Option<String>,
-    },
     /// Storage operations for pinning and unpinning files
     Storage {
         /// The storage operation to perform
@@ -198,8 +134,6 @@ enum Commands {
     },
     /// List all available marketplace plans
     ListPlans,
-    /// List all compute requests (VMs) for the current user
-    ListVms,
     /// List all IPFS file storage requests for the current user
     ListIpfsFiles,
     /// Fetch the current lock period from Credits pallet
@@ -213,30 +147,6 @@ enum Commands {
     },
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-enum SpaceType {
-    /// Docker space.
-    Docker,
-}
-
-#[derive(Debug)]
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-enum VmCommand {
-    /// Boot a VM
-    Boot,
-    /// Stop a VM
-    Stop,
-    /// Delete a VM
-    Delete,
-    /// Reboot a VM
-    Reboot
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-enum BuyType {
-    /// Purchase a plan
-    Plan,
-}
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum StorageCommand {
@@ -308,42 +218,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     
     match &cli.command {
-        Commands::Docker { docker_command, args } => {
-            handle_docker_command(docker_command.clone(), args.clone());
-        }
-        Commands::CreateSpace { space_type, name } => {
-            match space_type {
-                SpaceType::Docker => {
-                    if let Err(e) = handle_create_docker_space(name.clone()).await {
-                        eprintln!("❌ Error creating Docker space: {}", e);
-                        std::process::exit(1);
-                    }
-                }
-            }
-        }
-        Commands::Vm { vm_command, name, plan_id } => {
-            handle_vm_command(vm_command.clone(), name.clone(), plan_id.clone()).await;
-        }
-        Commands::BuyCompute { 
-            buy_type: BuyType::Plan, 
-            plan_id, 
-            location_id, 
-            image_name, 
-            cloud_init_cid, 
-            pay_for, 
-            miner_id 
-        } => {
-            if let Err(e) = handle_purchase_compute_plan(
-                plan_id.clone(), 
-                location_id.clone(), 
-                image_name.clone(), 
-                cloud_init_cid.clone(), 
-                pay_for.clone(),
-                miner_id.clone()
-            ).await {
-                eprintln!("❌ Failed to purchase plan: {}", e);
-            }
-        }
         Commands::Storage { 
             storage_command, 
             file_hash,
@@ -443,9 +317,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::ListPlans => {
             handle_list_plans().await?;
-        }
-        Commands::ListVms => {
-            handle_list_vms().await?;
         }
         Commands::ListIpfsFiles => {
             handle_list_ipfs_files().await?;
@@ -733,35 +604,6 @@ async fn handle_request_stop(name: String, plan_id: H256) -> Result<(), Box<dyn 
     println!("📦 Space Name: {}", name);
 
     Ok(())
-}
-
-async fn handle_vm_command(vm_command: VmCommand, name: String, plan_id: H256) {
-    match vm_command {
-        VmCommand::Boot => {
-            // Call the new handle_request_boot function with plan_id
-            if let Err(e) = handle_request_boot(name, plan_id).await {
-                eprintln!("❌ Failed to stop VM: {}", e);
-            }
-        },
-        VmCommand::Stop => {
-            // Call the new handle_request_stop function
-            if let Err(e) = handle_request_stop(name, plan_id).await {
-                eprintln!("❌ Failed to stop VM: {}", e);
-            }
-        },
-        VmCommand::Delete => {
-            // Call the new handle_request_delete function
-            if let Err(e) = handle_request_delete(name, plan_id).await {
-                eprintln!("❌ Failed to delete VM: {}", e);
-            }
-        },
-        VmCommand::Reboot => {
-            // Call the new handle_request_reboot function
-            if let Err(e) = handle_request_reboot(name, plan_id).await {
-                eprintln!("❌ Failed to reboot VM: {}", e);
-            }
-        }
-    }
 }
 
 async fn handle_purchase_compute_plan(
@@ -1784,72 +1626,6 @@ async fn handle_list_plans() -> Result<(), Box<dyn std::error::Error>> {
         println!("⚠️ No plans found in the marketplace.");
     } else {
         println!("✅ Total Plans Found: {}", plan_count);
-    }
-
-    Ok(())
-}
-
-async fn handle_list_vms() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🖥️  Fetching Compute Requests for Current User");
-
-    let (api, signer) = setup_substrate_client().await?;
-
-    // Get the current user's account ID and convert to SS58 string
-    let account_id = signer.account_id();
-
-    // Build a dynamic storage query for compute requests
-    let storage_query = subxt::dynamic::storage("Compute", "ComputeRequests", vec![
-        subxt::dynamic::Value::from(account_id.encode())
-    ]);
-    
-    // Fetch storage entries
-    let storage_client = api.storage().at_latest().await?;
-    let compute_requests_result = storage_client.fetch(&storage_query).await;
-
-    match compute_requests_result {
-        Ok(Some(value)) => {
-            // Decode the compute requests for the user
-            let compute_requests: Vec<ComputeRequest<AccountId32, u32, H256>> = value.as_type()?;
-
-            if compute_requests.is_empty() {
-                println!("⚠️ No compute requests found for the current user.");
-                return Ok(());
-            }
-            
-            println!("🔢 Total Compute Requests: {}", compute_requests.len());
-            
-            for (index, request) in compute_requests.iter().enumerate() {
-                // Convert byte vectors to strings for display
-                let image_name = String::from_utf8_lossy(&request.selected_image.name).to_string();
-                let image_url = String::from_utf8_lossy(&request.selected_image.image_url).to_string();
-                let plan_description = String::from_utf8_lossy(&request.plan_technical_description).to_string();
-                
-                // Convert cloud init CID to string if present
-                let cloud_init_cid = request.cloud_init_cid
-                    .as_ref()
-                    .map(|cid| String::from_utf8_lossy(cid).to_string())
-                    .unwrap_or_else(|| "Not specified".to_string());
-
-                println!("\n🖥️ Compute Request #{}", index + 1);
-                println!("  Request ID: {}", request.request_id);
-                println!("  Status: {:?}", request.status);
-                println!("  Plan ID: {:?}", request.plan_id);
-                println!("  Plan Description: {}", plan_description);
-                println!("  Image Name: {}", image_name);
-                println!("  Image URL: {}", image_url);
-                println!("  Created At: Block {}", request.created_at);
-                println!("  Is Assigned: {}", request.is_assigned);
-                println!("  Cloud Init CID: {}", cloud_init_cid);
-                println!("---");
-            }
-        },
-        Ok(None) => {
-            println!("⚠️ No compute requests found for the current user.");
-        },
-        Err(e) => {
-            eprintln!("❌ Error fetching compute requests: {}", e);
-            return Err(e.into());
-        }
     }
 
     Ok(())
