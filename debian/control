@@ -1,0 +1,15 @@
+Source: hipc
+Section: utils
+Priority: optional
+Maintainer: thenervelab <maintainer@hippius.com>
+Build-Depends: debhelper (>= 11)
+Standards-Version: 4.5.1
+
+Package: hipc
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: CLI tool for managing Docker registries and compute resources
+ Hipc (Hippius CLI) is a command-line tool for managing Docker registries,
+ compute resources, storage, and node operations on the Hippius network.
+ It provides functionality for Docker registry management, compute resource
+ provisioning, storage operations, and blockchain interactions.

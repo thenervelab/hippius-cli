@@ -1,0 +1,33 @@
+[package]
+name = "hipc"
+version = "0.1.0"
+edition = "2021"
+authors = ["thenervelab"]
+homepage = "https://hippius.com"
+description = "CLI tool for managing Docker registries and compute resources on Hippius network"
+license = "MIT"
+repository = "https://github.com/thenervelab/hippius-cli"
+
+[package.metadata.deb]
+maintainer = "thenervelab <maintainer@hippius.com>"
+copyright = "2025, thenervelab <maintainer@hippius.com>"
+license-file = ["LICENSE"]
+extended-description = "Hipc (Hippius CLI) is a command-line tool for managing Docker registries, compute resources, storage, and node operations on the Hippius network."
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/hipc", "usr/bin/", "755"],
+    ["readme.md", "usr/share/doc/hipc/readme.md", "644"],
+]
+
+[dependencies]
+clap = { version = "4.1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+dotenv = "0.15.0"
+subxt = { version = "0.38", features = ["substrate-compat"] }
+sp-core = "34.0.0"
+reqwest = { version = "0.11", features = ["json"] }
+serde_json = "1.0"
+hex = "0.4.3"
+codec = { package = "parity-scale-codec", version = "3.6.1", features = ["derive"] }
+csv = "1.3.0"
