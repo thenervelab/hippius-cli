@@ -12,9 +12,9 @@ use home::home_dir;
 use serde_json;
 use crate::custom_runtime::runtime_types::pallet_registration::types::NodeInfo;
 use std::convert::TryInto; // Ensure you have this import
+use std::str::FromStr;
 use subxt::config::substrate::MultiAddress;
-// use crate::custom_runtime::runtime_types::pallet_compute::types::MinerComputeRequest;
-use crate::custom_runtime::registration::calls::types::register_node::NodeType;
+use crate::custom_runtime::registration::calls::types::force_register_node_with_hotkey::NodeType;
 use crate::custom_runtime::runtime_types::pallet_rankings::types::NodeRankings;
 use crate::custom_runtime::runtime_types::pallet_marketplace::types::FileInput;
 use crate::custom_runtime::runtime_types::pallet_credits::types::LockedCredit;
@@ -100,7 +100,7 @@ enum Commands {
         node_id: String,
     },
     /// Register a new node
-    RegisterNode {
+    RegisterNodeWithColdkey {
         /// Type of the node to register
         #[arg(long, help = "Type of node to register (Validator, ComputeMiner, StorageMiner)")]
         node_type: CliNodeType,
@@ -113,6 +113,27 @@ enum Commands {
         #[arg(long, help = "Pay for node registration using credits")]
         pay_in_credits: bool,
 
+        /// Optional IPFS Node ID (required for Miner nodes)
+        #[arg(long, help = "IPFS Node ID (required for Miner nodes)")]
+        ipfs_node_id: Option<String>,
+    },
+    /// Register a new node with a hotkey
+    RegisterNodeWithHotkey {
+        /// The hotkey address
+        #[arg(help = "The hotkey address")]
+        hips_key: String,
+        /// The hotkey address
+        #[arg(help = "The hotkey address")]
+        hotkey_address: String,
+        /// Type of the node to register
+        #[arg(long, help = "Type of node to register (Validator, ComputeMiner, StorageMiner)")]
+        node_type: CliNodeType,
+        /// Node ID (typically a peer ID)
+        #[arg(long, help = "Node ID (e.g., libp2p peer ID)")]
+        node_id: String,
+        /// Optional flag to pay for registration in credits
+        #[arg(long, help = "Pay for node registration using credits")]
+        pay_in_credits: bool,
         /// Optional IPFS Node ID (required for Miner nodes)
         #[arg(long, help = "IPFS Node ID (required for Miner nodes)")]
         ipfs_node_id: Option<String>,
@@ -292,8 +313,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("❌ Failed to get rankings: {}", e);
             }
         }
-        Commands::RegisterNode { node_type, node_id, pay_in_credits, ipfs_node_id } => {
-            if let Err(e) = handle_register_node(*node_type, node_id.clone(), *pay_in_credits, ipfs_node_id.clone()).await {
+        Commands::RegisterNodeWithColdkey { node_type, node_id, pay_in_credits, ipfs_node_id } => {
+            if let Err(e) = handle_register_node_with_coldkey(*node_type, node_id.clone(), *pay_in_credits, ipfs_node_id.clone()).await {
+                eprintln!("❌ Failed to register node: {}", e);
+            }
+        }
+        Commands::RegisterNodeWithHotkey { hips_key, hotkey_address, node_type, node_id, pay_in_credits, ipfs_node_id } => {
+            if let Err(e) = handle_register_node_with_hotkey( hotkey_address, hips_key, *node_type, node_id.clone(), *pay_in_credits, ipfs_node_id.clone()).await {
                 eprintln!("❌ Failed to register node: {}", e);
             }
         }
@@ -530,7 +556,8 @@ async fn handle_create_docker_space(name: String) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-const KEYSTORE_PATH: &str = "/opt/hippius/data/chains/hippius-mainnet/keystore/";
+// const KEYSTORE_PATH: &str = "/opt/hippius/data/chains/hippius-mainnet/keystore/";
+const KEYSTORE_PATH: &str = "/home/faiz/test-chain/chains/hippius-mainnet/keystore/";
 fn get_hotkeys_dir() -> String {
     let home_path = home_dir().expect("Could not find home directory");
     home_path.join("hippius/keystore/hotkeys").to_str().unwrap().to_string()
@@ -606,9 +633,6 @@ fn find_hotkeys(hotkeys_dir: &str) -> Result<Vec<(String, String)>, Box<dyn std:
 }
 
 async fn create_hotkey() -> Result<String, Box<dyn std::error::Error>> {
-    // Retrieve the coldkey from the keystore
-    let coldkey = find_hips_key(KEYSTORE_PATH)?.ok_or("No HIPS key found")?;
-
     // Generate a new mnemonic
     let mnemonic = generate_mnemonic();
     
@@ -1497,10 +1521,76 @@ async fn query_pallet_balance(
             }
         }
     }
-
 }
 
-async fn handle_register_node(node_type: CliNodeType, node_id: String, pay_in_credits: bool, ipfs_node_id: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_register_node_with_hotkey(
+    hotkey_address: &str,
+    hips_key: &str,  // New parameter for HIPS key
+    node_type: CliNodeType,
+    node_id: String,
+    pay_in_credits: bool,
+    ipfs_node_id: Option<String>
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🚀 Initializing Node Registration for: {} ", node_id);
+    
+    // Initialize API client
+    let api = setup_substrate_client().await?.0;
+    
+    // Convert CliNodeType to runtime NodeType
+    let runtime_node_type = match node_type {
+        CliNodeType::Validator => NodeType::Validator,
+        CliNodeType::ComputeMiner => NodeType::ComputeMiner,
+        CliNodeType::StorageMiner => NodeType::StorageMiner,
+    };
+
+    let hotkeys_dir = get_hotkeys_dir();
+    
+    // Load the hotkey mnemonic from the keystore
+    let hotkey_path = format!("{}/{}", hotkeys_dir, hotkey_address);
+    if !Path::new(&hotkey_path).exists() {
+        return Err(format!("Hotkey not found at path: {}", hotkey_path).into());
+    }
+    
+    let mnemonic = fs::read_to_string(&hotkey_path)?;
+    let mnemonic = Mnemonic::parse_in_normalized(Language::English, mnemonic.trim())?;
+    let seed = mnemonic.to_seed("");
+    let seed_array: [u8; 32] = seed[..32].try_into().map_err(|_| "Seed slice has incorrect length")?;
+    let hotkey_pair = sr25519::Pair::from_seed(&seed_array);
+    
+    // Convert HIPS key string to AccountId32
+    let hips_account = AccountId32::from_str(hips_key)
+        .map_err(|_| "Invalid HIPS key format")?;
+    
+    println!("📤 Preparing transaction to register node...");
+    
+    // Create the transaction with HIPS key as first parameter
+    let tx = custom_runtime::tx().registration().register_node_with_hotkey(
+        hips_account,  // HIPS key as AccountId32
+        runtime_node_type,
+        node_id.clone().into_bytes(),
+        pay_in_credits,
+        ipfs_node_id.map(|id| id.into_bytes())
+    );
+
+    // Create a PairSigner from the hotkey pair
+    let signer = PairSigner::new(hotkey_pair);
+    
+    // Sign with the hotkey
+    let progress = api
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, &signer)
+        .await?;
+    
+    println!("⏳ Waiting for transaction to be finalized...");
+    let _ = progress.wait_for_finalized_success().await?;
+    
+    println!("✅ Successfully registered node!");
+    println!("📦 Node ID: {}", node_id);
+
+    Ok(())
+}
+
+async fn handle_register_node_with_coldkey(node_type: CliNodeType, node_id: String, pay_in_credits: bool, ipfs_node_id: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Initializing Node Registration for: {} ", node_id);
     
     let (api, signer) = setup_substrate_client().await?;
@@ -1513,7 +1603,7 @@ async fn handle_register_node(node_type: CliNodeType, node_id: String, pay_in_cr
     };
     
     println!("📤 Submitting transaction to register node...");
-    let tx = custom_runtime::tx().registration().register_node(runtime_node_type, node_id.clone().into_bytes(), pay_in_credits, ipfs_node_id.map(|id| id.into_bytes()));
+    let tx = custom_runtime::tx().registration().register_node_with_coldkey(runtime_node_type, node_id.clone().into_bytes(), pay_in_credits, ipfs_node_id.map(|id| id.into_bytes()));
 
     let progress = api
         .tx()

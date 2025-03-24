@@ -24,19 +24,21 @@ hipc storage pin <file-hash1> <file-hash2>
 - **Wallet Management**
   - Create a new hotkey wallet
   - List all available wallets
-  - View wallet balance
-  - Transfer funds between wallets
-
+  
 - **Storage Operations**
   - Pin and unpin files
   - Decentralized file storage management
 
-- **Node Management**
-  - Register different node types:
-    - Validator
-    - Storage Miner
-  - Query node information
-  - View node registration requirements
+### Node Management
+- Register different node types:
+  - **Validator**
+    - Register a Validator node with a hotkey
+    - Register a Validator node with a coldkey
+  - **Storage Miner**
+    - Register a Storage Miner node with a hotkey
+    - Register a Storage Miner node with a coldkey
+- Query node information
+- View node registration requirements
 
 - **Miner Operations**
   - Check miner registration requirements
@@ -110,14 +112,24 @@ hipc storage unpin <file-hash>
 
 ### Node Management
 
-- **Register a Validator node**
+- **Register a Validator node with a hotkey**
 ```bash
-hipc register-node --node-type Validator --node-id my-validator-node
+hipc register-node-with-hotkey --hips-key <HIPS_KEY> --hotkey-address <HOTKEY_ADDRESS> --node-type Validator --node-id <NODE_ID> --ipfs-node-id <optional-ipfs-node-id>
 ```
 
-- **Register a Storage Miner node**
+- **Register a Storage Miner node with a hotkey**
 ```bash
-hipc register-node --node-type StorageMiner --node-id my-storage-node --ipfs-node-id <optional-ipfs-node-id>
+hipc register-node-with-hotkey --hips-key <HIPS_KEY> --hotkey-address <HOTKEY_ADDRESS> --node-type StorageMiner --node-id <NODE_ID> --ipfs-node-id <IPFS_NODE_ID>
+```
+
+- **Register a Validator node with a hotkey**
+```bash
+hipc register-node-with-hotkey --hips-key <HIPS_KEY> --hotkey-address <HOTKEY_ADDRESS> --node-type Validator --node-id <NODE_ID> --ipfs-node-id <IPFS_NODE_ID>
+```
+
+- **Register a Storage Miner node with a hotkey**
+```bash
+hipc register-node-with-hotkey --hips-key <HIPS_KEY> --hotkey-address <HOTKEY_ADDRESS> --node-type StorageMiner --node-id <NODE_ID> --ipfs-node-id <IPFS_NODE_ID>
 ```
 
 - **Get information about your registered node**
