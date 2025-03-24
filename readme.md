@@ -37,6 +37,7 @@ hipc storage pin <file-hash1> <file-hash2>
   - **Storage Miner**
     - Register a Storage Miner node with a hotkey
     - Register a Storage Miner node with a coldkey
+- Swap the owner of a registered node
 - Query node information
 - View node registration requirements
 
@@ -135,6 +136,11 @@ hipc register-node-with-hotkey --hips-key <HIPS_KEY> --hotkey-address <HOTKEY_AD
 - **Get information about your registered node**
 ```bash
 hipc get-node-info
+```
+
+- **Swap the owner of a registered node**
+```bash
+hipc swap-node-owner <node_id> <new_owner_account_id> <signer_account>
 ```
 
 ### Miner Operations
