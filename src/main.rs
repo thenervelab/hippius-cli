@@ -556,8 +556,7 @@ async fn handle_create_docker_space(name: String) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-// const KEYSTORE_PATH: &str = "/opt/hippius/data/chains/hippius-mainnet/keystore/";
-const KEYSTORE_PATH: &str = "/home/faiz/test-chain/chains/hippius-mainnet/keystore/";
+const KEYSTORE_PATH: &str = "/opt/hippius/data/chains/hippius-mainnet/keystore/";
 fn get_hotkeys_dir() -> String {
     let home_path = home_dir().expect("Could not find home directory");
     home_path.join("hippius/keystore/hotkeys").to_str().unwrap().to_string()
