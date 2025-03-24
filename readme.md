@@ -21,6 +21,12 @@ hipc storage pin <file-hash1> <file-hash2>
 ---
 
 ## Features
+- **Wallet Management**
+  - Create a new hotkey wallet
+  - List all available wallets
+  - View wallet balance
+  - Transfer funds between wallets
+
 - **Storage Operations**
   - Pin and unpin files
   - Decentralized file storage management
@@ -69,95 +75,118 @@ hipc storage pin <file-hash1> <file-hash2>
 
 ## Available Commands
 
+
+### Wallet Management
+
+- **Create a new hotkey wallet**
+```bash
+hipc create-hotkey
+```
+
+This will:
+
+Generate a new mnemonic
+Create a keypair
+Save the wallet securely
+Register the hotkey with your account
+
+- **List all available wallets**
+
+```bash
+hipc list-wallets
+```
+
+
 ### Storage Operations
 - **Pin files to storage**
-  ```bash
-  hipc storage pin <file-hash1> <file-hash2>
-  ```
+```bash
+hipc storage pin <file-hash1> <file-hash2>
+```
 
 - **Unpin a file from storage**
-  ```bash
-  hipc storage unpin <file-hash>
-  ```
+```bash
+hipc storage unpin <file-hash>
+```
 
 ### Node Management
+
 - **Register a Validator node**
-  ```bash
-  hipc register-node --node-type Validator --node-id my-validator-node
-  ```
+```bash
+hipc register-node --node-type Validator --node-id my-validator-node
+```
 
 - **Register a Storage Miner node**
-  ```bash
-  hipc register-node --node-type StorageMiner --node-id my-storage-node --ipfs-node-id <optional-ipfs-node-id>
-  ```
+```bash
+hipc register-node --node-type StorageMiner --node-id my-storage-node --ipfs-node-id <optional-ipfs-node-id>
+```
 
 - **Get information about your registered node**
-  ```bash
-  hipc get-node-info
-  ```
+```bash
+hipc get-node-info
+```
 
 ### Miner Operations
 - **Fetch storage-related information**
-  ```bash
-  hipc miner storage
-  ```
+```bash
+hipc miner storage
+```
 
 - **Get storage miner registration requirements**
-  ```bash
-  hipc miner register-storage-miner
-  ```
+```bash
+hipc miner register-storage-miner
+```
 
 - **Get validator registration requirements**
-  ```bash
-  hipc miner register-validator
-  ```
+```bash
+hipc miner register-validator
+```
 
 ### Account Operations
 - **Transfer funds from one account to another**
-  ```bash
-  hipc account transfer --account-id <account_id> --amount <amount>
-  ```
+```bash
+hipc account transfer --account-id <account_id> --amount <amount>
+```
 
 - **Stake funds**
-  ```bash
-  hipc account stake --amount <amount>
-  ```
+```bash
+hipc account stake --amount <amount>
+```
 
 - **Unstake funds**
-  ```bash
-  hipc account unStake --amount <amount>
-  ```
+```bash
+hipc account unStake --amount <amount>
+```
 
 - **Withdraw funds**
-  ```bash
-  hipc account withdraw --amount <amount>
-  ```
+```bash
+hipc account withdraw --amount <amount>
+```
 
 ### Other Utilities
 - **Check free credits for your account**
-  ```bash
-  hipc get-credits
-  ```
+```bash
+hipc get-credits
+```
 
 - **Insert a key to the local node**
-  ```bash
-  hipc insert-key --seed-phrase <seed-phrase> --public-key <public-key>
-  ```
+```bash
+hipc insert-key --seed-phrase <seed-phrase> --public-key <public-key>
+```
   
 - **Get HIPS key files**
-  ```bash
-  hipc get-hips-key
-  ```
+```bash
+hipc get-hips-key
+```
 
 - **Get Ipfs node ID**
-  ```bash
-  hipc get-ipfs-node-id
-  ```
+```bash
+hipc get-ipfs-node-id
+```
 
 - **Get node ID**
-  ```bash
-  hipc get-node-id
-  ```
+```bash
+hipc get-node-id
+```
 
 ---
 
@@ -165,10 +194,10 @@ hipc storage pin <file-hash1> <file-hash2>
 Configure your CLI by setting environment variables:
 - Create a `.env` file in the project root
 - Add the following variables:
-  ```
-  SUBSTRATE_NODE_URL=ws://your-substrate-node:9944
-  SUBSTRATE_SEED_PHRASE=your-seed-phrase-here
-  ```
+```bash
+SUBSTRATE_NODE_URL=ws://your-substrate-node:9944
+SUBSTRATE_SEED_PHRASE=your-seed-phrase-here
+```
 
 ---
 

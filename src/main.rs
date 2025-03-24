@@ -8,8 +8,11 @@ use sp_core::{Pair, sr25519};
 use subxt::utils::H256;
 use sp_core::Encode;
 use reqwest;
+use home::home_dir;
 use serde_json;
 use crate::custom_runtime::runtime_types::pallet_registration::types::NodeInfo;
+use std::convert::TryInto; // Ensure you have this import
+use subxt::config::substrate::MultiAddress;
 // use crate::custom_runtime::runtime_types::pallet_compute::types::MinerComputeRequest;
 use crate::custom_runtime::registration::calls::types::register_node::NodeType;
 use crate::custom_runtime::runtime_types::pallet_rankings::types::NodeRankings;
@@ -17,6 +20,7 @@ use crate::custom_runtime::runtime_types::pallet_marketplace::types::FileInput;
 use crate::custom_runtime::runtime_types::pallet_credits::types::LockedCredit;
 use crate::custom_runtime::runtime_types::pallet_credits::types::LockPeriod;
 use crate::custom_runtime::runtime_types::pallet_marketplace::types::Plan;
+use crate::custom_runtime::proxy::calls::types::add_proxy::ProxyType;
 use crate::custom_runtime::runtime_types::pallet_staking::RewardDestination::Staked;
 use sp_core::crypto::Ss58Codec;
 use subxt::utils::AccountId32;
@@ -25,7 +29,10 @@ use std::path::Path;
 use codec::Decode;
 use subxt::dynamic;
 use csv::ReaderBuilder;
-// use crate::custom_runtime::runtime_types::pallet_compute::types::ComputeRequest;
+
+use std::io::{self, Write};
+use bip39::{Mnemonic, Language};
+use rand::Rng;
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -145,6 +152,10 @@ enum Commands {
     GetIpfsNodeId,
     /// Get HIPS key by checking keystore files
     GetHipsKey,
+    /// Create a new hotkey wallet
+    CreateHotkey,
+    /// List all wallets
+    ListWallets,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -358,6 +369,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("❌ Failed to get HIPS key: {}", e);
             }
         }
+        Commands::CreateHotkey => {
+            match create_hotkey().await {
+                Ok(hotkey_address) => {
+                    println!("🔑 Hotkey created successfully!");
+                    println!("📍 Hotkey Address: {}", hotkey_address);
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed to create hotkey: {}", e);
+                }
+            }
+        },
+        Commands::ListWallets => {
+            // Logic to list wallets
+            list_wallets().await?;
+        },
     }
     
     Ok(())
@@ -504,9 +530,156 @@ async fn handle_create_docker_space(name: String) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
+const KEYSTORE_PATH: &str = "/opt/hippius/data/chains/hippius-mainnet/keystore/";
+fn get_hotkeys_dir() -> String {
+    let home_path = home_dir().expect("Could not find home directory");
+    home_path.join("hippius/keystore/hotkeys").to_str().unwrap().to_string()
+}
+
+
+/// Lists all wallets: the HIPS key (coldkey) and associated hotkeys.
+async fn list_wallets() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Wallets");
+
+    // Find the coldkey (HIPS key)
+    let coldkey = find_hips_key(KEYSTORE_PATH)?;
+    if let Some(coldkey) = coldkey {
+        println!("└── Coldkey {}  ss58_address {}", "hips-key", coldkey);
+    } else {
+        println!("❌ No HIPS key (coldkey) found.");
+        return Ok(());
+    }
+
+    // List all hotkeys
+    let hotkeys_dir = get_hotkeys_dir();
+    let hotkeys = find_hotkeys(&hotkeys_dir)?;
+    for (i, (name, address)) in hotkeys.iter().enumerate() {
+        if i == hotkeys.len() - 1 {
+            println!("    └── Hotkey {}  ss58_address {}", name, address);
+        } else {
+            println!("    ├── Hotkey {}  ss58_address {}", name, address);
+        }
+    }
+
+    Ok(())
+}
+
+/// Finds the HIPS key (coldkey) by checking files with the "68697073" prefix.
+fn find_hips_key(keystore_path: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let target_prefix = "68697073"; // "hips" in hex
+    let dir_entries = fs::read_dir(keystore_path)?;
+
+    for entry in dir_entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                if file_name.starts_with(target_prefix) {
+                    return Ok(Some(file_name.to_string())); // Use actual address parsing here
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Finds all hotkeys stored in the hotkeys directory.
+fn find_hotkeys(hotkeys_dir: &str) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+    let mut hotkeys = Vec::new();
+
+    if Path::new(hotkeys_dir).exists() {
+        for entry in fs::read_dir(hotkeys_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                    let hotkey_name = file_name.to_string(); // Adjust naming if needed
+                    let hotkey_address = file_name.to_string(); // Adjust address retrieval
+                    hotkeys.push((hotkey_name, hotkey_address));
+                }
+            }
+        }
+    }
+
+    Ok(hotkeys)
+}
+
+async fn create_hotkey() -> Result<String, Box<dyn std::error::Error>> {
+    // Retrieve the coldkey from the keystore
+    let coldkey = find_hips_key(KEYSTORE_PATH)?.ok_or("No HIPS key found")?;
+
+    // Generate a new mnemonic
+    let mnemonic = generate_mnemonic();
+    
+    // Generate keypair from mnemonic
+    let seed = Mnemonic::parse_in_normalized(Language::English, &mnemonic)?.to_seed("");
+    
+    // Use the first 32 bytes of the seed for the sr25519 keypair
+    let seed_array: [u8; 32] = seed[..32].try_into().map_err(|_| "Seed slice has incorrect length")?;
+    let keypair = sr25519::Pair::from_seed(&seed_array);
+
+    // Create hotkey address
+    let hotkey_address = keypair.public().to_ss58check();
+
+    // Ensure hotkeys directory exists
+    let hotkeys_dir = get_hotkeys_dir();
+    fs::create_dir_all(&hotkeys_dir)?;
+
+    // Save the hotkey to keystore
+    let hotkey_path = format!("{}/{}", hotkeys_dir, hotkey_address);
+    let mut file = fs::File::create(&hotkey_path)?;
+    writeln!(file, "{}", mnemonic)?;
+
+    // Print the mnemonic to the user
+    println!("📝 Mnemonic: {}", mnemonic);
+
+    // Warning about storing the mnemonic safely
+    println!("⚠️ WARNING: Store this mnemonic safely! It is stored in the file: {}", hotkey_path);
+
+    // Call the proxy pallet to add the new account
+    let (api, signer) = setup_substrate_client().await?;
+    
+    // Convert the public key to AccountId32
+    let account_id: AccountId32 = keypair.public().into();
+    let multi_address = MultiAddress::Id(account_id);
+
+    // Create the transaction to add the new account with type NonTransfer
+    let tx = custom_runtime::tx()
+        .proxy()
+        .add_proxy(multi_address, ProxyType::NonTransfer, 0);
+
+    // Sign and submit the transaction using the HIPS key
+    let progress = api
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, &signer)
+        .await?;
+
+    // Wait for the transaction to be finalized
+    println!("⏳ Waiting for transaction to be finalized...");
+    let _ = progress.wait_for_finalized_success().await?;
+    println!("✅ Successfully added the hotkey account to the proxy!");
+
+    Ok(hotkey_address)
+}
+
+/// Generates a 12-word mnemonic phrase.
+fn generate_mnemonic() -> String {
+    let mut entropy = [0u8; 16]; // 128 bits for 12 words
+    rand::thread_rng().fill(&mut entropy);
+
+    let mnemonic = Mnemonic::from_entropy(&entropy).unwrap();
+    mnemonic.to_string() // Use `.to_string()` directly
+}
+
+/// Creates a hotkey address from a coldkey and mnemonic.
+fn create_hotkey_address(coldkey: &str, mnemonic: &str) -> String {
+    format!("{}_hotkey_{}", coldkey, mnemonic.split_whitespace().next().unwrap()) // Simplified
+}
+
 async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairSigner<PolkadotConfig, sr25519::Pair>), Box<dyn std::error::Error>> {
     let url = env::var("SUBSTRATE_NODE_URL")
-        .unwrap_or_else(|_| "ws://127.0.0.1:9944".to_string());
+        .unwrap_or_else(|_| "wss://testnet.hippius.com".to_string());
     
     println!("🌐 Connecting to Substrate node at: {}", url);
     let api = OnlineClient::<PolkadotConfig>::from_url(&url).await?;
@@ -1747,11 +1920,8 @@ async fn handle_get_ipfs_node_id() -> Result<(), Box<dyn std::error::Error>> {
 async fn handle_get_hips_key() -> Result<(), Box<dyn std::error::Error>> {
     println!("🔍 Checking for HIPS key files...");
 
-    // Define the keystore path (modify this path as necessary)
-    let keystore_path = "/opt/hippius/data/chains/hippius-mainnet/keystore/";
-
     // Call the check_keystore_files function
-    check_keystore_files(keystore_path)?;
+    check_keystore_files(KEYSTORE_PATH)?;
 
     Ok(())
 }
