@@ -2067,3 +2067,50 @@ fn check_keystore_files(keystore_path: &str) -> Result<(), Box<dyn std::error::E
 
     Ok(())
 }
+
+async fn handle_swap_node_owner(node_id: String, new_owner: String, signer_account: String) -> Result<(), Box<dyn std::error::Error>> {
+    println!("🔄 Swapping owner for node ID: {}", node_id);
+
+    let api = setup_substrate_client().await?.0;
+
+    // Convert node_id and new_owner to the required types
+    let node_id_bytes = node_id.clone().into_bytes();
+    let new_owner_account_id: AccountId32 = new_owner.parse().map_err(|_| "Invalid account ID")?;
+
+    // Define the path to the hotkey
+    let hotkeys_dir = get_hotkeys_dir();
+    let hotkey_path = format!("{}/{}", hotkeys_dir, signer_account);
+
+    // Check if the hotkey exists
+    let signer = if Path::new(&hotkey_path).exists() {
+        // Load the hotkey mnemonic from the keystore
+        let mnemonic = fs::read_to_string(&hotkey_path)?;
+        let mnemonic = Mnemonic::parse_in_normalized(Language::English, mnemonic.trim())?;
+        let seed = mnemonic.to_seed("");
+        let seed_array: [u8; 32] = seed[..32].try_into().map_err(|_| "Seed slice has incorrect length")?;
+        let hotkey_pair = sr25519::Pair::from_seed(&seed_array);
+        
+        // Create a PairSigner from the hotkey pair
+        PairSigner::new(hotkey_pair)
+    } else {
+        // Fall back to the default signer
+        let signer = setup_substrate_client().await?.1; // Assuming this returns the default signer
+        signer
+    };
+
+    // Create the transaction to swap the node owner
+    let tx = custom_runtime::tx()
+        .registration()
+        .swap_node_owner(node_id_bytes, new_owner_account_id);
+
+    let progress = api
+        .tx()
+        .sign_and_submit_then_watch_default(&tx, &signer)
+        .await?;
+
+    println!("⏳ Waiting for transaction to be finalized...");
+    let _ = progress.wait_for_finalized_success().await?;
+
+    println!("✅ Successfully swapped node owner for node ID: {}", node_id);
+    Ok(())
+}
