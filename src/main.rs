@@ -720,7 +720,7 @@ fn create_hotkey_address(coldkey: &str, mnemonic: &str) -> String {
 
 async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairSigner<PolkadotConfig, sr25519::Pair>), Box<dyn std::error::Error>> {
     let url = env::var("SUBSTRATE_NODE_URL")
-        .unwrap_or_else(|_| "wss://testnet.hippius.com".to_string());
+        .unwrap_or_else(|_| "wss://rpc.hippius.network".to_string());
     
     println!("🌐 Connecting to Substrate node at: {}", url);
     let api = OnlineClient::<PolkadotConfig>::from_url(&url).await?;
@@ -1026,7 +1026,7 @@ async fn handle_insert_key(seed_phrase: String, public_key: String) -> Result<()
 
     // Send the request to the local node
     let response = client
-        .post("http://localhost:9944")
+        .post("https://rpc.hippius.network")
         .header("Content-Type", "application/json")
         .json(&payload)
         .send()
@@ -1983,7 +1983,7 @@ async fn handle_get_node_id() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = reqwest::Client::new();
     let response = client
-        .post("http://localhost:9944")
+        .post("https://rpc.hippius.network")
         .header("Content-Type", "application/json")
         .body(r#"{"id":1, "jsonrpc":"2.0", "method":"system_localPeerId"}"#)
         .send()
