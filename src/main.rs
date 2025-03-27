@@ -34,10 +34,11 @@ use bip39::{Mnemonic, Language};
 use rand::Rng;
 
 use tokio::fs::File;
-use tokio_util::codec::{BytesCodec, FramedRead};
+// use tokio_util::codec::{BytesCodec, FramedRead};
 use reqwest::multipart;
 use std::error::Error;
 use tokio::io::AsyncReadExt;
+use tokio::fs::read_dir;
 
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
@@ -2132,62 +2133,55 @@ async fn handle_swap_node_owner(node_id: String, new_owner: String, signer_accou
     Ok(())
 }
 
-async fn handle_upload_to_ipfs(file_path: String) -> Result<(), Box<dyn Error>> {
-    println!("📦 Uploading file to IPFS: {}", file_path);
+async fn handle_upload_to_ipfs(path: String) -> Result<(), Box<dyn Error>> {
+    println!("📦 Uploading to IPFS: {}", path);
 
-    // Check user credits
-    let (api, signer) = setup_substrate_client().await?;
-    let target_account = subxt::dynamic::Value::from_bytes(&signer.account_id().encode());
-    let storage_query = subxt::dynamic::storage("Credits", "FreeCredits", vec![target_account]);
-    let credits_result = api.storage().at_latest().await?.fetch(&storage_query).await;
-
-    let credits: u128 = match credits_result {
-        Ok(Some(credits_value)) => credits_value.as_type().unwrap_or(0),
-        Ok(None) => {
-            println!("❌ No credits found for the account.");
-            return Ok(());
-        },
-        Err(e) => {
-            eprintln!("🚨 Error querying credits: {}", e);
-            return Err(e.into());
-        }
-    };
-
-    if credits == 0 {
-        println!("❌ Insufficient credits. You must have more than 0 credits to upload a file.");
-        return Ok(());
-    }
-
-    let ipfs_api_url = "https://relay-fr.hippius.network/api/v0/add";
-
-    // Open the file and read its contents into a buffer
-    let mut file = File::open(&file_path).await?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer).await?;
-
-    let file_name = file_path.split('/').last().unwrap_or("unknown").to_string();
-
-    // Prepare multipart form data
-    let part = multipart::Part::bytes(buffer)
-        .file_name(file_name);
-
-    let form = multipart::Form::new()
-        .part("file", part);
-
+    let ipfs_api_url = "https://relay-fr.hippius.network/api/v0/add?recursive=true&wrap-with-directory=true";
     let client = reqwest::Client::new();
 
-    let response = client
-        .post(ipfs_api_url)
-        .multipart(form)
-        .send()
-        .await?;
+    let mut form = multipart::Form::new();
+
+    if Path::new(&path).is_dir() {
+        let mut entries = read_dir(&path).await?;
+        
+        while let Some(entry) = entries.next_entry().await? {
+            let file_path = entry.path();
+            if file_path.is_file() {
+                let file_name = file_path.file_name().unwrap().to_string_lossy().to_string();
+                let mut file = File::open(&file_path).await?;
+                let mut buffer = Vec::new();
+                file.read_to_end(&mut buffer).await?;
+
+                let part = multipart::Part::bytes(buffer)
+                    .file_name(file_name.clone());
+
+                form = form.part("file", part);
+            }
+        }
+    } else {
+        // If it's a single file, upload it as usual
+        let mut file = File::open(&path).await?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer).await?;
+
+        let file_name = Path::new(&path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        let part = multipart::Part::bytes(buffer).file_name(file_name.clone());
+        form = form.part("file", part);
+    }
+
+    let response = client.post(ipfs_api_url).multipart(form).send().await?;
 
     if response.status().is_success() {
         let response_text = response.text().await?;
-        println!("✅ File uploaded to IPFS: {}", response_text);
+        println!("✅ Uploaded to IPFS: {}", response_text);
     } else {
         let error_message = response.text().await?;
-        println!("❌ Failed to upload file to IPFS. Error: {}", error_message);
+        println!("❌ Upload failed. Error: {}", error_message);
     }
 
     Ok(())
