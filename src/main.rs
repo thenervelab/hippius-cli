@@ -33,6 +33,12 @@ use std::io::Write;
 use bip39::{Mnemonic, Language};
 use rand::Rng;
 
+use tokio::fs::File;
+use tokio_util::codec::{BytesCodec, FramedRead};
+use reqwest::multipart;
+use std::error::Error;
+use tokio::io::AsyncReadExt;
+
 #[subxt::subxt(runtime_metadata_path = "metadata.scale")]
 pub mod custom_runtime {}
 
@@ -189,6 +195,12 @@ enum Commands {
         /// The account ID to sign the transaction
         #[arg(help = "The account ID to sign the transaction")]
         signer_account: String,
+    },
+    /// Upload a file to an IPFS node and print the CID
+    UploadToIpfs {
+        /// Path to the file to upload
+        #[arg(help = "Path to the file to upload to IPFS")]
+        file_path: String,
     },
 }
 
@@ -426,6 +438,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::SwapNodeOwner { node_id, new_owner, signer_account } => {
             if let Err(e) = handle_swap_node_owner(node_id.clone(), new_owner.clone(), signer_account.clone()).await {
                 eprintln!("❌ Failed to swap node owner: {}", e);
+            }
+        },
+        Commands::UploadToIpfs { file_path } => {
+            if let Err(e) = handle_upload_to_ipfs(file_path.clone()).await {
+                eprintln!("❌ Failed to upload file to IPFS: {}", e);
             }
         },
     }
@@ -2112,5 +2129,66 @@ async fn handle_swap_node_owner(node_id: String, new_owner: String, signer_accou
     let _ = progress.wait_for_finalized_success().await?;
 
     println!("✅ Successfully swapped node owner for node ID: {}", node_id);
+    Ok(())
+}
+
+async fn handle_upload_to_ipfs(file_path: String) -> Result<(), Box<dyn Error>> {
+    println!("📦 Uploading file to IPFS: {}", file_path);
+
+    // Check user credits
+    let (api, signer) = setup_substrate_client().await?;
+    let target_account = subxt::dynamic::Value::from_bytes(&signer.account_id().encode());
+    let storage_query = subxt::dynamic::storage("Credits", "FreeCredits", vec![target_account]);
+    let credits_result = api.storage().at_latest().await?.fetch(&storage_query).await;
+
+    let credits: u128 = match credits_result {
+        Ok(Some(credits_value)) => credits_value.as_type().unwrap_or(0),
+        Ok(None) => {
+            println!("❌ No credits found for the account.");
+            return Ok(());
+        },
+        Err(e) => {
+            eprintln!("🚨 Error querying credits: {}", e);
+            return Err(e.into());
+        }
+    };
+
+    if credits == 0 {
+        println!("❌ Insufficient credits. You must have more than 0 credits to upload a file.");
+        return Ok(());
+    }
+
+    let ipfs_api_url = "https://relay-fr.hippius.network/api/v0/add";
+
+    // Open the file and read its contents into a buffer
+    let mut file = File::open(&file_path).await?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer).await?;
+
+    let file_name = file_path.split('/').last().unwrap_or("unknown").to_string();
+
+    // Prepare multipart form data
+    let part = multipart::Part::bytes(buffer)
+        .file_name(file_name);
+
+    let form = multipart::Form::new()
+        .part("file", part);
+
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(ipfs_api_url)
+        .multipart(form)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let response_text = response.text().await?;
+        println!("✅ File uploaded to IPFS: {}", response_text);
+    } else {
+        let error_message = response.text().await?;
+        println!("❌ Failed to upload file to IPFS. Error: {}", error_message);
+    }
+
     Ok(())
 }
