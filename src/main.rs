@@ -16,12 +16,13 @@ use std::str::FromStr;
 use subxt::config::substrate::MultiAddress;
 use crate::custom_runtime::registration::calls::types::force_register_node_with_hotkey::NodeType;
 use crate::custom_runtime::runtime_types::pallet_rankings::types::NodeRankings;
-use crate::custom_runtime::runtime_types::pallet_marketplace::types::FileInput;
+use crate::custom_runtime::runtime_types::ipfs_pallet::types::FileInput;
 use crate::custom_runtime::runtime_types::pallet_credits::types::LockedCredit;
 use crate::custom_runtime::runtime_types::pallet_credits::types::LockPeriod;
 use crate::custom_runtime::runtime_types::pallet_marketplace::types::Plan;
 use crate::custom_runtime::proxy::calls::types::add_proxy::ProxyType;
 use crate::custom_runtime::runtime_types::pallet_staking::RewardDestination::Staked;
+use crate::custom_runtime::runtime_types::bounded_collections::bounded_vec::BoundedVec;
 use sp_core::crypto::Ss58Codec;
 use subxt::utils::AccountId32;
 use std::fs;
@@ -32,9 +33,7 @@ use csv::ReaderBuilder;
 use std::io::Write;
 use bip39::{Mnemonic, Language};
 use rand::Rng;
-
 use tokio::fs::File;
-// use tokio_util::codec::{BytesCodec, FramedRead};
 use reqwest::multipart;
 use std::error::Error;
 use tokio::io::AsyncReadExt;
@@ -755,142 +754,142 @@ async fn setup_substrate_client() -> Result<(OnlineClient<PolkadotConfig>, PairS
     Ok((api, signer))
 }
 
-async fn handle_request_boot(name: String, plan_id: H256) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🚀 Initializing Boot Request For Minner: {}", name);
+// async fn handle_request_boot(name: String, plan_id: H256) -> Result<(), Box<dyn std::error::Error>> {
+//     println!("🚀 Initializing Boot Request For Minner: {}", name);
     
-    let (api, signer) = setup_substrate_client().await?;
+//     let (api, signer) = setup_substrate_client().await?;
     
-    println!("📤 Submitting transaction to request boot...");
-    let tx = custom_runtime::tx().compute().request_compute_boot(plan_id);
+//     println!("📤 Submitting transaction to request boot...");
+//     let tx = custom_runtime::tx().compute().request_compute_boot(plan_id);
 
-    let progress = api
-        .tx()
-        .sign_and_submit_then_watch_default(&tx, &signer)
-        .await?;
+//     let progress = api
+//         .tx()
+//         .sign_and_submit_then_watch_default(&tx, &signer)
+//         .await?;
     
-    println!("⏳ Waiting for transaction to be finalized...");
-    let _ = progress.wait_for_finalized_success().await?;
+//     println!("⏳ Waiting for transaction to be finalized...");
+//     let _ = progress.wait_for_finalized_success().await?;
     
-    println!("✅ Successfully requested boot!");
-    println!("📦 Space Name: {}", name);
-    println!("🆔 Plan ID: {:?}", plan_id);
+//     println!("✅ Successfully requested boot!");
+//     println!("📦 Space Name: {}", name);
+//     println!("🆔 Plan ID: {:?}", plan_id);
 
-    Ok(())
-}
+//     Ok(())
+// }
 
-async fn handle_request_reboot(name: String, plan_id: H256) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🚀 Initializing Boot Request For Minner: {}", name);
+// async fn handle_request_reboot(name: String, plan_id: H256) -> Result<(), Box<dyn std::error::Error>> {
+//     println!("🚀 Initializing Boot Request For Minner: {}", name);
     
-    let (api, signer) = setup_substrate_client().await?;
+//     let (api, signer) = setup_substrate_client().await?;
     
-    println!("📤 Submitting transaction to request boot...");
-    let tx = custom_runtime::tx().compute().request_compute_reboot(plan_id);
+//     println!("📤 Submitting transaction to request boot...");
+//     let tx = custom_runtime::tx().compute().request_compute_reboot(plan_id);
 
-    let progress = api
-        .tx()
-        .sign_and_submit_then_watch_default(&tx, &signer)
-        .await?;
+//     let progress = api
+//         .tx()
+//         .sign_and_submit_then_watch_default(&tx, &signer)
+//         .await?;
     
-    println!("⏳ Waiting for transaction to be finalized...");
-    let _ = progress.wait_for_finalized_success().await?;
+//     println!("⏳ Waiting for transaction to be finalized...");
+//     let _ = progress.wait_for_finalized_success().await?;
     
-    println!("✅ Successfully requested boot!");
-    println!("📦 Space Name: {}", name);
+//     println!("✅ Successfully requested boot!");
+//     println!("📦 Space Name: {}", name);
 
-    Ok(())
-}
+//     Ok(())
+// }
 
-async fn handle_request_delete(name: String, plan_id: H256) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🚀 Initializing Delete Request For Minner: {}", name);
+// async fn handle_request_delete(name: String, plan_id: H256) -> Result<(), Box<dyn std::error::Error>> {
+//     println!("🚀 Initializing Delete Request For Minner: {}", name);
     
-    let (api, signer) = setup_substrate_client().await?;
+//     let (api, signer) = setup_substrate_client().await?;
     
-    println!("📤 Submitting transaction to request delete...");
-    let tx = custom_runtime::tx().compute().request_compute_delete(plan_id);
+//     println!("📤 Submitting transaction to request delete...");
+//     let tx = custom_runtime::tx().compute().request_compute_delete(plan_id);
 
-    let progress = api
-        .tx()
-        .sign_and_submit_then_watch_default(&tx, &signer)
-        .await?;
+//     let progress = api
+//         .tx()
+//         .sign_and_submit_then_watch_default(&tx, &signer)
+//         .await?;
     
-    println!("⏳ Waiting for transaction to be finalized...");
-    let _ = progress.wait_for_finalized_success().await?;
+//     println!("⏳ Waiting for transaction to be finalized...");
+//     let _ = progress.wait_for_finalized_success().await?;
     
-    println!("✅ Successfully requested delete!");
-    println!("📦 Space Name: {}", name);
+//     println!("✅ Successfully requested delete!");
+//     println!("📦 Space Name: {}", name);
 
-    Ok(())
-}
+//     Ok(())
+// }
 
-async fn handle_request_stop(name: String, plan_id: H256) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🚀 Initializing Stop Request For Minner: {}", name);
+// async fn handle_request_stop(name: String, plan_id: H256) -> Result<(), Box<dyn std::error::Error>> {
+//     println!("🚀 Initializing Stop Request For Minner: {}", name);
     
-    let (api, signer) = setup_substrate_client().await?;
+//     let (api, signer) = setup_substrate_client().await?;
     
-    println!("📤 Submitting transaction to request stop...");
-    let tx = custom_runtime::tx().compute().request_compute_stop(plan_id);
+//     println!("📤 Submitting transaction to request stop...");
+//     let tx = custom_runtime::tx().compute().request_compute_stop(plan_id);
 
-    let progress = api
-        .tx()
-        .sign_and_submit_then_watch_default(&tx, &signer)
-        .await?;
+//     let progress = api
+//         .tx()
+//         .sign_and_submit_then_watch_default(&tx, &signer)
+//         .await?;
     
-    println!("⏳ Waiting for transaction to be finalized...");
-    let _ = progress.wait_for_finalized_success().await?;
+//     println!("⏳ Waiting for transaction to be finalized...");
+//     let _ = progress.wait_for_finalized_success().await?;
     
-    println!("✅ Successfully requested stop!");
-    println!("📦 Space Name: {}", name);
+//     println!("✅ Successfully requested stop!");
+//     println!("📦 Space Name: {}", name);
 
-    Ok(())
-}
+//     Ok(())
+// }
 
-async fn handle_purchase_compute_plan(
-    plan_id: H256, 
-    location_id: Option<u32>, 
-    image_name: String, 
-    cloud_init_cid: Option<String>, 
-    _pay_for: Option<String>,
-    miner_id: Option<String>
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🛒 Initiating Plan Purchase");
+// async fn handle_purchase_compute_plan(
+//     plan_id: H256, 
+//     location_id: Option<u32>, 
+//     image_name: String, 
+//     cloud_init_cid: Option<String>, 
+//     _pay_for: Option<String>,
+//     miner_id: Option<String>
+// ) -> Result<(), Box<dyn std::error::Error>> {
+//     println!("🛒 Initiating Plan Purchase");
     
-    let (api, signer) = setup_substrate_client().await?;
+//     let (api, signer) = setup_substrate_client().await?;
     
-    // Convert inputs to required types
-    let image_name_bytes = image_name.into_bytes();
-    let cloud_init_cid_bytes = cloud_init_cid.map(|cid| cid.into_bytes());
+//     // Convert inputs to required types
+//     let image_name_bytes = image_name.into_bytes();
+//     let cloud_init_cid_bytes = cloud_init_cid.map(|cid| cid.into_bytes());
     
-    // Convert pay_for to AccountId if provided
-    let pay_for_account: Option<_> = None;
+//     // Convert pay_for to AccountId if provided
+//     let pay_for_account: Option<_> = None;
 
-    // Convert miner_id to bytes if provided
-    let miner_id_bytes = miner_id.map(|id| id.into_bytes());
+//     // Convert miner_id to bytes if provided
+//     let miner_id_bytes = miner_id.map(|id| id.into_bytes());
 
-    println!("📤 Submitting transaction to purchase plan...");
-    let tx = custom_runtime::tx()
-        .marketplace()
-        .purchase_plan(
-            plan_id, 
-            location_id, 
-            image_name_bytes, 
-            cloud_init_cid_bytes, 
-            pay_for_account,
-            miner_id_bytes
-        );
+//     println!("📤 Submitting transaction to purchase plan...");
+//     let tx = custom_runtime::tx()
+//         .marketplace()
+//         .purchase_plan(
+//             plan_id, 
+//             location_id, 
+//             image_name_bytes, 
+//             cloud_init_cid_bytes, 
+//             pay_for_account,
+//             miner_id_bytes
+//         );
 
-    let progress = api
-        .tx()
-        .sign_and_submit_then_watch_default(&tx, &signer)
-        .await?;
+//     let progress = api
+//         .tx()
+//         .sign_and_submit_then_watch_default(&tx, &signer)
+//         .await?;
     
-    println!("⏳ Waiting for transaction to be finalized...");
-    let _ = progress.wait_for_finalized_success().await?;
+//     println!("⏳ Waiting for transaction to be finalized...");
+//     let _ = progress.wait_for_finalized_success().await?;
     
-    println!("✅ Successfully purchased plan!");
-    println!("🆔 Plan ID: {:?}", plan_id);
+//     println!("✅ Successfully purchased plan!");
+//     println!("🆔 Plan ID: {:?}", plan_id);
 
-    Ok(())
-}
+//     Ok(())
+// }
 
 async fn handle_storage_command(
     storage_command: StorageCommand, 
@@ -927,9 +926,13 @@ async fn handle_storage_command(
         },
         StorageCommand::Unpin => {
             println!("🔓 Submitting transaction to unpin file...");
+
+            let vec_u8 = file_hash.clone().into_bytes();
+            let bounded_file_hash = BoundedVec(vec_u8); // Tuple struct constructor
+
             let tx = custom_runtime::tx()
                 .marketplace()
-                .storage_unpin_request(file_hash.clone().into());
+                .storage_unpin_request(bounded_file_hash);
 
             let progress = api
                 .tx()
