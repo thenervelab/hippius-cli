@@ -20,8 +20,8 @@ Do not install it.
 
 | Job | Use |
 |---|---|
-| Store or fetch files | Any S3 client at https://s3.hippius.com. Agent file: https://github.com/thenervelab/hippius-s3/blob/staging/llms.txt |
-| Models and containers | `pip install hippius_hub`. Agent file: https://github.com/thenervelab/hippius-hub/blob/main/llms.txt |
+| Store or fetch files | Any S3 client at https://s3.hippius.com. Agent file: https://raw.githubusercontent.com/thenervelab/hippius-s3/staging/llms.txt |
+| Models and containers | `pip install hippius_hub`. Agent file: https://raw.githubusercontent.com/thenervelab/hippius-hub/main/llms.txt |
 | Run a storage miner | The Arion miner guides, not this CLI and not the IPFS Ansible repo. https://docs.hippius.com/earn/arion/running-miner |
 | Register a node on chain | The registration guide: https://docs.hippius.com/earn/register-in-blockchain |
 
