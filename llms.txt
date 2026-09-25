@@ -1,0 +1,35 @@
+# hipc (hippius-cli)
+
+> The old Hippius command-line tool. It targeted the retired IPFS storage backend. Do not install it and do not use it against the current network.
+
+Part of the Hippius docs for agents. Start at https://docs.hippius.com/llms.txt
+
+## What it is and what it does
+
+`hipc` was a Rust CLI for IPFS pinning, uploads, and node registration. The docs mark that CLI deprecated: the IPFS-based tool is no longer functional while a replacement for Arion is built.
+
+https://docs.hippius.com/cli/usage
+
+## How to install
+
+Do not install it.
+
+`brew tap thenervelab/tap && brew install hipc` is still written in the tap README. The formula points at release files that are not a working install. The commands (`hipc storage pin`, `hipc upload-to-ipfs`, and the rest of the IPFS-era surface) do not apply to current storage.
+
+## What to use instead
+
+| Job | Use |
+|---|---|
+| Store or fetch files | Any S3 client at https://s3.hippius.com. Agent file: https://github.com/thenervelab/hippius-s3/blob/staging/llms.txt |
+| Models and containers | `pip install hippius_hub`. Agent file: https://github.com/thenervelab/hippius-hub/blob/main/llms.txt |
+| Run a storage miner | The Arion miner guides, not this CLI and not the IPFS Ansible repo. https://docs.hippius.com/earn/arion/running-miner |
+| Register a node on chain | The registration guide: https://docs.hippius.com/earn/register-in-blockchain |
+
+## Links
+
+- Documentation home: https://docs.hippius.com
+- Deprecation notice: https://docs.hippius.com/cli/usage
+- First S3 upload: https://docs.hippius.com/use/quickstart
+- Arion miner: https://docs.hippius.com/earn/arion/running-miner
+- Blockchain node: https://docs.hippius.com/earn/arion/running-blockchain-node
+- This repository's README (describes the old IPFS commands): https://github.com/thenervelab/hippius-cli/blob/main/README.md
