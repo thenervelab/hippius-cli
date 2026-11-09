@@ -498,20 +498,20 @@ impl<'a> Context<'a> {
         // takes past the line is dropped with this reader rather than kept to answer the next
         // question.
         let mut input = io::BufReader::new(crate::hidden::Unbuffered(stdin.as_fd()));
+        if will_ask {
+            // What was typed before the question appears answers nothing: a `y` typed while an
+            // earlier read ran, or the second line of a paste that answered an earlier
+            // question, is discarded. The flush comes just before the question is written, not
+            // after: after it, an answer a script types as soon as the question shows could be
+            // discarded too, and the question would wait for ever.
+            crate::hidden::discard_typed_ahead();
+        }
         confirm_with(
             question,
             self.global.yes,
             self.can_prompt(),
             &mut input,
-            &mut |text| {
-                output::note(text);
-                if will_ask {
-                    // Once the question is written, what was typed before it showed answers
-                    // nothing: a `y` typed while an earlier read ran, or the second line of a
-                    // paste that answered an earlier question, is discarded.
-                    crate::hidden::discard_typed_ahead();
-                }
-            },
+            &mut output::note,
         )
     }
 }
