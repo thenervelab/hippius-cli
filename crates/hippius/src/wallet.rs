@@ -14,8 +14,10 @@
 //! The phrase is never kept: [`AccessKey::from_phrase`] reads it into the two keys, and
 //! clears every buffer of its own that held the phrase, its entropy, its seed, a BIP-32
 //! parent key, or a tweak. What it cannot clear: bip39 computes the seed with its own
-//! PBKDF2, whose HMAC pads stay on the stack frames it returns from, and a secp256k1 key or
-//! scalar passed by value leaves the copy the call made. No message quotes the phrase, and no
+//! PBKDF2, whose HMAC pads stay on the stack frames it returns from; a secp256k1 key or
+//! scalar passed by value leaves the copy the call made; and secp256k1 0.33 copies the
+//! secret key into the seed it re-randomizes its context with, in `PublicKey::from_secret_key`
+//! (each BIP-32 step) and in `sign_ecdsa_recoverable` (each signature), and does not clear it. No message quotes the phrase, and no
 //! error of a library it passes through is passed on.
 //!
 //! A login signs a message the server chose, with the same sr25519 context a chain
@@ -28,6 +30,7 @@ use std::path::Path;
 
 use bip39::{Language, Mnemonic};
 use blake2::{Blake2b512, Digest as _};
+use hmac::digest::FixedOutput as _;
 use hmac::{Hmac, KeyInit as _, Mac as _};
 use schnorrkel::{ExpansionMode, Keypair, MiniSecretKey};
 use secp256k1::ecdsa::RecoverableSignature;
@@ -379,7 +382,9 @@ fn hmac_sha512(key: &[u8], data: &[&[u8]]) -> Zeroizing<[u8; 64]> {
         mac.update(part);
     }
     let mut out = Zeroizing::new([0_u8; 64]);
-    let mut tag = mac.finalize().into_bytes();
+    // `finalize().into_bytes()` would clone the tag out of a `CtOutput`, leaving the
+    // original behind; `finalize_fixed` moves the one copy out, which is cleared below.
+    let mut tag = mac.finalize_fixed();
     out.copy_from_slice(&tag);
     tag.zeroize();
     out

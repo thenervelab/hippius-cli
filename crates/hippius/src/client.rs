@@ -2250,7 +2250,7 @@ enum Progress {
 ///
 /// A proxy `CONNECT` does not count either. ureq opens the proxy leg through this whole
 /// chain, this link included, with a copy of the config that has no proxy
-/// (`ConnectProxyConnector`, ureq 3.5.0 `transport/connect.rs`). So on a client that uses
+/// (`ConnectProxyConnector`, ureq 3.5.0 `src/unversioned/transport/connect.rs`). So on a client that uses
 /// a proxy, a connection whose config has none is that leg: it gets a flag of its own that
 /// nothing reads. The connection to the API is wrapped again around it and is marked.
 ///
