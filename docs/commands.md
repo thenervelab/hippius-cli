@@ -921,6 +921,8 @@ Replace a member's whole grant list with the --grant flags given; needs --yes, a
 
 Nothing is merged with the current list: a grant the member has now that the --grant flags leave out is refused, unless --remove-others is passed to remove it. To add one grant, read the member's grants with hipc account members list, then pass all of them. Without --grant the grants are kept, and only --manage-team and --billing-permission change.
 
+The route takes no version or If-Match, so the grants are read, then written whole: a change another admin makes between the read and the write is lost, and a grant revoked in that window is restored if a --grant flag names it.
+
 Usage: hipc account members update [OPTIONS] <MEMBER_ID>
 
 Arguments:
@@ -3039,7 +3041,7 @@ Examples:
 ```text
 Every S3 token, master and sub
 
-Secrets are never shown again; secret_preview is the last four characters.
+The master and the sub tokens are two lists, read whole and printed as one: every page of each is followed, so this list takes no page flags, and next_page_token is null. Secrets are never shown again; secret_preview is the last four characters.
 
 Usage: hipc s3 tokens list
 
@@ -7378,7 +7380,7 @@ Examples:
 ```text
 Replace the whole rule list with a file's; needs --yes, and --remove-others to drop or move a rule
 
-A rule the zone has now that the file leaves out or moves is refused unless --remove-others is passed.
+A rule the zone has now that the file leaves out or moves is refused unless --remove-others is passed. The route takes no version or If-Match, so the rules are read, then written whole: a change someone else makes between the read and the write is lost.
 
 Usage: hipc cdn rules update [OPTIONS] --rules-file <PATH> <ZONE_ID>
 
@@ -8106,7 +8108,7 @@ Examples:
 ```text
 Replace every item of the list with the file's; needs --yes, and --remove-others to drop an item
 
-An item the list has now that the file leaves out is refused unless --remove-others is passed.
+An item the list has now that the file leaves out is refused unless --remove-others is passed. The route takes no version or If-Match, so the items are read, then written whole: an item someone else adds between the read and the write is lost.
 
 Usage: hipc cdn lists items update [OPTIONS] --items-file <PATH> <LIST_NAME>
 
