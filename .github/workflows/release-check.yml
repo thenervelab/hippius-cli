@@ -26,6 +26,11 @@ jobs:
           persist-credentials: false
       - run: rustup toolchain install
       - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Remap the build paths
+        # As release.yml: fixed names for the checkout and the cargo home.
+        run: >-
+          echo "RUSTFLAGS=--remap-path-prefix=${GITHUB_WORKSPACE}=/build
+          --remap-path-prefix=${CARGO_HOME:-${HOME}/.cargo}=/cargo" >> "${GITHUB_ENV}"
       - run: cargo build --release --locked --target aarch64-apple-darwin
       - run: cargo build --release --locked --target x86_64-apple-darwin
       - name: Runs
@@ -35,10 +40,13 @@ jobs:
           "${bin}" version
           "${bin}" schema > /dev/null
       - name: The tarball is reproducible
+        # hipc is built a second time from scratch, and both builds must pack to the same
+        # bytes: the build and the packing are reproducible, not only the packing.
         run: |
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
             scripts/package.sh "target/${target}/release/hipc" "${RUNNER_TEMP}/a.tar.gz"
-            touch "target/${target}/release/hipc"
+            cargo clean --release --target "${target}" -p hippius-cli -p hippius
+            cargo build --release --locked --target "${target}"
             scripts/package.sh "target/${target}/release/hipc" "${RUNNER_TEMP}/b.tar.gz"
             cmp "${RUNNER_TEMP}/a.tar.gz" "${RUNNER_TEMP}/b.tar.gz"
           done
@@ -68,6 +76,11 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends musl-tools
       - run: rustup toolchain install
       - run: rustup target add "${TARGET}"
+      - name: Remap the build paths
+        # As release.yml: fixed names for the checkout and the cargo home.
+        run: >-
+          echo "RUSTFLAGS=--remap-path-prefix=${GITHUB_WORKSPACE}=/build
+          --remap-path-prefix=${CARGO_HOME:-${HOME}/.cargo}=/cargo" >> "${GITHUB_ENV}"
       - name: Build
         run: cargo build --release --locked --target "${TARGET}"
       - name: Static, and runs
@@ -79,9 +92,11 @@ jobs:
           "${bin}" version
           "${bin}" schema > /dev/null
       - name: The tarball is reproducible
+        # As on macOS: a second build from scratch packs to the same bytes.
         run: |
           bin="target/${TARGET}/release/hipc"
           scripts/package.sh "${bin}" "${RUNNER_TEMP}/a.tar.gz"
-          touch "${bin}"
+          cargo clean --release --target "${TARGET}" -p hippius-cli -p hippius
+          cargo build --release --locked --target "${TARGET}"
           scripts/package.sh "${bin}" "${RUNNER_TEMP}/b.tar.gz"
           cmp "${RUNNER_TEMP}/a.tar.gz" "${RUNNER_TEMP}/b.tar.gz"

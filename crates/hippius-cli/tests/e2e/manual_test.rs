@@ -49,7 +49,20 @@ fn manual_test_with(home: &Home, args: &[&str], env: &[(&str, &str)]) -> Output 
     for name in ["HIPPIUS_TOKEN", "HIPPIUS_API_URL", "CI", "AI_AGENT"] {
         command.env_remove(name);
     }
+    // A run without `--offline` aims at the default origin; every request it might send goes
+    // to a proxy that refuses it, so no test can reach the live API.
+    for name in [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ] {
+        command.env_remove(name);
+    }
     command
+        .env("ALL_PROXY", no_server())
         .env("HOME", home.path())
         .env("TMPDIR", &tmp)
         .env("HIPC_MANUAL_TEST_DEAD_ORIGIN", no_server())

@@ -86,6 +86,12 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: rustup target add "${TARGET}"
+      - name: Remap the build paths
+        # The checkout and the cargo home are runner paths that would land in the binary's
+        # panic locations; mapped to fixed names, the same commit builds the same bytes.
+        run: >-
+          echo "RUSTFLAGS=--remap-path-prefix=${GITHUB_WORKSPACE}=/build
+          --remap-path-prefix=${CARGO_HOME:-${HOME}/.cargo}=/cargo" >> "${GITHUB_ENV}"
       - name: Check that the tag matches the workspace version
         env:
           TAG: ${{ github.ref_name }}
@@ -103,11 +109,7 @@ jobs:
           # the target it builds, so the macOS targets ignore these.
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
-        # The checkout and the cargo home are runner paths that would land in the binary's
-        # panic locations; mapped to fixed names, the same commit builds the same paths.
-        run: |
-          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=/build --remap-path-prefix=${CARGO_HOME:-${HOME}/.cargo}=/cargo"
-          cargo build --release --locked --target "${TARGET}"
+        run: cargo build --release --locked --target "${TARGET}"
       - name: Static
         if: runner.os == 'Linux'
         env:
@@ -456,6 +458,12 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: rustup target add "${TARGET}"
+      - name: Remap the build paths
+        # The checkout and the cargo home are runner paths that would land in the binary's
+        # panic locations; mapped to fixed names, the same commit builds the same bytes.
+        run: >-
+          echo "RUSTFLAGS=--remap-path-prefix=${GITHUB_WORKSPACE}=/build
+          --remap-path-prefix=${CARGO_HOME:-${HOME}/.cargo}=/cargo" >> "${GITHUB_ENV}"
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         env:
           # As in `build`: ring's C goes through musl-gcc for the musl targets.

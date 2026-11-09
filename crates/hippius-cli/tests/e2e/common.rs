@@ -600,6 +600,10 @@ pub(crate) fn no_server() -> &'static str {
         use rustix::net::{AddressFamily, SocketType};
         let socket = rustix::net::socket(AddressFamily::INET, SocketType::STREAM, None)
             .expect("open a TCP socket");
+        // Not inherited by the processes a test starts: one left behind would keep the
+        // port bound after the tests end.
+        rustix::io::fcntl_setfd(&socket, rustix::io::FdFlags::CLOEXEC)
+            .expect("mark the socket close-on-exec");
         let loopback = std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0);
         rustix::net::bind(&socket, &loopback).expect("bind a loopback port");
         let bound = std::net::SocketAddrV4::try_from(

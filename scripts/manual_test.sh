@@ -3664,7 +3664,9 @@ done < <(compgen -e)
 # here: without HIPPIUS_TOKEN_ORIGIN, hipc sends HIPPIUS_TOKEN to the default origin only.
 if [[ $OFFLINE == 1 ]]; then
   # Something listening on the dead origin would receive the fake token and every request;
-  # bash's /dev/tcp connects and sends nothing, so the run checks first.
+  # bash's /dev/tcp connects and sends nothing, so the run checks first. Once: a listener
+  # started during the run is not caught, which only a held port (as the tests pass) rules
+  # out.
   if (exec 3<>"/dev/tcp/127.0.0.1/${DEAD_ORIGIN##*:}") 2>/dev/null; then
     die "something listens on ${DEAD_ORIGIN#http://}, the origin --offline needs closed;" \
       "stop it and run again"

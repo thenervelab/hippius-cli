@@ -368,9 +368,14 @@ fn the_wheels_are_built_with_the_maturin_pyproject_pins() {
     );
 }
 
-/// The release builds each tarball with `scripts/package.sh`, which the tests below check.
+/// The release builds each tarball with `scripts/package.sh`, which `package.rs` checks, and
+/// every release build, the tarballs' and the wheels', and each release check's, remaps the
+/// runner's paths, so the same commit builds the same bytes.
 #[test]
 fn the_release_packs_with_the_package_script() {
+    let remap = "      - name: Remap the build paths\n";
+    assert_eq!(RELEASE_WORKFLOW.matches(remap).count(), 2);
+    assert_eq!(WORKFLOWS[1].1.matches(remap).count(), 2);
     assert!(RELEASE_WORKFLOW.contains(
         "\n          scripts/package.sh \"target/${TARGET}/release/hipc\" \"dist/hipc-${TARGET}.tar.gz\"\n"
     ));
