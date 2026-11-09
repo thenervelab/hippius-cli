@@ -2790,9 +2790,18 @@ fn what_the_server_made_for_a_purchase_is_reported_apart() {
         ),
         vm_made.display()
     );
+    // Every other snapshot read answers an empty list, so each read gives a value and the
+    // two snapshots are compared. Only the snapshot home's reads: the scenario steps and the
+    // cleanup still meet the dead origin.
+    let snapshot = concat!(
+        "case \"$HOME\" in */snapshot/home) case \" $* \" in ",
+        "*\" s3 buckets list \"* | *\" s3 tokens list \"* | *\" network peers list \"*) ;; ",
+        "*\" --json \"*\" list \"* | *\" --json \"*\" get \"* | *\" billing balance \"*) ",
+        "printf '%s\\n' '{\"items\":[],\"next_page_token\":null}'; exit 0 ;; esac ;; esac"
+    );
     let (wrapper, _) = scripted_hipc(
         &home,
-        "",
+        snapshot,
         &[
             ("*\" s3 buckets list \"*", &buckets),
             ("*\" s3 tokens list \"*", &tokens),
@@ -3021,16 +3030,24 @@ fn an_account_without_a_hub_namespace_is_a_state_not_a_failure() {
             .any(|call| call.contains("provision") || call.contains("namespace create")),
         "nothing creates a namespace"
     );
-    // A 403 without the provision path is still a failure.
-    let home = Home::new();
-    let forbidden = concat!(
-        r#"printf '%s\n' '{"error":{"code":"permission","message":"cannot list: the API says "#,
-        r#"`You do not have permission.`","http_status":403}}' >&2; exit 1"#
-    );
-    let (wrapper, _) = scripted_hipc(&home, "", &[("*\" hub keys list \"*", forbidden)]);
-    let (_, log) = offline(&home, wrapper.to_str().expect("UTF-8"), &["hub"]);
-    assert!(
-        failed_titles(&log).contains(&"List the Hub keys".to_owned()),
-        "{log}"
-    );
+    // A 403 that is not that sentence is still a failure, one naming the route too.
+    for said in [
+        "You do not have permission.",
+        "Only an owner may call /api/registry/provision/.",
+    ] {
+        let home = Home::new();
+        let forbidden = format!(
+            concat!(
+                r#"printf '%s\n' '{{"error":{{"code":"permission","message":"cannot list: "#,
+                r#"the API says `{}`","http_status":403}}}}' >&2; exit 1"#
+            ),
+            said
+        );
+        let (wrapper, _) = scripted_hipc(&home, "", &[("*\" hub keys list \"*", &forbidden)]);
+        let (_, log) = offline(&home, wrapper.to_str().expect("UTF-8"), &["hub"]);
+        assert!(
+            failed_titles(&log).contains(&"List the Hub keys".to_owned()),
+            "{said}: {log}"
+        );
+    }
 }

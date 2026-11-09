@@ -487,7 +487,9 @@ pause() {
 # An account with no Hub namespace answers the namespace's reads, its keys and repositories
 # 403, "You must call /api/registry/provision/ first.", which hipc reports as `permission`
 # with a hint naming `hipc hub namespace create`. That is the state `hub_unprovisioned`,
-# matched the same way on the provision path in the message or `details`, never on the hint.
+# matched on that whole sentence in the message or `details`, never on the hint or on the
+# path alone: "Only an owner may call /api/registry/provision/." is a real refusal. The
+# network's sentence is matched whole the same way.
 # Creating a namespace claims a name for good, so no tier does it either.
 error_code() {
   local code
@@ -497,7 +499,7 @@ error_code() {
   elif [[ "$code" == permission ]] &&
     jq -e '.error | (.http_status // 403) == 403 and
       (([.message, (.details | tostring)] | map(strings) | join(" ")
-        | test("/network/provision/")) or
+        | test("You must call /api/network/provision/ first\\.")) or
        ((.message | type) == "string" and
         (.message | endswith("the private network is not set up for this account"))))' \
       "$1" >/dev/null 2>&1; then
@@ -505,7 +507,7 @@ error_code() {
   elif [[ "$code" == permission ]] &&
     jq -e '.error | (.http_status // 403) == 403 and
       ([.message, (.details | tostring)] | map(strings) | join(" ")
-        | test("/registry/provision/"))' "$1" >/dev/null 2>&1; then
+        | test("You must call /api/registry/provision/ first\\."))' "$1" >/dev/null 2>&1; then
     code=hub_unprovisioned
   fi
   [[ -z "$code" ]] || printf '%s\n' "$code"
