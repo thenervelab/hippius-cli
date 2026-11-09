@@ -2407,7 +2407,9 @@ fn a_hung_or_leaking_run_fails_fast_with_its_evidence() {
 /// The final log scan stays fast on a big log: a run whose every answer is a 200 KB JSON
 /// document with 20 secret fields writes a log of over 10 MB, and the scan of it takes a
 /// few seconds. bash 3.2 (macOS) once spun for minutes in the scan's shell loops; on Linux
-/// those loops took 12 seconds on this log, and the scan now takes about 1.
+/// those loops took 12 seconds on this log, and the scan now takes about 1. The hosted macOS
+/// runners of a public repository take up to 9 seconds for it, so macOS allows 30: still far
+/// below the minutes of the old loops.
 #[test]
 fn the_log_scan_of_a_big_log_takes_seconds() {
     let home = Home::new();
@@ -2442,7 +2444,11 @@ fn the_log_scan_of_a_big_log_takes_seconds() {
         .and_then(|(_, rest)| rest.split_once(" seconds"))
         .and_then(|(n, _)| n.parse().ok())
         .expect("the scan says how long it took");
-    assert!(seconds <= 6, "the scan took {seconds} seconds");
+    let limit = if cfg!(target_os = "macos") { 30 } else { 6 };
+    assert!(
+        seconds <= limit,
+        "the scan took {seconds} seconds, over {limit}"
+    );
 }
 
 /// Live write run, 2026-11-03: the S3 bucket list names its rows `bucket_name`, not `name`,
