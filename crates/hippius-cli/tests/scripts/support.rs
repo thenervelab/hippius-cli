@@ -49,29 +49,8 @@ impl Drop for TempDir {
     }
 }
 
-/// A server that refuses every connection: an ephemeral loopback port of a TCP socket that is
-/// bound and never listens, held for the life of the test process, so no other socket can
-/// take the port, as something could listen on a fixed one such as 9.
-pub(crate) fn no_server() -> &'static str {
-    static ORIGIN: std::sync::OnceLock<(std::os::fd::OwnedFd, String)> = std::sync::OnceLock::new();
-    let (_, origin) = ORIGIN.get_or_init(|| {
-        use rustix::net::{AddressFamily, SocketType};
-        let socket = rustix::net::socket(AddressFamily::INET, SocketType::STREAM, None)
-            .expect("open a TCP socket");
-        // Not inherited by the processes a test starts: one left behind would keep the
-        // port bound after the tests end.
-        rustix::io::fcntl_setfd(&socket, rustix::io::FdFlags::CLOEXEC)
-            .expect("mark the socket close-on-exec");
-        let loopback = std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0);
-        rustix::net::bind(&socket, &loopback).expect("bind a loopback port");
-        let bound = std::net::SocketAddrV4::try_from(
-            rustix::net::getsockname(&socket).expect("read the bound port"),
-        )
-        .expect("an IPv4 address");
-        (socket, format!("http://{bound}"))
-    });
-    origin
-}
+/// A loopback origin that refuses every connection ([`crate::dead_port::no_server`]).
+pub(crate) use crate::dead_port::no_server;
 
 /// What the server answers for one path.
 pub(crate) enum Answer {

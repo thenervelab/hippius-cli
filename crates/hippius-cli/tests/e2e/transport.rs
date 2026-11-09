@@ -273,7 +273,7 @@ fn a_server_that_never_answers_times_out() {
 
 #[test]
 fn a_closed_port_is_unavailable_and_nothing_was_sent() {
-    // `Hipc::new` aims at `no_server()`, a port bound and never listening.
+    // `Hipc::new` aims at `no_server()`, a loopback port that refuses connections.
     let error = Hipc::new(&Home::new())
         .env("HIPPIUS_TOKEN", TOKEN)
         .run(&["api", "POST", "/x/", "--yes"])

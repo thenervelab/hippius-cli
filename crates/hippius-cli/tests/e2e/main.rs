@@ -20,6 +20,8 @@ mod compute_reads;
 mod config;
 mod contract;
 mod databases;
+#[path = "../shared/dead_port.rs"]
+mod dead_port;
 mod dns_setup;
 mod drive;
 mod examples;

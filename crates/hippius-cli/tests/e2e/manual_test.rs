@@ -40,7 +40,7 @@ fn manual_test(home: &Home, args: &[&str]) -> Output {
 }
 
 /// [`manual_test`] with the variables `env` set, after the others are removed. `--offline`
-/// is aimed at [`no_server`], a port held bound and never listening, unless `env` names
+/// is aimed at [`no_server`], a loopback port that refuses connections, unless `env` names
 /// another dead origin.
 fn manual_test_with(home: &Home, args: &[&str], env: &[(&str, &str)]) -> Output {
     let tmp = home.path().join("tmp");

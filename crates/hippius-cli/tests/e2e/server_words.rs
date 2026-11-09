@@ -217,7 +217,7 @@ fn each_code_gets_the_hint_its_fix_is_known_by() {
 /// text goes to `details`.
 #[test]
 fn a_refused_connection_names_the_host_and_keeps_the_library_text_in_details() {
-    // `Hipc::new` aims at `no_server()`, a port bound and never listening.
+    // `Hipc::new` aims at `no_server()`, a loopback port that refuses connections.
     let host = no_server().strip_prefix("http://").unwrap();
     let run = Hipc::new(&Home::new())
         .env("HIPPIUS_TOKEN", "tok_abcdefghijklmnop")

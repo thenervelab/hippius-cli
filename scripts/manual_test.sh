@@ -90,8 +90,8 @@ umask 077
 REPO="thenervelab/hippius-cli"
 # Port 9 is the discard port: nothing listens there, so every request is refused at once.
 # hipc accepts plain http only for a loopback host, which this is. The test suite names
-# another closed loopback port in HIPC_MANUAL_TEST_DEAD_ORIGIN, one it holds bound so nothing
-# else can listen there; only a plain-http 127.0.0.1 origin with a port is taken.
+# another closed loopback port in HIPC_MANUAL_TEST_DEAD_ORIGIN, one it checked refuses
+# connections; only a plain-http 127.0.0.1 origin with a port is taken.
 DEAD_ORIGIN="http://127.0.0.1:9"
 if [[ "${HIPC_MANUAL_TEST_DEAD_ORIGIN:-}" =~ ^http://127\.0\.0\.1:[1-9][0-9]{0,4}$ ]]; then
   DEAD_ORIGIN="$HIPC_MANUAL_TEST_DEAD_ORIGIN"
@@ -3667,8 +3667,8 @@ done < <(compgen -e)
 if [[ $OFFLINE == 1 ]]; then
   # Something listening on the dead origin would receive the fake token and every request;
   # bash's /dev/tcp connects and sends nothing, so the run checks first. Once: a listener
-  # started during the run is not caught, which only a held port (as the tests pass) rules
-  # out.
+  # started during the run is not caught. The tests' port is held (Linux) or freshly
+  # checked (macOS).
   if (exec 3<>"/dev/tcp/127.0.0.1/${DEAD_ORIGIN##*:}") 2>/dev/null; then
     die "something listens on ${DEAD_ORIGIN#http://}, the origin --offline needs closed;" \
       "stop it and run again"

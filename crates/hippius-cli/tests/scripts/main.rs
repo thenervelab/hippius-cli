@@ -5,6 +5,8 @@
 //! nothing reaches the network.
 
 mod brew_formula;
+#[path = "../shared/dead_port.rs"]
+mod dead_port;
 mod docs_reference;
 mod install;
 mod package;
