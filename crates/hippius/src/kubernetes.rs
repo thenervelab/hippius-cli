@@ -384,7 +384,7 @@ fn box_key(secret: &[u8; KEY_BYTES]) -> crypto_box::SecretKey {
 /// How far the API's `Date` may be from the local clock, in seconds, and still date a
 /// signature: five minutes, the allowance Kerberos and AWS Signature Version 4 give a
 /// request's clock.
-const CLOCK_SKEW_SECS: u64 = 300;
+pub(crate) const CLOCK_SKEW_SECS: u64 = 300;
 
 /// The `iat` of an operation signed now. The backend checks `iat` and `exp` against its own
 /// clock, so the server's clock is used when the answer's `Date` holds a time `hipc` reads
@@ -421,7 +421,7 @@ fn issued_at(date: Option<&str>, now: SystemTime) -> Result<u64> {
 /// The hint of a refusal to date a signature: the clock is the one thing the caller can fix,
 /// and a server whose `Date` is far off is a bug to report, so the hint keeps both halves of
 /// the `internal` hint it replaces.
-fn clock_hint() -> String {
+pub(crate) fn clock_hint() -> String {
     format!(
         "check the system clock, then run this again with `--debug` and report what it \
          prints at `{}`",
@@ -435,7 +435,7 @@ fn clock_hint() -> String {
 /// forms that section lets a recipient read are left out on purpose: no server `hipc` talks to
 /// sends them, and without a time the caller uses its own clock. The day is checked against
 /// the month's length (no 31 Feb), and the weekday is not checked against the date.
-fn http_date(date: &str) -> Option<u64> {
+pub(crate) fn http_date(date: &str) -> Option<u64> {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];

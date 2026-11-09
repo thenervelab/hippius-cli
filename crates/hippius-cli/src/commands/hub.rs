@@ -240,7 +240,7 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
     ctx.confirm_write(checked, &action, Some(PayFrom::Credits.how()))?;
     let plans = read_list(ctx, &client, &plans)?;
     let plan_id = resolve_plan(&plans, &args.plan)?;
-    let subscriptions = read_list(ctx, &client, &subscriptions)?;
+    let (subscriptions, now) = read_list_dated(ctx, &client, &subscriptions)?;
     let paid = active_paid(&plans, &subscriptions)?;
     if !paid.is_empty() && !args.replace {
         return Err(Error::replace_required(
@@ -251,7 +251,7 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
             ctx.args(),
         ));
     }
-    let mark = Mark::set(ctx, &client, &settings.profile, &paid)?;
+    let mark = Mark::set(ctx, &client, &settings.profile, &paid, now)?;
     let mut cancelled = Vec::new();
     for id in &paid {
         let request = Request::new(Method::Delete, format!("/registry/subscriptions/{id}/"))
@@ -279,12 +279,6 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
         }
         Err(error) => Err(mark.fail(&cancelled, error, "subscribe")),
     }
-}
-
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 /// The double-subscribe marker one run set. A new subscription shows in the list
@@ -327,9 +321,21 @@ impl Mark {
     /// before the window as active: an id outside `cancels` is then taken for the plan bought
     /// in the window. The POST answer names no subscription id, so hipc cannot tell the two
     /// apart; it takes the list to move forward.
-    fn set(ctx: &Context<'_>, client: &Client, profile: &str, paid: &[u64]) -> Result<Self> {
+    ///
+    /// `now` is the time of the subscriptions read by the API's clock (`hippius::Now`), so a
+    /// local clock that steps forward between two runs does not age a marker out early: a
+    /// marker's age is measured from `now.earliest`, and a new marker is dated
+    /// `now.latest`, so when the API's `Date` and the local clock disagree, the window is
+    /// measured by the clock that keeps it open longer.
+    fn set(
+        ctx: &Context<'_>,
+        client: &Client,
+        profile: &str,
+        paid: &[u64],
+        now: hippius::Now,
+    ) -> Result<Self> {
         let path = context::config_path()?;
-        let at = unix_now();
+        let at = now.earliest;
         let key = client.identity();
         let (previous, marker) = ConfigFile::edit(path.clone(), |config| {
             let previous = config.hub_marker(profile).cloned();
@@ -421,7 +427,11 @@ impl Mark {
                 )
                 .with_hint("wait a few minutes, then run `hipc hub subscription get`"));
             }
-            let marker = HubMarker { at, key, cancels };
+            let marker = HubMarker {
+                at: now.latest,
+                key,
+                cancels,
+            };
             config.set_hub_marker(profile, Some(marker.clone()));
             Ok((previous, marker))
         })?;
@@ -512,7 +522,20 @@ const SUBSCRIPTIONS: &str = "/registry/subscriptions/";
 /// Sends `request`, a GET whose answer is a list, after the command's dry-run check and
 /// confirmation.
 fn read_list(ctx: &Context<'_>, client: &Client, request: &Request) -> Result<Vec<Value>> {
-    hippius::page(ctx.send(client, request)?.json()?)?.into_complete(request.target())
+    Ok(read_list_dated(ctx, client, request)?.0)
+}
+
+/// [`read_list`], with the time of the answer by the API's clock (`hippius::Now`).
+fn read_list_dated(
+    ctx: &Context<'_>,
+    client: &Client,
+    request: &Request,
+) -> Result<(Vec<Value>, hippius::Now)> {
+    let answer = ctx.send(client, request)?;
+    let action = "check the last Hub subscribe";
+    let now = hippius::Now::of(answer.date(), std::time::SystemTime::now(), action)?;
+    let items = hippius::page(answer.json()?)?.into_complete(request.target())?;
+    Ok((items, now))
 }
 
 /// The plan id for a numeric id or a name in any case, from the catalog.

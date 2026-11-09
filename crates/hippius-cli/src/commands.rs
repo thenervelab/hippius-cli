@@ -14,6 +14,7 @@ pub(crate) mod halpha;
 pub(crate) mod hub;
 pub(crate) mod list;
 pub(crate) mod network;
+pub(crate) mod poll;
 pub(crate) mod projects;
 pub(crate) mod referrals;
 pub(crate) mod replace;

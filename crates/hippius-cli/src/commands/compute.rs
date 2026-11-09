@@ -36,6 +36,7 @@ use crate::cli::{
     ExposeProtocol, ExposureCreate, Exposures, FailoverMode, Firewall, FirewallUpdate,
     GuestPoweroff, PowerPolicy, PublicIp, SshKeys, VmCreate, Vms,
 };
+use crate::commands::poll::{Next, Schedule, Wait, poll_until};
 use crate::commands::replace::{self, Entry, Found, Replace, replace_list};
 use crate::commands::{
     Input, Printed, failed_part, keyed_list, list, print_body, print_body_or, print_envelope,
@@ -44,15 +45,23 @@ use crate::commands::{
 use crate::context::{self, Context, Gate, Step, Write};
 use crate::output::Mode;
 
-/// How many polls in a row may fail with a retryable error (a 502, 503, 504, 425 or 429,
-/// a timeout, or a failed connection; a 500 ends the wait at once) before the wait gives up:
-/// about six seconds of outage, enough for a restart behind the API. The wait's own deadline
-/// bounds polls that time out.
-pub(crate) const MAX_POLL_FAILURES: u32 = 3;
-
 /// How often a launch is polled, 2 seconds: a launch takes on the order of a
 /// minute, so a shorter interval only adds requests.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// What the question of a launch with backups says of its failover, after the backups:
+/// `auto` restarts the VM on another server from its latest backup, losing what was written
+/// since. Shared by `hipc compute vms create` and `hipc compute app-engine apps create`.
+pub(crate) fn failover_clause(failover: Option<FailoverMode>) -> &'static str {
+    match failover {
+        Some(FailoverMode::Auto) => {
+            " and failover `auto`, which restarts it on another server from its latest backup \
+             if its server dies, losing what was written after that backup"
+        }
+        Some(FailoverMode::Manual) => " and failover `manual`",
+        None => "",
+    }
+}
 
 pub(crate) fn run(ctx: &Context<'_>, command: &Compute) -> Result<Printed> {
     let get = |path: &str, action: &str| {
@@ -882,14 +891,7 @@ fn launch_action(args: &VmCreate, dedicated: Option<Dedicated>) -> String {
         ));
     }
     if let Some(interval) = args.backup_interval {
-        let failover = match args.failover {
-            Some(FailoverMode::Auto) => {
-                " and failover `auto`, which restarts it on another server from its latest \
-                 backup if its server dies, losing what was written after that backup"
-            }
-            Some(FailoverMode::Manual) => " and failover `manual`",
-            None => "",
-        };
+        let failover = failover_clause(args.failover);
         clauses.push(format!(
             "backups every {}{failover}, stored backups billed per GB-hour at the price that \
              `hipc compute backups options` shows",
@@ -1082,73 +1084,108 @@ fn wait(
             "launched the VM {vm_quoted}; waiting until {until}"
         ));
     }
-    let deadline = Instant::now() + timeout;
     let request = Request::get(vm_path(&vm_id)).about(format!("poll the VM {vm_quoted}"));
-    let mut vm = launched;
-    let mut failures = 0;
-    loop {
-        let pending = match launch_state(&vm, goal) {
-            Launch::Done => return Ok(Printed::Document(vm)),
+    let schedule = Schedule {
+        first: POLL_INTERVAL,
+        interval: POLL_INTERVAL,
+        deadline: Instant::now() + timeout,
+    };
+    let launch = VmLaunch {
+        vm: launched,
+        goal,
+        pending: Pending::Booting,
+        vm_id: &vm_id,
+        vm_quoted: &vm_quoted,
+        hint: &hint,
+        timeout,
+    };
+    poll_until(ctx, client, &request, schedule, launch)
+}
+
+/// The wait of a VM launch: the last VM document seen, and what the wait says of it.
+struct VmLaunch<'a> {
+    vm: Value,
+    goal: Goal,
+    /// What the VM was waiting for when it was last looked at.
+    pending: Pending,
+    vm_id: &'a str,
+    vm_quoted: &'a str,
+    hint: &'a str,
+    timeout: Duration,
+}
+
+impl Wait for VmLaunch<'_> {
+    type Output = Printed;
+
+    fn next(&mut self) -> Next<Printed> {
+        match launch_state(&self.vm, self.goal) {
+            Launch::Done => Next::Stop(Ok(Printed::Document(std::mem::take(&mut self.vm)))),
             Launch::Ended(status) => {
                 let message = format!(
-                    "the VM {vm_quoted} reached {} instead of `running`",
+                    "the VM {} reached {} instead of `running`",
+                    self.vm_quoted,
                     phrase::quote(status)
                 );
-                return Err(Error::new(Code::PartialFailure, message)
-                    .with_hint(hint)
-                    .after_write(vm));
+                Next::Stop(Err(Error::new(Code::PartialFailure, message)
+                    .with_hint(self.hint)
+                    .after_write(std::mem::take(&mut self.vm))))
             }
-            Launch::Waiting(pending) => pending,
-        };
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            let after = phrase::count(timeout.as_secs(), "second");
-            let message = match pending {
-                Pending::Booting => format!("the VM {vm_quoted} was not running after {after}"),
-                Pending::Stalled => format!(
-                    "the VM {vm_quoted} was not running after {after}: its boot stalled \
-                     (`boot_stalled`) and has not recovered"
-                ),
-                Pending::Unreachable => format!(
-                    "the VM {vm_quoted} was running, but its public IPv4 was not reachable \
-                     (`network_ready`) after {after}"
-                ),
-            };
-            return Err(Error::new(Code::Timeout, message)
-                .with_hint(hint)
-                .after_write(vm));
+            Launch::Waiting(pending) => {
+                self.pending = pending;
+                Next::Poll
+            }
         }
-        std::thread::sleep(POLL_INTERVAL.min(left));
-        vm = match ctx
-            .send(client, &request)
-            .and_then(|response| response.document())
-        {
-            // A document for another VM, or for none, is not this launch: printing it would
-            // report another VM's status as this one's.
-            Ok(polled) => match polled.get("vm_id").and_then(Value::as_str) {
-                Some(id) if id == vm_id => {
-                    failures = 0;
-                    polled
-                }
-                other => {
-                    let named = match other {
-                        Some(other) => format!("the VM {}", phrase::quote(other)),
-                        None => "no VM".to_owned(),
-                    };
-                    let message = format!(
-                        "the poll of the VM {vm_quoted} answered with the document of {named}"
-                    );
-                    return Err(Error::internal(message).with_hint(hint).after_write(vm));
-                }
-            },
-            // A poll is a read, so polling on after a passing outage cannot launch twice.
-            // The last good document is kept, and only a run of failures ends the wait.
-            Err(error) if error.is_retryable() && failures < MAX_POLL_FAILURES => {
-                failures += 1;
-                continue;
+    }
+
+    fn take(&mut self, polled: Value) -> Result<()> {
+        // A document for another VM, or for none, is not this launch: printing it would
+        // report another VM's status as this one's.
+        match polled.get("vm_id").and_then(Value::as_str) {
+            Some(id) if id == self.vm_id => {
+                self.vm = polled;
+                Ok(())
             }
-            Err(error) => return Err(error.with_hint(hint).after_write(vm)),
+            other => {
+                let named = match other {
+                    Some(other) => format!("the VM {}", phrase::quote(other)),
+                    None => "no VM".to_owned(),
+                };
+                let message = format!(
+                    "the poll of the VM {} answered with the document of {named}",
+                    self.vm_quoted
+                );
+                Err(Error::internal(message)
+                    .with_hint(self.hint)
+                    .after_write(std::mem::take(&mut self.vm)))
+            }
+        }
+    }
+
+    fn timed_out(self) -> Result<Printed> {
+        let (vm, after) = (
+            self.vm_quoted,
+            phrase::count(self.timeout.as_secs(), "second"),
+        );
+        let message = match self.pending {
+            Pending::Booting => format!("the VM {vm} was not running after {after}"),
+            Pending::Stalled => format!(
+                "the VM {vm} was not running after {after}: its boot stalled (`boot_stalled`) \
+                 and has not recovered"
+            ),
+            Pending::Unreachable => format!(
+                "the VM {vm} was running, but its public IPv4 was not reachable \
+                 (`network_ready`) after {after}"
+            ),
         };
+        Err(Error::new(Code::Timeout, message)
+            .with_hint(self.hint)
+            .after_write(self.vm))
+    }
+
+    // A poll is a read, so polling on after a passing outage cannot launch twice: the last
+    // good document is kept, and only a run of failures ends the wait.
+    fn failed(self, error: Error) -> Error {
+        error.with_hint(self.hint).after_write(self.vm)
     }
 }
 

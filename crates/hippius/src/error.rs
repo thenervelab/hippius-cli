@@ -636,8 +636,9 @@ impl Error {
         self
     }
 
-    /// The server's `Retry-After`, in milliseconds, of a retryable error.
-    pub(crate) fn retry_after_ms(&self) -> Option<u64> {
+    /// The server's `Retry-After`, in milliseconds, of a retryable error: the `retry_after_ms`
+    /// of the JSON, for a loop that reads again after a passing failure.
+    pub fn retry_after_ms(&self) -> Option<u64> {
         match self.0.retry {
             Retry::Yes { after_ms } => after_ms,
             Retry::No => None,
