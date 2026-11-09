@@ -1088,11 +1088,11 @@ impl PrivateFile {
         let mut opened = Vec::new();
         for &file in files {
             let fd = file.open_lock()?;
-            // A lock file that cannot be inspected is locked on its own.
-            let id: Option<(u64, u64)> = rustix::fs::fstat(&fd)
-                .ok()
-                .map(|stat| (stat.st_dev, stat.st_ino));
-            if id.is_none() || opened.iter().all(|(other, _, _)| *other != id) {
+            // Without its identity a lock file could be locked twice, or out of order, so a
+            // lock file that cannot be inspected is refused.
+            let stat = rustix::fs::fstat(&fd).map_err(file.lock_error())?;
+            let id = (stat.st_dev, stat.st_ino);
+            if opened.iter().all(|(other, _, _)| *other != id) {
                 opened.push((id, fd, file));
             }
         }
@@ -1124,7 +1124,7 @@ impl PrivateFile {
             Err(Errno::EXIST) => rustix::fs::openat(&self.dir, &name, flags, Mode::empty()),
             Err(e) => Err(e),
         };
-        self.locking(opened)
+        opened.map_err(self.lock_error())
     }
 
     /// Takes the exclusive `flock` of `fd`, the file's lock file. When another process holds
@@ -1143,13 +1143,12 @@ impl PrivateFile {
             }
             locked => locked,
         };
-        self.locking(locked.map(|()| fd))
+        locked.map(|()| fd).map_err(self.lock_error())
     }
 
-    /// `result` of an open or a lock of the lock file, with the error of a lock file that
-    /// cannot be opened or locked.
-    fn locking(&self, result: rustix::io::Result<OwnedFd>) -> Result<OwnedFd> {
-        result.map_err(|error| {
+    /// The error of a lock file that cannot be opened, inspected, or locked.
+    fn lock_error(&self) -> impl Fn(Errno) -> Error + '_ {
+        |error| {
             let dir = directory(&self.path);
             file_error(
                 "lock",
@@ -1157,7 +1156,7 @@ impl PrivateFile {
                 &error.into(),
                 Denied::Chmod("700", dir),
             )
-        })
+        }
     }
 
     /// Creates the file empty with mode `0600` when it is missing, never through a symlink,
