@@ -1,110 +1,481 @@
 name: Release
 
+# Runs only for a plain version tag such as v0.1.0. Not v1, not v1.2.3-rc.1.
 on:
   push:
     tags:
-      - 'v*'
+      - "v[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+  # Who may sign SHA256SUMS: this workflow file at this release's tag, certified from the
+  # GitHub OIDC token. The identity a user checks is this followed by `@refs/tags/vX.Y.Z`,
+  # the exact tag, so the signed SHA256SUMS of an older release served under a newer tag
+  # does not verify. `sign` verifies with it and the release notes print it, so the command
+  # a user runs is the one this workflow already ran. docs/getting-started.md repeats the
+  # command, and scripts/install.sh checks the same identity, pinned to the tag it installs.
+  # Written out rather than built from github.repository, so a copy of this workflow in
+  # another repository fails its own check.
+  RELEASE_WORKFLOW: https://github.com/thenervelab/hippius-cli/.github/workflows/release.yml
+  CERT_OIDC_ISSUER: https://token.actions.githubusercontent.com
 
 jobs:
-  release:
-    name: Create Release
+  on-main:
+    # A tag can name a commit that never reached main, from a branch nobody reviewed. Every
+    # other job waits for this one, so such a commit is not tested, built, signed or
+    # published; `publish` checks again before it creates the release. This catches a
+    # mistake: the workflow runs from the tagged commit, so a tag on a commit that edits this
+    # file skips it, and only a tag ruleset on the repository stops that.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          name: Release ${{ github.ref_name }}
-          draft: false
-          prerelease: false
-          body: |
-            ## Hippius CLI ${{ github.ref_name }}
-            
-            ### Installation
-            
-            #### macOS
-            ```bash
-            brew install thenervelab/tap/hipc
-            ```
-            
-            #### Ubuntu/Debian
-            ```bash
-            sudo dpkg -i hipc_${{ github.ref_name }}_amd64.deb
-            ```
-            
-            #### From Source
-            ```bash
-            cargo install --git https://github.com/thenervelab/hippius-cli.git --tag ${{ github.ref }}
-            ```
+          persist-credentials: false
+          sparse-checkout: scripts/release-on-main.sh
+          sparse-checkout-cone-mode: false
+      - name: Check that the tagged commit is on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILT: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: scripts/release-on-main.sh "${REPO}" "${BUILT}"
+
+  ci:
+    # The full CI suite (fmt, clippy, tests on Linux and macOS, coverage, deny, lint) runs
+    # again here, on the tagged commit, so nothing is built from a commit that fails it.
+    needs: on-main
+    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
 
   build:
-    name: Build ${{ matrix.target }}
-    needs: release
-    runs-on: ${{ matrix.os }}
+    needs: ci
+    # macOS: Apple silicon builds both; x86_64 is cross-compiled and never executed. Linux:
+    # each musl target is built natively, so the C in ring compiles without a cross
+    # toolchain, and each static binary runs on the runner that built it.
     strategy:
-      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: hipc
-            asset_name: hipc-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: hipc
-            asset_name: hipc-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact_name: hipc
-            asset_name: hipc-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz
-
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          targets: ${{ matrix.target }}
-
-      - name: Build Binary
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Package Binary
+          persist-credentials: false
+      - name: Install musl-gcc
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends musl-tools
+      - run: rustup toolchain install
+      - name: Add the target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: rustup target add "${TARGET}"
+      - name: Check that the tag matches the workspace version
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.asset_name }} ${{ matrix.artifact_name }}
-          cd -
-
-      - name: Upload Binary
-        uses: softprops/action-gh-release@v1
+          version=$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "hippius-cli") | .version')
+          if [ "v${version}" != "${TAG}" ]; then
+            echo "tag ${TAG} does not match hippius-cli version ${version}" >&2
+            exit 1
+          fi
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+          # ring's C goes through musl-gcc for the musl targets. cc-rs reads the variable for
+          # the target it builds, so the macOS targets ignore these.
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --locked --target "${TARGET}"
+      - name: Static, and runs
+        if: runner.os == 'Linux'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          bin="target/${TARGET}/release/hipc"
+          file "${bin}" | grep -Eq 'statically linked|static-pie linked'
+          "${bin}" version
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+        # The binary and both license files at the top of the archive, with no directory
+        # around them: scripts/install.sh extracts the member `hipc`, and the Homebrew
+        # formula installs `hipc` from the unpacked root.
+        run: |
+          stage="${RUNNER_TEMP}/stage"
+          mkdir "${stage}"
+          cp "target/${TARGET}/release/hipc" LICENSE-MIT LICENSE-APACHE "${stage}/"
+          mkdir -p dist
+          tar -czf "dist/hipc-${TARGET}.tar.gz" -C "${stage}" hipc LICENSE-MIT LICENSE-APACHE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          files: ${{ matrix.asset_name }}
+          name: hipc-${{ matrix.target }}
+          path: dist/hipc-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
 
-  package:
-    name: Create Debian Package
-    needs: release
+  sign:
+    # SHA256SUMS is signed keyless with cosign: Fulcio certifies this workflow's
+    # GitHub OIDC identity and the public Rekor log records the signature, so there is no key
+    # to hold. A job of its own, so the OIDC token and the third-party installer never share
+    # a job with the `contents: write` token that `publish` needs.
+    needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # the OIDC token Fulcio certifies
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          targets: x86_64-unknown-linux-gnu
-
-      - name: Install cargo-deb
-        uses: taiki-e/cache-cargo-install-action@v1
+          persist-credentials: false
+          sparse-checkout: scripts/install.sh
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          tool: cargo-deb
-
-      - name: Build Debian Package
-        run: cargo deb
-
-      - name: Upload Debian Package
-        uses: softprops/action-gh-release@v1
+          pattern: hipc-*
+          path: dist
+          merge-multiple: true
+      # install.sh is a release asset of its own, the one the README pipes to sh. Listing it
+      # here puts it under the signature, so a user can check the installer before running
+      # it. The installer looks up only its tarball's line, so the extra line changes nothing
+      # for it or for scripts/brew-formula.sh.
+      - name: Checksums
+        run: |
+          cp scripts/install.sh dist/install.sh
+          cd dist
+          sha256sum hipc-*.tar.gz install.sh > SHA256SUMS
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
         with:
-          files: target/debian/hipc_${{ github.ref_name }}_amd64.deb
+          # The installer's bootstrap version, which it checks against a SHA-256 written in
+          # the action itself; any other version is checked by a second signature download.
+          cosign-release: v3.0.6
+      - name: Sign
+        working-directory: dist
+        # cosign 3 writes a Sigstore bundle (certificate, signature, and Rekor entry in one
+        # file) by default; --yes accepts the upload to the public Rekor log.
+        run: cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
+      - name: Verify the signature as a user would
+        working-directory: dist
+        # The command the release notes give, so a bundle the documented check rejects fails
+        # the release before anything is published.
+        # GITHUB_REF is refs/tags/vX.Y.Z: the workflow runs only for such a tag.
+        run: |
+          cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
+            --certificate-identity "${RELEASE_WORKFLOW}@${GITHUB_REF}" \
+            --certificate-oidc-issuer "${CERT_OIDC_ISSUER}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: signed-checksums
+          path: |
+            dist/SHA256SUMS
+            dist/SHA256SUMS.sigstore.json
+            dist/install.sh
+          if-no-files-found: error
+
+  publish:
+    needs: sign
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # gh release create
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # By name, not every artifact of the run: the wheel jobs run beside this one.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: hipc-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: signed-checksums
+          path: dist
+      - name: Release notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          awk -v heading="## [${version}]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > notes.md || {
+            echo "CHANGELOG.md has no heading ## [${version}]" >&2
+            exit 1
+          }
+          {
+            echo
+            echo "After a browser download, Gatekeeper quarantines the unsigned binary." \
+              "Run \`xattr -d com.apple.quarantine ./hipc\`."
+            echo
+            echo "The Linux binaries are static (musl) and run on any distribution. Each" \
+              "tarball holds \`hipc\`, \`LICENSE-MIT\` and \`LICENSE-APACHE\`."
+            echo
+            # The quoted heredocs keep the Markdown backticks and `$file` literal. The
+            # identity comes from the workflow env and this tag, the values `sign` verified
+            # with.
+            cat <<'EOF'
+          ### Verify
+
+          `SHA256SUMS` lists every tarball and `install.sh`. It is signed by this repository's release workflow through Sigstore, and `SHA256SUMS.sigstore.json` holds the signature. Download both with the tarball, check the signature with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 3.0 or later, then check the file you downloaded against its line in `SHA256SUMS`:
+
+          ```sh
+          EOF
+            printf '%s\n' \
+              "cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \\" \
+              "  --certificate-identity ${RELEASE_WORKFLOW}@refs/tags/${TAG} \\" \
+              "  --certificate-oidc-issuer ${CERT_OIDC_ISSUER}"
+            cat <<'EOF'
+          file=hipc-aarch64-apple-darwin.tar.gz  # the tarball you downloaded, or install.sh
+          awk -v f="$file" '$2 == f' SHA256SUMS | shasum -a 256 -c -
+          ```
+
+          `cosign` prints `Verified OK` and `shasum` prints the file name followed by `: OK`. On Linux without `shasum`, `sha256sum -c -` takes its place.
+          EOF
+          } >> notes.md
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          BUILT: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        # The tarballs were built from BUILT. A tag moved while they built would put them
+        # under another commit, so the tag must still point at BUILT. This narrows the
+        # window to the seconds before `gh release create`, which ignores --target for an
+        # existing tag; tag protection closes it.
+        run: |
+          # Checkout keeps no credentials, so the tag is read through the API. An annotated
+          # tag points at a tag object, which points at the commit.
+          ref=$(gh api "repos/${REPO}/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha')
+          now="${ref#* }"
+          if [ "${ref%% *}" = "tag" ]; then
+            now=$(gh api "repos/${REPO}/git/tags/${now}" --jq '.object.sha')
+          fi
+          if [ "${now}" != "${BUILT}" ]; then
+            echo "tag ${TAG} moved to ${now} while ${BUILT} was built" >&2
+            exit 1
+          fi
+          scripts/release-on-main.sh "${REPO}" "${BUILT}"
+          gh release create "${TAG}" --target "${BUILT}" --notes-file notes.md \
+            dist/*.tar.gz dist/install.sh dist/SHA256SUMS dist/SHA256SUMS.sigstore.json
+
+  homebrew:
+    # Writes Formula/hipc.rb for this release to thenervelab/homebrew-tap, which
+    # `brew install thenervelab/tap/hipc` reads. The push needs HOMEBREW_TAP_TOKEN, a
+    # fine-grained token with contents write on that repository only. In
+    # thenervelab/hippius-cli a missing secret fails the job: the release is already
+    # published, and the tap would keep serving the formula of an older or another `hipc`,
+    # so the failure says the tap must be updated by hand. In any other repository (a fork
+    # or a private copy) the job does nothing and passes.
+    #
+    # The token is a secret of the `homebrew` environment, never a repository or
+    # organization secret: anyone who can push a branch here can edit this file to run on
+    # that branch, and GitHub checks an environment's deployment policy (`v*` tags only)
+    # before it hands the job the environment's secrets, whatever the workflow says.
+    needs: publish
+    runs-on: ubuntu-latest
+    environment: homebrew
+    permissions:
+      contents: read
+    env:
+      # Whether the secret is set, not the secret: an `if:` cannot read `secrets`, and only
+      # the tap checkout below gets the token itself.
+      HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    steps:
+      - name: Without a tap token, fail in the public repository and skip elsewhere
+        if: env.HAS_TAP_TOKEN != 'true'
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "${REPO}" = thenervelab/hippius-cli ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is not set in the homebrew environment, so" \
+              "Formula/hipc.rb was not updated; set it and re-run this job"
+            exit 1
+          fi
+          echo "::notice::HOMEBREW_TAP_TOKEN is not set, so Formula/hipc.rb was not updated"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: env.HAS_TAP_TOKEN == 'true'
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        if: env.HAS_TAP_TOKEN == 'true'
+        with:
+          name: signed-checksums
+          path: dist
+      - name: Write the formula
+        if: env.HAS_TAP_TOKEN == 'true'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: scripts/brew-formula.sh "${TAG#v}" dist/SHA256SUMS > "${RUNNER_TEMP}/hipc.rb"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: env.HAS_TAP_TOKEN == 'true'
+        with:
+          repository: thenervelab/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+          # The push below authenticates with the credential checkout stores. Nothing after
+          # this step runs code from outside this repository or uploads the workspace.
+          persist-credentials: true
+      - name: Commit and push the formula
+        if: env.HAS_TAP_TOKEN == 'true'
+        env:
+          TAG: ${{ github.ref_name }}
+        working-directory: tap
+        run: |
+          mkdir -p Formula
+          cp "${RUNNER_TEMP}/hipc.rb" Formula/hipc.rb
+          git add Formula/hipc.rb
+          # The tap is shared, so only this tool's own formulas are touched: hipc.rb, and
+          # the two names its releases used before the rename, hip.rb and hippius.rb,
+          # which are removed so no stale formula stays beside it. A missing one is a no-op.
+          git rm --quiet --ignore-unmatch Formula/hip.rb Formula/hippius.rb
+          if git diff --cached --quiet; then
+            echo "Formula/hipc.rb is already at ${TAG}"
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit --quiet -m "hipc ${TAG#v}"
+          git push --quiet origin HEAD
+
+  pypi-version:
+    # The wheel is published as `hippius-cli` (the PyPI name `hippius` is the Python SDK, a
+    # separate project). Publishing starts when the variable PYPI_PUBLISH of the repository
+    # that runs the release is `true`, set once PyPI trusts this workflow for `hippius-cli`;
+    # unset or `false`, this job says so and passes, and the wheel and upload jobs are
+    # skipped, so a release without the trusted publisher does not end in a failed upload.
+    # Any other value fails the job, so a misspelt `True` is not a silent skip.
+    needs: ci
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the wheels only when PYPI_PUBLISH is true
+        id: check
+        env:
+          TAG: ${{ github.ref_name }}
+          PUBLISH: ${{ vars.PYPI_PUBLISH }}
+        # The tag holds only digits and dots after the v (the trigger's pattern).
+        run: |
+          version="${TAG#v}"
+          case "${PUBLISH}" in
+            true) ;;
+            '' | false)
+              echo "::notice::PYPI_PUBLISH is not true, so no wheel is built for PyPI"
+              echo build=false >> "${GITHUB_OUTPUT}"
+              exit 0
+              ;;
+            *)
+              echo "PYPI_PUBLISH is neither true nor false" >&2
+              exit 1
+              ;;
+          esac
+          workspace=$(scripts/pypi-version-check.sh)
+          if [ "${workspace}" != "${version}" ]; then
+            echo "tag ${TAG} does not match the workspace version ${workspace}" >&2
+            exit 1
+          fi
+          echo build=true >> "${GITHUB_OUTPUT}"
+
+  pypi-wheels:
+    # One binary-only wheel per release target, built by maturin from packaging/pypi on the
+    # runners `build` uses. maturin compiles hipc again for the wheel, from the same commit,
+    # toolchain and musl-gcc as `build`, so a wheel's binary is built the same way as the
+    # tarball's but is not that file. No Docker image: the Linux wheels hold a static musl
+    # binary, so they carry both a manylinux and a musllinux tag and install on glibc and
+    # musl systems alike.
+    needs: pypi-version
+    if: needs.pypi-version.outputs.build == 'true'
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            compatibility: ''
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            compatibility: ''
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            compatibility: --compatibility manylinux_2_17 musllinux_1_2
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            compatibility: --compatibility manylinux_2_17 musllinux_1_2
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install musl-gcc
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends musl-tools
+      # maturin-action installs patchelf with pip on Linux, which the runner image's system
+      # Python refuses (PEP 668).
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        if: runner.os == 'Linux'
+        with:
+          python-version: '3.13'
+      - run: rustup toolchain install
+      - name: Add the target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: rustup target add "${TARGET}"
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
+        env:
+          # As in `build`: ring's C goes through musl-gcc for the musl targets.
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          # The version packaging/pypi/pyproject.toml requires and was tested with.
+          maturin-version: v1.16.0
+          container: 'off'
+          working-directory: packaging/pypi
+          args: --release --locked --out wheels ${{ matrix.compatibility }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: wheel-${{ matrix.target }}
+          path: packaging/pypi/wheels/*.whl
+          if-no-files-found: error
+
+  pypi-publish:
+    # Trusted publishing: PyPI accepts this workflow's OIDC token in the `pypi` environment
+    # for the project `hippius-cli`, so no PyPI token is stored. A job of its own, so id-token
+    # is granted only next to the upload, and only after the GitHub release exists. PyPI
+    # trusts the repository, workflow file and environment, not the ref, so the environment's
+    # deployment policy (`v*` tags only) is what stops a branch that edits this file from
+    # getting a token PyPI accepts.
+    needs: [pypi-wheels, publish]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/hippius-cli/
+    permissions:
+      id-token: write  # the OIDC token PyPI trusts
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      # At least v1.14.3: GHSA-5xjx-3w67-w9x9 (critical) covers every release up to v1.14.2,
+      # whose trust store holds a revoked CA in Sigstore's chain.
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3

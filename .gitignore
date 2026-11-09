@@ -1,4 +1,17 @@
-# Rust-specific ignores
-/target/
-./env
+/target
+# Release archives and wheels, as the release workflow builds them.
+dist/
+packaging/pypi/wheels/
+# The transcript scripts/manual_test.sh writes by default, which holds live answers.
+manual_test.log
+# Local secrets (a console token for live tests) and editor swap files of them.
 .env
+.env.*
+*.swp
+# Local agent state, OS metadata, merge leftovers, and editor settings.
+.claude/
+.grok/
+.DS_Store
+*.orig
+.idea/
+.vscode/

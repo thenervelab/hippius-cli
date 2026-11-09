@@ -1,38 +1,184 @@
-[package]
-name = "hipc"
-version = "0.1.0"
-edition = "2021"
-authors = ["thenervelab"]
-homepage = "https://hippius.com"
-description = "CLI tool for managing Docker registries and compute resources on Hippius network"
-license = "MIT"
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.15.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/thenervelab/hippius-cli"
 
-[package.metadata.deb]
-maintainer = "thenervelab <maintainer@hippius.com>"
-copyright = "2025, thenervelab <maintainer@hippius.com>"
-license-file = ["LICENSE"]
-extended-description = "Hipc (Hippius CLI) is a command-line tool for managing Docker registries, compute resources, storage, and node operations on the Hippius network."
-section = "utils"
-priority = "optional"
-assets = [
-    ["target/release/hipc", "usr/bin/", "755"],
-    ["readme.md", "usr/share/doc/hipc/readme.md", "644"],
-]
+# New dependencies need a reason in the pull request that adds them. Prefer std.
+[workspace.dependencies]
+hippius = { path = "crates/hippius" }
+# derive: the CLI grammar is declared with #[derive(Parser)]. std, help, usage, error-context:
+# clap's standard help and error text.
+clap = { version = "4.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+clap_complete = { version = "4.6", default-features = false }
+# std: serde_json and toml need it. derive: the config document types in config.rs.
+serde = { version = "1.0.228", default-features = false, features = ["std", "derive"] }
+# arbitrary_precision: server numbers (Hub paid_per_month, about 1e20) exceed u64 and f64 and
+# must print unchanged. preserve_order: documents keep the server's field order.
+serde_json = { version = "1.0.151", default-features = false, features = ["std", "arbitrary_precision", "preserve_order"] }
+# std: implements std::error::Error for the library error.
+thiserror = { version = "2.0", default-features = false, features = ["std"] }
+# fs, process: open the config file without following a symlink, fstat the open descriptor,
+# and compare its owner with geteuid. std has no safe geteuid, and checking a path before
+# reading it leaves a race that the open descriptor closes.
+rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }
+# parse, serde, display: read and write config.toml through serde.
+toml = { version = "1.1", default-features = false, features = ["parse", "serde", "display", "std"] }
+# Only to recognize a rustls error inside the io::Error that ureq returns for a failed TLS
+# handshake (an invalid certificate surfaces as io::ErrorKind::InvalidData). The same
+# version ureq uses, so no second copy is built.
+rustls = { version = "0.23", default-features = false }
+# rustls: HTTPS to api.hippius.com with bundled roots and no system OpenSSL. No gzip: the
+# console's JSON answers are small.
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+# The Kubernetes cluster key (crates/hippius/src/kubernetes.rs): Ed25519 signatures over node
+# operations and the drop signatures, and libsodium sealed boxes for the kubeconfig. Both are
+# pure Rust and share curve25519-dalek 4, so the curve is built once. ed25519-dalek 3 moved to
+# curve25519-dalek 5, which no stable crypto_box uses yet, so 2.x keeps one copy.
+# zeroize: the signing key clears its seed when dropped. No std: hipc never uses the signature
+# error as a std::error::Error, only whether verification passed.
+ed25519-dalek = { version = "2.2", default-features = false, features = ["zeroize"] }
+# salsa20 and seal: `crypto_box_seal_open`, XSalsa20-Poly1305 with a BLAKE2b nonce, as
+# libsodium and PyNaCl `SealedBox` make it. rand_core: 0.9.1's seal module does not compile
+# without it, since it names the RNG trait that sealing takes; hipc only opens. Its SecretKey
+# does not clear its 32 bytes when dropped (only the scalar), so hipc keeps the bytes itself
+# (`box_key` in crates/hippius/src/kubernetes.rs).
+crypto_box = { version = "0.9.1", default-features = false, features = ["salsa20", "seal", "rand_core"] }
+# The drop message holds the hex SHA-256 of the sealed kubeconfig; ed25519-dalek already
+# builds this crate.
+sha2 = { version = "0.10.9", default-features = false }
+# The request id of a signed node operation is a random v4 UUID. Already in the tree, under
+# rustls.
+getrandom = { version = "0.2.17", default-features = false, features = ["std"] }
+# The key file's keys, the drops, and the signatures are standard base64. RustCrypto's decoder
+# runs in constant time over the secret keys, refuses a non-canonical encoding, and decodes into
+# a fixed buffer, so a secret key is never in a growable allocation. alloc: encode to a String.
+base64ct = { version = "1.8", default-features = false, features = ["alloc"] }
+# Clears the key file's bytes and the decoded secret keys after use. Already in the tree.
+zeroize = { version = "1.9", default-features = false, features = ["std"] }
+# The access key (crates/hippius/src/wallet.rs): a BIP-39 phrase whose two keys log in to an
+# account that has no other credential. Each crate below was published more than two weeks
+# before it was taken, and the module's tests check each against published vectors.
+# std: the English word list and the NFKD check. zeroize: a parsed phrase clears its words
+# when dropped. Pinned exactly, as a new major whose phrases must keep deriving the same keys.
+bip39 = { version = "=3.0.0", default-features = false, features = ["std", "zeroize"] }
+# NFKD-normalizes a phrase that is not ASCII into a buffer hipc clears, before bip39 parses it.
+# Already in the tree, through bip39.
+unicode-normalization = { version = "0.1.24", default-features = false }
+# The sr25519 key of the Substrate address, the scheme Substrate signs with. It shares
+# curve25519-dalek 4 with ed25519-dalek, so the curve is built once. getrandom: a signature
+# takes fresh randomness from the system.
+schnorrkel = { version = "0.11.5", default-features = false, features = ["std", "getrandom"] }
+# PBKDF2-HMAC-SHA512 of the phrase's entropy, the Substrate mini secret as Substrate's
+# `from_phrase` makes it, into a buffer hipc clears (substrate-bip39 returns it in a plain
+# array). hmac: the HMAC form. 0.12 shares digest 0.10 with sha2.
+pbkdf2 = { version = "0.12.2", default-features = false, features = ["hmac"] }
+# The secp256k1 key of the Ethereum address and its EIP-191 signature: Bitcoin Core's
+# libsecp256k1, constant-time and the most reviewed implementation of the curve. cc builds its
+# C, as it builds ring's. The pure-Rust k256 was not taken: every k256 release needs either a
+# crypto-bigint that RUSTSEC-2026-0387 covers or one published less than two weeks ago.
+# recovery: the signature carries the `v` from which Ethereum recovers the address.
+secp256k1 = { version = "0.31.1", default-features = false, features = ["std", "recovery"] }
+# Keccak-256, the hash of an Ethereum address and of an EIP-191 message.
+sha3 = { version = "0.10.8", default-features = false }
+# HMAC-SHA512, each BIP-32 step from the seed to the Ethereum key.
+hmac = { version = "0.12.1", default-features = false }
+# BLAKE2b-512, the checksum of an SS58 address. Already in the tree, through crypto_box.
+blake2 = { version = "0.10.6", default-features = false }
 
-[dependencies]
-clap = { version = "4.1", features = ["derive"] }
-tokio = { version = "1", features = ["full"] }
-dotenv = "0.15.0"
-subxt = { version = "0.38", features = ["substrate-compat"] }
-sp-core = "34.0.0"
-reqwest = { version = "0.11", features = ["json", "multipart", "stream"] }
-serde_json = "1.0"
-hex = "0.4.3"
-codec = { package = "parity-scale-codec", version = "3.6.1", features = ["derive"] }
-csv = "1.3.0"
-bip39 = "2.0"
-rand = "0.8"
-home = "0.5"
-tokio-util = { version = "0.7", features = ["codec"] }
-futures-util = "0.3.31"
+[workspace.lints.rust]
+# The crates have no unsafe code and must not grow any.
+unsafe_code = "forbid"
+# The 2018 idioms, every public item documented and Debug, internal items not marked pub,
+# and an explicit unsafe block inside an unsafe fn.
+rust_2018_idioms = { level = "warn", priority = -1 }
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+# An ignored Result or guard is always a bug.
+unused_must_use = "deny"
+# Allow-by-default lints that catch dead or redundant code.
+trivial_numeric_casts = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+unused_extern_crates = "warn"
+unused_import_braces = "warn"
+# The edition 2024 default, stated so it holds whatever the edition.
+static_mut_refs = "deny"
+# Declare every custom cfg, so a typo in a cfg name warns.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(fuzzing)', 'cfg(coverage_nightly)'] }
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "warn"
+
+[workspace.lints.clippy]
+# Pedantic catches real defects; the relaxations below turn off the noisy ones.
+pedantic = { level = "warn", priority = -1 }
+
+# Panics. `expect("<invariant>")` where an invariant guarantees success; tests may unwrap
+# (clippy.toml).
+unwrap_used = "warn"
+
+# Lint suppressions: `#[expect(lint, reason = "...")]`, so a stale suppression fails.
+allow_attributes_without_reason = "deny"
+allow_attributes = "warn"
+
+# Hygiene
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+# Libraries never print. A CLI prints from `main` or its one output function, with
+# `println!`/`eprintln!` under a reasoned #[expect] on that function.
+print_stdout = "deny"
+print_stderr = "deny"
+
+# Structure and style
+use_self = "warn"
+mod_module_files = "warn"
+uninlined_format_args = "warn"
+# Arc::clone(&x) makes reference-count clones visible.
+clone_on_ref_ptr = "warn"
+# A struct is all-public passive data or all-private.
+partial_pub_fields = "warn"
+# Ignoring a #[must_use] value needs `drop(..)` or a binding that says why.
+let_underscore_must_use = "warn"
+
+# Unsafe. Every block has a `// SAFETY:` comment; every unsafe fn a `# Safety`
+# section; one unsafe operation per block so each gets its own argument.
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+multiple_unsafe_ops_per_block = "warn"
+
+# Concurrency and async
+await_holding_lock = "deny"
+large_futures = "deny"
+mem_forget = "deny"
+
+# Pedantic relaxations: noisy without catching bugs.
+module_name_repetitions = "allow"
+similar_names = "allow"
+must_use_candidate = "allow"
+# Pushing a format! onto a String is clear; the lint's rewrite (write! plus an ignored
+# fmt::Result, or iterator gymnastics) is not.
+format_push_string = "allow"
+# Fires on every invariant `expect`, which cannot panic while the invariant holds, so it
+# buys `# Panics: never` boilerplate. A panic on misuse gets a `# Panics` section, checked
+# in review.
+missing_panics_doc = "allow"
+
+# Measured on 2026-10-27: a clean `cargo build --release --locked`, then
+# `hipc version` 300 times in a shell loop, the total divided by 300:
+# Linux (rust:1.99.1-slim): 5.00 MB -> 2.95 MB, 1.68 ms -> 0.96 ms, build 49 s -> 50 s.
+# macOS (aarch64): 4.43 MB -> 2.85 MB, startup within noise (about 4 ms), build 35 s -> 48 s.
+# `strip` alone gives 3.58 MB on macOS; LTO and one codegen unit give the rest.
+# Accepted: a release panic backtrace has no symbol names; reproduce it with a debug build.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,15 @@
+# Clippy configuration, read by `cargo clippy` locally and in CI.
+
+# Tests unwrap instead of using `?` so a failure reports its exact location.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-print-in-tests = true
+
+# Function size limits: at most 5 parameters, 100 lines per function. too_many_lines is
+# a pedantic lint (on in the workspace lint table); too_many_arguments is on by default.
+too-many-arguments-threshold = 5
+too-many-lines-threshold = 100
+
+# Product and protocol names that doc_markdown should not ask to backtick. ".." keeps
+# clippy's defaults (GitHub, WebAssembly, ...).
+doc-valid-idents = ["..", "Hippius", "hipc", "hippius"]

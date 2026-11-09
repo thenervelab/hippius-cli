@@ -1,0 +1,7 @@
+# Applications pin the latest stable so CI and laptops lint with the same clippy. Bump it
+# in its own pull request.
+[toolchain]
+channel = "1.99.1"
+# Only the components below: CI never needs the docs or the other default components.
+profile = "minimal"
+components = ["clippy", "rustfmt", "llvm-tools-preview"]
