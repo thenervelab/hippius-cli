@@ -3,12 +3,12 @@
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::{TcpListener, TcpStream};
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// A directory under the system temp directory, removed on drop.
+/// A private directory under the system temp directory, removed on drop.
 pub(crate) struct TempDir {
     path: PathBuf,
 }
@@ -16,13 +16,24 @@ pub(crate) struct TempDir {
 impl TempDir {
     pub(crate) fn new() -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
+        // Created new with mode 0700, never reused, under a name with a random part: another
+        // user who made the path first fails the test instead of owning its files.
+        let random = std::hash::BuildHasher::hash_one(
+            &std::collections::hash_map::RandomState::new(),
+            NEXT.load(Ordering::Relaxed),
+        );
         let path = std::env::temp_dir().join(format!(
-            "hipc-scripts-{}-{}",
+            "hipc-scripts-{}-{}-{random:016x}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        drop(std::fs::remove_dir_all(&path));
-        std::fs::create_dir_all(&path).expect("create a temporary directory");
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&path)
+            .expect("create a new private temporary directory");
+        // The umask may have cleared bits of 0700, never added any.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .expect("make the temporary directory private");
         Self { path }
     }
 
@@ -36,6 +47,26 @@ impl Drop for TempDir {
         // Best effort: a directory left under the temp dir does not fail a test.
         drop(std::fs::remove_dir_all(&self.path));
     }
+}
+
+/// A server that refuses every connection: an ephemeral loopback port of a TCP socket that is
+/// bound and never listens, held for the life of the test process, so no other socket can
+/// take the port, as something could listen on a fixed one such as 9.
+pub(crate) fn no_server() -> &'static str {
+    static ORIGIN: std::sync::OnceLock<(std::os::fd::OwnedFd, String)> = std::sync::OnceLock::new();
+    let (_, origin) = ORIGIN.get_or_init(|| {
+        use rustix::net::{AddressFamily, SocketType};
+        let socket = rustix::net::socket(AddressFamily::INET, SocketType::STREAM, None)
+            .expect("open a TCP socket");
+        let loopback = std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0);
+        rustix::net::bind(&socket, &loopback).expect("bind a loopback port");
+        let bound = std::net::SocketAddrV4::try_from(
+            rustix::net::getsockname(&socket).expect("read the bound port"),
+        )
+        .expect("an IPv4 address");
+        (socket, format!("http://{bound}"))
+    });
+    origin
 }
 
 /// What the server answers for one path.
@@ -107,13 +138,31 @@ const TOOL_DIRS: [&str; 6] = [
     "/opt/homebrew/bin",
 ];
 
-/// The path of the system tool `name`.
-pub(crate) fn tool(name: &str) -> PathBuf {
+/// The path of the system tool `name`, if it is installed in a standard directory.
+pub(crate) fn find_tool(name: &str) -> Option<PathBuf> {
     TOOL_DIRS
         .iter()
         .map(|dir| Path::new(dir).join(name))
         .find(|path| path.is_file())
-        .expect("every tool the scripts use is installed in a standard directory")
+}
+
+/// The path of the system tool `name`, which every system the tests run on has.
+pub(crate) fn tool(name: &str) -> PathBuf {
+    find_tool(name).unwrap_or_else(|| panic!("`{name}` is installed in a standard directory"))
+}
+
+/// The first of `names` that is not installed, for a test of a tool some systems lack (a
+/// stock Mac has no `wget`, a minimal Linux no `shasum`), which then skips and says so.
+pub(crate) fn missing_tool<'a>(names: &[&'a str]) -> Option<&'a str> {
+    let missing = names.iter().copied().find(|name| find_tool(name).is_none());
+    if let Some(name) = missing {
+        // Shown with --nocapture; a skipped test otherwise reads as a pass.
+        drop(writeln!(
+            std::io::stderr(),
+            "skipped: `{name}` is not installed"
+        ));
+    }
+    missing
 }
 
 /// Writes an executable `sh` script named `name` into `dir`.
@@ -124,13 +173,18 @@ pub(crate) fn script(dir: &Path, name: &str, body: &str) {
         .expect("make the fake tool executable");
 }
 
-/// The lower-case hex SHA-256 of the file at `path`.
+/// The lower-case hex SHA-256 of the file at `path`, from `shasum`, which macOS has, or
+/// `sha256sum`, which a minimal Linux has in its place.
 pub(crate) fn sha256(path: &Path) -> String {
-    let out = Command::new(tool("shasum"))
-        .args(["-a", "256"])
-        .arg(path)
-        .output()
-        .expect("run shasum");
-    assert!(out.status.success(), "shasum failed");
-    String::from_utf8(out.stdout).expect("shasum prints ASCII")[..64].to_owned()
+    let mut command = match find_tool("shasum") {
+        Some(shasum) => {
+            let mut command = Command::new(shasum);
+            command.args(["-a", "256"]);
+            command
+        }
+        None => Command::new(tool("sha256sum")),
+    };
+    let out = command.arg(path).output().expect("run the hash tool");
+    assert!(out.status.success(), "the hash tool failed");
+    String::from_utf8(out.stdout).expect("the hash tool prints ASCII")[..64].to_owned()
 }

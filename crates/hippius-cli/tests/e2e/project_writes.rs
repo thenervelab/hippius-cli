@@ -6,7 +6,7 @@
 use serde_json::{Value, json};
 
 use crate::common::{
-    ACCOUNTS, Hipc, Home, MEMBER, Reply, Run, Server, draft, one_request_dry_run, route,
+    ACCOUNTS, Hipc, Home, MEMBER, Reply, Run, Server, draft, no_server, one_request_dry_run, route,
 };
 
 const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
@@ -722,7 +722,7 @@ fn projects_transfer_refuses_the_same_account_and_an_unknown_project() {
 /// sends nothing.
 #[test]
 fn projects_transfer_dry_run_from_the_own_account_lists_both_reads() {
-    let origin = "http://127.0.0.1:9";
+    let origin = no_server();
     let mut argv = vec!["--dry-run", "--api-url", origin];
     argv.extend(projects(&["transfer", PROJECT, "--to-account", TARGET]));
     let doc = Hipc::new(&Home::new())
@@ -1926,7 +1926,7 @@ fn every_write_dry_run_lists_its_requests() {
 /// prints the request `method path` with `body`, after the `GET` of each of `reads` in
 /// `requests`, and the account header on a scoped route only.
 fn assert_dry_run(words: &str, reads: &[&str], method: &str, path: &str, body: &Value) {
-    let origin = "http://127.0.0.1:9";
+    let origin = no_server();
     let mut argv = vec![
         "--dry-run",
         "--api-url",

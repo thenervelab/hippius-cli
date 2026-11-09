@@ -4,7 +4,7 @@
 
 use serde_json::Value;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Server, no_server, route};
 
 /// `hipc compute vms get vm1` against a server that answers `status` with `body`: a failure
 /// with exit 1 and `code`, and its error object.
@@ -217,19 +217,19 @@ fn each_code_gets_the_hint_its_fix_is_known_by() {
 /// text goes to `details`.
 #[test]
 fn a_refused_connection_names_the_host_and_keeps_the_library_text_in_details() {
-    // `Hipc::new` aims at `NO_SERVER`, the discard port 9, where nothing listens. A port
-    // bound and closed again could be taken by another test before `hipc` dials it.
+    // `Hipc::new` aims at `no_server()`, a port bound and never listening.
+    let host = no_server().strip_prefix("http://").unwrap();
     let run = Hipc::new(&Home::new())
         .env("HIPPIUS_TOKEN", "tok_abcdefghijklmnop")
         .run(&["compute", "vms", "get", "vm1"]);
     let error = run.fails(1, "unavailable");
     assert_eq!(
         error["message"],
-        "cannot get the VM `vm1`: the connection to `127.0.0.1:9` was refused"
+        format!("cannot get the VM `vm1`: the connection to `{host}` was refused")
     );
     assert_eq!(
         error["hint"],
-        "check the network, and that `127.0.0.1:9` is the API host to use"
+        format!("check the network, and that `{host}` is the API host to use")
     );
     assert!(
         error["details"]["transport_error"]

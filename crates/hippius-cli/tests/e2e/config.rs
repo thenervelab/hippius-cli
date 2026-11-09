@@ -2,7 +2,7 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 
-use crate::common::{Hipc, Home, Reply, Server, TOKEN, route, status_routes};
+use crate::common::{Hipc, Home, Reply, Server, TOKEN, no_server, route, status_routes};
 
 fn chmod(path: &std::path::Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
@@ -270,8 +270,8 @@ fn a_profile_the_file_does_not_have_is_named_when_no_token_is_found() {
     assert_eq!(
         error["message"],
         format!(
-            "no API token is configured for `http://127.0.0.1:9`: the config file `{}` has no \
-             profile `nope`",
+            "no API token is configured for `{}`: the config file `{}` has no profile `nope`",
+            no_server(),
             path.display()
         )
     );
@@ -342,7 +342,7 @@ fn a_profile_the_file_does_not_have_is_named_when_no_token_is_found() {
         let error = Hipc::new(home).run(args).fails(1, "auth");
         assert_eq!(
             error["message"],
-            format!("no API token is configured for `http://127.0.0.1:9`: {found}")
+            format!("no API token is configured for `{}`: {found}", no_server())
         );
         let hint = error["hint"].as_str().unwrap();
         let asked = format!("ask the user to run {login} in their own terminal");

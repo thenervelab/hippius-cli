@@ -589,10 +589,27 @@ struct Watched {
     requests: Arc<Mutex<Vec<Recorded>>>,
 }
 
-/// The closed loopback port the environment points `hipc` at when a test names no server:
-/// nothing listens on the discard port, so a test that forgets its server fails with
-/// `unavailable` and never reaches `api.hippius.com`.
-pub(crate) const NO_SERVER: &str = "http://127.0.0.1:9";
+/// The closed loopback origin the environment points `hipc` at when a test names no server,
+/// so a test that forgets its server fails with `unavailable` and never reaches
+/// `api.hippius.com`. Its port is an ephemeral one of a TCP socket that is bound and never
+/// listens, held for the life of the test process: a connection to it is refused, and no
+/// other socket can take the port, as something could listen on a fixed one such as 9.
+pub(crate) fn no_server() -> &'static str {
+    static ORIGIN: std::sync::OnceLock<(std::os::fd::OwnedFd, String)> = std::sync::OnceLock::new();
+    let (_, origin) = ORIGIN.get_or_init(|| {
+        use rustix::net::{AddressFamily, SocketType};
+        let socket = rustix::net::socket(AddressFamily::INET, SocketType::STREAM, None)
+            .expect("open a TCP socket");
+        let loopback = std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0);
+        rustix::net::bind(&socket, &loopback).expect("bind a loopback port");
+        let bound = std::net::SocketAddrV4::try_from(
+            rustix::net::getsockname(&socket).expect("read the bound port"),
+        )
+        .expect("an IPv4 address");
+        (socket, format!("http://{bound}"))
+    });
+    origin
+}
 
 /// The proxy variables of the developer's shell, which a test must not inherit: a test of an
 /// https origin would go through that proxy, and `NO_PROXY` could exempt the default origin
@@ -610,7 +627,7 @@ const PROXY_VARIABLES: [&str; 8] = [
 
 /// The `hipc` binary with the clean environment every test starts from: no `CI` or
 /// `AI_AGENT`, no `HIPPIUS_*`, AWS file, or proxy variables from the parent, `HOME` set to the
-/// test home, and `HIPPIUS_API_URL` and `HIPPIUS_TOKEN_ORIGIN` set to [`NO_SERVER`]. A test that
+/// test home, and `HIPPIUS_API_URL` and `HIPPIUS_TOKEN_ORIGIN` set to [`no_server()`]. A test that
 /// runs `hipc` some other way than
 /// [`Hipc`] (a terminal, a closed or full stdout) starts here too.
 pub(crate) fn command(home: &Home) -> Command {
@@ -638,8 +655,8 @@ pub(crate) fn command(home: &Home) -> Command {
     // its server cannot send it to `api.hippius.com` either.
     command
         .env("HOME", home.path())
-        .env("HIPPIUS_API_URL", NO_SERVER)
-        .env("HIPPIUS_TOKEN_ORIGIN", NO_SERVER);
+        .env("HIPPIUS_API_URL", no_server())
+        .env("HIPPIUS_TOKEN_ORIGIN", no_server());
     command
 }
 
@@ -658,7 +675,7 @@ impl Hipc {
     /// a local server through the flag or the profile, or go through a local proxy that
     /// refuses the `CONNECT` (`invites::preview_at_the_default_origin_asks_nothing`).
     ///
-    /// `ALL_PROXY`, the first proxy variable the HTTP library reads, points at [`NO_SERVER`],
+    /// `ALL_PROXY`, the first proxy variable the HTTP library reads, points at [`no_server()`],
     /// so a regression that does send to an https origin fails with `unavailable` instead of
     /// reaching `api.hippius.com`. A plain-http loopback origin is reached directly, and a test
     /// that sets its own `ALL_PROXY` replaces this one.
@@ -670,7 +687,7 @@ impl Hipc {
     pub(crate) fn without_api_url(home: &Home) -> Self {
         Self::new(home)
             .env_remove("HIPPIUS_API_URL")
-            .env("ALL_PROXY", NO_SERVER)
+            .env("ALL_PROXY", no_server())
     }
 
     /// Points `hipc` at a test server, with the test token in `HIPPIUS_TOKEN`, bound to the

@@ -69,9 +69,16 @@ unset HIPPIUS_API_URL
 unset HIPPIUS_PROFILE HIPPIUS_CONFIG
 unset AWS_CONFIG_FILE AWS_SHARED_CREDENTIALS_FILE CI AI_AGENT
 
-# Port 9 is the discard port: nothing listens on a CI runner or a laptop, so a connection is
-# refused. Plain http is accepted only for a loopback host, which this is.
+# Port 9 is the discard port: nothing should listen there, so a connection is refused. Plain
+# http is accepted only for a loopback host, which this is. Something that does listen there
+# would receive the fake token and every offline request, so the run checks first, with
+# bash's /dev/tcp, which connects and sends nothing, and stops if the connection is taken.
 DEAD_ORIGIN="http://127.0.0.1:9"
+if (exec 3<>/dev/tcp/127.0.0.1/9) 2>/dev/null; then
+  echo "release-check: something listens on 127.0.0.1:9, the origin the offline checks need" \
+    "closed; stop it and run again" >&2
+  exit 2
+fi
 FAKE_TOKEN="release-check-fake-token-0000"
 FAKE_DNS_TOKEN="release-check-fake-dns-token-0000"
 FAKE_APP_SECRET="release-check-fake-app-secret-0000"

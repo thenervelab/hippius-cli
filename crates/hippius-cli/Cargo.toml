@@ -26,9 +26,10 @@ zeroize.workspace = true
 
 [dev-dependencies]
 # pty and event: the e2e tests open a pseudo-terminal and poll it, so the confirmation
-# prompt is tested at a real terminal. rustix is already in the tree, through the
-# library.
-rustix = { workspace = true, features = ["pty", "event"] }
+# prompt is tested at a real terminal. net: the tests hold a loopback port bound and never
+# listening, an origin that refuses every connection. rustix is already in the tree, through
+# the library.
+rustix = { workspace = true, features = ["pty", "event", "net"] }
 # The e2e tests verify the signatures `hipc` sends against the test key's public half. Both are
 # already in the tree, through the library.
 base64ct.workspace = true

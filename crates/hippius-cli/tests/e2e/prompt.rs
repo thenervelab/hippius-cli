@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 
-use crate::common::{self, Home, Reply, Server, TOKEN, route, route_each};
+use crate::common::{self, Home, Reply, Server, TOKEN, no_server, route, route_each};
 
 /// A pseudo-terminal: the side `hipc` sees as its terminal, and the side the test types
 /// into and reads from.
@@ -281,10 +281,7 @@ fn a_terminal_in_json_mode_gets_redacted_urls_and_escaped_bodies() {
 #[test]
 fn the_drive_cancel_prompt_names_who_goes_back_to_free() {
     let args = ["--output", "text", "drive", "subscription", "cancel"];
-    let env = [
-        ("HIPPIUS_API_URL", "http://127.0.0.1:9"),
-        ("HIPPIUS_TOKEN", TOKEN),
-    ];
+    let env = [("HIPPIUS_API_URL", no_server()), ("HIPPIUS_TOKEN", TOKEN)];
     let (output, shown) = at_a_terminal(&args, &env, b"n\n", true);
     assert_eq!(output.status.code(), Some(2), "{shown:?}");
     assert!(
@@ -302,10 +299,7 @@ fn the_drive_cancel_prompt_names_who_goes_back_to_free() {
 #[test]
 fn the_s3_cancel_prompt_names_the_paid_month_and_pay_as_you_go() {
     let args = ["--output", "text", "s3", "subscription", "cancel"];
-    let env = [
-        ("HIPPIUS_API_URL", "http://127.0.0.1:9"),
-        ("HIPPIUS_TOKEN", TOKEN),
-    ];
+    let env = [("HIPPIUS_API_URL", no_server()), ("HIPPIUS_TOKEN", TOKEN)];
     let (output, shown) = at_a_terminal(&args, &env, b"n\n", true);
     assert_eq!(output.status.code(), Some(2), "{shown:?}");
     assert!(
@@ -322,10 +316,7 @@ fn the_s3_cancel_prompt_names_the_paid_month_and_pay_as_you_go() {
 #[test]
 fn the_hub_cancel_prompt_names_the_grace_period_and_the_deletion() {
     let args = ["--output", "text", "hub", "subscription", "cancel", "7"];
-    let env = [
-        ("HIPPIUS_API_URL", "http://127.0.0.1:9"),
-        ("HIPPIUS_TOKEN", TOKEN),
-    ];
+    let env = [("HIPPIUS_API_URL", no_server()), ("HIPPIUS_TOKEN", TOKEN)];
     let (output, shown) = at_a_terminal(&args, &env, b"n\n", true);
     assert_eq!(output.status.code(), Some(2), "{shown:?}");
     assert!(
@@ -342,10 +333,7 @@ fn the_hub_cancel_prompt_names_the_grace_period_and_the_deletion() {
 /// so nothing is sent.
 #[test]
 fn the_hub_delete_prompts_name_what_is_lost() {
-    let env = [
-        ("HIPPIUS_API_URL", "http://127.0.0.1:9"),
-        ("HIPPIUS_TOKEN", TOKEN),
-    ];
+    let env = [("HIPPIUS_API_URL", no_server()), ("HIPPIUS_TOKEN", TOKEN)];
     for (args, question) in [
         (
             &["hub", "repositories", "delete", "acme/app"][..],
@@ -371,10 +359,7 @@ fn the_hub_delete_prompts_name_what_is_lost() {
 /// is no, so nothing is sent.
 #[test]
 fn the_api_hub_delete_prompt_says_it_cannot_be_undone() {
-    let env = [
-        ("HIPPIUS_API_URL", "http://127.0.0.1:9"),
-        ("HIPPIUS_TOKEN", TOKEN),
-    ];
+    let env = [("HIPPIUS_API_URL", no_server()), ("HIPPIUS_TOKEN", TOKEN)];
     for (path, warned) in [
         ("/registry/repositories/acme/app/", true),
         ("/registry/repositories/acme/app/artifacts/v1", true),
@@ -388,7 +373,7 @@ fn the_api_hub_delete_prompt_says_it_cannot_be_undone() {
             true,
         );
         assert_eq!(output.status.code(), Some(2), "{shown:?}");
-        let call = format!("this will call `DELETE http://127.0.0.1:9/api{path}`");
+        let call = format!("this will call `DELETE {}/api{path}`", no_server());
         let question = if warned {
             format!("{call}; this cannot be undone; continue? [y/N] ")
         } else {
@@ -489,10 +474,7 @@ const API_CONSEQUENCES: [(&str, &str, Option<&str>); 16] = [
 /// asks with none. The answer is no, so nothing is sent.
 #[test]
 fn the_api_prompt_gives_the_curated_consequence() {
-    let env = [
-        ("HIPPIUS_API_URL", "http://127.0.0.1:9"),
-        ("HIPPIUS_TOKEN", TOKEN),
-    ];
+    let env = [("HIPPIUS_API_URL", no_server()), ("HIPPIUS_TOKEN", TOKEN)];
     for (method, path, consequence) in API_CONSEQUENCES {
         let (output, shown) = at_a_terminal(
             &["--output", "text", "api", method, path],
@@ -501,7 +483,7 @@ fn the_api_prompt_gives_the_curated_consequence() {
             true,
         );
         assert_eq!(output.status.code(), Some(2), "{shown:?}");
-        let call = format!("this will call `{method} http://127.0.0.1:9/api{path}`");
+        let call = format!("this will call `{method} {}/api{path}`", no_server());
         let question = match consequence {
             Some(consequence) => format!("{call}; {consequence}; continue? [y/N] "),
             None => format!("{call}; continue? [y/N] "),
@@ -514,10 +496,7 @@ fn the_api_prompt_gives_the_curated_consequence() {
 /// old secret stops working. The answer is no, so nothing is sent.
 #[test]
 fn the_hub_key_prompts_say_ci_jobs_stop_working() {
-    let env = [
-        ("HIPPIUS_API_URL", "http://127.0.0.1:9"),
-        ("HIPPIUS_TOKEN", TOKEN),
-    ];
+    let env = [("HIPPIUS_API_URL", no_server()), ("HIPPIUS_TOKEN", TOKEN)];
     for (args, question) in [
         (
             &["--output", "text", "hub", "keys", "rotate", "7", "--reveal"][..],
@@ -553,10 +532,7 @@ fn the_launch_prompt_with_a_public_ip_names_its_price() {
         "7",
         "--public-ip",
     ];
-    let env = [
-        ("HIPPIUS_API_URL", "http://127.0.0.1:9"),
-        ("HIPPIUS_TOKEN", TOKEN),
-    ];
+    let env = [("HIPPIUS_API_URL", no_server()), ("HIPPIUS_TOKEN", TOKEN)];
     let (output, shown) = at_a_terminal(&args, &env, b"n\n", true);
     assert_eq!(output.status.code(), Some(2), "{shown:?}");
     assert!(
@@ -584,10 +560,7 @@ fn the_waf_off_prompt_names_what_stops() {
         "--mode",
         "off",
     ];
-    let env = [
-        ("HIPPIUS_API_URL", "http://127.0.0.1:9"),
-        ("HIPPIUS_TOKEN", TOKEN),
-    ];
+    let env = [("HIPPIUS_API_URL", no_server()), ("HIPPIUS_TOKEN", TOKEN)];
     let (output, shown) = at_a_terminal(&args, &env, b"n\n", true);
     assert_eq!(output.status.code(), Some(2), "{shown:?}");
     assert!(
@@ -959,10 +932,7 @@ fn login_leaves_a_token_stored_while_its_prompt_waited() {
 /// so nothing is sent.
 #[test]
 fn the_hub_namespace_prompts_name_what_changes() {
-    let env = [
-        ("HIPPIUS_API_URL", "http://127.0.0.1:9"),
-        ("HIPPIUS_TOKEN", TOKEN),
-    ];
+    let env = [("HIPPIUS_API_URL", no_server()), ("HIPPIUS_TOKEN", TOKEN)];
     for (args, question) in [
         (
             &[

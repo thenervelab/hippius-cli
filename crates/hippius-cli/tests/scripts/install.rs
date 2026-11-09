@@ -6,7 +6,7 @@ use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use crate::support::{Answer, TempDir, script, serve, sha256, tool};
+use crate::support::{Answer, TempDir, missing_tool, no_server, script, serve, sha256, tool};
 
 const INSTALL: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/install.sh");
 
@@ -26,9 +26,6 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The files besides `hipc` in each release tarball.
 const LICENSES: [&str; 2] = ["LICENSE-MIT", "LICENSE-APACHE"];
-
-/// A server that is never contacted: nothing listens on the discard port.
-const DEAD: &str = "http://127.0.0.1:9";
 
 /// A machine to install on: a HOME, and a PATH of only the tools the test chose.
 struct Machine {
@@ -352,7 +349,7 @@ fn a_relative_or_tilde_install_dir_is_refused_before_any_download() {
         let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
 
         let out = machine
-            .installer(DEAD, &[])
+            .installer(no_server(), &[])
             .env(var, dir)
             .output()
             .expect("run the installer");
@@ -378,7 +375,7 @@ fn a_directory_named_hip_in_the_install_dir_is_refused() {
         let (tarball, sum) = machine.tarball();
         let base = if early {
             std::fs::create_dir_all(dir.join("hipc")).expect("create a directory named hipc");
-            DEAD.to_owned()
+            no_server().to_owned()
         } else {
             machine.replace(
                 "tar",
@@ -612,7 +609,7 @@ fn an_unsupported_machine_is_refused_before_any_download() {
     ] {
         let machine = Machine::new(os, arch, &["curl", "sha256sum"]);
 
-        let out = machine.install(DEAD, &[]);
+        let out = machine.install(no_server(), &[]);
 
         let stderr = text(&out.stderr);
         assert_eq!(out.status.code(), Some(1), "{os} {arch}: {stderr}");
@@ -821,6 +818,9 @@ fn a_release_without_a_signature_is_refused_when_cosign_is_on_path() {
 
 #[test]
 fn wget_and_shasum_stand_in_for_curl_and_sha256sum() {
+    if missing_tool(&["wget", "shasum"]).is_some() {
+        return;
+    }
     let machine = Machine::new("Linux", "x86_64", &["wget", "shasum"]);
     let target = "x86_64-unknown-linux-musl";
     let (tarball, sum) = machine.tarball();
@@ -847,20 +847,30 @@ fn bad_arguments_and_a_missing_tool_or_release_are_refused() {
     ]);
     let curl = &["curl", "sha256sum"][..];
     for (tools, base, args, message) in [
-        (curl, DEAD, &["--bogus"][..], "unknown option: --bogus"),
-        (curl, DEAD, &["--version"], "--version needs a value"),
-        (curl, DEAD, &["1..2"], "not a version: 1..2"),
-        (curl, DEAD, &["latest"], "not a version: latest"),
-        (curl, DEAD, &["1.0.0/../x"], "not a version: 1.0.0/../x"),
+        (
+            curl,
+            no_server(),
+            &["--bogus"][..],
+            "unknown option: --bogus",
+        ),
+        (curl, no_server(), &["--version"], "--version needs a value"),
+        (curl, no_server(), &["1..2"], "not a version: 1..2"),
+        (curl, no_server(), &["latest"], "not a version: latest"),
+        (
+            curl,
+            no_server(),
+            &["1.0.0/../x"],
+            "not a version: 1.0.0/../x",
+        ),
         (
             &["sha256sum"],
-            DEAD,
+            no_server(),
             &[],
             "neither curl nor wget is on PATH",
         ),
         (
             &["curl"],
-            DEAD,
+            no_server(),
             &[],
             "neither sha256sum nor shasum is on PATH",
         ),
@@ -879,6 +889,10 @@ fn bad_arguments_and_a_missing_tool_or_release_are_refused() {
             "(no release v1.0.0, or no build for x86_64-unknown-linux-musl in it)",
         ),
     ] {
+        // A stock Mac has no `wget`: that row is skipped there, and runs on CI's images.
+        if missing_tool(tools).is_some() {
+            continue;
+        }
         let machine = Machine::new("Linux", "x86_64", tools);
 
         let out = machine.install(base, args);
@@ -894,7 +908,7 @@ fn bad_arguments_and_a_missing_tool_or_release_are_refused() {
 fn help_exits_zero_and_home_is_needed_only_without_hip_install_dir() {
     let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
 
-    let help = machine.install(DEAD, &["--help"]);
+    let help = machine.install(no_server(), &["--help"]);
     assert!(help.status.success());
     let usage = text(&help.stderr);
     assert!(usage.starts_with("usage: install.sh [VERSION]"), "{usage}");
@@ -908,7 +922,7 @@ fn help_exits_zero_and_home_is_needed_only_without_hip_install_dir() {
     );
 
     let out = machine
-        .installer(DEAD, &[])
+        .installer(no_server(), &[])
         .env_remove("HOME")
         .output()
         .expect("run the installer");
@@ -944,7 +958,7 @@ fn a_partial_download_installs_nothing() {
             .env_clear()
             .env("PATH", &machine.bin)
             .env("HOME", machine.home.path())
-            .env("HIPC_INSTALL_BASE_URL", DEAD)
+            .env("HIPC_INSTALL_BASE_URL", no_server())
             .output()
             .expect("run the partial installer");
 
@@ -991,7 +1005,7 @@ fn an_inherited_base_url_is_ignored_without_the_second_variable() {
     );
 
     let out = machine
-        .installer(DEAD, &[])
+        .installer(no_server(), &[])
         .env_remove("HIPC_INSTALL_ALLOW_BASE_URL")
         .output()
         .expect("run the installer");
@@ -1114,7 +1128,7 @@ fn a_wget_without_the_needed_switches_is_refused() {
     let machine = Machine::new("Linux", "x86_64", &["sha256sum"]);
     machine.fake("wget", "echo 'BusyBox v1.36.1 multi-call binary.'");
 
-    let out = machine.install(DEAD, &[]);
+    let out = machine.install(no_server(), &[]);
 
     let stderr = text(&out.stderr);
     assert_eq!(out.status.code(), Some(1), "{stderr}");
@@ -1194,7 +1208,7 @@ fn a_relative_old_install_dir_is_refused_by_its_own_name() {
     std::fs::write(old.join("hip"), "the 0.14.0 binary").expect("write the old hip");
 
     let out = machine
-        .installer(DEAD, &["1.0.0"])
+        .installer(no_server(), &["1.0.0"])
         .env("HIP_INSTALL_DIR", "old")
         .output()
         .expect("run the installer");
