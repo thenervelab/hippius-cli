@@ -1107,9 +1107,8 @@ impl PrivateFile {
         Ok(locks)
     }
 
-    /// Opens the file's lock file, `.<name>.lock`, creating it with mode `0600`, set again
-    /// once it is created, since `open` masks it with the umask: under `0277` it would be
-    /// `0400`, and the next run could not open it to lock it.
+    /// Opens the file's lock file, `.<name>.lock`, creating it with mode `0600` (less under a
+    /// strict umask, which does no harm: it is opened read-only).
     fn open_lock(&self) -> Result<OwnedFd> {
         let name = self.sibling("lock");
         // Read-only: `flock` needs no write access, so a lock file an older run left `0400`
@@ -1120,9 +1119,8 @@ impl PrivateFile {
         // `ENOENT` when another thread or process creates the same name at the same moment.
         // Nothing removes a lock file, so the open after `EEXIST` finds it.
         let opened = match rustix::fs::openat(&self.dir, &name, flags | CREATE_NEW, PRIVATE) {
-            Ok(fd) => rustix::fs::fchmod(&fd, PRIVATE).map(|()| fd),
             Err(Errno::EXIST) => rustix::fs::openat(&self.dir, &name, flags, Mode::empty()),
-            Err(e) => Err(e),
+            opened => opened,
         };
         opened.map_err(self.lock_error())
     }
