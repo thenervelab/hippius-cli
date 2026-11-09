@@ -34,6 +34,7 @@ jobs:
     # mistake: the workflow runs from the tagged commit, so a tag on a commit that edits this
     # file skips it, and only a tag ruleset on the repository stops that.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -55,21 +56,24 @@ jobs:
 
   build:
     needs: ci
-    # macOS: Apple silicon builds both; x86_64 is cross-compiled and never executed. Linux:
-    # each musl target is built natively, so the C in ring compiles without a cross
-    # toolchain, and each static binary runs on the runner that built it.
+    # macOS: Apple silicon builds both, and runs the arm64 binary; x86_64 is cross-compiled
+    # and never executed. Linux: each musl target is built natively, so the C in ring
+    # compiles without a cross toolchain, and each static binary runs on the runner that
+    # built it. The runner images are pinned, not -latest, so a rebuild of a tag uses the
+    # same image family and the same tools.
     strategy:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            runner: macos-latest
+            runner: macos-15
           - target: x86_64-apple-darwin
-            runner: macos-latest
+            runner: macos-15
           - target: x86_64-unknown-linux-musl
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -99,27 +103,37 @@ jobs:
           # the target it builds, so the macOS targets ignore these.
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
-        run: cargo build --release --locked --target "${TARGET}"
-      - name: Static, and runs
+        # The checkout and the cargo home are runner paths that would land in the binary's
+        # panic locations; mapped to fixed names, the same commit builds the same paths.
+        run: |
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=/build --remap-path-prefix=${CARGO_HOME:-${HOME}/.cargo}=/cargo"
+          cargo build --release --locked --target "${TARGET}"
+      - name: Static
         if: runner.os == 'Linux'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: file "target/${TARGET}/release/hipc" | grep -Eq 'statically linked|static-pie linked'
+      - name: Runs
+        # Every binary the runner can execute: both Linux targets, and arm64 macOS. Rosetta
+        # is not assumed, so the x86_64 macOS binary is not run.
+        if: matrix.target != 'x86_64-apple-darwin'
         env:
           TARGET: ${{ matrix.target }}
         run: |
           bin="target/${TARGET}/release/hipc"
-          file "${bin}" | grep -Eq 'statically linked|static-pie linked'
+          "${bin}" --version
           "${bin}" version
+          "${bin}" schema > /dev/null
       - name: Package
         env:
           TARGET: ${{ matrix.target }}
         # The binary and both license files at the top of the archive, with no directory
         # around them: scripts/install.sh extracts the member `hipc`, and the Homebrew
-        # formula installs `hipc` from the unpacked root.
+        # formula installs `hipc` from the unpacked root. The script makes the same bytes
+        # from the same binary: names, modes, owner and times are fixed, the time the commit's.
         run: |
-          stage="${RUNNER_TEMP}/stage"
-          mkdir "${stage}"
-          cp "target/${TARGET}/release/hipc" LICENSE-MIT LICENSE-APACHE "${stage}/"
           mkdir -p dist
-          tar -czf "dist/hipc-${TARGET}.tar.gz" -C "${stage}" hipc LICENSE-MIT LICENSE-APACHE
+          scripts/package.sh "target/${TARGET}/release/hipc" "dist/hipc-${TARGET}.tar.gz"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: hipc-${{ matrix.target }}
@@ -133,6 +147,7 @@ jobs:
     # a job with the `contents: write` token that `publish` needs.
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write  # the OIDC token Fulcio certifies
@@ -187,6 +202,7 @@ jobs:
   publish:
     needs: sign
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write  # gh release create
     steps:
@@ -288,6 +304,7 @@ jobs:
     # before it hands the job the environment's secrets, whatever the workflow says.
     needs: publish
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: homebrew
     permissions:
       contents: read
@@ -361,6 +378,7 @@ jobs:
     # Any other value fails the job, so a misspelt `True` is not a silent skip.
     needs: ci
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       build: ${{ steps.check.outputs.build }}
     steps:
@@ -407,18 +425,19 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            runner: macos-latest
+            runner: macos-15
             compatibility: ''
           - target: x86_64-apple-darwin
-            runner: macos-latest
+            runner: macos-15
             compatibility: ''
           - target: x86_64-unknown-linux-musl
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             compatibility: --compatibility manylinux_2_17 musllinux_1_2
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
             compatibility: --compatibility manylinux_2_17 musllinux_1_2
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -445,7 +464,8 @@ jobs:
         with:
           command: build
           target: ${{ matrix.target }}
-          # The version packaging/pypi/pyproject.toml requires and was tested with.
+          # The version packaging/pypi/pyproject.toml pins, which Dependabot tracks there; a
+          # test fails while the two differ.
           maturin-version: v1.16.0
           container: 'off'
           working-directory: packaging/pypi
@@ -465,6 +485,7 @@ jobs:
     # getting a token PyPI accepts.
     needs: [pypi-wheels, publish]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment:
       name: pypi
       url: https://pypi.org/project/hippius-cli/

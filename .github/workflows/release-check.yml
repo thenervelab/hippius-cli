@@ -1,6 +1,7 @@
 name: Release check
 
-# Builds every release target, and runs each Linux binary, without publishing anything. It runs only
+# Builds every release target, runs each one the runner can execute, and packs each twice to
+# check the tarball is reproducible, without publishing anything. It runs only
 # when started by hand, to save runner time: `gh workflow run release-check.yml`. Start it before
 # tagging a release, so a broken cross-compile shows before the tag.
 on:
@@ -14,9 +15,11 @@ env:
 
 jobs:
   release-build:
-    # Builds both macOS release targets. The x86_64 binary is never run here: Rosetta is
-    # not assumed on the runner.
-    runs-on: macos-latest
+    # Builds both macOS release targets, on the image release.yml builds them on, and runs
+    # the arm64 binary. The x86_64 binary is never run here: Rosetta is not assumed on the
+    # runner.
+    runs-on: macos-15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -25,6 +28,20 @@ jobs:
       - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - run: cargo build --release --locked --target aarch64-apple-darwin
       - run: cargo build --release --locked --target x86_64-apple-darwin
+      - name: Runs
+        run: |
+          bin=target/aarch64-apple-darwin/release/hipc
+          "${bin}" --version
+          "${bin}" version
+          "${bin}" schema > /dev/null
+      - name: The tarball is reproducible
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            scripts/package.sh "target/${target}/release/hipc" "${RUNNER_TEMP}/a.tar.gz"
+            touch "target/${target}/release/hipc"
+            scripts/package.sh "target/${target}/release/hipc" "${RUNNER_TEMP}/b.tar.gz"
+            cmp "${RUNNER_TEMP}/a.tar.gz" "${RUNNER_TEMP}/b.tar.gz"
+          done
 
   release-build-linux:
     # The Linux release targets, each built natively, so the C in ring compiles without a
@@ -34,10 +51,11 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     env:
       TARGET: ${{ matrix.target }}
       # As release.yml: cc-rs reads the compiler for the target it builds.
@@ -60,3 +78,10 @@ jobs:
           "${bin}" --version
           "${bin}" version
           "${bin}" schema > /dev/null
+      - name: The tarball is reproducible
+        run: |
+          bin="target/${TARGET}/release/hipc"
+          scripts/package.sh "${bin}" "${RUNNER_TEMP}/a.tar.gz"
+          touch "${bin}"
+          scripts/package.sh "${bin}" "${RUNNER_TEMP}/b.tar.gz"
+          cmp "${RUNNER_TEMP}/a.tar.gz" "${RUNNER_TEMP}/b.tar.gz"
