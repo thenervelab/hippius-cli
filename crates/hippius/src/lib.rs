@@ -41,5 +41,6 @@ pub use crate::project::{BillingId, DEFAULT, ProjectId};
 pub use crate::regular::{OpenRegularError, open_regular};
 pub use crate::source::{Given, Source};
 pub use crate::wallet::{
-    AccessKey, LoginSignatures, holds_phrase, new_idempotency_key, phrase_in_argv, read_phrase_file,
+    AccessKey, INVISIBLE_JOINS, LoginSignatures, holds_checked_phrase, holds_phrase,
+    new_idempotency_key, phrase_in_argv, read_phrase_file,
 };

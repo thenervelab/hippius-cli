@@ -8269,7 +8269,7 @@ Examples:
 ```text
 Open a ticket that a person on the support team reads; needs --yes
 
-The message is read from a file, or from stdin with --body-file -, never from argv. A subject or message that holds an API token, HIPPIUS_TOKEN or one the config file stores, as it is, quoted, percent-encoded, or split by whitespace, or 12 access key words in a row, is refused before anything is sent. The check catches an accident, such as a pasted config file, not a secret encoded on purpose.
+The message is read from a file, or from stdin with --body-file -, never from argv. A subject or message that holds an API token, HIPPIUS_TOKEN or one the config file stores, as it is, quoted, percent-encoded, or split by whitespace, or an access key whose checksum holds, is refused before anything is sent. The check catches an accident, such as a pasted config file, not a secret encoded on purpose.
 
 Usage: hipc support tickets create [OPTIONS] --subject <SUBJECT> --body-file <PATH>
 

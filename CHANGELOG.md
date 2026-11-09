@@ -8,9 +8,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 ### Changed
 
-- A confirmation question discards what was typed at the terminal before it appeared, so a `y` typed while an earlier read ran, or the second line of a paste that answered an earlier question, no longer answers a question the person has not seen.
-- `hipc auth login` without `--token-file` asks about a non-default API origin before it asks for the token, so a person sees where the token goes before pasting it. A dry run without `--token-file` asks for no token: `replaces_token` says whether the profile stores one, as the access-key dry run does.
-- `hipc support tickets create` and `reply`, and a support write through `hipc api`, also refuse a text that holds what looks like an access key (12 words in a row on the BIP-39 list, with punctuation and numbering between them), and find the API token when whitespace splits it. The help says the check catches an accident, not a secret encoded on purpose.
+- A confirmation question discards what was typed at the terminal before it was shown, and reads its answer without keeping what follows the line, so a `y` typed while an earlier read ran, or the second line of a paste that answered an earlier question, no longer answers a question the person has not seen.
+- `hipc auth login` without `--token-file` asks about a non-default API origin before it asks for the token, so a person sees where the token goes before pasting it. The question says the token is asked for next, at the hidden prompt. A dry run without `--token-file` asks for no token: `replaces_token` says whether the profile stores one, as the access-key dry run does.
+- `hipc support tickets create` and `reply`, and a support write through `hipc api`, also refuse a text that holds an access key (12 to 24 words in a row on the BIP-39 list whose checksum holds, with punctuation and numbering between them read as spaces), and find the API token when whitespace splits it or when it is split between the subject and the message. The help says the check catches an accident, not a secret encoded on purpose.
 - An access-key login refuses to sign a challenge message that holds a Unicode line or paragraph separator, as it refuses one with a line break.
 
 ## [0.15.0] - 2026-11-09

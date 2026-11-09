@@ -161,7 +161,7 @@ fn client_without_token_in(ctx: &Context<'_>, texts: &[&str]) -> Result<hippius:
 pub(crate) enum Secret {
     /// `HIPPIUS_TOKEN`, or a token a profile of the config file stores.
     Token,
-    /// What [`hippius::holds_phrase`] takes for an access key.
+    /// What [`hippius::holds_checked_phrase`] takes for an access key.
     AccessKey,
 }
 
@@ -188,8 +188,9 @@ impl Secret {
 /// - `HIPPIUS_TOKEN`, or a token any profile of `config` stores, in any spelling an error
 ///   redacts it in (tenet 9), also with the text's whitespace removed, so a token wrapped
 ///   across lines or split by a space is found;
-/// - an access key: 12 words in a row on the BIP-39 list, with anything that is not a
-///   letter read as a space, so a numbered or comma-separated list of the words is found.
+/// - an access key whose checksum holds ([`hippius::holds_checked_phrase`]), with anything
+///   that is not a letter read as a space, so a numbered or comma-separated list of the words
+///   is found, while everyday prose of listed words is not taken for one.
 ///
 /// It guards against an accident, such as a pasted config file or a log, not against text
 /// written to hide a secret: an encoded or reordered one is not found. `hipc api` applies
@@ -204,21 +205,27 @@ pub(crate) fn secret_in(
         variable.as_ref().is_some_and(|token| token.is_in(text))
             || config.holds_a_stored_token(text)
     };
+    // The texts joined too, so a token split between the subject and the message is found.
+    let mut all = Zeroizing::new(String::with_capacity(
+        texts.iter().map(|text| text.len() + 1).sum(),
+    ));
     for text in texts {
-        // Cleared when dropped: it holds whatever secret the text does.
-        // Sized up front, so the buffer never grows and leaves a copy behind.
+        all.push_str(text);
+        all.push('\n');
+    }
+    for text in texts.iter().copied().chain([all.as_str()]) {
+        // Cleared when dropped, and sized up front so it never grows and leaves a copy
+        // behind. Whitespace and the invisible characters that join a word are dropped, so a
+        // wrapped token is whole again.
         let mut joined = Zeroizing::new(String::with_capacity(text.len()));
-        joined.extend(text.split_whitespace());
+        joined.extend(
+            text.chars()
+                .filter(|c| !c.is_whitespace() && !hippius::INVISIBLE_JOINS.contains(c)),
+        );
         if holds_token(text) || holds_token(&joined) {
             return Ok(Some(Secret::Token));
         }
-        // A letter keeps its length and anything else becomes one byte, so this fits too.
-        let mut words = Zeroizing::new(String::with_capacity(text.len()));
-        words.extend(
-            text.chars()
-                .map(|c| if c.is_alphabetic() { c } else { ' ' }),
-        );
-        if hippius::holds_phrase(&words) {
+        if hippius::holds_checked_phrase(text) {
             return Ok(Some(Secret::AccessKey));
         }
     }

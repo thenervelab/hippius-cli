@@ -9,6 +9,7 @@
 use std::cell::Cell;
 use std::ffi::OsString;
 use std::io::{self, BufRead};
+use std::os::fd::AsFd as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -490,18 +491,27 @@ impl<'a> Context<'a> {
     /// [`Context::call`], or [`Context::check_write`] and [`Context::confirm_write`], and
     /// [`Context::confirm_origin`] before a secret goes to an origin.
     pub(crate) fn confirm(&self, question: Question<'_>) -> Result<()> {
-        if self.will_ask() {
-            // What was typed before the question appeared answers nothing: a `y` typed while
-            // an earlier read ran, or the second line of a paste that answered an earlier
-            // question, would otherwise answer one the person has not seen yet.
-            crate::hidden::discard_typed_ahead();
-        }
+        let will_ask = self.will_ask();
+        let stdin = io::stdin();
+        // The answer is read from the descriptor, not through std's process-wide stdin
+        // buffer: a terminal in canonical mode gives one line per read, and whatever a read
+        // takes past the line is dropped with this reader rather than kept to answer the next
+        // question.
+        let mut input = io::BufReader::new(crate::hidden::Unbuffered(stdin.as_fd()));
         confirm_with(
             question,
             self.global.yes,
             self.can_prompt(),
-            &mut io::stdin().lock(),
-            &mut output::note,
+            &mut input,
+            &mut |text| {
+                output::note(text);
+                if will_ask {
+                    // Once the question is written, what was typed before it showed answers
+                    // nothing: a `y` typed while an earlier read ran, or the second line of a
+                    // paste that answered an earlier question, is discarded.
+                    crate::hidden::discard_typed_ahead();
+                }
+            },
         )
     }
 }

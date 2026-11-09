@@ -282,6 +282,57 @@ pub fn holds_phrase(text: &str) -> bool {
     false
 }
 
+/// The characters that join the parts of a word without a visible mark: the soft hyphen, the
+/// zero-width space, joiners, the word joiner, and the byte order mark. Dropped rather than
+/// read as a space, so they cannot split a word of an access key.
+pub const INVISIBLE_JOINS: [char; 6] = [
+    '\u{ad}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{2060}', '\u{feff}',
+];
+
+/// The lengths of a BIP-39 phrase, in words.
+const PHRASE_LENGTHS: [usize; 5] = [12, 15, 18, 21, 24];
+
+/// Whether `text` holds an access key a person must not read, such as in a support ticket:
+/// 12, 15, 18, 21, or 24 words in a row on the English BIP-39 list whose checksum holds, after
+/// NFKD normalization, in any letter case, with anything that is not a letter read as a space,
+/// so a numbered or comma-separated list of the words is found.
+///
+/// The checksum tells a key from prose: everyday words (`please`, `help`, `account`, `error`)
+/// are on the list, and twelve of them in a row are common in a message, but only one such
+/// run in 16 has a valid checksum. A key with a mistyped word fails it too, so this guards
+/// against a pasted key, not a damaged one. Every copy of the text is cleared when dropped.
+pub fn holds_checked_phrase(text: &str) -> bool {
+    let mut words = Zeroizing::new(String::with_capacity(text.nfkd().map(char::len_utf8).sum()));
+    words.extend(
+        text.nfkd()
+            .filter(|c| !INVISIBLE_JOINS.contains(c))
+            .map(|c| {
+                if c.is_alphabetic() {
+                    c.to_ascii_lowercase()
+                } else {
+                    ' '
+                }
+            }),
+    );
+    let words: Vec<&str> = words.split_whitespace().collect();
+    let listed = |word: &&&str| Language::English.find_word(word).is_some();
+    let mut at = 0;
+    while at < words.len() {
+        let run = words[at..].iter().take_while(listed).count();
+        let checked = PHRASE_LENGTHS.iter().any(|&length| {
+            words[at..at + run].windows(length).any(|window| {
+                let candidate = Zeroizing::new(window.join(" "));
+                Mnemonic::parse_in_normalized(Language::English, &candidate).is_ok()
+            })
+        });
+        if checked {
+            return true;
+        }
+        at += run.max(1);
+    }
+    false
+}
+
 /// The refusal of a command line that holds an access key ([`holds_phrase`]): `usage`, with
 /// nothing of the command line in it.
 pub fn phrase_in_argv() -> Error {
@@ -793,6 +844,36 @@ mod tests {
             )
             .unwrap();
         assert!(format!("{signatures:?}").contains(&signatures.signature));
+    }
+
+    /// A key is found by its checksum, in any case, NFKD form, and separator, inside prose;
+    /// twelve listed words whose checksum fails are not a key.
+    #[test]
+    fn a_checked_phrase_is_found_and_prose_is_not() {
+        let phrase = TEST_PHRASE;
+        let fullwidth: String = phrase
+            .chars()
+            // Fullwidth Latin letters, which NFKD folds back to ASCII.
+            .map(|c| match c {
+                'a'..='z' => char::from_u32(u32::from(c) - u32::from('a') + 0xff41).unwrap(),
+                other => other,
+            })
+            .collect();
+        for text in [
+            phrase.to_owned(),
+            format!("my key: {}. thanks", phrase.to_uppercase()),
+            phrase.replace(' ', ", "),
+            fullwidth,
+        ] {
+            assert!(holds_checked_phrase(&text), "{text}");
+        }
+        for text in [
+            "please help can you check this token error when you have that file",
+            "",
+            "abandon",
+        ] {
+            assert!(!holds_checked_phrase(text), "{text}");
+        }
     }
 
     #[test]

@@ -729,9 +729,9 @@ const API_REFUSED_WHEN: &str = "the target is a full URL off the configured API 
                                 `POST`, `PUT`, `PATCH`, or `DELETE` under `/api/support/` \
                                 whose body holds `HIPPIUS_TOKEN` or a token a profile of the \
                                 config file stores, as it is, quoted, percent-encoded, behind \
-                                a JSON escape, or split by whitespace, or 12 access key words \
-                                in a row, with or without the trailing slash or a format \
-                                suffix";
+                                a JSON escape, or split by whitespace, or an access key \
+                                whose checksum holds, with or without the trailing slash or a \
+                                format suffix";
 
 /// When `hipc api` asks: the one route it confirms on a read is the one the rows of
 /// `hippius::PROVISIONING_ROUTES` name, written here so the text says which, in every form
@@ -2026,8 +2026,8 @@ mod tests {
              JSON object counts as setting it), or a `POST`, `PUT`, `PATCH`, or `DELETE` under \
              `/api/support/` whose body holds `HIPPIUS_TOKEN` or a token a profile of the config \
              file stores, as it is, quoted, percent-encoded, behind a JSON escape, or split by \
-             whitespace, or 12 access key words in a row, with or without the trailing slash or \
-             a format suffix"
+             whitespace, or an access key whose checksum holds, with or without the trailing slash \
+             or a format suffix"
         );
         for noun in ["repositories", "artifacts"] {
             let delete = commands
