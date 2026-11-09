@@ -720,7 +720,8 @@ fn token_document(token: Value, kind: TokenKind) -> Value {
 
 /// Whether `key` names an S3 token's secret key: `secret`, as the API answers it, or a
 /// spelling of the secret access key another version of the answer could use
-/// (`secret_key`, `secretKey`, `secret_access_key`, `SecretAccessKey`), compared in lowercase
+/// (`secret_key`, `secretKey`, `secret_access_key`, `SecretAccessKey`,
+/// `aws_secret_access_key`), compared in lowercase
 /// without `_` and `-`. The list and the revoke drop them all, and `--secret-file` moves
 /// them all (tenet 9).
 fn is_s3_secret(key: &str) -> bool {
@@ -729,7 +730,10 @@ fn is_s3_secret(key: &str) -> bool {
         .filter(|c| !matches!(c, '_' | '-'))
         .map(|c| c.to_ascii_lowercase())
         .collect();
-    matches!(key.as_str(), "secret" | "secretkey" | "secretaccesskey")
+    matches!(
+        key.as_str(),
+        "secret" | "secretkey" | "secretaccesskey" | "awssecretaccesskey"
+    )
 }
 
 /// The largest token document read, in bytes. Arbitrary: a create answer is a few hundred

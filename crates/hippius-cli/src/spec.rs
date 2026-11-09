@@ -199,8 +199,9 @@ const API_GUARDS: &[Guard] = &[
              `/api/cdn/lists/<name>/` whose body sets `items`, or any other write `hipc` \
              guards that replaces a whole list or document; a body that is not a JSON \
              object counts as setting the key, and each rule holds for every write method of \
-             its route, not only the one named, but a `POST` or `DELETE` of \
-             `/api/cdn/lists/<name>/items/`, which adds or removes the items it names",
+             its route, not only the one named; a `POST` or `DELETE` of \
+             `/api/cdn/lists/<name>/items/`, which adds or removes the items it names, needs \
+             none",
         ),
     },
 ];

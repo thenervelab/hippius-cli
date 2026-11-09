@@ -1060,19 +1060,19 @@ fn a_token_in_the_wrong_place_is_never_repeated() {
     let cases: [(Vec<&str>, &str); 8] = [
         (
             vec!["auth", pasted],
-            "`hipc auth` takes no such argument, so the word given is not repeated here",
+            "`hipc auth` takes no such argument or value, so the word given is not repeated here",
         ),
         (
             vec!["auth", "status", pasted],
-            "`hipc auth status` takes no such argument, so the word given is not repeated here",
+            "`hipc auth status` takes no such argument or value, so the word given is not repeated here",
         ),
         (
             vec!["auth", "login", pasted],
-            "`hipc auth login` takes no such argument, so the word given is not repeated here",
+            "`hipc auth login` takes no such argument or value, so the word given is not repeated here",
         ),
         (
             vec!["--output", "text", "auth", "login", "--yes", pasted],
-            "`hipc auth login` takes no such argument, so the word given is not repeated here",
+            "`hipc auth login` takes no such argument or value, so the word given is not repeated here",
         ),
         (
             vec!["version", stored],

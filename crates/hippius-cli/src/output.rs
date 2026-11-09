@@ -288,33 +288,43 @@ pub(crate) fn clap_error(mode: Mode, error: &clap::Error, args: &[OsString]) -> 
         return raw(mode, rendered.as_bytes(), SideEffects::None);
     }
     let (path, mut command) = typed_command(args);
-    // No `hipc auth` command takes an argument, and a word given to one that could not be a
-    // command name (only lowercase letters and `-`) is likely the token pasted in the wrong
+    // No `hipc auth` command takes an argument, and a word given to one, or as any command's
+    // name, that is too long to be a command name is likely the token pasted in the wrong
     // place, so it is not repeated: clap's message would quote it. A mistyped command name
     // still gets the usual message and its nearest command.
-    if path == "hipc auth" || path.starts_with("hipc auth ") {
-        let word = match error.kind() {
-            ErrorKind::UnknownArgument => error.get(ContextKind::InvalidArg),
-            ErrorKind::InvalidSubcommand => error.get(ContextKind::InvalidSubcommand),
-            _ => None,
-        };
-        if let Some(ContextValue::String(word)) = word
-            && !word.starts_with('-')
-            && word.chars().any(|c| !(c.is_ascii_lowercase() || c == '-'))
-        {
-            return failure(
-                mode,
-                &Error::usage(
-                    format!(
-                        "`{path}` takes no such argument, so the word given is not repeated \
-                         here; if it is a token, treat it as exposed to anyone who can read \
-                         this machine's process list or shell history"
-                    ),
-                    "pass the token with `hipc auth login --token-file <path>` or at its \
-                     prompt, never on the command line",
+    let auth = path == "hipc auth" || path.starts_with("hipc auth ");
+    // Only the errors that quote a word the caller gave; a missing subcommand's context names
+    // the command instead.
+    let refuses_a_word = matches!(
+        error.kind(),
+        ErrorKind::UnknownArgument | ErrorKind::InvalidValue | ErrorKind::InvalidSubcommand
+    );
+    let quoted = [
+        ContextKind::InvalidArg,
+        ContextKind::InvalidValue,
+        ContextKind::InvalidSubcommand,
+    ]
+    .into_iter()
+    .filter(|&kind| auth || kind == ContextKind::InvalidSubcommand)
+    .filter_map(|kind| match error.get(kind) {
+        Some(ContextValue::String(word)) => Some(word.as_str()),
+        _ => None,
+    });
+    // A console token is 40 characters; no command name is 20.
+    let token_shaped = |word: &str| !word.starts_with('-') && word.chars().count() >= 20;
+    if refuses_a_word && quoted.into_iter().any(token_shaped) {
+        return failure(
+            mode,
+            &Error::usage(
+                format!(
+                    "`{path}` takes no such argument or value, so the word given is not \
+                     repeated here; if it is a token, treat it as exposed to anyone who can \
+                     read this machine's process list or shell history"
                 ),
-            );
-        }
+                "pass the token with `hipc auth login --token-file <path>` or at its \
+                 prompt, never on the command line",
+            ),
+        );
     }
     let missing_subcommand = is_missing_subcommand(error);
     let unknown = unknown_subcommand(error);
@@ -950,7 +960,9 @@ mod text {
         match document {
             Value::Array(items) => list(items),
             Value::Object(map)
-                if is_dry_run && map.contains_key("dry_run") && map.contains_key("requests") =>
+                if is_dry_run
+                    && map.contains_key("dry_run")
+                    && map.get("requests").is_some_and(Value::is_array) =>
             {
                 dry_run(map)
             }

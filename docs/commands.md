@@ -8811,7 +8811,7 @@ Options:
       --remove-others
           Let a write that replaces a whole list or document remove the entries it leaves out; required for a PUT of /compute/vms/<vm_id>/firewall/, /cdn/zones/<zone_id>/rules/, /cdn/zones/<zone_id>/waf/rules/, /cdn/zones/<zone_id>/waf/rate-limits/, /cdn/lists/<name>/items/, or /objectstore/buckets/<name>/acl/set/, for a PATCH of /accounts/members/<id>/ whose body sets grants or of /cdn/lists/<name>/ whose body sets items, and for any other write hipc guards that replaces a whole list or document
           
-          hipc api does not read the list first, so without the flag it sends nothing. hipc compute firewall update, hipc cdn rules update, and hipc account members update read the list, and refuse only a write that removes an entry. Each route named needs it for any write method, not only the one named, but a POST or DELETE of /cdn/lists/<name>/items/, which adds or removes the items it names.
+          hipc api does not read the list first, so without the flag it sends nothing. hipc compute firewall update, hipc cdn rules update, and hipc account members update read the list, and refuse only a write that removes an entry. Each route named needs it for any write method, not only the one named; a POST or DELETE of /cdn/lists/<name>/items/, which adds or removes the items it names, needs no flag.
 
   -h, --help
           Print help (see a summary with '-h')

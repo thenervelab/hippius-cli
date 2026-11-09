@@ -1398,6 +1398,25 @@ fn a_guard_holds_for_every_write_method_and_letter_case() {
         let argv = ["api", method, path, BODY, body, "--yes"];
         Hipc::against(&home, &server).run(&argv).fails(2, code);
     }
+    // A refusal holds for every write method too, and its message names the method sent.
+    let error = Hipc::against(&home, &server)
+        .run(&[
+            "api",
+            "PUT",
+            "/cdn/zones/z1/hostnames/cdn.example.com/dns-setup/",
+            "--yes",
+        ])
+        .fails(2, "usage");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("`hipc api` does not send `PUT /api/cdn/zones/<zone_id>/hostnames/"),
+        "{error}"
+    );
+    Hipc::against(&home, &server)
+        .run(&["api", "PATCH", "/registry/subscribe/", "--yes"])
+        .fails(2, "usage");
     // The network summary's first read creates the network, in any letter case.
     for path in ["/Network/me/", "/NETWORK/ME"] {
         Hipc::against(&home, &server)
@@ -1405,6 +1424,16 @@ fn a_guard_holds_for_every_write_method_and_letter_case() {
             .fails(2, "confirmation_required");
     }
     assert!(server.requests().is_empty());
+    // A `DELETE` of the deletion request withdraws it, and is sent.
+    let withdraw = Server::start(vec![route(
+        "DELETE",
+        "/api/account/deletion/",
+        Reply::json(200, "{}"),
+    )]);
+    Hipc::against(&home, &withdraw)
+        .run(&["api", "DELETE", "/account/deletion/", "--yes"])
+        .ok();
+    assert_eq!(withdraw.requests().len(), 1);
 }
 
 /// A CDN zone create, and a zone PATCH that moves the origin, need `--public` as the

@@ -128,10 +128,12 @@ impl Token {
 
 /// Whether `text` holds `token` in any spelling [`crate::client::token_spellings`] lists.
 /// The token is trimmed first, as [`Token::new`] trims it before it is sent, so a hand-edited
-/// file's padded token is found as it goes out. An empty token is in no text.
+/// file's padded token is found as it goes out. A token shorter than [`PREVIEW_MIN_CHARS`]
+/// is in no text: a console token is 40 characters, and a short one, such as `token`, would
+/// match ordinary words and refuse a command line or a ticket for holding it.
 fn quoted_in(token: &str, text: &str) -> bool {
     let token = token.trim();
-    !token.is_empty()
+    token.chars().count() >= PREVIEW_MIN_CHARS
         && zeroize::Zeroizing::new(crate::client::token_spellings(token))
             .iter()
             .any(|spelling| text.contains(spelling.as_str()))

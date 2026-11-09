@@ -59,8 +59,8 @@ pub(crate) struct Api {
     /// hipc api does not read the list first, so without the flag it sends nothing. hipc compute
     /// firewall update, hipc cdn rules update, and hipc account members update read the list,
     /// and refuse only a write that removes an entry. Each route named needs it for any write
-    /// method, not only the one named, but a POST or DELETE of /cdn/lists/<name>/items/, which
-    /// adds or removes the items it names.
+    /// method, not only the one named; a POST or DELETE of /cdn/lists/<name>/items/, which adds
+    /// or removes the items it names, needs no flag.
     #[arg(long)]
     pub(crate) remove_others: bool,
 }

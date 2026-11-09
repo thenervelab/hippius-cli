@@ -485,6 +485,14 @@ const ROUTE_RULES: &[(Method, &str, RouteRule)] = &[
             hint: AUTH_TOKEN_HINT,
         },
     ),
+    // Swagger: a `DELETE` withdraws a pending deletion request, which locks and revokes
+    // nothing, so it is sent as any write is; the other write methods are refused as the
+    // `POST` is.
+    (
+        Method::Delete,
+        "/api/account/deletion/",
+        RouteRule::Needs(&[]),
+    ),
     (
         Method::Post,
         "/api/account/deletion/",
@@ -516,36 +524,12 @@ const ROUTE_RULES: &[(Method, &str, RouteRule)] = &[
                    with the cluster key file and writes it to a new file",
         },
     ),
-    // Swagger lists only `POST`, but any write would carry the credential, so each is
-    // refused.
     (
         Method::Post,
         "/api/cdn/zones/{id}/hostnames/{id}/dns-setup/",
         RouteRule::Refused {
             message: "`hipc api` does not send \
                       `POST /api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`: its body \
-                      and its answer hold a DNS provider credential",
-            hint: "run `hipc cdn hostnames dns-setup`, which reads the credential from a private \
-                   file and keeps it out of every output",
-        },
-    ),
-    (
-        Method::Put,
-        "/api/cdn/zones/{id}/hostnames/{id}/dns-setup/",
-        RouteRule::Refused {
-            message: "`hipc api` does not send \
-                      `PUT /api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`: its body \
-                      and its answer hold a DNS provider credential",
-            hint: "run `hipc cdn hostnames dns-setup`, which reads the credential from a private \
-                   file and keeps it out of every output",
-        },
-    ),
-    (
-        Method::Patch,
-        "/api/cdn/zones/{id}/hostnames/{id}/dns-setup/",
-        RouteRule::Refused {
-            message: "`hipc api` does not send \
-                      `PATCH /api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`: its body \
                       and its answer hold a DNS provider credential",
             hint: "run `hipc cdn hostnames dns-setup`, which reads the credential from a private \
                    file and keeps it out of every output",
@@ -706,11 +690,13 @@ const ROUTE_RULES: &[(Method, &str, RouteRule)] = &[
 /// too ([`folded`]). A path without its trailing `/` matches as if it had one, for the reason
 /// [`returns_secret`] gives.
 ///
-/// A row whose rule asks for a flag, and whose method writes, also applies to every other
-/// write method on its route that no row lists ([`applies`]): swagger names one method, but
-/// a view may take another (Django REST framework's update views take `PUT` beside `PATCH`),
-/// and a flag that a second method skipped would guard nothing. A refusal names its method
-/// in its message, so it is listed for each method it refuses.
+/// A row whose method writes also applies to every other write method on its route that no
+/// row lists ([`applies`]): swagger names one method, but a view may take another (Django
+/// REST framework's update views take `PUT` beside `PATCH`), and a guard that a second method
+/// skipped would guard nothing. A refusal borrowed this way names the request's own method
+/// ([`Client::route_flags`](crate::Client::route_flags)). A row with no flag (`Needs(&[])`)
+/// lists a method the API documents as doing something else, so nothing is borrowed for it;
+/// it must come after the row whose rule the route's other methods borrow.
 pub(crate) fn route_rules(method: Method, path: &str) -> Vec<RouteRule> {
     let mut rules = Vec::new();
     for form in folded(path) {
@@ -769,13 +755,9 @@ fn borrowed(rule: RouteRule, method: Method) -> RouteRule {
 }
 
 /// Whether a row listed for `route` guards a request with `method` that no row of its path
-/// lists: both write, and the rule asks for a flag rather than refusing.
+/// lists: both write, and the row guards something (a row with no flag lends nothing).
 fn applies(route: Method, rule: RouteRule, method: Method) -> bool {
-    let asks_for_a_flag = matches!(
-        rule,
-        RouteRule::Needs(_) | RouteRule::NeedsWhenSet(..) | RouteRule::NeedsUnlessFalse(..)
-    );
-    asks_for_a_flag && !route.is_read() && !method.is_read()
+    !matches!(rule, RouteRule::Needs([])) && !route.is_read() && !method.is_read()
 }
 
 /// The outcome of a route table for `path` (its query ignored): `table` gives the outcome
@@ -1823,7 +1805,7 @@ pub(crate) mod tests {
         assert_rules_hold(&routes);
         assert_eq!(
             ROUTE_RULES.len(),
-            34,
+            33,
             "a new row needs cases in a rule test"
         );
     }
@@ -1833,13 +1815,11 @@ pub(crate) mod tests {
     fn assert_rules_hold(routes: &[(Method, &str, &str)]) {
         for &(_, path, _) in routes {
             for method in METHODS {
-                // A flag rule of a write holds for the route's other write methods too.
+                // A write's rule holds for the route's other write methods too, but for a row
+                // with no flag (`""`), which lends nothing.
                 let from_another_write = || {
                     routes.iter().find(|&&(m, p, rule)| {
-                        p == path
-                            && !m.is_read()
-                            && !method.is_read()
-                            && !rule.starts_with("refused")
+                        p == path && !m.is_read() && !method.is_read() && !rule.is_empty()
                     })
                 };
                 let expected = routes
@@ -1912,13 +1892,25 @@ pub(crate) mod tests {
         ] {
             assert_eq!(rule_name(method, items).as_deref(), expected, "{method}");
         }
+        // A refusal holds for every write method too; a deletion request's `DELETE`, which
+        // withdraws it, is sent.
         for (method, path) in [
             (Method::Put, "/api/account/deletion/"),
-            (Method::Delete, "/api/account/deletion/"),
+            (Method::Patch, "/api/account/deletion/"),
             (Method::Put, "/api/registry/subscribe/"),
+            (Method::Delete, "/api/cdn/zones/z1/hostnames/h/dns-setup/"),
         ] {
-            assert_eq!(rule_name(method, path), None, "{method} {path}");
+            assert_eq!(
+                rule_name(method, path).as_deref(),
+                Some("refused"),
+                "{method} {path}"
+            );
         }
+        assert_eq!(rule_name(Method::Delete, "/api/account/deletion/"), None);
+        assert_eq!(
+            rule_name(Method::Put, "/api/compute/app-engine/validate/").as_deref(),
+            Some("refused if secrets")
+        );
         // The route a refusal names is refused in any letter case too.
         assert_eq!(
             rule_name(Method::Post, "/api/Account/Deletion/").as_deref(),

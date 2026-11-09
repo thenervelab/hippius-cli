@@ -244,7 +244,14 @@ pub fn read_phrase_file(path: &Path, flag: &'static str) -> Result<Zeroizing<Str
         if path.to_str().is_some_and(holds_phrase) {
             return Err(phrase_in_argv());
         }
-        return Err(refuse("does not exist"));
+        // Nor is a path that names no file, which may be a secret passed in its place.
+        return Err(Error::usage(
+            format!(
+                "the access key file `{flag}` names does not exist; the path is not repeated \
+                 here, in case it is the access key itself"
+            ),
+            format!("pass `{flag}` a file that holds only the access key's words"),
+        ));
     };
     let mut bytes = Zeroizing::new(bytes);
     if std::str::from_utf8(&bytes).is_err() {

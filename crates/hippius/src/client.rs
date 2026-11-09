@@ -1053,10 +1053,12 @@ impl Client {
                         flags
                     }
                 }
-                RouteRule::Refused { message, hint } => return Err(Error::usage(message, hint)),
+                RouteRule::Refused { message, hint } => {
+                    return Err(Error::usage(for_method(message, request.method), hint));
+                }
                 RouteRule::RefusedWhenSet { key, message, hint } => {
                     if sets_key(request.body.as_deref(), key) {
-                        return Err(Error::usage(message, hint));
+                        return Err(Error::usage(for_method(message, request.method), hint));
                     }
                     &[]
                 }
@@ -2060,6 +2062,22 @@ fn wait_for(retry_after_ms: Option<u64>) -> Option<String> {
             crate::phrase::count(ms.div_ceil(1000), "second")
         )
     })
+}
+
+/// `message`, a refusal that names the method of its row, such as
+/// ``... does not send `POST /api/...` ``, with that method replaced by `method`: a write
+/// borrows the refusal of another write method on its route (`account::route_rules`), and
+/// the message names what was asked.
+fn for_method(message: &str, method: Method) -> String {
+    ["POST", "PUT", "PATCH", "DELETE"]
+        .iter()
+        .find_map(|listed| {
+            let named = format!("`{listed} /");
+            message
+                .contains(&named)
+                .then(|| message.replacen(&named, &format!("`{method} /"), 1))
+        })
+        .unwrap_or_else(|| message.to_owned())
 }
 
 /// The fields that hold a secret in a Hippius answer, dropped from an error body (tenet 9).

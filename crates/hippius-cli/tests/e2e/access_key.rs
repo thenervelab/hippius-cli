@@ -820,7 +820,8 @@ fn the_phrase_file_must_be_private_and_not_a_symlink() {
         .fails(2, "usage");
     assert_eq!(
         error["message"],
-        format!("the access key file `{missing}` does not exist")
+        "the access key file `--access-key-file` names does not exist; the path is not \
+         repeated here, in case it is the access key itself"
     );
     assert!(server.requests().is_empty());
 }
