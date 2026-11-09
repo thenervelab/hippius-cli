@@ -27,6 +27,7 @@ mod drive;
 mod examples;
 mod expose;
 mod file_inputs;
+mod gamma;
 mod halpha;
 mod hub;
 mod hub_keys;

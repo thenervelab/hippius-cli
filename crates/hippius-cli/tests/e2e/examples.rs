@@ -139,6 +139,10 @@ fn run_against(server: &Server, args: &[&str]) -> Run {
         format!("{}\n", crate::common::PHRASES[1]).as_bytes(),
     );
     home.file(
+        "hotkey.txt",
+        format!("{}\n", crate::common::PHRASES[0]).as_bytes(),
+    );
+    home.file(
         "id_ed25519.pub",
         b"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGV4YW1wbGU ana@laptop\n",
     );
@@ -338,12 +342,14 @@ fn every_confirmed_command_refuses_without_yes_and_sends_no_write() {
 /// The commands whose real run always sends more than one request, which a dry run lists
 /// (`TENETS.md` tenet 5). A list replace is told by its `reads_first`, and Hub
 /// `--replace` by its `may_cancel_first`.
-const MORE_THAN_ONE_REQUEST: [&str; 24] = [
+const MORE_THAN_ONE_REQUEST: [&str; 25] = [
     // With `--access-key-file`; with `--token-file` it is a local `action`.
     "auth login",
     "auth status",
     "billing subscriptions",
     "billing auto-reload update",
+    // The challenge, then the link with its signature.
+    "billing gamma hotkeys create",
     "s3 tokens list",
     "compute vms delete",
     "compute backups restore",
