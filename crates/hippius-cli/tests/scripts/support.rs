@@ -20,13 +20,11 @@ impl TempDir {
         // user who made the path first fails the test instead of owning its files.
         let random = std::hash::BuildHasher::hash_one(
             &std::collections::hash_map::RandomState::new(),
-            NEXT.load(Ordering::Relaxed),
+            (std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)),
         );
-        let path = std::env::temp_dir().join(format!(
-            "hipc-scripts-{}-{}-{random:016x}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        // Short: a test archives a symlink to a file in here, and the ustar format that
+        // bsdtar appends with (`tar -rf`, macOS) holds a link target of at most 100 bytes.
+        let path = std::env::temp_dir().join(format!("hipc-s-{random:016x}"));
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(&path)

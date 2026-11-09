@@ -474,7 +474,8 @@ fn a_tarball_whose_hipc_is_a_symlink_installs_nothing() {
         let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
         let target = "x86_64-unknown-linux-musl";
         let ran = machine.home.path().join("ran");
-        let local = machine.home.path().join("local-program");
+        // A short name: the link target must fit ustar's 100 bytes (see `TempDir::new`).
+        let local = machine.home.path().join("prog");
         std::fs::write(
             &local,
             format!("#!/bin/sh\ntouch '{}'\necho hipc 0.0.0\n", ran.display()),
