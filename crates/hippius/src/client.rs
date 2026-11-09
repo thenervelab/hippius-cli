@@ -1376,7 +1376,7 @@ impl Client {
         let date = header("date");
         // The status has arrived, so it decides even when the body cannot be read: a 2xx
         // write was done (`partial`, not retryable), and a 4xx is that status's error.
-        // The limit is one byte past the cap: ureq 3.4.2 refuses a read once its limit is used
+        // The limit is one byte past the cap: ureq 3.5.0 refuses a read once its limit is used
         // up, before it sees the end of the body (`LimitReader::read` in `src/body/limit.rs`),
         // so a limit of the cap itself would refuse a body of exactly the cap.
         let body = match response
@@ -1531,7 +1531,7 @@ fn check_if_match(request: &Request) -> Result<()> {
     }
 }
 
-/// The proxy variables, in the order the HTTP library reads them (ureq 3.4.2,
+/// The proxy variables, in the order the HTTP library reads them (ureq 3.5.0,
 /// `Proxy::try_from_env`).
 const PROXY_VARIABLES: [&str; 6] = [
     "ALL_PROXY",
@@ -2251,7 +2251,7 @@ enum Progress {
 ///
 /// A proxy `CONNECT` does not count either. ureq opens the proxy leg through this whole
 /// chain, this link included, with a copy of the config that has no proxy
-/// (`ConnectProxyConnector`, ureq 3.4.2 `transport/connect.rs`). So on a client that uses
+/// (`ConnectProxyConnector`, ureq 3.5.0 `src/unversioned/transport/connect.rs`). So on a client that uses
 /// a proxy, a connection whose config has none is that leg: it gets a flag of its own that
 /// nothing reads. The connection to the API is wrapped again around it and is marked.
 ///
@@ -2631,6 +2631,7 @@ mod tests {
         let timeout = || NextTimeout {
             after: std::time::Duration::from_secs(1).into(),
             reason: ureq::Timeout::Global,
+            ..NextTimeout::default()
         };
         // Reading and checking the connection is not writing a request.
         assert!(!marked.await_input(timeout()).unwrap());

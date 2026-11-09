@@ -3534,7 +3534,13 @@ list_teardown() {
 # The commands no tier runs, as itself or as a --dry-run: `path: reason`, one per line.
 # `--excluded` prints them, and a test fails when a command of `hipc schema` is neither run
 # nor named here, or is named here and run too.
-EXCLUDED='completions: prints a shell script; the binary is covered by its tests, not the account'
+EXCLUDED='completions: prints a shell script; the binary is covered by its tests, not the account
+billing gamma get: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
+billing gamma hotkeys create: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
+billing gamma hotkeys delete: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
+billing gamma conversions create: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
+billing gamma conversions list: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
+billing gamma conversions get: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey'
 
 if [[ $EXCLUDED_ONLY == 1 ]]; then
   printf '%s\n' "$EXCLUDED"

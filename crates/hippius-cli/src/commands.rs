@@ -10,6 +10,7 @@ pub(crate) mod compute;
 pub(crate) mod credits;
 pub(crate) mod drive;
 pub(crate) mod files;
+pub(crate) mod gamma;
 pub(crate) mod halpha;
 pub(crate) mod hub;
 pub(crate) mod list;

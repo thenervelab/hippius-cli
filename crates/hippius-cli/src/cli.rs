@@ -64,8 +64,9 @@ pub(crate) use crate::cli::backups::{
     BackupInterval, BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, FailoverMode,
 };
 pub(crate) use crate::cli::billing::{
-    AutoReload, AutoReloadUpdate, Billing, BillingProfile, CHAIN_MINIMUM, Invoices, ONE, Planck,
-    ProfileUpdate, ReloadCap, TopUp, TopUpMethod, Usd, usd,
+    AutoReload, AutoReloadUpdate, Billing, BillingProfile, CHAIN_MINIMUM, Gamma, GammaConversions,
+    GammaHotkeys, Invoices, ONE, Planck, ProfileUpdate, ReloadCap, TopUp, TopUpMethod, Usd,
+    conversion_id, usd,
 };
 pub(crate) use crate::cli::cdn::{
     Cdn, CdnCap, CdnEstimate, CdnHostnames, CdnPurge, CdnPurges, CdnRules, CdnStats, CdnZones,

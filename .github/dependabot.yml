@@ -16,7 +16,7 @@ updates:
         update-types: [minor, patch]
     ignore:
       # The kubeconfig and node-operation crypto moves as one set: crypto_box 0.9 (its latest
-      # stable release) uses curve25519-dalek 4, digest 0.10 and getrandom 0.2, so a major of
+      # stable release) uses curve25519-dalek 4 and getrandom 0.2, so a major of
       # any of these alone builds a second curve or a second RNG next to the first. Move them
       # together, by hand, once a stable crypto_box uses curve25519-dalek 5.
       - dependency-name: crypto_box
@@ -25,9 +25,19 @@ updates:
         update-types: [version-update:semver-major]
       - dependency-name: curve25519-dalek
         update-types: [version-update:semver-major]
+      - dependency-name: getrandom
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      # The RustCrypto hashes share one digest release: a breaking sha2, sha3, hmac, blake2 or
+      # pbkdf2 alone does not build against the others, so they move together, by hand.
       - dependency-name: sha2
         update-types: [version-update:semver-major, version-update:semver-minor]
-      - dependency-name: getrandom
+      - dependency-name: sha3
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: hmac
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: blake2
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: pbkdf2
         update-types: [version-update:semver-major, version-update:semver-minor]
   - package-ecosystem: github-actions
     directory: /
