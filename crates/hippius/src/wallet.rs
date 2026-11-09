@@ -190,9 +190,9 @@ fn legacy_v(recovery: i32) -> u8 {
 /// The template of the server's message is not documented (swagger types it as a string), so
 /// the rules hold what any challenge holds and a document to sign does not: the nonce the
 /// answer names, inside the message; text of at most [`MAX_CHALLENGE_BYTES`] with no control
-/// character, so no line break, which a Sign-In with Ethereum message needs, and no raw
-/// bytes, which an extrinsic payload is; and more than 32 bytes, since Substrate signs the
-/// 32-byte hash of a long payload, not the payload.
+/// character or Unicode line or paragraph separator, so no line break, which a Sign-In with
+/// Ethereum message needs, and no raw bytes, which an extrinsic payload is; and more than 32
+/// bytes, since Substrate signs the 32-byte hash of a long payload, not the payload.
 pub(crate) fn check_challenge(
     message: &str,
     challenge: &str,
@@ -208,6 +208,11 @@ pub(crate) fn check_challenge(
     }
     if message.chars().any(char::is_control) {
         return Err("message holds a control character");
+    }
+    // U+2028 and U+2029 are not control characters, but a verifier that splits on Unicode
+    // line breaks reads them as one, as it would a line feed.
+    if message.contains(['\u{2028}', '\u{2029}']) {
+        return Err("message holds a line or paragraph separator");
     }
     if !message.contains(challenge) {
         return Err("message does not hold its `challenge`");
@@ -801,6 +806,9 @@ mod tests {
         let nonce = "8f2c41d09a7b";
         let ok = format!("Sign in to Hippius with challenge {nonce}");
         assert!(key.sign_login(&ok, nonce).is_ok());
+        // The form the public wallet login guide shows.
+        let documented = format!("Please sign this message to verify your ownership: {nonce}");
+        assert!(key.sign_login(&documented, nonce).is_ok());
         let long = format!("{nonce} {}", "a".repeat(1024));
         let siwe = format!(
             "example.com wants you to sign in with your Ethereum account:\n{}\n\nNonce: {nonce}",
@@ -825,6 +833,16 @@ mod tests {
                 "Sign in to Hippius 8f2c41d09a7b\u{1b}[2J",
                 nonce,
                 "message holds a control character",
+            ),
+            (
+                "example.com wants you to sign in\u{2028}Nonce: 8f2c41d09a7b",
+                nonce,
+                "message holds a line or paragraph separator",
+            ),
+            (
+                "example.com wants you to sign in\u{2029}Nonce: 8f2c41d09a7b",
+                nonce,
+                "message holds a line or paragraph separator",
             ),
         ];
         for (message, challenge, why) in cases {
