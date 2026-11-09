@@ -461,6 +461,13 @@ fn file_hint(flag: &str, provider: DnsProvider) -> String {
 mod tests {
     use super::*;
 
+    /// Every string, at any depth, and every name is dropped through `Zeroizing`; numbers and
+    /// the rest are dropped as they are.
+    #[test]
+    fn a_value_of_any_shape_is_dropped_cleared() {
+        clear_owned(serde_json::json!({"a": [1, "s", {"k": "v"}, null, true], "b": 2.5}));
+    }
+
     #[test]
     fn the_spellings_include_the_rust_and_python_escapes() {
         assert_eq!(

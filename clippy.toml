@@ -21,4 +21,6 @@ disallowed-methods = [
   { path = "serde_json::Map::remove_entry", reason = "it reorders the fields; use `shift_remove_entry`" },
   { path = "serde_json::Map::swap_remove", reason = "it reorders the fields; use `shift_remove`" },
   { path = "serde_json::Map::swap_remove_entry", reason = "it reorders the fields; use `shift_remove_entry`" },
+  { path = "serde_json::map::OccupiedEntry::remove", reason = "it reorders the fields; use `shift_remove` on the map" },
+  { path = "serde_json::map::OccupiedEntry::remove_entry", reason = "it reorders the fields; use `shift_remove_entry` on the map" },
 ]

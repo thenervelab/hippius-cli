@@ -423,9 +423,7 @@ fn create_private_dirs(dir: &Path) -> std::io::Result<()> {
     if dir.as_os_str().is_empty() || fs::symlink_metadata(dir).is_ok() {
         return Ok(());
     }
-    if let Some(parent) = dir.parent() {
-        create_private_dirs(parent)?;
-    }
+    create_private_dirs(dir.parent().unwrap_or(Path::new("")))?;
     match fs::DirBuilder::new().mode(0o700).create(dir) {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
         created => created?,
@@ -1114,7 +1112,9 @@ impl PrivateFile {
     /// `0400`, and the next run could not open it to lock it.
     fn open_lock(&self) -> Result<OwnedFd> {
         let name = self.sibling("lock");
-        let flags = OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        // Read-only: `flock` needs no write access, so a lock file an older run left `0400`
+        // under a strict umask still opens.
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         // Created with `O_EXCL`, then opened without `O_CREAT` when it exists. On macOS
         // (Darwin 24, APFS), `openat` with `O_CREAT` and without `O_EXCL` can fail with
         // `ENOENT` when another thread or process creates the same name at the same moment.
@@ -1124,7 +1124,7 @@ impl PrivateFile {
             Err(Errno::EXIST) => rustix::fs::openat(&self.dir, &name, flags, Mode::empty()),
             Err(e) => Err(e),
         };
-        opened.map_err(|e| self.lock_error(e))
+        self.locking(opened)
     }
 
     /// Takes the exclusive `flock` of `fd`, the file's lock file. When another process holds
@@ -1143,18 +1143,21 @@ impl PrivateFile {
             }
             locked => locked,
         };
-        locked.map(|()| fd).map_err(|e| self.lock_error(e))
+        self.locking(locked.map(|()| fd))
     }
 
-    /// The error of a lock file that cannot be opened or locked.
-    fn lock_error(&self, error: Errno) -> Error {
-        let dir = directory(&self.path);
-        file_error(
-            "lock",
-            &dir.join(self.sibling("lock")),
-            &error.into(),
-            Denied::Chmod("700", dir),
-        )
+    /// `result` of an open or a lock of the lock file, with the error of a lock file that
+    /// cannot be opened or locked.
+    fn locking(&self, result: rustix::io::Result<OwnedFd>) -> Result<OwnedFd> {
+        result.map_err(|error| {
+            let dir = directory(&self.path);
+            file_error(
+                "lock",
+                &dir.join(self.sibling("lock")),
+                &error.into(),
+                Denied::Chmod("700", dir),
+            )
+        })
     }
 
     /// Creates the file empty with mode `0600` when it is missing, never through a symlink,
@@ -1163,10 +1166,12 @@ impl PrivateFile {
     /// which keeps the owner bits a file has, would keep it so.
     pub(crate) fn create_if_missing(&self) -> Result<bool> {
         let flags = OFlags::WRONLY | CREATE_NEW;
-        match rustix::fs::openat(&self.dir, &self.name, flags | OFlags::CLOEXEC, PRIVATE)
-            .and_then(|fd| rustix::fs::fchmod(&fd, PRIVATE))
-        {
-            Ok(()) => Ok(true),
+        match rustix::fs::openat(&self.dir, &self.name, flags | OFlags::CLOEXEC, PRIVATE) {
+            // Best effort: the file exists now, and the caller must know it made it.
+            Ok(fd) => {
+                let _best_effort = rustix::fs::fchmod(&fd, PRIVATE);
+                Ok(true)
+            }
             // It exists, or it is a symlink, which the read refuses with its own message.
             Err(Errno::EXIST) => Ok(false),
             Err(e) => Err(file_error(

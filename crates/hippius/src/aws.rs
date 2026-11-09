@@ -326,8 +326,8 @@ pub fn configure(
     // that exist are compared now, before any question; a missing one only once the write
     // is certain, so declining the question creates neither file. It does not leave the
     // disk as it was: `ensure` above has already created a missing directory, and the lock
-    // below creates `.<credentials name>.lock` beside the credentials file, which stays, as
-    // every lock file does. A refusal at that later point leaves the empty file it created.
+    // below create `.<config name>.lock` and `.<credentials name>.lock` beside the two
+    // files, which stay, as every lock file does. A refusal at that later point leaves the empty file it created.
     refuse_one_file(files)?;
     // Both files are locked, so two runs that share only one of them cannot lose each
     // other's section. The locks also remove each file's leftover temporary files, which for
@@ -519,8 +519,9 @@ fn profile_named(kind: Kind, header: &str) -> Option<String> {
     match kind {
         Kind::Credentials => Some(header.to_owned()),
         Kind::Config if header == "default" => Some(header.to_owned()),
+        // botocore passes over a profile whose name is empty.
         Kind::Config if header.starts_with("profile") => match &shell_words(header)?[..] {
-            [_, name] => Some(name.clone()),
+            [_, name] if !name.is_empty() => Some(name.clone()),
             _ => None,
         },
         Kind::Config => None,
@@ -607,6 +608,10 @@ fn set_section(
     let mut skipping = false;
     let mut replaced = false;
     for (line, found) in lines_and_headers(text) {
+        // The header that ends a section this replaced or removed follows an option of the
+        // new body, at column 0; indented, it would read as that option's continuation, so
+        // its indent is dropped. A header resets the option, so nothing after it changes.
+        let ended = skipping;
         if let Some(found) = found {
             skipping = profile_named(kind, found).as_deref() == Some(name);
             if skipping && !replaced {
@@ -615,7 +620,7 @@ fn set_section(
             }
         }
         if !skipping {
-            out.push_str(line);
+            out.push_str(if ended { line.trim_start() } else { line });
         }
     }
     if !replaced {
@@ -865,6 +870,8 @@ mod tests {
             config: dir.join("config"),
             credentials: dir.join("credentials"),
         };
+        // The profile exists, so the run asks before it replaces it, under both locks.
+        write_private_file(&files.credentials, b"[p]\nold = 1\n");
         let other = PrivateFile::ensure(&files.config, AWS_CONFIG).unwrap();
         let held = other.lock().unwrap();
         let (told, waiting) = std::sync::mpsc::channel();
@@ -891,8 +898,9 @@ mod tests {
                 crate::phrase::quote_path(&files.config)
             )
         );
-        assert!(
-            !files.credentials.exists(),
+        assert_eq!(
+            fs::read_to_string(&files.credentials).unwrap(),
+            "[p]\nold = 1\n",
             "nothing is written while it waits"
         );
         drop(held);
@@ -912,14 +920,37 @@ mod tests {
     #[test]
     fn one_lock_file_named_twice_is_locked_once() {
         let dir = temp_dir("one-lock-file");
-        let file = dir.join("same");
-        let a = PrivateFile::ensure(&file, AWS_CONFIG).unwrap();
-        let b = PrivateFile::ensure(&dir.join(".").join("same"), AWS_CREDENTIALS).unwrap();
-        let c = PrivateFile::ensure(&dir.join("other"), AWS_CREDENTIALS).unwrap();
-        crate::config::on_lock_wait(|note| panic!("no lock is held: {note}"));
-        assert_eq!(PrivateFile::lock_all(&[&a, &b]).unwrap().len(), 1);
-        assert_eq!(PrivateFile::lock_all(&[&c, &a, &b]).unwrap().len(), 2);
-        crate::config::on_lock_wait(|_| {});
+        // A lock file an older run left read-only still locks.
+        fs::write(dir.join(".other.lock"), "").unwrap();
+        fs::set_permissions(dir.join(".other.lock"), fs::Permissions::from_mode(0o400)).unwrap();
+        let held = PrivateFile::ensure(&dir.join("other"), AWS_CREDENTIALS)
+            .unwrap()
+            .lock()
+            .unwrap();
+        let (told, notes) = std::sync::mpsc::channel();
+        let run = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                crate::config::on_lock_wait(move |note| told.send(note.to_owned()).unwrap());
+                let a = PrivateFile::ensure(&dir.join("same"), AWS_CONFIG).unwrap();
+                let b = PrivateFile::ensure(&dir.join(".").join("same"), AWS_CREDENTIALS).unwrap();
+                let c = PrivateFile::ensure(&dir.join("other"), AWS_CREDENTIALS).unwrap();
+                let once = PrivateFile::lock_all(&[&a, &b]).unwrap().len();
+                // Then a lock another descriptor holds: this one waits, and says so.
+                let both = PrivateFile::lock_all(&[&c, &a, &b]).unwrap().len();
+                (once, both)
+            })
+        };
+        // The first note is the wait for `other`: the lock of `same` was taken once, at once.
+        let note = notes
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the wait for the held lock");
+        assert!(
+            note.ends_with(&crate::phrase::quote_path(&dir.join("other"))),
+            "{note}"
+        );
+        drop(held);
+        assert_eq!(run.join().unwrap(), (1, 2));
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1228,7 +1259,7 @@ mod tests {
             (Kind::Config, "profile  hippius", Some("hippius")),
             (Kind::Config, "profile \"hip pius\"", Some("hip pius")),
             (Kind::Config, "profile 'x'\\y\"\\\"\\n\"", Some("xy\"\\n")),
-            (Kind::Config, "profile ''", Some("")),
+            (Kind::Config, "profile ''", None),
             (Kind::Config, "profilex y", Some("y")),
             (Kind::Config, "profile", None),
             (Kind::Config, "profile a b", None),
@@ -1273,6 +1304,13 @@ mod tests {
             set(text, "default", "[default]", &["d = 2"]),
             format!("{text}\n[default]\nd = 2\n")
         );
+        // The indented header after a replaced section is moved to column 0, so it does not
+        // read as a continuation of the new body's last option.
+        let text = "[p]\n a = 1\n [work]\n k = W\n";
+        let out = set(text, "p", "[p]", &["x = 1"]);
+        assert_eq!(out, "[p]\nx = 1\n[work]\n k = W\n");
+        let headers: Vec<_> = lines_and_headers(&out).filter_map(|(_, h)| h).collect();
+        assert_eq!(headers, ["p", "work"]);
     }
 
     #[test]
