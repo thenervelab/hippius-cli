@@ -48,6 +48,10 @@ fn with_gamma_hint(error: Error) -> Error {
             "the hotkey is not linked to this account: `hipc billing gamma get` lists the linked \
              hotkeys"
         }
+        Some("gamma_page_not_found") => {
+            "the page is past the end of the list: run `hipc billing gamma conversions list` \
+             again without `--page-token`"
+        }
         Some("gamma_conversion_not_found") => {
             "this account has no such conversion: `hipc billing gamma conversions list` lists \
              them"

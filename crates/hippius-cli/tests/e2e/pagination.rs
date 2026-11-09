@@ -261,6 +261,10 @@ const PAGED_BY_NUMBER: &[(&[&str], &str)] = &[
     (&["billing", "transactions"], "/api/billing/transactions/"),
     (&["billing", "invoices", "list"], "/api/billing/invoices/"),
     (
+        &["billing", "gamma", "conversions", "list"],
+        "/api/billing/gamma/conversions/",
+    ),
+    (
         &["drive", "subscription", "history"],
         "/api/drive/subscription/history/",
     ),

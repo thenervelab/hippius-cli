@@ -446,6 +446,19 @@ fn the_gamma_refusals_name_what_helps() {
             "hipc billing gamma conversions list",
         ),
         (
+            vec![
+                "billing",
+                "gamma",
+                "conversions",
+                "list",
+                "--page-token",
+                "9",
+            ],
+            404,
+            "gamma_page_not_found",
+            "without `--page-token`",
+        ),
+        (
             vec!["billing", "gamma", "get"],
             400,
             "gamma_personal_only",
