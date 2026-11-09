@@ -14,8 +14,10 @@
 //! The phrase is never kept: [`AccessKey::from_phrase`] reads it into the two keys, and
 //! clears every buffer of its own that held the phrase, its entropy, its seed, a BIP-32
 //! parent key, or a tweak. What it cannot clear: bip39 computes the seed with its own
-//! PBKDF2, whose HMAC pads stay on the stack frames it returns from, and a secp256k1 key or
-//! scalar passed by value leaves the copy the call made. No message quotes the phrase, and no
+//! PBKDF2, whose HMAC pads stay on the stack frames it returns from; a secp256k1 key or
+//! scalar passed by value leaves the copy the call made; and secp256k1 0.33 copies the
+//! secret key into the seed it re-randomizes its context with, in `PublicKey::from_secret_key`
+//! (each BIP-32 step) and in `sign_ecdsa_recoverable` (each signature), and does not clear it. No message quotes the phrase, and no
 //! error of a library it passes through is passed on.
 //!
 //! A login signs a message the server chose, with the same sr25519 context a chain
@@ -28,9 +30,11 @@ use std::path::Path;
 
 use bip39::{Language, Mnemonic};
 use blake2::{Blake2b512, Digest as _};
-use hmac::{Hmac, Mac as _};
+use hmac::digest::FixedOutput as _;
+use hmac::{Hmac, KeyInit as _, Mac as _};
 use schnorrkel::{ExpansionMode, Keypair, MiniSecretKey};
-use secp256k1::{Message, PublicKey, Scalar, Secp256k1, SecretKey};
+use secp256k1::ecdsa::RecoverableSignature;
+use secp256k1::{Message, PublicKey, Scalar, SecretKey};
 use sha2::Sha512;
 use sha3::Keccak256;
 use unicode_normalization::UnicodeNormalization as _;
@@ -212,11 +216,11 @@ impl AccessKey {
     /// [`personal_message_hash`], as `0x` and `r || s || v` in hex with `v` 27 or 28.
     fn personal_sign(&self, message: &[u8]) -> String {
         let digest = Message::from_digest(personal_message_hash(message));
-        let signed = Secp256k1::signing_only().sign_ecdsa_recoverable(digest, &self.ethereum.0);
+        let signed = RecoverableSignature::sign_ecdsa_recoverable(digest, &self.ethereum.0);
         let (recovery, compact) = signed.serialize_compact();
         let mut bytes = [0_u8; 65];
         bytes[..64].copy_from_slice(&compact);
-        bytes[64] = legacy_v(i32::from(recovery));
+        bytes[64] = legacy_v(u8::from(recovery));
         format!("0x{}", hex(&bytes))
     }
 }
@@ -224,8 +228,8 @@ impl AccessKey {
 /// Ethereum's legacy `v`, 27 or 28, for a recovery id: its low bit is the parity of `y`. Ids
 /// 2 and 3, which say `x` overflowed the curve order (a chance near 2^-127), cannot be
 /// written in a legacy `v`, so their parity is kept, as Ethereum libraries do.
-fn legacy_v(recovery: i32) -> u8 {
-    if recovery % 2 == 0 { 27 } else { 28 }
+fn legacy_v(recovery: u8) -> u8 {
+    27 + (recovery & 1)
 }
 
 /// Why `message` is not a login challenge whose nonce is `challenge`, or `Ok`.
@@ -439,15 +443,14 @@ fn parse(text: &str, source: &Source, owner: &str) -> Result<Mnemonic> {
 /// BIP-32 says, but refused: the chance is below 2^-127, and a skip would derive a key no
 /// wallet expects.
 fn derive(seed: &[u8], path: &[u32]) -> EthereumKey {
-    let secp = Secp256k1::signing_only();
     let (key, mut chain) = split(&hmac_sha512(b"Bitcoin seed", &[seed]));
     let mut secret =
-        EthereumKey(SecretKey::from_byte_array(*key).expect("BIP-32: the master key is valid"));
+        EthereumKey(SecretKey::from_secret_bytes(*key).expect("BIP-32: the master key is valid"));
     drop(key);
     for &index in path {
         let index_bytes = index.to_be_bytes();
-        let public = PublicKey::from_secret_key(&secp, &secret.0).serialize();
-        let parent = Zeroizing::new(secret.0.secret_bytes());
+        let public = PublicKey::from_secret_key(&secret.0).serialize();
+        let parent = Zeroizing::new(secret.0.to_secret_bytes());
         // A hardened child hashes the parent's private key, a normal one its public key.
         let data: [&[u8]; 3] = if index >= HARDENED {
             [&[0], &parent[..], &index_bytes]
@@ -476,7 +479,9 @@ fn hmac_sha512(key: &[u8], data: &[&[u8]]) -> Zeroizing<[u8; 64]> {
         mac.update(part);
     }
     let mut out = Zeroizing::new([0_u8; 64]);
-    let mut tag = mac.finalize().into_bytes();
+    // `finalize().into_bytes()` would clone the tag out of a `CtOutput`, leaving the
+    // original behind; `finalize_fixed` moves the one copy out, which is cleared below.
+    let mut tag = mac.finalize_fixed();
     out.copy_from_slice(&tag);
     tag.zeroize();
     out
@@ -505,7 +510,7 @@ pub(crate) fn personal_message_hash(message: &[u8]) -> [u8; 32] {
 /// public key without the `04` tag, each hex letter in upper case where the same nibble of
 /// the Keccak-256 of the lowercase hex is 8 or more.
 fn ethereum_address(key: &EthereumKey) -> String {
-    let public = PublicKey::from_secret_key(&Secp256k1::signing_only(), &key.0);
+    let public = PublicKey::from_secret_key(&key.0);
     ethereum_address_of(&public)
 }
 
@@ -591,7 +596,7 @@ fn no_random_bytes(error: getrandom::Error) -> Error {
 mod tests {
     use std::path::PathBuf;
 
-    use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+    use secp256k1::ecdsa::RecoveryId;
 
     use super::*;
 
@@ -660,7 +665,7 @@ mod tests {
     fn the_substrate_dev_phrase_derives_alith_on_ethereum() {
         let key = key(DEV_PHRASE);
         assert_eq!(
-            hex(&key.ethereum.0.secret_bytes()),
+            hex(&key.ethereum.0.to_secret_bytes()),
             "5fb92d6e98884f76de468fa3f6278f8807c48bebc13595d45af5bdc4da702133"
         );
         assert_eq!(key.address(), "0xf24FF3a9CF04c71Dbc94D0b566f7A27B94566cac");
@@ -698,7 +703,7 @@ mod tests {
         ];
         for (path, secret) in expected {
             assert_eq!(
-                hex(&derive(&seed, path).0.secret_bytes()),
+                hex(&derive(&seed, path).0.to_secret_bytes()),
                 secret,
                 "{path:?}"
             );
@@ -711,11 +716,8 @@ mod tests {
         assert_eq!(bytes.len(), 65);
         let recovery = RecoveryId::try_from(i32::from(bytes[64]) - 27).unwrap();
         let signature = RecoverableSignature::from_compact(&bytes[..64], recovery).unwrap();
-        let public = Secp256k1::verification_only()
-            .recover_ecdsa(
-                Message::from_digest(personal_message_hash(message)),
-                &signature,
-            )
+        let public = signature
+            .recover_ecdsa(Message::from_digest(personal_message_hash(message)))
             .unwrap();
         ethereum_address_of(&public)
     }
@@ -950,6 +952,125 @@ mod tests {
             )
             .unwrap();
         assert!(format!("{signatures:?}").contains(&signatures.signature));
+    }
+
+    /// More EIP-191 signatures, pinned so a change of the secp256k1 or Keccak crate cannot
+    /// change a signature unnoticed: two keys, a non-ASCII message, and both values of `v`.
+    /// Each was computed by an independent RFC 6979 and Keccak-256 implementation, which also
+    /// gives [`PINNED_SIGNATURE`].
+    #[test]
+    fn the_ethereum_signatures_match_pinned_vectors() {
+        let ascii = "Sign in to Hippius with challenge 1f2e3d4c5b6a";
+        let unicode = "ünïcode ✓ challenge 1f2e3d4c5b6a, signed in to Hippius";
+        for (phrase, message, expected) in [
+            (
+                DEV_PHRASE,
+                ascii,
+                concat!(
+                    "0x0010e773f1873f7b24a3e88cbb42a5e4c3bc400fce444b89e1f7f8e085c9eb59",
+                    "44765228e94b5aa12c935395713a217fc2693cf836ce9fe281ef1424b9cdbde31b",
+                ),
+            ),
+            (
+                DEV_PHRASE,
+                unicode,
+                concat!(
+                    "0x96b151c82b95bfbd521d871b28c764f35ff893bc380939be5ae000b2a48f8568",
+                    "58dba9add4d1b2715d632730f7e4e679c26204489b12050288bd8c571ab160b71c",
+                ),
+            ),
+            (
+                TEST_PHRASE,
+                ascii,
+                concat!(
+                    "0x2dc2829372e08fee2ef2ef026591ad11459afea4f6ceb787d11f7dff409084c5",
+                    "1ba14d5835756b3d4f33fbdd886fb2be90ef5f1ad14ea8acf49d8e38a0b853171b",
+                ),
+            ),
+            (
+                TEST_PHRASE,
+                unicode,
+                concat!(
+                    "0x859ed3927ff2d4920f6bd4a3d9010de61c3afe776009f9d49b38cca3ee70fbc9",
+                    "622505ef0716b4d391f02c594347ede8910fb6d2e69a642165d35d5ab415c2cd1c",
+                ),
+            ),
+        ] {
+            let signed = key(phrase).sign_login(message, "1f2e3d4c5b6a").unwrap();
+            assert_eq!(signed.signature, expected, "{message}");
+        }
+    }
+
+    /// Keccak-256, not the standardized SHA3-256, of the empty input.
+    #[test]
+    fn keccak256_matches_the_published_vector() {
+        assert_eq!(
+            hex(&Keccak256::digest(b"")),
+            "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+        );
+    }
+
+    /// RFC 4231 test cases 1, 2, and 6 for HMAC-SHA-512; case 6's key is longer than the
+    /// block, so it is hashed first. Data split across parts must give the same tag.
+    #[test]
+    fn hmac_sha512_matches_rfc_4231() {
+        assert_eq!(
+            hex(&hmac_sha512(&[0x0b; 20], &[b"Hi ", b"There"])[..]),
+            concat!(
+                "87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cde",
+                "daa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854",
+            )
+        );
+        assert_eq!(
+            hex(&hmac_sha512(b"Jefe", &[b"what do ya want for nothing?"])[..]),
+            concat!(
+                "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea250554",
+                "9758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737",
+            )
+        );
+        assert_eq!(
+            hex(&hmac_sha512(
+                &[0xaa; 131],
+                &[b"Test Using Larger Than Block-Size Key - Hash Key First"]
+            )[..]),
+            concat!(
+                "80b24263c7c1a3ebb71493c1dd7be8b49b46d1f41b4aeec1121b013783f8f352",
+                "6b56d037e05f2598bd0fd2215d6a1e5295e64f73f63f0aec8b915a985d786598",
+            )
+        );
+    }
+
+    /// PBKDF2-HMAC-SHA-512 of "password" and "salt", one iteration, 64 bytes, as published
+    /// for RFC 6070's inputs with SHA-512.
+    #[test]
+    fn pbkdf2_hmac_sha512_matches_the_published_vector() {
+        let mut out = [0_u8; 64];
+        pbkdf2::pbkdf2_hmac::<Sha512>(b"password", b"salt", 1, &mut out);
+        assert_eq!(
+            hex(&out),
+            concat!(
+                "867f70cf1ade02cff3752599a3a53dc4af34c7a669815ae5d513554e1c8cf252",
+                "c02d470a285a0501bad999bfe943c08f050235d7d68b1da55e63f73b60a57fce",
+            )
+        );
+    }
+
+    /// RFC 7693 Appendix A, BLAKE2b-512 of "abc", and an SS58 address whose checksum was
+    /// computed independently: prefix 42 and the key bytes 0 to 31.
+    #[test]
+    fn blake2b512_and_the_ss58_checksum_match_known_vectors() {
+        assert_eq!(
+            hex(&Blake2b512::digest(b"abc")),
+            concat!(
+                "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d1",
+                "7d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923",
+            )
+        );
+        let public: [u8; 32] = std::array::from_fn(|i| u8::try_from(i).unwrap());
+        assert_eq!(
+            ss58(&public),
+            "5C4iA2und8WV6mbvTBYupm2eZwtxk3wCYUM2SFHXSyQuapGp"
+        );
     }
 
     #[test]
