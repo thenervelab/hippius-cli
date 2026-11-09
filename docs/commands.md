@@ -2272,7 +2272,7 @@ Gamma is subnet 75's prepaid credit on Bittensor, minted by burning its alpha; o
 Usage: hipc billing gamma <COMMAND>
 
 Commands:
-  get          The subnet, the Hippius spender a deposit must name, the minimum, and each linked hotkey with its deposit read from the chain
+  get          The subnet, the Hippius spender a deposit must name, its service hotkey, the minimum, and each linked hotkey with its deposit read from the chain
   hotkeys      Link a hotkey to the account, or unlink one
   conversions  Burn gamma for credits, and follow the conversions
 
@@ -2290,9 +2290,9 @@ Examples:
 ### hipc billing gamma get
 
 ```text
-The subnet, the Hippius spender a deposit must name, the minimum, and each linked hotkey with its deposit read from the chain
+The subnet, the Hippius spender a deposit must name, its service hotkey, the minimum, and each linked hotkey with its deposit read from the chain
 
-A hotkey's deposit is null when it holds none on the subnet. names_hippius false means the deposit names another spender, so Hippius cannot spend it. spendable is the balance as the deposit's daily spend cap limits it now. Amounts are gamma with 9 decimals, as strings.
+spender is the account a deposit must name, and service_hotkey the hotkey that btcli's gamma mint takes to name it; service_hotkey is null until Hippius publishes its service. A hotkey's deposit is null when it holds none on the subnet, or when the chain could not be read, which chain unavailable says. names_hippius false means the deposit names another spender, so Hippius cannot spend it. spendable is the balance as the deposit's daily spend cap limits it now. Amounts are gamma with 9 decimals, as strings.
 
 Usage: hipc billing gamma get
 
@@ -2374,7 +2374,7 @@ Usage: hipc billing gamma conversions <COMMAND>
 
 Commands:
   create  Burn gamma from a linked hotkey's deposit for the same amount in USD; spends money, and needs --yes
-  list    The account's conversions, newest first, at most 50
+  list    The account's conversions, newest first, one page at a time
   get     One conversion: its status, its on-chain reference, and the transaction that credited it
 
 Options:
@@ -2413,18 +2413,29 @@ Examples:
 ### hipc billing gamma conversions list
 
 ```text
-The account's conversions, newest first, at most 50
+The account's conversions, newest first, one page at a time
 
-The route has no pages: it sends the newest 50 and nothing says whether older ones exist.
-
-Usage: hipc billing gamma conversions list
+Usage: hipc billing gamma conversions list [OPTIONS]
 
 Options:
+      --limit <LIMIT>
+          Items per page, 1 to 500
+          
+          [default: 100]
+
+      --page-token <TOKEN>
+          The page to fetch, from a previous answer's next_page_token
+
+      --all
+          Follow every page: one JSON array, or one table in text mode
+
   -h, --help
           Print help (see a summary with '-h')
 
 Examples:
   hipc billing gamma conversions list
+  hipc billing gamma conversions list --limit 20
+  hipc billing gamma conversions list --all
 ```
 
 ### hipc billing gamma conversions get

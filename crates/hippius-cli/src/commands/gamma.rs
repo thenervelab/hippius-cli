@@ -18,13 +18,46 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 use crate::cli::{Gamma, GammaConversions, GammaHotkeys};
-use crate::commands::{Input, Printed, print_body, print_body_or, print_with, replace};
+use crate::commands::{Input, Printed, list, print_body, print_body_or, print_with, replace};
 use crate::context::{Context, Gate};
 
 const GAMMA: &str = "/billing/gamma/";
 const FLAG: &str = "--hotkey-file";
 
 pub(crate) fn run(ctx: &Context<'_>, command: &Gamma) -> Result<Printed> {
+    dispatch(ctx, command).map_err(with_gamma_hint)
+}
+
+/// The hint of an API refusal whose `code` is one of the gamma routes' own: what the code
+/// means for the caller, and the command that helps. Any other error is passed on unchanged.
+fn with_gamma_hint(error: Error) -> Error {
+    let code = error
+        .details()
+        .and_then(|details| details.get("code"))
+        .and_then(Value::as_str);
+    let hint = match code {
+        Some("gamma_unavailable") => {
+            "gamma payments are not enabled on this server yet: they open once gamma is enabled \
+             on subnet 75 and Hippius announces it"
+        }
+        Some("gamma_personal_only") => {
+            "gamma pays for the signed-in user's own account only: run it without `--account`, \
+             `--project`, or `--billing`, and without a stored selection, or with `--account self`"
+        }
+        Some("gamma_hotkey_not_found") => {
+            "the hotkey is not linked to this account: `hipc billing gamma get` lists the linked \
+             hotkeys"
+        }
+        Some("gamma_conversion_not_found") => {
+            "this account has no such conversion: `hipc billing gamma conversions list` lists \
+             them"
+        }
+        _ => return error,
+    };
+    error.with_hint(hint)
+}
+
+fn dispatch(ctx: &Context<'_>, command: &Gamma) -> Result<Printed> {
     match command {
         Gamma::Get => print_body(
             ctx,
@@ -52,11 +85,11 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Gamma) -> Result<Printed> {
         Gamma::Conversions(GammaConversions::Create { hotkey, amount }) => {
             convert(ctx, hotkey, amount)
         }
-        Gamma::Conversions(GammaConversions::List) => print_body(
+        Gamma::Conversions(GammaConversions::List(args)) => list::run(
             ctx,
             &ctx.load_authed_client()?,
             &Request::get(format!("{GAMMA}conversions/")).about("list the gamma conversions"),
-            Gate::Open,
+            args,
         ),
         Gamma::Conversions(GammaConversions::Get { conversion_id }) => print_body(
             ctx,

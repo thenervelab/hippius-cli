@@ -362,7 +362,10 @@ fn an_amount_or_a_hotkey_the_api_cannot_take_is_refused_before_sending() {
 #[test]
 fn the_conversions_are_read_one_or_all() {
     let one = format!("{CONVERSIONS}{ID}/");
-    let list = format!(r#"{{"results":[{}]}}"#, conversion("spent"));
+    let list = format!(
+        r#"{{"count":1,"next":null,"previous":null,"results":[{}]}}"#,
+        conversion("spent")
+    );
     let server = Server::start(vec![
         route("GET", CONVERSIONS, Reply::json(200, &list)),
         route("GET", &one, Reply::json(200, &conversion("spent"))),
@@ -370,13 +373,96 @@ fn the_conversions_are_read_one_or_all() {
     let doc = Hipc::against(&Home::new(), &server)
         .run(&["billing", "gamma", "conversions", "list"])
         .ok();
-    assert_eq!(doc["results"][0]["status"], "spent");
+    assert_eq!(doc["items"][0]["status"], "spent");
+    assert_eq!(doc["count"], 1);
+    assert_eq!(doc["next_page_token"], serde_json::Value::Null);
     let doc = Hipc::against(&Home::new(), &server)
         .run(&["billing", "gamma", "conversions", "get", ID])
         .ok();
     assert_eq!(doc["id"], ID);
-    let targets: Vec<String> = server.requests().iter().map(|r| r.target.clone()).collect();
-    assert_eq!(targets, vec![CONVERSIONS.to_owned(), one]);
+    let paths: Vec<String> = server
+        .requests()
+        .iter()
+        .map(|r| r.path().to_owned())
+        .collect();
+    assert_eq!(paths, vec![CONVERSIONS.to_owned(), one]);
+}
+
+#[test]
+fn the_conversions_list_follows_the_pages_with_all() {
+    let first = format!(
+        r#"{{"count":2,"next":"{{base}}/api/billing/gamma/conversions/?page=2&page_size=1","previous":null,"results":[{}]}}"#,
+        conversion("spent")
+    );
+    let second = format!(
+        r#"{{"count":2,"next":null,"previous":null,"results":[{}]}}"#,
+        conversion("failed")
+    );
+    let server = Server::start(vec![crate::common::route_each(
+        "GET",
+        CONVERSIONS,
+        vec![Reply::json(200, &first), Reply::json(200, &second)],
+    )]);
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&[
+            "billing",
+            "gamma",
+            "conversions",
+            "list",
+            "--limit",
+            "1",
+            "--all",
+        ])
+        .ok();
+    let statuses: Vec<&str> = doc
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(statuses, ["spent", "failed"]);
+    assert_eq!(server.requests().len(), 2);
+}
+
+#[test]
+fn the_gamma_refusals_name_what_helps() {
+    for (args, status, code, hint) in [
+        (
+            vec!["billing", "gamma", "get"],
+            404,
+            "gamma_unavailable",
+            "not enabled on this server",
+        ),
+        (
+            vec!["billing", "gamma", "hotkeys", "delete", HOTKEY, "--yes"],
+            404,
+            "gamma_hotkey_not_found",
+            "hipc billing gamma get",
+        ),
+        (
+            vec!["billing", "gamma", "conversions", "get", ID],
+            404,
+            "gamma_conversion_not_found",
+            "hipc billing gamma conversions list",
+        ),
+        (
+            vec!["billing", "gamma", "get"],
+            400,
+            "gamma_personal_only",
+            "own account only",
+        ),
+    ] {
+        let body = json!({"code": code, "detail": "refused"}).to_string();
+        let server = Server::start(vec![crate::common::any_request(Reply::json(status, &body))]);
+        let run = Hipc::against(&Home::new(), &server).run(&args);
+        assert_ne!(run.code(), Some(0), "{args:?}");
+        let error: serde_json::Value = serde_json::from_str(run.stderr()).unwrap();
+        assert_eq!(error["error"]["details"]["code"], code, "{args:?}");
+        assert!(
+            error["error"]["hint"].as_str().unwrap().contains(hint),
+            "{args:?}: {error}"
+        );
+    }
 }
 
 #[test]

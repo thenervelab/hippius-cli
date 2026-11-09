@@ -577,10 +577,13 @@ fn new_pdf_file(text: &str) -> Result<PathBuf, String> {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Gamma {
-    /// The subnet, the Hippius spender a deposit must name, the minimum, and each linked
-    /// hotkey with its deposit read from the chain
+    /// The subnet, the Hippius spender a deposit must name, its service hotkey, the minimum,
+    /// and each linked hotkey with its deposit read from the chain
     ///
-    /// A hotkey's deposit is null when it holds none on the subnet. names_hippius false means
+    /// spender is the account a deposit must name, and service_hotkey the hotkey that btcli's
+    /// gamma mint takes to name it; service_hotkey is null until Hippius
+    /// publishes its service. A hotkey's deposit is null when it holds none on the subnet, or
+    /// when the chain could not be read, which chain unavailable says. names_hippius false means
     /// the deposit names another spender, so Hippius cannot spend it. spendable is the balance
     /// as the deposit's daily spend cap limits it now. Amounts are gamma with 9 decimals, as
     /// strings.
@@ -663,13 +666,13 @@ pub(crate) enum GammaConversions {
         #[arg(long, value_name = "GAMMA", value_parser = gamma_amount)]
         amount: String,
     },
-    /// The account's conversions, newest first, at most 50
-    ///
-    /// The route has no pages: it sends the newest 50 and nothing says whether older ones exist.
+    /// The account's conversions, newest first, one page at a time
     #[command(after_help = examples(&[
         "hipc billing gamma conversions list",
+        "hipc billing gamma conversions list --limit 20",
+        "hipc billing gamma conversions list --all",
     ]))]
-    List,
+    List(ListArgs),
     /// One conversion: its status, its on-chain reference, and the transaction that credited it
     #[command(after_help = examples(&[
         "hipc billing gamma conversions get 6f0b2c1e-7b4d-4e8a-9c01-5d6e7f8a5f60",

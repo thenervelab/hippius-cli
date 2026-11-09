@@ -189,11 +189,6 @@ const READ_WHOLE: &[(&[&str], &str, &str)] = &[
 /// The `... list` commands that are neither paged nor in [`READ_WHOLE`], each with why.
 const NOT_READ_WHOLE: &[(&str, &str)] = &[
     (
-        "billing gamma conversions list",
-        "the route sends the newest 50 with no `next` link, so the server's object is printed \
-         as sent: an envelope's null token would say no older conversion exists",
-    ),
-    (
         "account project-transfers list",
         "two lists in one answer; `project_transfers_refuse_a_next_link`",
     ),
@@ -212,7 +207,7 @@ const NOT_READ_WHOLE: &[(&str, &str)] = &[
 ];
 
 /// The lists swagger pages, and so the only ones that take the page flags: by `page` and
-/// `page_size` (`/billing/transactions/`, `/billing/invoices/`, `/drive/subscription/history/`,
+/// `page_size` (`/billing/transactions/`, `/billing/invoices/`, `/billing/gamma/conversions/`, `/drive/subscription/history/`,
 /// `/s3/subscription/history/`, `/ssh-keys/`, `/support/tickets/`,
 /// `/support/tickets/{id}/messages/`), by
 /// `continuation_token` (`/objectstore/buckets/{name}/objects/`), by the `before` cursor at
@@ -225,6 +220,10 @@ const PAGED: &[(&str, &[&str])] = &[
     ),
     (
         "billing invoices list",
+        &["--limit", "--page-token", "--all"],
+    ),
+    (
+        "billing gamma conversions list",
         &["--limit", "--page-token", "--all"],
     ),
     (

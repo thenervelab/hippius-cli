@@ -270,7 +270,7 @@ fn spec(path: &[&str]) -> Option<Spec> {
         ]
         | ["billing", "auto-reload", "get" | "history"]
         | ["billing", "gamma" | "profile", "get"]
-        | ["billing", "gamma", "conversions", "list" | "get"]
+        | ["billing", "gamma", "conversions", "get"]
         | ["drive" | "s3" | "hub", "plans"]
         | ["drive" | "s3" | "hub", "subscription", "get"]
         | ["drive" | "s3", "subscription", "checkout"]
@@ -336,6 +336,7 @@ fn spec(path: &[&str]) -> Option<Spec> {
         | ["cdn", "lists", "list" | "get"]
         | ["support", "tickets", "get"] => Some(READ_ONLY),
         ["billing", "transactions"]
+        | ["billing", "gamma", "conversions", "list"]
         | ["support", "tickets", "list"]
         | ["support", "tickets", "messages", "list"]
         | ["billing", "invoices", "list"]
