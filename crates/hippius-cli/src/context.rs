@@ -490,6 +490,12 @@ impl<'a> Context<'a> {
     /// [`Context::call`], or [`Context::check_write`] and [`Context::confirm_write`], and
     /// [`Context::confirm_origin`] before a secret goes to an origin.
     pub(crate) fn confirm(&self, question: Question<'_>) -> Result<()> {
+        if self.will_ask() {
+            // What was typed before the question appeared answers nothing: a `y` typed while
+            // an earlier read ran, or the second line of a paste that answered an earlier
+            // question, would otherwise answer one the person has not seen yet.
+            crate::hidden::discard_typed_ahead();
+        }
         confirm_with(
             question,
             self.global.yes,

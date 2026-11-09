@@ -559,3 +559,115 @@ fn declining_the_replacement_keeps_the_stored_token_and_sends_nothing() {
     assert!(server.requests().is_empty());
     assert!(home.config_text().contains(TOKEN));
 }
+
+/// The question about replacing a stored token, after the origin question of an access-key
+/// login.
+const REPLACE_QUESTION: &str = "replace the token stored in the profile `default` with the \
+                                token the access key's login answers; every later command \
+                                with this profile acts as the new token's owner; continue? \
+                                [y/N] ";
+
+/// What was typed before a question appeared does not answer it: a paste of two `y` lines at
+/// the origin question answers that one, and the second line is discarded rather than read
+/// as the answer to the replacement question that follows, which waits for its own answer.
+#[test]
+fn a_second_line_pasted_at_one_question_does_not_answer_the_next() {
+    let home = Home::new();
+    let server = access_key_server();
+    home.write_config(&format!(
+        "[profiles.default]\ntoken = \"{TOKEN}\"\ntoken_origin = \"{}\"\n",
+        server.url()
+    ));
+    let login = run_at_a_terminal(
+        &home,
+        TEXT,
+        &["--access-key"],
+        &[("HIPPIUS_API_URL", server.url())],
+        &[
+            (Some("continue? [y/N] "), b"y\ry\r"),
+            (Some(REPLACE_QUESTION), b"n\r"),
+        ],
+    );
+    assert_eq!(login.code, Some(2), "{:?}", login.shown);
+    assert!(
+        login.shown.contains("was not answered yes"),
+        "{:?}",
+        login.shown
+    );
+    assert!(
+        !login.shown.contains(ACCESS_KEY_PROMPT),
+        "{:?}",
+        login.shown
+    );
+    assert!(server.requests().is_empty());
+    assert!(home.config_text().contains(TOKEN));
+}
+
+/// The origin question of a login that asks for the token comes before the prompt: a person
+/// who declines it is never asked to paste the token, and nothing is stored.
+#[test]
+fn the_origin_question_comes_before_the_token_prompt() {
+    let home = Home::new();
+    let login = run_at_a_terminal(
+        &home,
+        TEXT,
+        &[],
+        &[("HIPPIUS_API_URL", common::NO_SERVER)],
+        &[(Some("continue? [y/N] "), b"n\r")],
+    );
+    assert_eq!(login.code, Some(2), "{:?}", login.shown);
+    assert!(
+        login.shown.starts_with(&format!(
+            "this will store the token for `{}`, named by `HIPPIUS_API_URL`",
+            common::NO_SERVER
+        )),
+        "{:?}",
+        login.shown
+    );
+    assert!(!login.shown.contains(PROMPT), "{:?}", login.shown);
+    assert!(!home.config().exists());
+    // Confirmed, the token is asked for next, and stored for that origin.
+    let home = Home::new();
+    let login = run_at_a_terminal(
+        &home,
+        TEXT,
+        &[],
+        &[("HIPPIUS_API_URL", common::NO_SERVER)],
+        &[
+            (Some("continue? [y/N] "), b"y\r"),
+            (Some(PROMPT), format!("{TOKEN}\r").as_bytes()),
+        ],
+    );
+    assert_eq!(login.code, Some(0), "{:?}", login.shown);
+    assert!(home.config_text().contains(TOKEN));
+}
+
+/// A dry run sends nothing and needs no token, so a login without `--token-file` asks for
+/// none, even at a terminal: it says whether a stored token would be replaced by whether one
+/// is stored.
+#[test]
+fn a_dry_run_asks_for_no_token() {
+    for (stored, replaces) in [(false, false), (true, true)] {
+        let home = Home::new();
+        if stored {
+            home.write_config(&format!("[profiles.default]\ntoken = \"{TOKEN}\"\n"));
+        }
+        let login = login_at_a_terminal(&home, &["--output", "text", "--dry-run"], &[], &[]);
+        assert_eq!(login.code, Some(0), "{:?}", login.shown);
+        assert!(!login.shown.contains(PROMPT), "{:?}", login.shown);
+        assert!(
+            login
+                .shown
+                .contains(&format!("replaces_token  {replaces}\n")),
+            "{:?}",
+            login.shown
+        );
+        assert!(
+            login
+                .shown
+                .contains("token_origin    https://api.hippius.com\n"),
+            "{:?}",
+            login.shown
+        );
+    }
+}
