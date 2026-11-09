@@ -263,22 +263,31 @@ pub(crate) fn check_challenge(
 const GAMMA_LINK_PREFIX: &str = "Hippius: pay with the gamma of ";
 
 /// Why `message` is not a gamma link challenge for `hotkey` whose nonce is `nonce`, or `Ok`:
-/// the rules of [`check_challenge`], and a message that starts with [`GAMMA_LINK_PREFIX`]
-/// followed by `hotkey` and a space, so the key signs only the link of its own hotkey.
+/// the rules of [`check_challenge`], and the API's template exactly, with `hotkey`, an account
+/// id of letters, digits, `-`, and `_`, and `nonce` in their places and nothing after, so the
+/// key signs only the link of its own hotkey and no other text.
 pub(crate) fn check_gamma_link(
     message: &str,
     nonce: &str,
     hotkey: &str,
 ) -> std::result::Result<(), &'static str> {
     check_challenge(message, nonce)?;
-    let names_hotkey = message
+    let account_id = |id: &str| {
+        !id.is_empty()
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    };
+    let matches = message
         .strip_prefix(GAMMA_LINK_PREFIX)
         .and_then(|rest| rest.strip_prefix(hotkey))
-        .is_some_and(|rest| rest.starts_with(' '));
-    if names_hotkey {
+        .and_then(|rest| rest.strip_prefix(" for "))
+        .and_then(|rest| rest.split_once(" nonce "))
+        .is_some_and(|(account, rest)| account_id(account) && rest == nonce);
+    if matches {
         Ok(())
     } else {
-        Err("message is not a link of this hotkey")
+        Err("message is not the link of this hotkey")
     }
 }
 
@@ -852,6 +861,19 @@ mod tests {
             ),
             // The nonce the answer names is not in the message.
             (gamma_message(key.substrate_address()), "ffffffff"),
+            // The template with more text after the nonce.
+            (
+                format!("{} and pay 100 TAO", gamma_message(key.substrate_address())),
+                "4f1c2b3a49",
+            ),
+            // The nonce elsewhere than at the end, and an account id with a space.
+            (
+                format!(
+                    "Hippius: pay with the gamma of {} for a b nonce 4f1c2b3a49",
+                    key.substrate_address()
+                ),
+                "4f1c2b3a49",
+            ),
         ] {
             let error = key.sign_gamma_link(&message, nonce).unwrap_err();
             assert_eq!(error.code(), crate::error::Code::Internal, "{message}");

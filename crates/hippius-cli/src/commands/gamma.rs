@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use hippius::{AccessKey, Method, Request, Result, Source, phrase};
+use hippius::{AccessKey, Error, Method, Request, Result, SideEffects, Source, phrase};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
@@ -93,7 +93,8 @@ fn link(ctx: &Context<'_>, path: &Path) -> Result<Printed> {
     let (words, source) = hotkey_words(path)?;
     let key = AccessKey::from_hotkey_phrase(&words, &source)?;
     drop(words);
-    let hotkey = key.substrate_address();
+    let hotkey = key.substrate_address().to_owned();
+    let hotkey = hotkey.as_str();
     let client = ctx.load_authed_client()?;
     let challenge = Request::new(Method::Post, format!("{GAMMA}hotkeys/challenge/"))
         .json(&json!({ "hotkey": hotkey }))
@@ -126,6 +127,8 @@ fn link(ctx: &Context<'_>, path: &Path) -> Result<Printed> {
         return Err(replace::unreadable("ask for a gamma link challenge"));
     };
     let signature = key.sign_gamma_link(message, nonce)?;
+    // The keys are not needed for the link itself, so they are cleared before it is sent.
+    drop(key);
     print_body(ctx, &client, &submit(nonce, &signature), Gate::Open)
 }
 
@@ -147,15 +150,27 @@ fn convert(ctx: &Context<'_>, hotkey: &str, amount: &str) -> Result<Printed> {
     };
     print_with(ctx, &client, &request, gate, |response| {
         let body = response.document()?;
-        let follow = body
+        let Some(id) = body
             .get("id")
             .and_then(Value::as_str)
             .and_then(|id| crate::cli::as_argument(id, crate::cli::conversion_id))
-            .map(|id| format!("; `hipc billing gamma conversions get {id}` follows it"))
-            .unwrap_or_default();
+        else {
+            // The API took the conversion, and may burn the gamma, but its answer names no
+            // conversion to follow: not a success to build on.
+            return Err(Error::partial_failure(
+                "the API accepted the conversion, but its answer names no conversion id to \
+                 follow it by",
+                body,
+                Value::Null,
+                SideEffects::Partial,
+            )
+            .with_hint(
+                "run `hipc billing gamma conversions list` to find it before converting again",
+            ));
+        };
         ctx.note(&format!(
             "the conversion is pending: the balance grows once the spend is in a finalized \
-             block{follow}"
+             block; `hipc billing gamma conversions get {id}` follows it"
         ));
         Ok(body)
     })

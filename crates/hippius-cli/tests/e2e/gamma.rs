@@ -216,6 +216,23 @@ fn a_missing_or_unprivate_hotkey_file_is_refused_without_its_words() {
     let text = error["message"].as_str().unwrap();
     assert!(text.contains("the hotkey phrase"), "{text}");
     assert!(!text.contains("access key"), "{text}");
+    // A file the group or others can read is refused before its words are read.
+    let open = home.file("open.txt", format!("{}\n", PHRASES[0]).as_bytes());
+    std::fs::set_permissions(&open, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+    let error = Hipc::new(&home)
+        .run(&[
+            "billing",
+            "gamma",
+            "hotkeys",
+            "create",
+            "--hotkey-file",
+            open.to_str().unwrap(),
+        ])
+        .fails(2, "usage");
+    assert!(
+        error["message"].as_str().unwrap().contains("hotkey file"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -270,15 +287,13 @@ fn a_conversion_is_confirmed_and_names_the_read_that_follows_it() {
 }
 
 #[test]
-fn a_conversion_answer_without_an_id_names_no_read() {
+fn a_conversion_answer_without_an_id_is_a_partial_failure_with_the_answer() {
     let server = Server::start(vec![route(
         "POST",
         CONVERSIONS,
         Reply::json(202, r#"{"status":"pending"}"#),
     )]);
     let run = Hipc::against(&Home::new(), &server).run(&[
-        "--output",
-        "text",
         "billing",
         "gamma",
         "conversions",
@@ -289,11 +304,16 @@ fn a_conversion_answer_without_an_id_names_no_read() {
         "0.1",
         "--yes",
     ]);
-    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(run.code(), Some(1), "{}", run.stderr());
+    assert_eq!(run.json(), json!({"status": "pending"}));
+    let error: serde_json::Value = serde_json::from_str(run.stderr()).unwrap();
+    assert_eq!(error["error"]["code"], "partial_failure");
+    assert_eq!(error["error"]["side_effects"], "partial");
     assert!(
-        !run.stderr().contains("conversions get"),
-        "{}",
-        run.stderr()
+        error["error"]["hint"]
+            .as_str()
+            .unwrap()
+            .contains("hipc billing gamma conversions list")
     );
 }
 
@@ -327,6 +347,16 @@ fn an_amount_or_a_hotkey_the_api_cannot_take_is_refused_before_sending() {
     Hipc::new(&Home::new())
         .run(&["billing", "gamma", "conversions", "get", "not-a-uuid"])
         .fails(2, "usage");
+    // A hotkey goes into the unlink's URL path, so no `/`, `?`, or `.` gets past.
+    for hotkey in [
+        "5DfhGyQdFobKM8NsWvEeAKk5EQQgYe9AydgJ7rMB6E/../x",
+        "5DfhGyQdFobKM8NsWvEeAKk5EQQgYe9AydgJ7rMB6E1E?q=1",
+        "5DfhGyQdFobKM8NsWvEeAKk5EQQgYe9AydgJ7rMB6E1Eq.z",
+    ] {
+        Hipc::new(&Home::new())
+            .run(&["billing", "gamma", "hotkeys", "delete", hotkey, "--yes"])
+            .fails(2, "usage");
+    }
 }
 
 #[test]
@@ -352,9 +382,23 @@ fn the_conversions_are_read_one_or_all() {
 #[test]
 fn a_membership_is_refused_before_anything_is_sent() {
     let server = Server::start(vec![]);
+    let id = ID;
     for args in [
         &["billing", "gamma", "get"][..],
         &["billing", "gamma", "conversions", "list"][..],
+        &["billing", "gamma", "conversions", "get", id][..],
+        &["billing", "gamma", "hotkeys", "delete", HOTKEY, "--yes"][..],
+        &[
+            "billing",
+            "gamma",
+            "conversions",
+            "create",
+            "--hotkey",
+            HOTKEY,
+            "--amount",
+            "1",
+            "--yes",
+        ][..],
     ] {
         let mut full = vec!["--account", MEMBER];
         full.extend_from_slice(args);
