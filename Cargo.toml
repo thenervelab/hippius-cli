@@ -88,7 +88,7 @@ sha3 = { version = "0.10.8", default-features = false }
 # HMAC-SHA512, each BIP-32 step from the seed to the Ethereum key.
 hmac = { version = "0.12.1", default-features = false }
 # BLAKE2b-512, the checksum of an SS58 address. Already in the tree, through crypto_box.
-blake2 = { version = "0.10.6", default-features = false }
+blake2 = { version = "0.11.0", default-features = false }
 
 [workspace.lints.rust]
 # The crates have no unsafe code and must not grow any.
