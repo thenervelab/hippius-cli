@@ -1453,7 +1453,8 @@ impl Client {
         let Some(token) = self.credential.token() else {
             return error;
         };
-        token_spellings(token.expose())
+        // Cleared on drop, as [`Client::sent_token_spellings`] is.
+        zeroize::Zeroizing::new(token_spellings(token.expose()))
             .iter()
             .fold(error, |error, spelling| error.redacted(spelling))
     }

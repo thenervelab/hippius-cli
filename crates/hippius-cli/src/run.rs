@@ -61,6 +61,11 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         .map(|word| word.to_string_lossy().into_owned())
         .collect();
     let ctx = Context::new(&cli.global, &terminal, mode, &words);
+    // A wait for another run's lock of the config or an AWS file is a note, so a run that
+    // waits for another one's question does not seem to hang.
+    if matches!(mode, output::Mode::Text) && !cli.global.quiet {
+        hippius::on_lock_wait(|waiting| output::note(&format!("note: {waiting}\n")));
+    }
     let ran = guarded(&ctx, || execute(&ctx, &cli.command));
     // Also after a failure: a command can write the config and then fail at a later step.
     // Text mode warns on stderr; JSON mode, which writes no warning lines, adds the text to a

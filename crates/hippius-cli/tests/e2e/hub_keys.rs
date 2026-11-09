@@ -443,8 +443,8 @@ fn create_and_rotate_drop_the_server_login_command_and_refuse_any_other() {
         let doc = Hipc::against(&Home::new(), &server).run(&args).ok();
         let mut expected = issued_as_printed();
         let fields = expected.as_object_mut().unwrap();
-        fields.remove("name");
-        fields.remove("role");
+        fields.shift_remove("name");
+        fields.shift_remove("role");
         assert_eq!(doc, expected, "{path}");
         // Elsewhere in the answer, the command is refused whole.
         let answer = json!({
