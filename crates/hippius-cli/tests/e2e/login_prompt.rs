@@ -624,6 +624,14 @@ fn the_origin_question_comes_before_the_token_prompt() {
         "{:?}",
         login.shown
     );
+    // It says the token comes next, at a hidden prompt, so nobody pastes it here.
+    assert!(
+        login
+            .shown
+            .contains("answer here, and paste the token at the hidden prompt that follows"),
+        "{:?}",
+        login.shown
+    );
     assert!(!login.shown.contains(PROMPT), "{:?}", login.shown);
     assert!(!home.config().exists());
     // Confirmed, the token is asked for next, and stored for that origin.

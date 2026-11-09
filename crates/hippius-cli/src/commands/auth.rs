@@ -29,13 +29,17 @@ pub(crate) fn login(
         return login_with_access_key(ctx, access_key_file, new_account);
     }
     let login = Login::new(ctx)?;
-    // A token bound to any origin but the default one is sent there from now on.
-    let confirm_origin = || {
-        ctx.confirm_origin(
-            &login.target,
-            "store the token for",
-            "the token is then sent there and nowhere else",
-        )
+    // A token bound to any origin but the default one is sent there from now on. Asked
+    // before the hidden prompt, the question says the token comes next: this answer is
+    // shown as it is typed, so a token pasted here would be on the screen.
+    let confirm_origin = |asked_next: bool| {
+        let consequence = if asked_next {
+            "the token is then sent there and nowhere else; answer here, and paste the token at \
+             the hidden prompt that follows"
+        } else {
+            "the token is then sent there and nowhere else"
+        };
+        ctx.confirm_origin(&login.target, "store the token for", consequence)
     };
     let token = match token_file {
         Some(path) => {
@@ -59,7 +63,7 @@ pub(crate) fn login(
         }
         // The origin is asked about before the prompt, so a person sees where the token goes
         // before pasting it, and one who declines has pasted nothing.
-        None => asked_token(ctx, confirm_origin)?,
+        None => asked_token(ctx, || confirm_origin(true))?,
     };
     // A different token stored in the profile is replaced, and every later command then acts
     // as whoever owns the new one: a token piped in from a hostile source would move the
@@ -72,7 +76,7 @@ pub(crate) fn login(
         )));
     }
     if token_file.is_some() {
-        confirm_origin()?;
+        confirm_origin(false)?;
     }
     if replaces {
         login.confirm_replace(ctx, "a different one")?;

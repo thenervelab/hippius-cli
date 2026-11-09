@@ -507,7 +507,13 @@ fn a_ticket_text_with_a_split_token_or_an_access_key_is_refused() {
     // Eleven listed words in a row, then one that is not listed, then more: no run of 12.
     let eleven = "abandon ability able about above absent absorb abstract absurd abuse access";
     reply(&format!("{eleven} zzz {eleven}")).ok();
-    assert_eq!(server.requests().len(), 1);
+    // An everyday message, many of whose words are on the list, is sent.
+    reply(
+        "Hello, my bucket upload failed again today after the network change; please check \
+         the access log, the account balance, and the invoice for this month. Thank you!",
+    )
+    .ok();
+    assert_eq!(server.requests().len(), 2);
 }
 
 #[test]

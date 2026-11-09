@@ -206,14 +206,17 @@ pub(crate) fn secret_in(
     };
     for text in texts {
         // Cleared when dropped: it holds whatever secret the text does.
-        let joined: Zeroizing<String> = Zeroizing::new(text.split_whitespace().collect::<String>());
+        // Sized up front, so the buffer never grows and leaves a copy behind.
+        let mut joined = Zeroizing::new(String::with_capacity(text.len()));
+        joined.extend(text.split_whitespace());
         if holds_token(text) || holds_token(&joined) {
             return Ok(Some(Secret::Token));
         }
-        let words: Zeroizing<String> = Zeroizing::new(
+        // A letter keeps its length and anything else becomes one byte, so this fits too.
+        let mut words = Zeroizing::new(String::with_capacity(text.len()));
+        words.extend(
             text.chars()
-                .map(|c| if c.is_alphabetic() { c } else { ' ' })
-                .collect(),
+                .map(|c| if c.is_alphabetic() { c } else { ' ' }),
         );
         if hippius::holds_phrase(&words) {
             return Ok(Some(Secret::AccessKey));
