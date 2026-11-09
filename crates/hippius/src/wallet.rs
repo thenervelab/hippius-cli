@@ -106,7 +106,21 @@ impl AccessKey {
     /// `usage` when `text` is not a BIP-39 phrase: the message names the source and, for an
     /// unknown word, its position, and never quotes a word.
     pub fn from_phrase(text: &str, source: &Source) -> Result<Self> {
-        let mnemonic = parse(text, source)?;
+        Self::from_words(text, source, "access key")
+    }
+
+    /// The keys of a Bittensor hotkey's phrase, as [`AccessKey::from_phrase`] reads an access
+    /// key's: the SS58 address is the hotkey. A refusal names the hotkey, never a word.
+    ///
+    /// # Errors
+    ///
+    /// `usage` when `text` is not a BIP-39 phrase.
+    pub fn from_hotkey_phrase(text: &str, source: &Source) -> Result<Self> {
+        Self::from_words(text, source, "hotkey")
+    }
+
+    fn from_words(text: &str, source: &Source, owner: &str) -> Result<Self> {
+        let mnemonic = parse(text, source, owner)?;
         let (mut entropy, length) = mnemonic.to_entropy_array();
         let mut stretched = Zeroizing::new([0_u8; 64]);
         pbkdf2::pbkdf2_hmac::<Sha512>(&entropy[..length], b"mnemonic", 2048, &mut stretched[..]);
@@ -165,6 +179,35 @@ impl AccessKey {
         })
     }
 
+    /// Signs the `message` of a gamma hotkey-link challenge whose nonce is `nonce` with the
+    /// sr25519 key alone, once the message reads as a link challenge of its own hotkey: `0x`
+    /// and 128 hex digits.
+    ///
+    /// The phrase is the hotkey's, so the key's SS58 address is the hotkey, and the message
+    /// must name that hotkey: the API links the hotkey the challenge was issued for, and a
+    /// message that names another is not one this key was asked to sign. The signature is over
+    /// the raw bytes, which the API verifies.
+    ///
+    /// # Errors
+    ///
+    /// `internal` when the message does not read as a gamma link challenge for this hotkey;
+    /// nothing is signed.
+    pub fn sign_gamma_link(&self, message: &str, nonce: &str) -> Result<String> {
+        check_gamma_link(message, nonce, &self.substrate_address).map_err(|why| {
+            Error::internal(format!(
+                "the gamma link challenge {why}, so `hipc` signed nothing: a message that is not \
+                 a link challenge for this hotkey could be a payment or a sign-in elsewhere"
+            ))
+        })?;
+        Ok(format!(
+            "0x{}",
+            hex(&self
+                .sr25519
+                .sign_simple(SIGNING_CONTEXT, message.as_bytes())
+                .to_bytes())
+        ))
+    }
+
     /// EIP-191 `personal_sign`: an RFC 6979 ECDSA signature, low `s`, of
     /// [`personal_message_hash`], as `0x` and `r || s || v` in hex with `v` 27 or 28.
     fn personal_sign(&self, message: &[u8]) -> String {
@@ -215,6 +258,40 @@ pub(crate) fn check_challenge(
     Ok(())
 }
 
+/// How every gamma hotkey-link challenge message starts: the API's template is
+/// `Hippius: pay with the gamma of <hotkey> for <account> nonce <nonce>`.
+const GAMMA_LINK_PREFIX: &str = "Hippius: pay with the gamma of ";
+
+/// Why `message` is not a gamma link challenge for `hotkey` whose nonce is `nonce`, or `Ok`:
+/// the rules of [`check_challenge`], and a message that starts with [`GAMMA_LINK_PREFIX`]
+/// followed by `hotkey` and a space, so the key signs only the link of its own hotkey.
+pub(crate) fn check_gamma_link(
+    message: &str,
+    nonce: &str,
+    hotkey: &str,
+) -> std::result::Result<(), &'static str> {
+    check_challenge(message, nonce)?;
+    let names_hotkey = message
+        .strip_prefix(GAMMA_LINK_PREFIX)
+        .and_then(|rest| rest.strip_prefix(hotkey))
+        .is_some_and(|rest| rest.starts_with(' '));
+    if names_hotkey {
+        Ok(())
+    } else {
+        Err("message is not a link of this hotkey")
+    }
+}
+
+/// The hotkey phrase in the file `flag` names, held to the checks of [`read_phrase_file`]:
+/// the BIP-39 words a Bittensor hotkey was made from, such as `btcli` prints at its creation.
+///
+/// # Errors
+///
+/// `usage` when a check refuses the file, it does not exist, or it is not UTF-8 text.
+pub fn read_hotkey_file(path: &Path, flag: &'static str) -> Result<Zeroizing<String>> {
+    read_words_file(path, flag, "hotkey")
+}
+
 /// The access key phrase in the file `flag` names, held to the config file's checks: a
 /// regular file of the current user, not a symlink, with no bits for the group or others, at
 /// most 1 MiB, in a directory no one else can write. The bytes are read into a buffer sized
@@ -224,23 +301,34 @@ pub(crate) fn check_challenge(
 ///
 /// `usage` when a check refuses the file, it does not exist, or it is not UTF-8 text.
 pub fn read_phrase_file(path: &Path, flag: &'static str) -> Result<Zeroizing<String>> {
+    read_words_file(path, flag, "access key")
+}
+
+/// The BIP-39 words of an `owner` key (`access key` or `hotkey`) in the file `flag` names,
+/// held to the config file's checks. Messages name the owner, never the words.
+fn read_words_file(
+    path: &Path,
+    flag: &'static str,
+    owner: &'static str,
+) -> Result<Zeroizing<String>> {
+    let (what, holds) = match owner {
+        "hotkey" => ("the hotkey file", "a hotkey phrase"),
+        _ => ("the access key file", "an access key phrase"),
+    };
     let guarded = Guarded {
-        what: "the access key file",
-        holds: "an access key phrase",
+        what,
+        holds,
         named_by: NamedBy::Flag(flag),
     };
     let refuse = |problem: &str| {
         Error::usage(
-            format!(
-                "the access key file {} {problem}",
-                crate::phrase::quote_path(path)
-            ),
-            format!("pass `{flag}` a file that holds only the access key's words"),
+            format!("{what} {} {problem}", crate::phrase::quote_path(path)),
+            format!("pass `{flag}` a file that holds only the {owner}'s words"),
         )
     };
     let Some(bytes) = PrivateFile::load(path, guarded)? else {
-        // A path that is itself an access key was passed in place of a file: it is not
-        // quoted, so the words go no further than the argv they are already in.
+        // A path that is itself a phrase was passed in place of a file: it is not quoted, so
+        // the words go no further than the argv they are already in.
         if path.to_str().is_some_and(holds_phrase) {
             return Err(phrase_in_argv());
         }
@@ -291,7 +379,7 @@ pub fn phrase_in_argv() -> Error {
 
 /// The phrase in `text` as a mnemonic, or a refusal that names `source` and never quotes the
 /// phrase.
-fn parse(text: &str, source: &Source) -> Result<Mnemonic> {
+fn parse(text: &str, source: &Source, owner: &str) -> Result<Mnemonic> {
     // ASCII is already NFKD; any other text is normalized into a buffer that is cleared when
     // dropped, which bip39's own normalization would leave behind. Its size is counted first,
     // so filling it never reallocates and frees a copy nothing clears.
@@ -307,31 +395,31 @@ fn parse(text: &str, source: &Source) -> Result<Mnemonic> {
     let problem = match Mnemonic::parse_in_normalized(Language::English, words) {
         Ok(mnemonic) => return Ok(mnemonic),
         Err(_) if words.split_whitespace().next().is_none() => {
-            format!("the access key phrase{from} is empty")
+            format!("the {owner} phrase{from} is empty")
         }
         Err(bip39::Error::BadWordCount(count)) => format!(
-            "the access key phrase{from} has {count} words, and a BIP-39 phrase has 12, 15, 18, \
+            "the {owner} phrase{from} has {count} words, and a BIP-39 phrase has 12, 15, 18, \
              21, or 24"
         ),
         Err(bip39::Error::UnknownWord(index)) => format!(
-            "word {} of the access key phrase{from} is not on the English BIP-39 word list",
+            "word {} of the {owner} phrase{from} is not on the English BIP-39 word list",
             index + 1
         ),
         // The library's own words are not passed on, so none can carry the phrase.
         Err(_) => format!(
-            "the access key phrase{from} fails its BIP-39 checksum: a word is wrong or out of \
+            "the {owner} phrase{from} fails its BIP-39 checksum: a word is wrong or out of \
              place"
         ),
     };
     let hint = match source {
         Source::File { flag, path } if path.as_os_str() == "-" => {
-            format!("pipe only the access key's words to `{flag} -`")
+            format!("pipe only the {owner}'s words to `{flag} -`")
         }
         Source::File { flag, .. } => {
-            format!("leave only the access key's words in the file `{flag}` names")
+            format!("leave only the {owner}'s words in the file `{flag}` names")
         }
-        Source::Argument => "type only the access key's words at the prompt".to_owned(),
-        _ => "pass the file that holds the access key's words".to_owned(),
+        Source::Argument => format!("type only the {owner}'s words at the prompt"),
+        _ => format!("pass the file that holds the {owner}'s words"),
     };
     Err(Error::usage(problem, hint))
 }
@@ -717,6 +805,58 @@ mod tests {
         assert_eq!(wide.substrate_address(), plain.substrate_address());
         let nbsp = key(&DEV_PHRASE.replace(' ', "\u{a0}"));
         assert_eq!(nbsp.address(), key(DEV_PHRASE).address());
+    }
+
+    fn gamma_message(hotkey: &str) -> String {
+        format!("Hippius: pay with the gamma of {hotkey} for 42 nonce 4f1c2b3a49")
+    }
+
+    #[test]
+    fn the_gamma_link_signature_verifies_over_the_raw_message() {
+        let key = key(TEST_PHRASE);
+        let message = gamma_message(key.substrate_address());
+        let signed = key.sign_gamma_link(&message, "4f1c2b3a49").unwrap();
+        let hex_digits = signed.strip_prefix("0x").unwrap();
+        assert_eq!(hex_digits.len(), 128);
+        let signature = schnorrkel::Signature::from_bytes(&unhex(hex_digits)).unwrap();
+        assert!(
+            key.sr25519
+                .public
+                .verify_simple(SIGNING_CONTEXT, message.as_bytes(), &signature)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_gamma_link_of_another_hotkey_or_another_text_is_not_signed() {
+        let other = key(DEV_PHRASE);
+        let key = key(TEST_PHRASE);
+        for (message, nonce) in [
+            // Another hotkey's link.
+            (gamma_message(other.substrate_address()), "4f1c2b3a49"),
+            // This hotkey's address as the start of a longer one.
+            (
+                format!(
+                    "Hippius: pay with the gamma of {}x for 42 nonce 4f1c2b3a49",
+                    key.substrate_address()
+                ),
+                "4f1c2b3a49",
+            ),
+            // Not a gamma link at all, though it names the hotkey and the nonce.
+            (
+                format!(
+                    "Sign in to Hippius as {} with challenge 4f1c2b3a49",
+                    key.substrate_address()
+                ),
+                "4f1c2b3a49",
+            ),
+            // The nonce the answer names is not in the message.
+            (gamma_message(key.substrate_address()), "ffffffff"),
+        ] {
+            let error = key.sign_gamma_link(&message, nonce).unwrap_err();
+            assert_eq!(error.code(), crate::error::Code::Internal, "{message}");
+            assert!(error.to_string().contains("signed nothing"), "{error}");
+        }
     }
 
     #[test]

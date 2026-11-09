@@ -96,6 +96,24 @@ pub(crate) enum Billing {
         "hipc billing native-quote",
     ]))]
     NativeQuote,
+    /// Pay with the Bittensor gamma of subnet 75: link a hotkey, read its deposit, and burn its
+    /// gamma for credits
+    ///
+    /// Gamma is subnet 75's prepaid credit on Bittensor, minted by burning its alpha; one gamma
+    /// is worth one US dollar. A conversion burns gamma from a deposit you hold and adds the
+    /// same amount in USD to the balance. The deposit must name the Hippius spender, which
+    /// hipc billing gamma get prints, and its hotkey must be linked to the account first. The
+    /// routes act on the signed-in user's own account: a membership (from a flag, a variable,
+    /// or the profile) is refused, and so is a project or a billing account from a flag or a
+    /// variable. Every route answers 404 while the server has gamma payments off.
+    #[command(subcommand)]
+    #[command(after_help = examples(&[
+        "hipc billing gamma get",
+        "hipc billing gamma hotkeys create --hotkey-file hotkey.txt",
+        "hipc billing gamma conversions create --hotkey 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --amount 10 --yes",
+        "hipc billing gamma conversions get 6f0b2c1e-7b4d-4e8a-9c01-5d6e7f8a5f60",
+    ]))]
+    Gamma(Gamma),
     /// Top up the balance by card, Bitcoin, or hAlpha; needs --yes
     ///
     /// A card or Bitcoin top-up takes --amount in US dollars and prints its checkout_url.
@@ -555,6 +573,155 @@ fn month(text: &str) -> Result<String, String> {
 /// The file an invoice PDF goes to ([`new_file`]).
 fn new_pdf_file(text: &str) -> Result<PathBuf, String> {
     new_file(text, "the PDF")
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum Gamma {
+    /// The subnet, the Hippius spender a deposit must name, the minimum, and each linked
+    /// hotkey with its deposit read from the chain
+    ///
+    /// A hotkey's deposit is null when it holds none on the subnet. names_hippius false means
+    /// the deposit names another spender, so Hippius cannot spend it. spendable is the balance
+    /// as the deposit's daily spend cap limits it now. Amounts are gamma with 9 decimals, as
+    /// strings.
+    #[command(after_help = examples(&[
+        "hipc billing gamma get",
+    ]))]
+    Get,
+    /// Link a hotkey to the account, or unlink one
+    #[command(subcommand)]
+    #[command(after_help = examples(&[
+        "hipc billing gamma hotkeys create --hotkey-file hotkey.txt",
+        "hipc billing gamma hotkeys delete 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --yes",
+    ]))]
+    Hotkeys(GammaHotkeys),
+    /// Burn gamma for credits, and follow the conversions
+    #[command(subcommand)]
+    #[command(after_help = examples(&[
+        "hipc billing gamma conversions create --hotkey 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --amount 10 --yes",
+        "hipc billing gamma conversions list",
+        "hipc billing gamma conversions get 6f0b2c1e-7b4d-4e8a-9c01-5d6e7f8a5f60",
+    ]))]
+    Conversions(GammaConversions),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum GammaHotkeys {
+    /// Link the hotkey whose words --hotkey-file holds: hipc signs the server's challenge with
+    /// it, and the words go nowhere else
+    ///
+    /// The hotkey is the SS58 address the words make. hipc asks POST
+    /// /api/billing/gamma/hotkeys/challenge/ for a challenge, checks that its message is a
+    /// link of that hotkey, signs it with the hotkey's sr25519 key, and sends the signature to
+    /// POST /api/billing/gamma/hotkeys/. A challenge is spent by its first answer, even a
+    /// refusal; a hotkey linked to another account is refused with 409 hotkey_linked_elsewhere.
+    /// The file is held to the config file's checks: a regular file of the current user, with
+    /// no bits for the group or others. A file of - reads the words from stdin. A dry run reads the
+    /// words too, to name the hotkey.
+    #[command(after_help = examples(&[
+        "hipc billing gamma hotkeys create --hotkey-file hotkey.txt",
+    ]))]
+    Create {
+        /// The file that holds the hotkey's BIP-39 words, or - for stdin
+        #[arg(long, value_name = "PATH")]
+        hotkey_file: PathBuf,
+    },
+    /// Unlink a hotkey from the account; needs --yes
+    ///
+    /// A conversion from it then needs it linked again, which takes its words. Its gamma stays
+    /// in its deposit on the chain.
+    #[command(after_help = examples(&[
+        "hipc billing gamma hotkeys delete 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --yes",
+    ]))]
+    Delete {
+        /// The hotkey's SS58 address, as hipc billing gamma get lists it
+        #[arg(value_parser = hotkey)]
+        hotkey: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum GammaConversions {
+    /// Burn gamma from a linked hotkey's deposit for the same amount in USD; spends money, and
+    /// needs --yes
+    ///
+    /// POST /api/billing/gamma/conversions/ answers 202 with the conversion pending: the API
+    /// then signs the spend on chain and credits the balance once a finalized block holds it.
+    /// hipc does not wait: hipc billing gamma conversions get <id> shows it, spent once it is
+    /// credited, skipped or failed when nothing was spent or credited. Burned gamma cannot be
+    /// refunded. The API refuses a hotkey not linked to the account, a deposit that does not
+    /// name its spender or cannot spend the amount now, a chain price too far from its own,
+    /// a daily limit reached, and a second conversion while one is in flight.
+    #[command(after_help = examples(&[
+        "hipc billing gamma conversions create --hotkey 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --amount 10 --yes",
+    ]))]
+    Create {
+        /// The linked hotkey whose deposit pays, as hipc billing gamma get lists it
+        #[arg(long, value_name = "SS58", value_parser = hotkey)]
+        hotkey: String,
+        /// The gamma to burn, at least 0.1 and at most 9 decimals; credited 1:1 in USD
+        #[arg(long, value_name = "GAMMA", value_parser = gamma_amount)]
+        amount: String,
+    },
+    /// The account's conversions, newest first, at most 50
+    ///
+    /// The route has no pages: it sends the newest 50 and nothing says whether older ones exist.
+    #[command(after_help = examples(&[
+        "hipc billing gamma conversions list",
+    ]))]
+    List,
+    /// One conversion: its status, its on-chain reference, and the transaction that credited it
+    #[command(after_help = examples(&[
+        "hipc billing gamma conversions get 6f0b2c1e-7b4d-4e8a-9c01-5d6e7f8a5f60",
+    ]))]
+    Get {
+        /// The conversion id, from the answer of hipc billing gamma conversions create or list
+        #[arg(value_parser = conversion_id)]
+        conversion_id: String,
+    },
+}
+
+/// A hotkey's SS58 address: it goes into the URL path, so only the Base58 alphabet is
+/// accepted, 46 to 48 characters as a 32-byte key's address has. The server checks the
+/// address itself.
+fn hotkey(text: &str) -> Result<String, String> {
+    let base58 = |b: u8| b.is_ascii_alphanumeric() && !matches!(b, b'0' | b'O' | b'I' | b'l');
+    if (46..=48).contains(&text.len()) && text.bytes().all(base58) {
+        Ok(text.to_owned())
+    } else {
+        Err("a hotkey is an SS58 address, such as \
+             `5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty`"
+            .to_owned())
+    }
+}
+
+/// `--amount` of gamma: digits with at most 9 after the point, at least `0.1`, sent as written.
+fn gamma_amount(text: &str) -> Result<String, String> {
+    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
+    let digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
+    if whole.is_empty() || !digits(whole) || !digits(fraction) || text.ends_with('.') {
+        return Err("an amount is gamma in digits, such as `10` or `0.5`".to_owned());
+    }
+    if fraction.len() > 9 {
+        return Err(
+            "gamma has 9 decimals, so an amount has at most 9 digits after the point".to_owned(),
+        );
+    }
+    let whole_zero = whole.bytes().all(|b| b == b'0');
+    let tenths = fraction.bytes().next().unwrap_or(b'0');
+    if whole_zero && tenths == b'0' {
+        return Err("a conversion takes at least `0.1` gamma".to_owned());
+    }
+    Ok(text.to_owned())
+}
+
+/// A conversion id: a UUID, as the API answers it, which goes into the URL path.
+pub(crate) fn conversion_id(text: &str) -> Result<String, String> {
+    idempotency_key(text).map_err(|_| {
+        "a conversion id is a UUID such as `6f0b2c1e-7b4d-4e8a-9c01-5d6e7f8a5f60`, as hipc billing \
+         gamma conversions create prints it"
+            .to_owned()
+    })
 }
 
 #[cfg(test)]

@@ -89,6 +89,15 @@ same tree, with each command's effect, confirmation, guards, and flags as JSON, 
 - [`hipc billing profile get`](#hipc-billing-profile-get)
 - [`hipc billing profile update`](#hipc-billing-profile-update)
 - [`hipc billing native-quote`](#hipc-billing-native-quote)
+- [`hipc billing gamma`](#hipc-billing-gamma)
+- [`hipc billing gamma get`](#hipc-billing-gamma-get)
+- [`hipc billing gamma hotkeys`](#hipc-billing-gamma-hotkeys)
+- [`hipc billing gamma hotkeys create`](#hipc-billing-gamma-hotkeys-create)
+- [`hipc billing gamma hotkeys delete`](#hipc-billing-gamma-hotkeys-delete)
+- [`hipc billing gamma conversions`](#hipc-billing-gamma-conversions)
+- [`hipc billing gamma conversions create`](#hipc-billing-gamma-conversions-create)
+- [`hipc billing gamma conversions list`](#hipc-billing-gamma-conversions-list)
+- [`hipc billing gamma conversions get`](#hipc-billing-gamma-conversions-get)
 - [`hipc billing top-up`](#hipc-billing-top-up)
 - [`hipc drive`](#hipc-drive)
 - [`hipc drive plans`](#hipc-drive-plans)
@@ -1836,6 +1845,7 @@ Commands:
   auto-reload    The balance auto-reload setting, the card it charges, and the attempts it made
   profile        The billing profile: the company name, address, tax id, and email invoices carry
   native-quote   The hAlpha price and the account's hAlpha: what a hAlpha top-up would buy
+  gamma          Pay with the Bittensor gamma of subnet 75: link a hotkey, read its deposit, and burn its gamma for credits
   top-up         Top up the balance by card, Bitcoin, or hAlpha; needs --yes
 
 Options:
@@ -2250,6 +2260,190 @@ Options:
 
 Examples:
   hipc billing native-quote
+```
+
+### hipc billing gamma
+
+```text
+Pay with the Bittensor gamma of subnet 75: link a hotkey, read its deposit, and burn its gamma for credits
+
+Gamma is subnet 75's prepaid credit on Bittensor, minted by burning its alpha; one gamma is worth one US dollar. A conversion burns gamma from a deposit you hold and adds the same amount in USD to the balance. The deposit must name the Hippius spender, which hipc billing gamma get prints, and its hotkey must be linked to the account first. The routes act on the signed-in user's own account: a membership (from a flag, a variable, or the profile) is refused, and so is a project or a billing account from a flag or a variable. Every route answers 404 while the server has gamma payments off.
+
+Usage: hipc billing gamma <COMMAND>
+
+Commands:
+  get          The subnet, the Hippius spender a deposit must name, the minimum, and each linked hotkey with its deposit read from the chain
+  hotkeys      Link a hotkey to the account, or unlink one
+  conversions  Burn gamma for credits, and follow the conversions
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma get
+  hipc billing gamma hotkeys create --hotkey-file hotkey.txt
+  hipc billing gamma conversions create --hotkey 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --amount 10 --yes
+  hipc billing gamma conversions get 6f0b2c1e-7b4d-4e8a-9c01-5d6e7f8a5f60
+```
+
+### hipc billing gamma get
+
+```text
+The subnet, the Hippius spender a deposit must name, the minimum, and each linked hotkey with its deposit read from the chain
+
+A hotkey's deposit is null when it holds none on the subnet. names_hippius false means the deposit names another spender, so Hippius cannot spend it. spendable is the balance as the deposit's daily spend cap limits it now. Amounts are gamma with 9 decimals, as strings.
+
+Usage: hipc billing gamma get
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma get
+```
+
+### hipc billing gamma hotkeys
+
+```text
+Link a hotkey to the account, or unlink one
+
+Usage: hipc billing gamma hotkeys <COMMAND>
+
+Commands:
+  create  Link the hotkey whose words --hotkey-file holds: hipc signs the server's challenge with it, and the words go nowhere else
+  delete  Unlink a hotkey from the account; needs --yes
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma hotkeys create --hotkey-file hotkey.txt
+  hipc billing gamma hotkeys delete 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --yes
+```
+
+### hipc billing gamma hotkeys create
+
+```text
+Link the hotkey whose words --hotkey-file holds: hipc signs the server's challenge with it, and the words go nowhere else
+
+The hotkey is the SS58 address the words make. hipc asks POST /api/billing/gamma/hotkeys/challenge/ for a challenge, checks that its message is a link of that hotkey, signs it with the hotkey's sr25519 key, and sends the signature to POST /api/billing/gamma/hotkeys/. A challenge is spent by its first answer, even a refusal; a hotkey linked to another account is refused with 409 hotkey_linked_elsewhere. The file is held to the config file's checks: a regular file of the current user, with no bits for the group or others. A file of - reads the words from stdin. A dry run reads the words too, to name the hotkey.
+
+Usage: hipc billing gamma hotkeys create --hotkey-file <PATH>
+
+Options:
+      --hotkey-file <PATH>
+          The file that holds the hotkey's BIP-39 words, or - for stdin
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma hotkeys create --hotkey-file hotkey.txt
+```
+
+### hipc billing gamma hotkeys delete
+
+```text
+Unlink a hotkey from the account; needs --yes
+
+A conversion from it then needs it linked again, which takes its words. Its gamma stays in its deposit on the chain.
+
+Usage: hipc billing gamma hotkeys delete <HOTKEY>
+
+Arguments:
+  <HOTKEY>
+          The hotkey's SS58 address, as hipc billing gamma get lists it
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma hotkeys delete 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --yes
+```
+
+### hipc billing gamma conversions
+
+```text
+Burn gamma for credits, and follow the conversions
+
+Usage: hipc billing gamma conversions <COMMAND>
+
+Commands:
+  create  Burn gamma from a linked hotkey's deposit for the same amount in USD; spends money, and needs --yes
+  list    The account's conversions, newest first, at most 50
+  get     One conversion: its status, its on-chain reference, and the transaction that credited it
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma conversions create --hotkey 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --amount 10 --yes
+  hipc billing gamma conversions list
+  hipc billing gamma conversions get 6f0b2c1e-7b4d-4e8a-9c01-5d6e7f8a5f60
+```
+
+### hipc billing gamma conversions create
+
+```text
+Burn gamma from a linked hotkey's deposit for the same amount in USD; spends money, and needs --yes
+
+POST /api/billing/gamma/conversions/ answers 202 with the conversion pending: the API then signs the spend on chain and credits the balance once a finalized block holds it. hipc does not wait: hipc billing gamma conversions get <id> shows it, spent once it is credited, skipped or failed when nothing was spent or credited. Burned gamma cannot be refunded. The API refuses a hotkey not linked to the account, a deposit that does not name its spender or cannot spend the amount now, a chain price too far from its own, a daily limit reached, and a second conversion while one is in flight.
+
+Usage: hipc billing gamma conversions create --hotkey <SS58> --amount <GAMMA>
+
+Options:
+      --hotkey <SS58>
+          The linked hotkey whose deposit pays, as hipc billing gamma get lists it
+
+      --amount <GAMMA>
+          The gamma to burn, at least 0.1 and at most 9 decimals; credited 1:1 in USD
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma conversions create --hotkey 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --amount 10 --yes
+```
+
+### hipc billing gamma conversions list
+
+```text
+The account's conversions, newest first, at most 50
+
+The route has no pages: it sends the newest 50 and nothing says whether older ones exist.
+
+Usage: hipc billing gamma conversions list
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma conversions list
+```
+
+### hipc billing gamma conversions get
+
+```text
+One conversion: its status, its on-chain reference, and the transaction that credited it
+
+Usage: hipc billing gamma conversions get <CONVERSION_ID>
+
+Arguments:
+  <CONVERSION_ID>
+          The conversion id, from the answer of hipc billing gamma conversions create or list
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma conversions get 6f0b2c1e-7b4d-4e8a-9c01-5d6e7f8a5f60
 ```
 
 ### hipc billing top-up

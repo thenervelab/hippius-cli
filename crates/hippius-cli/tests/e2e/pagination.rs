@@ -189,6 +189,11 @@ const READ_WHOLE: &[(&[&str], &str, &str)] = &[
 /// The `... list` commands that are neither paged nor in [`READ_WHOLE`], each with why.
 const NOT_READ_WHOLE: &[(&str, &str)] = &[
     (
+        "billing gamma conversions list",
+        "the route sends the newest 50 with no `next` link, so the server's object is printed \
+         as sent: an envelope's null token would say no older conversion exists",
+    ),
+    (
         "account project-transfers list",
         "two lists in one answer; `project_transfers_refuse_a_next_link`",
     ),
