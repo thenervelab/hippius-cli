@@ -27,7 +27,7 @@ use super::{APPS, Compose, Hashed, app_path, check_hash, path, read_compose, una
 use crate::cli::{AppCreate, DiskTier, FailoverMode, GuestPoweroff};
 use crate::commands::Printed;
 use crate::commands::compute::{
-    MAX_POLL_FAILURES, POLL_INTERVAL, STAYS_STOPPED, balance_hint, launch_wait,
+    MAX_POLL_FAILURES, POLL_INTERVAL, STAYS_STOPPED, backups_clause, balance_hint, launch_wait,
 };
 use crate::context::{Context, Write};
 
@@ -138,22 +138,12 @@ fn launch_action(args: &AppCreate) -> String {
     if let Some(tier) = args.os_disk_tier {
         let tier = tier.code();
         more.push(format!(
-            "an OS disk on tier `{tier}` or faster, billed at the `{tier}` price"
+            "an OS disk on tier `{tier}` or faster, billed at the `{tier}` price that `hipc \
+             compute prices` shows (`vm_by_os_disk_tier`)"
         ));
     }
     if let Some(interval) = args.backup_interval {
-        let failover = match args.failover {
-            Some(FailoverMode::Auto) => {
-                " and failover `auto`, which restarts it on another server from its latest \
-                 backup if its server dies, losing what was written after that backup"
-            }
-            Some(FailoverMode::Manual) => " and failover `manual`",
-            None => "",
-        };
-        more.push(format!(
-            "backups every {}{failover}",
-            phrase::count(u64::from(interval.seconds()), "second")
-        ));
+        more.push(backups_clause(interval, args.failover));
     }
     if args.on_guest_poweroff == Some(GuestPoweroff::Stop) {
         more.push(STAYS_STOPPED.to_owned());

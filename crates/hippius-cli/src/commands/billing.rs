@@ -140,21 +140,59 @@ fn print_in_credits(
 /// is the default that swagger's description gives; a server setting may set a lower ceiling,
 /// which the server then enforces itself. Both match the ranges the console offers.
 ///
-/// A hAlpha top-up has no rail: [`start_top_up`] sends it to [`halpha::top_up`] first.
-const fn rail(method: TopUpMethod) -> (&'static str, &'static str, Usd, Usd) {
+/// A hAlpha top-up has no rail, so it is `None`: no caller can send hAlpha to a checkout
+/// route, and [`start_top_up`] sends it to [`halpha_top_up`] instead.
+const fn rail(method: TopUpMethod) -> Option<(&'static str, &'static str, Usd, Usd)> {
     match method {
-        TopUpMethod::Card => (
+        TopUpMethod::Card => Some((
             "card",
             "/billing/stripe/create-checkout-session/",
             Usd::from_cents(10 * 100),
             Usd::from_cents(10_000 * 100),
-        ),
-        TopUpMethod::Bitcoin | TopUpMethod::Halpha => (
+        )),
+        TopUpMethod::Bitcoin => Some((
             "bitcoin",
             "/billing/btcpay/create-invoice/",
             Usd::from_cents(20 * 100),
             Usd::from_cents(100_000 * 100),
-        ),
+        )),
+        TopUpMethod::Halpha => None,
+    }
+}
+
+/// A hAlpha top-up: `--alpha`, never `--amount`, and a retry's key and minimum together.
+fn halpha_top_up(ctx: &Context<'_>, top_up: &TopUp) -> Result<Printed> {
+    match (top_up.amount, top_up.alpha) {
+        (Some(_), _) => Err(Error::usage(
+            "`--amount` is US dollars, for a `card` or `bitcoin` top-up; a `halpha` top-up \
+             takes `--alpha`",
+            "pass the hAlpha to spend as `--alpha <HALPHA>` in place of `--amount`",
+        )),
+        (None, None) => Err(Error::usage(
+            "a `halpha` top-up needs `--alpha`, the hAlpha to spend",
+            "pass `--alpha <HALPHA>`, such as `--alpha 1.5`",
+        )),
+        (None, Some(alpha)) => {
+            let retry = match (top_up.idempotency_key.as_deref(), top_up.min_credits) {
+                (Some(key), Some(min_credits)) => Some(halpha::Retry { key, min_credits }),
+                (None, None) => None,
+                (Some(_), None) => {
+                    return Err(Error::usage(
+                        "a retry with `--idempotency-key` resends the first buy's exact amounts, \
+                     and needs its `--min-credits`",
+                        "pass `--min-credits <CREDITS>` as the failed run printed it",
+                    ));
+                }
+                (None, Some(_)) => {
+                    return Err(Error::usage(
+                        "`--min-credits` is the minimum of a buy to retry, and needs that buy's \
+                     `--idempotency-key`",
+                        "pass `--idempotency-key <UUID>` as the failed run printed it",
+                    ));
+                }
+            };
+            halpha::top_up(ctx, alpha, retry, top_up.wait_timeout)
+        }
     }
 }
 
@@ -166,63 +204,27 @@ const fn rail(method: TopUpMethod) -> (&'static str, &'static str, Usd, Usd) {
 /// passes through a float. No return URL is sent: the server falls back to its own, and
 /// ignores one off the console origin.
 fn start_top_up(ctx: &Context<'_>, top_up: &TopUp) -> Result<Printed> {
-    let amount = match (top_up.method, top_up.amount, top_up.alpha) {
-        (TopUpMethod::Halpha, None, Some(alpha)) => {
-            let retry = match (top_up.idempotency_key.as_deref(), top_up.min_credits) {
-                (Some(key), Some(min_credits)) => Some(halpha::Retry { key, min_credits }),
-                (None, None) => None,
-                (Some(_), None) => {
-                    return Err(Error::usage(
-                        "a retry with `--idempotency-key` resends the first buy's exact amounts, \
-                         and needs its `--min-credits`",
-                        "pass `--min-credits <CREDITS>` as the failed run printed it",
-                    ));
-                }
-                (None, Some(_)) => {
-                    return Err(Error::usage(
-                        "`--min-credits` is the minimum of a buy to retry, and needs that buy's \
-                         `--idempotency-key`",
-                        "pass `--idempotency-key <UUID>` as the failed run printed it",
-                    ));
-                }
-            };
-            return halpha::top_up(ctx, alpha, retry, top_up.wait_timeout);
-        }
-        (TopUpMethod::Halpha, Some(_), _) => {
-            return Err(Error::usage(
-                "`--amount` is US dollars, for a `card` or `bitcoin` top-up; a `halpha` top-up \
-                 takes `--alpha`",
-                "pass the hAlpha to spend as `--alpha <HALPHA>` in place of `--amount`",
-            ));
-        }
-        (TopUpMethod::Halpha, None, None) => {
-            return Err(Error::usage(
-                "a `halpha` top-up needs `--alpha`, the hAlpha to spend",
-                "pass `--alpha <HALPHA>`, such as `--alpha 1.5`",
-            ));
-        }
-        (method, _, Some(_)) => {
+    let Some((name, path, least, most)) = rail(top_up.method) else {
+        return halpha_top_up(ctx, top_up);
+    };
+    let amount = match (top_up.amount, top_up.alpha) {
+        (_, Some(_)) => {
             return Err(Error::usage(
                 format!(
-                    "`--alpha` is hAlpha, for a `halpha` top-up; a `{}` top-up takes `--amount` \
-                     in US dollars",
-                    rail(method).0
+                    "`--alpha` is hAlpha, for a `halpha` top-up; a `{name}` top-up takes \
+                     `--amount` in US dollars"
                 ),
                 "pass the US dollars as `--amount <USD>` in place of `--alpha`",
             ));
         }
-        (method, None, None) => {
+        (None, None) => {
             return Err(Error::usage(
-                format!(
-                    "a `{}` top-up needs `--amount`, in US dollars",
-                    rail(method).0
-                ),
+                format!("a `{name}` top-up needs `--amount`, in US dollars"),
                 "pass `--amount <USD>`, such as `--amount 50`",
             ));
         }
-        (_, Some(amount), None) => amount,
+        (Some(amount), None) => amount,
     };
-    let (name, path, least, most) = rail(top_up.method);
     for (given, flag) in [
         (top_up.idempotency_key.is_some(), "--idempotency-key"),
         (top_up.min_credits.is_some(), "--min-credits"),

@@ -415,6 +415,18 @@ fn a_missing_app_names_the_list_and_an_unavailable_engine_names_get() {
         "run `hipc compute app-engine get` to see whether the account may use it"
     );
     assert_eq!(error["details"]["error"], "app-engine-unavailable");
+    // The slug in `code`, which compute bodies may carry in place of `error`, is the same gate.
+    let in_code = Server::start(vec![route(
+        "GET",
+        APPS,
+        Reply::json(403, r#"{"code":"app-engine-unavailable"}"#),
+    )]);
+    let error =
+        hipc(&home, &in_code, &["compute", "app-engine", "apps", "list"]).fails(1, "permission");
+    assert_eq!(
+        error["hint"],
+        "run `hipc compute app-engine get` to see whether the account may use it"
+    );
     // The engine's code on another status is not its gate, so no hint names `get`.
     let runtime_args = ["compute", "app-engine", "apps", "runtime", "vm-1a2b"];
     let error = hipc(&home, &server, &runtime_args).fails(1, "not_found");

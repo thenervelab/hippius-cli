@@ -32,9 +32,9 @@ use hippius::{Client, Code, Error, Method, Request, Response, Result, phrase};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
-    BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, Compute, DedicatedDisk, ExposeMode,
-    ExposeProtocol, ExposureCreate, Exposures, FailoverMode, Firewall, FirewallUpdate,
-    GuestPoweroff, PowerPolicy, PublicIp, SshKeys, VmCreate, Vms,
+    BackupInterval, BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, Compute,
+    DedicatedDisk, ExposeMode, ExposeProtocol, ExposureCreate, Exposures, FailoverMode, Firewall,
+    FirewallUpdate, GuestPoweroff, PowerPolicy, PublicIp, SshKeys, VmCreate, Vms,
 };
 use crate::commands::replace::{self, Entry, Found, Replace, replace_list};
 use crate::commands::{
@@ -295,6 +295,24 @@ fn vm_delete(ctx: &Context<'_>, client: &Client, vm_id: &str) -> Result<Printed>
 /// is then billed while it sits stopped.
 pub(crate) const STAYS_STOPPED: &str = "a power-off from inside the VM leaving it stopped, and \
                                         billed as a stopped VM until it is started or deleted";
+
+/// The launch clause of `--backup-interval`, for the VM and the app questions: how often, the
+/// failover, and that stored backups are billed, so neither question can leave the bill out.
+pub(crate) fn backups_clause(interval: BackupInterval, failover: Option<FailoverMode>) -> String {
+    let failover = match failover {
+        Some(FailoverMode::Auto) => {
+            " and failover `auto`, which restarts it on another server from its latest backup \
+             if its server dies, losing what was written after that backup"
+        }
+        Some(FailoverMode::Manual) => " and failover `manual`",
+        None => "",
+    };
+    format!(
+        "backups every {}{failover}, stored backups billed per GB-hour at the price that `hipc \
+         compute backups options` shows",
+        phrase::count(u64::from(interval.seconds()), "second")
+    )
+}
 
 /// What a VM delete leaves billed (swagger, `DELETE /api/compute/vms/{vm_id}/`), for its
 /// question: the VM's time stops; an attached address goes with the VM (a deleted VM's
@@ -715,10 +733,12 @@ fn open_launched_ports(
     ports: &[u16],
     public_ip: bool,
 ) -> Result<()> {
+    // The id goes into the PUT's path, so it is held to the rule of the `vm_id` argument; a
+    // leading `-` is fine there, and only matters to a printed command (the hint below).
     let vm_id = launched
         .get("vm_id")
         .and_then(Value::as_str)
-        .and_then(|id| crate::cli::as_argument(id, crate::cli::vm_id));
+        .filter(|id| crate::cli::vm_id(id).is_ok());
     let Some(vm_id) = vm_id else {
         return Err(Error::internal(
             "the launch answer has no usable `vm_id`, so the firewall rule was not set",
@@ -760,8 +780,12 @@ fn open_launched_ports(
                 hippius::SideEffects::Partial,
             )
             .with_hint(format!(
-                "run `hipc compute firewall update {vm_id} --rules-file - --yes` with `{}` on \
-                 stdin",
+                "run `hipc compute firewall update {}` with `{}` on stdin",
+                // An id clap would read as a flag goes after `--`.
+                match crate::cli::as_argument(vm_id, crate::cli::vm_id) {
+                    Some(id) => format!("{id} --rules-file - --yes"),
+                    None => format!("--rules-file - --yes -- {vm_id}"),
+                },
                 open_ports_rules(ports)
             )))
         }
@@ -882,19 +906,7 @@ fn launch_action(args: &VmCreate, dedicated: Option<Dedicated>) -> String {
         ));
     }
     if let Some(interval) = args.backup_interval {
-        let failover = match args.failover {
-            Some(FailoverMode::Auto) => {
-                " and failover `auto`, which restarts it on another server from its latest \
-                 backup if its server dies, losing what was written after that backup"
-            }
-            Some(FailoverMode::Manual) => " and failover `manual`",
-            None => "",
-        };
-        clauses.push(format!(
-            "backups every {}{failover}, stored backups billed per GB-hour at the price that \
-             `hipc compute backups options` shows",
-            phrase::count(u64::from(interval.seconds()), "second")
-        ));
+        clauses.push(backups_clause(interval, args.failover));
     }
     if args.on_guest_poweroff == Some(GuestPoweroff::Stop) {
         clauses.push(STAYS_STOPPED.to_owned());
