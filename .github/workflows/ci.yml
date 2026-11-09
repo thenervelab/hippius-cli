@@ -1,0 +1,167 @@
+name: CI
+
+# Runs on every pull request, on each push to main, and from release.yml on each version
+# tag, which builds nothing until this passes. workflow_dispatch runs it by hand on any ref.
+#
+# A pull request from a fork runs this with a read-only token and no secrets: the trigger is
+# pull_request, never pull_request_target, and no job reads a secret or an environment.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its earlier run. Runs for main, for a tag and by hand
+# each finish: a cancelled run there would leave a commit without a result. Under
+# workflow_call, github.workflow is the caller's name, so a release's run has its own group.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      # Neither clippy nor the tests read a rustdoc link, so a broken one only fails here.
+      - run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      # No test calls the live API. The live check is scripts/release-check.sh, which a
+      # maintainer runs by hand with their own token.
+      - run: cargo test --locked
+      # The runner's umask is 0022. Ubuntu's default for a user is 0002, under which a
+      # directory a test creates without an explicit mode is writable by the group, and hipc
+      # refuses it (a file open to the group is refused under either umask). The second run
+      # reuses the build and catches a test that relies on the umask.
+      - run: umask 0002 && cargo test --locked
+
+  coverage:
+    # Every line under src/ and build.rs must run under the test suite: unit tests and the
+    # binary that the integration tests spawn both count. Linux, because the /dev/full test
+    # is the only way to reach the failed-write path. On macOS the gate misses that path.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177  # v2.87.30
+        with:
+          tool: cargo-llvm-cov@0.9.1
+          fallback: none
+      # Zero uncovered lines, counted per source line across every test binary. The
+      # percentage summary is not used: on Linux it also counts a closure or function
+      # that one binary never calls as missed, even when another binary runs that line.
+      # The uncovered functions are a ratchet: the count on main, which only goes down,
+      # so a new closure that never runs fails even when its line is covered.
+      - run: >-
+          cargo llvm-cov --locked --include-build-script --fail-uncovered-lines 0
+          --fail-uncovered-functions 23 --show-missing-lines
+
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - run: cargo test --locked
+
+  deny:
+    # The only job that queries a service besides the toolchain and crate downloads: the
+    # RustSec advisory database. No job contacts api.hippius.com.
+    runs-on: ubuntu-latest
+    env:
+      # cargo-deny reads Cargo.lock and the manifests, which any recent cargo can do, so the
+      # stable toolchain on the runner image is enough and the pinned one is not downloaded.
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # A prebuilt binary. The cargo-deny action builds a Docker image on every run first.
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177  # v2.87.30
+        with:
+          tool: cargo-deny@0.20.2
+          fallback: none
+      - run: cargo deny --locked check
+
+  lint:
+    # The checks CONTRIBUTING.md asks of a change to a script or a workflow, run on every
+    # pull request so a script that fails shellcheck cannot merge. No cargo: the job needs
+    # no toolchain, and the four tools are prebuilt, so it finishes in well under a minute.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # Prebuilt and checked against the checksums in the action's manifests, as cargo-deny
+      # above. They land in ~/.cargo/bin, which the image puts on PATH ahead of /usr/bin, so
+      # the pinned shellcheck runs rather than the image's. `fallback: none`, here and at
+      # every other use of the action: its default is cargo-binstall, which a version
+      # missing from the manifests would run instead, unchecked, with only a warning.
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177  # v2.87.30
+        with:
+          tool: shellcheck@0.11.0,shfmt@3.14.1,zizmor@1.31.1
+          fallback: none
+      - name: Install actionlint
+        env:
+          # The action has no manifest for actionlint, so its release tarball is fetched
+          # and checked against the SHA-256 of the 1.7.12 Linux x86_64 build (the only
+          # architecture ubuntu-latest runs) from the release's checksums file.
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          dir="${RUNNER_TEMP}/actionlint"
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          release="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          mkdir -p "${dir}"
+          # --proto covers the first URL only; the release URL redirects to the asset host,
+          # so --proto-redir keeps that hop on https too.
+          curl --fail --silent --show-error --location --tlsv1.2 \
+            --proto '=https' --proto-redir '=https' \
+            --output "${dir}/${tarball}" "${release}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${dir}/${tarball}" | sha256sum --check --strict
+          tar -xzf "${dir}/${tarball}" -C "${dir}" actionlint
+          echo "${dir}" >> "${GITHUB_PATH}"
+      # install.sh is the one script the README pipes to sh, so it is checked as POSIX sh
+      # whatever its shebang says; the second command checks each script by its shebang.
+      - run: shellcheck -s sh scripts/install.sh
+      - run: shellcheck scripts/*.sh
+      - run: shfmt -d -i 2 scripts
+      # No arguments: actionlint finds every workflow under .github/workflows itself, a
+      # .yaml one included. It runs shellcheck, installed above, on each `run:` block too.
+      - run: actionlint
+      # --offline, at the default persona: the online audits need a token, this job holds
+      # none, and the flag keeps the audit set the same whether or not one is present, in
+      # CI and in a maintainer's shell alike. CONTRIBUTING.md gives the same command.
+      - run: zizmor --offline .github/workflows

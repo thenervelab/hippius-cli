@@ -1,0 +1,40 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    # A release is taken only once it is two weeks old, the rule every pin in this repository
+    # follows.
+    cooldown:
+      default-days: 14
+    groups:
+      # Minor and patch releases together; a major comes on its own, so one breaking crate
+      # does not hold back the rest.
+      cargo:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # The kubeconfig and node-operation crypto moves as one set: crypto_box 0.9 (its latest
+      # stable release) uses curve25519-dalek 4, digest 0.10 and getrandom 0.2, so a major of
+      # any of these alone builds a second curve or a second RNG next to the first. Move them
+      # together, by hand, once a stable crypto_box uses curve25519-dalek 5.
+      - dependency-name: crypto_box
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: ed25519-dalek
+        update-types: [version-update:semver-major]
+      - dependency-name: curve25519-dalek
+        update-types: [version-update:semver-major]
+      - dependency-name: sha2
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: getrandom
+        update-types: [version-update:semver-major, version-update:semver-minor]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    groups:
+      actions:
+        patterns: ["*"]

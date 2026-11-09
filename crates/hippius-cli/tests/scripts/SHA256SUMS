@@ -1,0 +1,5 @@
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  hipc-aarch64-apple-darwin.tar.gz
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  hipc-x86_64-apple-darwin.tar.gz
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  hipc-x86_64-unknown-linux-musl.tar.gz
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  hipc-aarch64-unknown-linux-musl.tar.gz
+eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee  install.sh

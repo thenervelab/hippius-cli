@@ -1,0 +1,32 @@
+# The PyPI package `hippius-cli`: a binary-only wheel that installs the `hipc` command, the
+# way ruff and uv ship their Rust binaries. maturin builds crates/hippius-cli and puts its
+# `hipc` binary in the wheel's scripts; there is no Python code. The version is the workspace
+# version from Cargo.toml. The PyPI name `hippius` is the Python SDK, a separate project, and
+# `hipc` on PyPI is an unrelated one.
+
+[build-system]
+requires = ["maturin>=1.16,<2"]
+build-backend = "maturin"
+
+[project]
+name = "hippius-cli"
+dynamic = ["version"]
+description = "hipc, the Hippius command-line tool"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+# Both names are symlinks to the files at the repository root. maturin 1.16 refuses `..` in
+# a license-files glob, and it follows the links, so the wheel and the sdist carry the texts.
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Rust",
+]
+
+[project.urls]
+Homepage = "https://github.com/thenervelab/hippius-cli"
+
+[tool.maturin]
+bindings = "bin"
+manifest-path = "../../crates/hippius-cli/Cargo.toml"

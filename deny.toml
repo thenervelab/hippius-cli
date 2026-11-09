@@ -1,0 +1,78 @@
+# cargo-deny policy. The `deny` job in .github/workflows/ci.yml runs `cargo deny check` (blocking,
+# never continue-on-error). Vulnerable and unmaintained crates are denied by cargo-deny's defaults;
+# yanked and unsound are set explicitly below because their defaults are weaker (warn, and direct
+# dependencies only).
+
+[graph]
+all-features = true
+
+[advisories]
+# Every ignore needs an advisory id and a reason, e.g.
+# { id = "RUSTSEC-0000-0000", reason = "not reachable: we never call X" }
+ignore = []
+yanked = "deny"
+unsound = "all"
+
+[licenses]
+# Permissive licenses only. Adding one is a deliberate, reviewed decision.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+# A shared allow-list is broader than any one repo needs; do not warn on unused entries.
+unused-allowed-license = "allow"
+
+# Unpublished crates (`publish = false`, typical for applications) need no license field.
+[licenses.private]
+ignore = true
+
+[bans]
+# Warn, not deny: a dependency graph can carry duplicates the application cannot remove.
+multiple-versions = "warn"
+# `*` version requirements are never allowed; workspace path dependencies are exempt.
+wildcards = "deny"
+allow-wildcard-paths = true
+# No anyhow/eyre ban here: `bans.deny` matches the whole graph, transitive dependencies
+# included, while only the library crate must not use them; code review checks the library
+# crate's manifest and sources for them.
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# webpki-roots is Mozilla's CA root list, which ureq bundles for HTTPS. Its data license is
+# CDLA-Permissive-2.0, a permissive license. The exception is scoped to that one crate.
+[[licenses.exceptions]]
+crate = "webpki-roots"
+allow = ["CDLA-Permissive-2.0"]
+
+# CC0-1.0, a public-domain dedication, for the rust-bitcoin crates only: libsecp256k1's
+# binding, which signs the Ethereum half of an access-key login, the BIP-39 phrase parser, and
+# their helpers.
+[[licenses.exceptions]]
+crate = "bip39"
+allow = ["CC0-1.0"]
+
+[[licenses.exceptions]]
+crate = "bitcoin_hashes"
+allow = ["CC0-1.0"]
+
+[[licenses.exceptions]]
+crate = "hex-conservative"
+allow = ["CC0-1.0"]
+
+[[licenses.exceptions]]
+crate = "secp256k1"
+allow = ["CC0-1.0"]
+
+[[licenses.exceptions]]
+crate = "secp256k1-sys"
+allow = ["CC0-1.0"]

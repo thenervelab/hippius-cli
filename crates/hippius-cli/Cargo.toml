@@ -1,0 +1,38 @@
+[package]
+name = "hippius-cli"
+description = "Hippius console control plane for agents and people"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "hipc"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+clap_complete.workspace = true
+hippius.workspace = true
+# The new private files are created in their checked directory's descriptor (`openat`), which
+# the standard library cannot do, and `hipc auth login` reads a token typed at the terminal
+# with echo off (termios). rustix is already in the tree, through the library.
+rustix = { workspace = true, features = ["termios"] }
+serde_json.workspace = true
+# The token typed at that prompt, and an access key phrase, are cleared from memory. Already in
+# the tree, through the library.
+zeroize.workspace = true
+
+[dev-dependencies]
+# pty and event: the e2e tests open a pseudo-terminal and poll it, so the confirmation
+# prompt is tested at a real terminal. rustix is already in the tree, through the
+# library.
+rustix = { workspace = true, features = ["pty", "event"] }
+# The e2e tests verify the signatures `hipc` sends against the test key's public half. Both are
+# already in the tree, through the library.
+base64ct.workspace = true
+ed25519-dalek.workspace = true
+
+[lints]
+workspace = true

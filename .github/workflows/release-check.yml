@@ -1,0 +1,62 @@
+name: Release check
+
+# Builds every release target, and runs each Linux binary, without publishing anything. It runs only
+# when started by hand, to save runner time: `gh workflow run release-check.yml`. Start it before
+# tagging a release, so a broken cross-compile shows before the tag.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  release-build:
+    # Builds both macOS release targets. The x86_64 binary is never run here: Rosetta is
+    # not assumed on the runner.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - run: cargo build --release --locked --target aarch64-apple-darwin
+      - run: cargo build --release --locked --target x86_64-apple-darwin
+
+  release-build-linux:
+    # The Linux release targets, each built natively, so the C in ring compiles without a
+    # cross toolchain, and each binary can run on the runner that built it. musl links
+    # statically, so one binary runs on any distribution.
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+      # As release.yml: cc-rs reads the compiler for the target it builds.
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CC_aarch64_unknown_linux_musl: musl-gcc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends musl-tools
+      - run: rustup toolchain install
+      - run: rustup target add "${TARGET}"
+      - name: Build
+        run: cargo build --release --locked --target "${TARGET}"
+      - name: Static, and runs
+        run: |
+          bin="target/${TARGET}/release/hipc"
+          file "${bin}"
+          file "${bin}" | grep -Eq 'statically linked|static-pie linked'
+          "${bin}" --version
+          "${bin}" version
+          "${bin}" schema > /dev/null

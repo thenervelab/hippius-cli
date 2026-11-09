@@ -1,0 +1,676 @@
+//! The grammar of `hipc billing`.
+
+use std::path::PathBuf;
+
+use clap::{Args, Subcommand, ValueEnum};
+
+use crate::cli::{INVOICE_ID, ListArgs, examples, new_file, number};
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum Billing {
+    /// The account's balance (GET /api/billing/credits/balance/)
+    #[command(after_help = examples(&[
+        "hipc billing balance",
+    ]))]
+    Balance,
+    /// Every plan in one list: Drive, S3, Hub, and a legacy Stripe top-up plan
+    ///
+    /// The token's own account only.
+    #[command(after_help = examples(&[
+        "hipc billing subscriptions",
+    ]))]
+    Subscriptions,
+    /// The transaction history, one page at a time
+    #[command(after_help = examples(&[
+        "hipc billing transactions",
+        "hipc billing transactions --limit 20",
+        "hipc billing transactions --all",
+    ]))]
+    Transactions(ListArgs),
+    /// The legacy Stripe top-up plan, if there is one
+    #[command(after_help = examples(&[
+        "hipc billing stripe",
+    ]))]
+    Stripe,
+    /// What compute burns per hour, and how long the balance lasts at that rate
+    ///
+    /// burn_rate_per_hour, arrears, and each item's per_hour are base units (10^18 = $1);
+    /// balance is dollars; runway_hours is null when nothing burns. Text mode shows those
+    /// three in credits (1 credit = $1), as the balance is, and says so in a note; the JSON
+    /// output keeps the base units. charge_cap is printed as sent. Drive and S3 plans are not
+    /// in it.
+    #[command(after_help = examples(&[
+        "hipc billing summary",
+    ]))]
+    Summary,
+    /// Every closed UTC hour of compute usage in one month, with its priced lines
+    ///
+    /// Amounts are base units (10^18 = $1). Text mode shows each total, unit_price, and amount
+    /// in credits (1 credit = $1) and says so in a note; the JSON output keeps the base units.
+    /// Each hour's status says whether it was charged.
+    #[command(after_help = examples(&[
+        "hipc billing usage",
+        "hipc billing usage --month 2026-09",
+    ]))]
+    Usage {
+        /// The month, as YYYY-MM in UTC
+        ///
+        /// Without it the server uses the current month.
+        #[arg(long, value_name = "YYYY-MM", value_parser = month)]
+        month: Option<String>,
+    },
+    /// List the invoices and credit notes, and download one as a PDF
+    #[command(subcommand)]
+    #[command(after_help = examples(&[
+        "hipc billing invoices list",
+        "hipc billing invoices get 42 --output-file invoice-42.pdf",
+    ]))]
+    Invoices(Invoices),
+    /// The balance auto-reload setting, the card it charges, and the attempts it made
+    #[command(subcommand)]
+    #[command(after_help = examples(&[
+        "hipc billing auto-reload get",
+        "hipc billing auto-reload history",
+        "hipc billing auto-reload update --enabled false",
+        "hipc billing auto-reload card-setup",
+    ]))]
+    AutoReload(AutoReload),
+    /// The billing profile: the company name, address, tax id, and email invoices carry
+    #[command(subcommand)]
+    #[command(after_help = examples(&[
+        "hipc billing profile get",
+        "hipc billing profile update --company-name Acme --country GB",
+    ]))]
+    Profile(BillingProfile),
+    /// The hAlpha price and the account's hAlpha: what a hAlpha top-up would buy
+    ///
+    /// GET /api/billing/native/quote/. enabled and stale say whether a buy can go through now;
+    /// alpha_price is credits per hAlpha, and min_alpha and native_balance are hAlpha, all
+    /// 18-decimal integers (10^18 per hAlpha or credit), kept exact in JSON and shown as
+    /// decimals in text mode. custodial says whether the API signs the account's buys, and
+    /// address is its Hippius address. The route reads the signed-in user's own hAlpha, not an
+    /// account's or a billing account's, so a membership (from a flag, a variable, or the
+    /// profile) is refused, and so is a project or a billing account from a flag or a variable;
+    /// one stored in the profile is skipped.
+    #[command(after_help = examples(&[
+        "hipc billing native-quote",
+    ]))]
+    NativeQuote,
+    /// Top up the balance by card, Bitcoin, or hAlpha; needs --yes
+    ///
+    /// A card or Bitcoin top-up takes --amount in US dollars and prints its checkout_url.
+    /// Nothing is paid until a person pays there; then the balance grows by the amount. hipc
+    /// does not wait for the payment: hipc billing balance shows it. A member tops up only a
+    /// billing account, from --billing, HIPPIUS_BILLING, or hipc account billing-accounts use;
+    /// without one a membership is refused with account_scope_unsupported.
+    ///
+    /// A hAlpha top-up takes --alpha, the hAlpha to spend, and converts it into credits on
+    /// chain (1 credit = 1 USD). It reads GET /api/billing/native/quote/ and the purchases
+    /// first, and refuses when the quote is stale or not enabled, when --alpha is below its
+    /// min_alpha, when --alpha and the 0.01 hAlpha kept for the fee are more than its
+    /// native_balance, when a purchase from the last 15 minutes is still in flight, or when the
+    /// account signs its own buys (custodial false), which this version of hipc cannot do yet.
+    /// The question names the address whose hAlpha is spent, the credits the quote gives,
+    /// rounded down, and the minimum it accepts, 1 percent less; a price that falls further
+    /// makes the chain refuse the buy. A person who was asked has the purchases read again
+    /// before the buy. Then it sends POST /api/billing/native/buy/ with an Idempotency-Key, and
+    /// follows GET /api/billing/native/purchases/ every 3 seconds until the purchase is
+    /// completed or failed, for at most --wait-timeout. A run that stops first prints the
+    /// purchase as it stands and exits 0; a purchase the chain refused is partial_failure, with
+    /// the purchase on stdout. The key is printed as idempotency_key. A buy that may have
+    /// reached the server is retried with the command its error names, which adds
+    /// --min-credits and --idempotency-key: the retry sends the amounts unchanged, so the API
+    /// answers it as the first buy, and reads only the quote first, refusing a --min-credits
+    /// below 90 percent of what --alpha buys now, since under a key the API has not seen it is
+    /// a new buy. The routes act on the signed-in user's own hAlpha, and the credits go to the
+    /// user's own balance: a membership (from a flag, a variable, or the profile) is refused,
+    /// and so is a project from anywhere or a billing account from a flag or a variable; a
+    /// billing account stored in the profile is skipped. USDC and TAO top-ups stay in the
+    /// console.
+    #[command(after_help = examples(&[
+        "hipc billing top-up --amount 50 --method card --yes",
+        "hipc billing top-up --method halpha --alpha 1.5 --yes",
+    ]))]
+    TopUp(TopUp),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum AutoReload {
+    /// The balance auto-reload setting, and the card it charges
+    ///
+    /// On or off, its threshold, target, and monthly cap in USD (1 credit = $1), and its state.
+    /// available is false, and nothing else is sent, while the feature is off on the server.
+    #[command(after_help = examples(&[
+        "hipc billing auto-reload get",
+    ]))]
+    Get,
+    /// The auto-reload attempts, newest first, with their status, credits, and invoice
+    ///
+    /// The route has no pages: it sends the newest --limit attempts and nothing says whether
+    /// older ones exist. Amounts are credits (1 credit = $1).
+    #[command(after_help = examples(&[
+        "hipc billing auto-reload history",
+        "hipc billing auto-reload history --limit 10",
+    ]))]
+    History {
+        /// How many attempts to read, 1 to 100, the most the route sends
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+    },
+    /// Change the auto-reload setting; spends money when it leaves auto-reload on, and then
+    /// needs --yes when it turns it on, finds it in a state other than armed, raises the
+    /// threshold, the target, or the monthly cap, or cannot read the setting in force
+    ///
+    /// Auto-reload charges the saved card whenever the balance falls below the threshold, back
+    /// up to the target. The route replaces the whole setting, so hipc reads it first and sends
+    /// it back with only the flags given changed; a change saved by someone else in between is
+    /// written over. Turning auto-reload off, or lowering an amount while it is armed, needs no
+    /// --yes. A save while it is on checks the balance at once, which may charge the card now,
+    /// so an update that leaves it on is confirmed in every state but armed. A field the
+    /// setting does not hold, such as the threshold of a setting never saved, must be given.
+    /// A member acts only in a billing account, from --billing, HIPPIUS_BILLING, or hipc account
+    /// billing-accounts use.
+    #[command(after_help = examples(&[
+        "hipc billing auto-reload update --threshold 20 --target 100",
+        "hipc billing auto-reload update --enabled true --threshold 20 --target 100 --yes",
+        "hipc billing auto-reload update --enabled false",
+    ]))]
+    Update(AutoReloadUpdate),
+    /// Start saving the card auto-reload charges, and print its checkout URL
+    ///
+    /// A Stripe checkout in setup mode: nothing is charged, and the card is saved once a person
+    /// completes it at checkout_url. hipc does not wait for it; next_step names hipc billing
+    /// auto-reload get, which shows the card.
+    #[command(after_help = examples(&[
+        "hipc billing auto-reload card-setup",
+    ]))]
+    CardSetup,
+}
+
+/// `hipc billing auto-reload update`: the fields of the setting to change; the others are kept.
+#[derive(Debug, Args)]
+#[command(group(
+    clap::ArgGroup::new("change")
+        .required(true)
+        .multiple(true)
+        .args(["enabled", "threshold", "target", "monthly_cap"])
+))]
+pub(crate) struct AutoReloadUpdate {
+    /// Turn auto-reload on or off: true or false
+    #[arg(long, value_name = "BOOL")]
+    pub(crate) enabled: Option<bool>,
+    /// The balance in US dollars, to the cent, below which the card is charged
+    #[arg(long, value_name = "USD", value_parser = usd)]
+    pub(crate) threshold: Option<Usd>,
+    /// The balance in US dollars, to the cent, that a charge brings the balance back up to
+    ///
+    /// Each charge is the target less the balance, not a fixed amount.
+    #[arg(long, value_name = "USD", value_parser = usd)]
+    pub(crate) target: Option<Usd>,
+    /// The most charged to the card in a calendar month (UTC), in US dollars to the cent, or
+    /// none for no limit
+    #[arg(long, value_name = "USD", value_parser = reload_cap)]
+    pub(crate) monthly_cap: Option<ReloadCap>,
+}
+
+/// `--monthly-cap` of auto-reload: an amount, or no limit, which is sent as `null`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ReloadCap {
+    Usd(Usd),
+    None,
+}
+
+fn reload_cap(value: &str) -> Result<ReloadCap, String> {
+    if value == "none" {
+        return Ok(ReloadCap::None);
+    }
+    usd(value).map(ReloadCap::Usd).map_err(|_| {
+        "a cap is US dollars to the cent, such as `500` or `12.50`, or `none`".to_owned()
+    })
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum BillingProfile {
+    /// The billing profile; every field is empty when none was saved
+    #[command(after_help = examples(&[
+        "hipc billing profile get",
+    ]))]
+    Get,
+    /// Change the fields given of the billing profile; the others are kept; needs --yes when
+    /// it changes the billing email
+    ///
+    /// Only the flags given are sent, and the server keeps every field left out. An empty
+    /// value, such as --address-line2 "", clears a field. Invoices issued after the update
+    /// carry it. A member acts only in a billing account, from --billing, HIPPIUS_BILLING, or
+    /// hipc account billing-accounts use.
+    ///
+    /// With --billing-email, the profile is read first: invoices go to that address, so the
+    /// update needs --yes unless the profile already holds that exact email. A profile that is
+    /// not found, or holds no email, counts as a change.
+    #[command(after_help = examples(&[
+        "hipc billing profile update --company-name Acme --country GB",
+        "hipc billing profile update --billing-email invoices@example.com --yes",
+    ]))]
+    Update(Box<ProfileUpdate>),
+}
+
+/// `hipc billing profile update`: the fields to change, named as the route names them.
+#[derive(Debug, Args)]
+#[command(group(
+    clap::ArgGroup::new("change")
+        .required(true)
+        .multiple(true)
+        .args([
+            "company_name",
+            "address_line1",
+            "address_line2",
+            "city",
+            "postal_code",
+            "region",
+            "country",
+            "tax_id",
+            "billing_email",
+        ])
+))]
+pub(crate) struct ProfileUpdate {
+    /// The company name invoices carry
+    #[arg(long, value_name = "NAME")]
+    pub(crate) company_name: Option<String>,
+    /// The first line of the address
+    #[arg(long, value_name = "LINE")]
+    pub(crate) address_line1: Option<String>,
+    /// The second line of the address
+    #[arg(long, value_name = "LINE")]
+    pub(crate) address_line2: Option<String>,
+    /// The city
+    #[arg(long, value_name = "CITY")]
+    pub(crate) city: Option<String>,
+    /// The postal code
+    #[arg(long, value_name = "CODE")]
+    pub(crate) postal_code: Option<String>,
+    /// The region, state, or province
+    #[arg(long, value_name = "REGION")]
+    pub(crate) region: Option<String>,
+    /// The country, as a two-letter ISO 3166-1 code such as GB, sent in upper case
+    #[arg(long, value_name = "CC", value_parser = country)]
+    pub(crate) country: Option<String>,
+    /// The tax id, such as a VAT number
+    #[arg(long, value_name = "ID")]
+    pub(crate) tax_id: Option<String>,
+    /// Where invoices are mailed; empty means the account's email
+    #[arg(long, value_name = "EMAIL")]
+    pub(crate) billing_email: Option<String>,
+}
+
+impl ProfileUpdate {
+    /// Each field of the profile, as the route names it, and the value given for it.
+    pub(crate) fn fields(&self) -> [(&'static str, Option<&str>); 9] {
+        [
+            ("company_name", self.company_name.as_deref()),
+            ("address_line1", self.address_line1.as_deref()),
+            ("address_line2", self.address_line2.as_deref()),
+            ("city", self.city.as_deref()),
+            ("postal_code", self.postal_code.as_deref()),
+            ("region", self.region.as_deref()),
+            ("country", self.country.as_deref()),
+            ("tax_id", self.tax_id.as_deref()),
+            ("billing_email", self.billing_email.as_deref()),
+        ]
+    }
+}
+
+/// `--country`: two ASCII letters, sent in upper case as the console sends them, or empty to
+/// clear the field.
+fn country(value: &str) -> Result<String, String> {
+    if value.is_empty() || (value.len() == 2 && value.bytes().all(|b| b.is_ascii_alphabetic())) {
+        Ok(value.to_ascii_uppercase())
+    } else {
+        Err("a country is a two-letter ISO 3166-1 code, such as `GB`, or empty".to_owned())
+    }
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct TopUp {
+    /// The amount of a card or Bitcoin top-up in US dollars, to the cent, such as 50 or 12.50
+    ///
+    /// A card top-up takes 10 to 10000, and a Bitcoin top-up 20 to 100000.
+    #[arg(long, value_name = "USD", value_parser = usd)]
+    pub(crate) amount: Option<Usd>,
+    /// The hAlpha a hAlpha top-up spends, a decimal such as 1.5 or 0.01
+    ///
+    /// At least 0.01, the chain's minimum, with at most 18 digits after the point.
+    #[arg(long, value_name = "HALPHA", value_parser = alpha)]
+    pub(crate) alpha: Option<Planck>,
+    /// How the top-up is paid: a Stripe card checkout, a BTCPay Bitcoin invoice (on-chain or
+    /// Lightning), or the account's hAlpha
+    #[arg(long, value_enum)]
+    pub(crate) method: TopUpMethod,
+    /// The Idempotency-Key of a hAlpha buy to retry, a UUID: the one a run that failed
+    /// printed, so the retry is not a second buy
+    ///
+    /// Without it each run sends a new one. With it, the run resends that buy as it was: it
+    /// needs --min-credits from the same hint and the same --alpha, reads the quote but not the
+    /// purchases first, and refuses a --min-credits below 90 percent of what --alpha buys now.
+    #[arg(long, value_name = "UUID", value_parser = idempotency_key)]
+    pub(crate) idempotency_key: Option<String>,
+    /// The min_credits of the hAlpha buy to retry, in credits, as the failed run printed it
+    ///
+    /// Only with --idempotency-key: a retry sends the first run's amounts unchanged.
+    #[arg(long, value_name = "CREDITS", value_parser = min_credits)]
+    pub(crate) min_credits: Option<Planck>,
+    /// How long a hAlpha top-up follows the purchase, in seconds, 1 to 900, default 900
+    ///
+    /// A poll still in flight at the deadline can add up to --request-timeout.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..=900)
+    )]
+    pub(crate) wait_timeout: Option<u64>,
+}
+
+/// An amount in planck, the 18-decimal base unit of hAlpha and of credits: 10^18 is one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Planck(pub(crate) u128);
+
+/// Planck in one hAlpha or one credit.
+pub(crate) const ONE: u128 = 1_000_000_000_000_000_000;
+
+/// The least `Marketplace.buy_credits` takes, 0.01 hAlpha: less fails on chain with
+/// `BuyAmountTooLow`.
+pub(crate) const CHAIN_MINIMUM: Planck = Planck(ONE / 100);
+
+impl std::fmt::Display for Planck {
+    /// The amount as a decimal, exactly: `1.5`, `0.01`, `2`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let fraction = format!("{:018}", self.0 % ONE);
+        let fraction = fraction.trim_end_matches('0');
+        if fraction.is_empty() {
+            write!(f, "{}", self.0 / ONE)
+        } else {
+            write!(f, "{}.{fraction}", self.0 / ONE)
+        }
+    }
+}
+
+/// `--alpha`: hAlpha in plain digits, with at most 18 after a point, to an exact planck
+/// count. No float is involved, so the amount sent is the amount typed.
+pub(crate) fn alpha(text: &str) -> Result<Planck, String> {
+    let planck = decimal18(text, "hAlpha", "`1.5` or `0.01`")?;
+    if planck < CHAIN_MINIMUM {
+        return Err(format!(
+            "the chain takes at least `{CHAIN_MINIMUM}` hAlpha, and a smaller buy fails with \
+             `BuyAmountTooLow`"
+        ));
+    }
+    Ok(planck)
+}
+
+/// `--min-credits`: credits as [`alpha`] reads hAlpha, above zero.
+fn min_credits(text: &str) -> Result<Planck, String> {
+    let planck = decimal18(text, "credits", "`6.12` or `990`")?;
+    if planck.0 == 0 {
+        return Err("a buy accepts at least some credits, so the minimum is above `0`".to_owned());
+    }
+    Ok(planck)
+}
+
+/// A decimal of `unit`, which has 18 decimals, to its exact count of planck.
+fn decimal18(text: &str, unit: &str, examples: &str) -> Result<Planck, String> {
+    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
+    let digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
+    if whole.is_empty() || !digits(whole) || !digits(fraction) || text.ends_with('.') {
+        return Err(format!("an amount is {unit} in digits, such as {examples}"));
+    }
+    if fraction.len() > 18 {
+        return Err(format!(
+            "{unit} has 18 decimals, so an amount has at most 18 digits after the point"
+        ));
+    }
+    let too_large = || format!("the amount is larger than any {unit} balance");
+    let whole: u128 = whole.parse().map_err(|_| too_large())?;
+    let fraction: u128 = format!("{fraction:0<18}")
+        .parse()
+        .expect("checked: 18 ASCII digits");
+    whole
+        .checked_mul(ONE)
+        .and_then(|w| w.checked_add(fraction))
+        .map(Planck)
+        .ok_or_else(too_large)
+}
+
+/// `--idempotency-key`: a UUID, as each run makes one: hex in groups of 8, 4, 4, 4, and 12.
+fn idempotency_key(text: &str) -> Result<String, String> {
+    let groups: Vec<&str> = text.split('-').collect();
+    let lengths: Vec<usize> = groups.iter().map(|g| g.len()).collect();
+    let hex = groups
+        .iter()
+        .all(|g| g.bytes().all(|b| b.is_ascii_hexdigit()));
+    if lengths == [8, 4, 4, 4, 12] && hex {
+        Ok(text.to_owned())
+    } else {
+        Err(
+            "a key is a UUID such as `3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0c`, as a run prints it"
+                .to_owned(),
+        )
+    }
+}
+
+/// An amount of US dollars, in cents.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub(crate) struct Usd {
+    cents: u64,
+}
+
+impl Usd {
+    pub(crate) const fn from_cents(cents: u64) -> Self {
+        Self { cents }
+    }
+}
+
+impl std::fmt::Display for Usd {
+    /// The amount as the top-up routes take it: dollars, a point, and two digits.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{:02}", self.cents / 100, self.cents % 100)
+    }
+}
+
+/// `--amount`: dollars in plain digits, with at most two digits after a point. At most nine
+/// digits before the point (arbitrary, far above any top-up), so the cents fit in a `u64`.
+pub(crate) fn usd(text: &str) -> Result<Usd, String> {
+    let (dollars, cents) = text.split_once('.').unwrap_or((text, "00"));
+    let digits = |part: &str, most: usize| {
+        (1..=most).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit())
+    };
+    if !digits(dollars, 9) || !digits(cents, 2) {
+        return Err("an amount is US dollars to the cent, such as `50` or `12.50`".to_owned());
+    }
+    let parse = |part: &str| {
+        part.parse::<u64>()
+            .expect("checked: one to nine ASCII digits")
+    };
+    // One digit after the point is tenths: `20.5` is 20 dollars and 50 cents.
+    let cents = if cents.len() == 1 {
+        parse(cents) * 10
+    } else {
+        parse(cents)
+    };
+    Ok(Usd::from_cents(parse(dollars) * 100 + cents))
+}
+
+/// How a top-up is paid. USDC and TAO are left to the console.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum TopUpMethod {
+    /// A Stripe card checkout
+    Card,
+    /// A BTCPay invoice, paid on-chain or over Lightning
+    Bitcoin,
+    /// The account's hAlpha, converted into credits on chain
+    Halpha,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum Invoices {
+    /// The invoices and credit notes, newest first, one page at a time
+    #[command(after_help = examples(&[
+        "hipc billing invoices list",
+        "hipc billing invoices list --all",
+    ]))]
+    List(ListArgs),
+    /// Download one invoice as a PDF, to a new file
+    ///
+    /// The PDF goes only to the file --output-file names, created with mode 0600; an existing
+    /// file is never overwritten. stdout is a JSON document that names the file.
+    #[command(after_help = examples(&[
+        "hipc billing invoices get 42 --output-file invoice-42.pdf",
+    ]))]
+    Get {
+        /// The invoice id, from hipc billing invoices list
+        #[arg(value_parser = number(INVOICE_ID))]
+        invoice_id: u64,
+        /// The file to create; it must not exist yet
+        #[arg(long, value_name = "PATH", value_parser = new_pdf_file)]
+        output_file: PathBuf,
+    },
+}
+
+/// A month as the compute usage route takes it: `YYYY-MM`, months 01 to 12. Checked at
+/// parse time, so a bad month is a usage error before anything is sent; the server answers
+/// one with 400 (swagger `compute_usage_list`).
+fn month(text: &str) -> Result<String, String> {
+    let valid = match text.as_bytes() {
+        [y1, y2, y3, y4, b'-', m1, m2] => {
+            [y1, y2, y3, y4, m1, m2].iter().all(|b| b.is_ascii_digit())
+                && matches!((m1, m2), (b'0', b'1'..=b'9') | (b'1', b'0'..=b'2'))
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(text.to_owned())
+    } else {
+        Err("a month is YYYY-MM, such as `2026-09`".to_owned())
+    }
+}
+
+/// The file an invoice PDF goes to ([`new_file`]).
+fn new_pdf_file(text: &str) -> Result<PathBuf, String> {
+    new_file(text, "the PDF")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every amount up to the largest top-up, and a stride past it, reads back as written in
+    /// each spelling `--amount` takes: `d.cc`, `d.c` for whole tenths, and `d` for whole
+    /// dollars, with leading zeros too.
+    #[test]
+    fn usd_reads_every_spelling_of_an_amount_back_to_its_cents() {
+        // Every cent up to past both minimums and around both maximums, and a prime stride
+        // across the rest, which keeps the run short in a debug build.
+        let cents = (0..=200_000)
+            .chain(999_000..=1_001_000)
+            .chain(9_999_000..=10_001_000)
+            .chain((200_001..=99_999_999_999).step_by(999_983));
+        for cents in cents {
+            let usd = Usd::from_cents(cents);
+            let written = usd.to_string();
+            assert_eq!(super::usd(&written), Ok(usd), "{written}");
+            if cents < 10_000_000_000 {
+                assert_eq!(super::usd(&format!("0{written}")), Ok(usd), "{written}");
+            }
+            if cents % 10 == 0 {
+                let tenths = &written[..written.len() - 1];
+                assert_eq!(super::usd(tenths), Ok(usd), "{tenths}");
+            }
+            if cents % 100 == 0 {
+                let dollars = (cents / 100).to_string();
+                assert_eq!(super::usd(&dollars), Ok(usd), "{dollars}");
+            }
+        }
+        assert!(
+            super::usd("1000000000").is_err(),
+            "ten digits before the point"
+        );
+        assert!(super::usd("999999999.99").is_ok());
+    }
+
+    #[test]
+    fn alpha_reads_a_decimal_to_exact_planck() {
+        for (text, planck) in [
+            ("0.01", 10_000_000_000_000_000),
+            ("1", ONE),
+            ("1.5", 1_500_000_000_000_000_000),
+            ("01.50", 1_500_000_000_000_000_000),
+            ("0.010000000000000001", 10_000_000_000_000_001),
+            (
+                "123456789.123456789123456789",
+                123_456_789_123_456_789_123_456_789,
+            ),
+            ("340282366920938463463", 340_282_366_920_938_463_463 * ONE),
+        ] {
+            assert_eq!(super::alpha(text), Ok(Planck(planck)), "{text}");
+        }
+        let shape = "an amount is hAlpha in digits, such as `1.5` or `0.01`";
+        let minimum = "the chain takes at least `0.01` hAlpha, and a smaller buy fails with \
+                       `BuyAmountTooLow`";
+        let decimals = "hAlpha has 18 decimals, so an amount has at most 18 digits after the point";
+        let large = "the amount is larger than any hAlpha balance";
+        for (text, error) in [
+            ("", shape),
+            (".5", shape),
+            ("1.", shape),
+            ("-1", shape),
+            ("+1", shape),
+            ("1e3", shape),
+            (" 1", shape),
+            ("1.2.3", shape),
+            ("1,5", shape),
+            ("0", minimum),
+            ("0.0", minimum),
+            ("0.009999999999999999", minimum),
+            ("0.0000000000000000001", decimals),
+            ("1.0000000000000000000", decimals),
+            ("340282366920938463464", large),
+            ("9999999999999999999999999999999999999999", large),
+        ] {
+            assert_eq!(super::alpha(text), Err(error.to_owned()), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn planck_prints_as_an_exact_decimal() {
+        for (planck, text) in [
+            (0, "0"),
+            (1, "0.000000000000000001"),
+            (ONE, "1"),
+            (ONE / 100, "0.01"),
+            (7_425_000_000_000_000_000, "7.425"),
+            (u128::MAX, "340282366920938463463.374607431768211455"),
+        ] {
+            assert_eq!(Planck(planck).to_string(), text);
+        }
+        assert_eq!(CHAIN_MINIMUM.to_string(), "0.01");
+    }
+
+    #[test]
+    fn idempotency_keys_are_uuids() {
+        for key in [
+            "3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0c",
+            "3F2C9A1E-7B4D-4E8A-9C01-5D6E7F8A9B0C",
+        ] {
+            assert_eq!(super::idempotency_key(key).as_deref(), Ok(key));
+        }
+        for bad in [
+            "",
+            "3f2c9a1e7b4d4e8a9c015d6e7f8a9b0c",
+            "3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0",
+            "3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0cc",
+            "3f2c9a1g-7b4d-4e8a-9c01-5d6e7f8a9b0c",
+            "3f2c9a1e-7b4d-4e8a-9c01-5d6e-7f8a9b0c",
+            " 3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0c",
+        ] {
+            assert!(super::idempotency_key(bad).is_err(), "{bad:?}");
+        }
+    }
+}

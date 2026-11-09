@@ -1,0 +1,53 @@
+name: Scheduled
+
+# A weekly check for RustSec advisories published since the last release, against the
+# locked crates: cargo-deny reads the lockfile and builds nothing, so it costs seconds. The
+# build against the newest compatible dependencies builds and tests the whole workspace, so
+# it runs only by hand (workflow_dispatch). There is no nightly
+# toolchain job: hipc pins its toolchain in rust-toolchain.toml, and a bump is its own PR.
+on:
+  schedule:
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  deny:
+    runs-on: ubuntu-latest
+    env:
+      # cargo-deny reads Cargo.lock and the manifests, which any recent cargo can do.
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177  # v2.87.30
+        with:
+          tool: cargo-deny@0.20.2
+          fallback: none
+      - run: cargo deny --locked check
+
+  latest-dependencies:
+    # The lockfile is updated in the runner only; nothing is committed. A failure here says
+    # the next `cargo update` would break, before a person runs it. By hand only: it builds
+    # and tests the whole workspace.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      # This runs the newest compatible releases, build scripts included, without
+      # Dependabot's 14-day cooldown. Accepted downside: a hostile build script runs
+      # arbitrary code on the runner; it gets no write token, no persisted credentials,
+      # and no cache.
+      - run: cargo update
+      - run: cargo test
+        env:
+          RUSTFLAGS: -D deprecated
