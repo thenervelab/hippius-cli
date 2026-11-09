@@ -23,15 +23,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - A new `~/.aws` or `~/.hippius` directory and a new AWS file get mode `0700` or `0600` whatever the umask, and a lock file is opened read-only: under `0277` they were read-only, and a later run could not write the profile or take the lock.
 - `hipc compute kubernetes clusters kubeconfig` picks the newest launch drop by its `created_at` time, so a time with a fraction is no longer older than the same second without one, and passes over a drop without a ciphertext or a signature for the newest one that has both.
 - An RFC 3339 time with a day its month does not have (`02-31`), an offset past `23:59`, or a field of the wrong width no longer reads as a time; the hAlpha in-flight check treats such a `created_at` as it treats any unreadable one, as in flight.
+- The hAlpha top-up's in-flight check measures a purchase's age by the earlier of the local clock and the `Date` of the purchases read, so when the API sends a `Date`, a local clock that runs fast no longer ages a purchase in flight out of the 15-minute window and lets a second buy through. A local clock set before 1970 is `internal`, whatever the `Date`.
+- The VM launch wait, the App Engine launch wait, and the hAlpha purchase follow wait for the server's `Retry-After` after a retryable failure, when it asks for longer than their interval; one that runs past `--wait-timeout` ends the wait at the deadline without another read. The three share one loop.
 
 ### Security
 
 - More copies of secrets are cleared from memory when they are dropped: a secret read from `--token-file`, `--secret-key-file`, or an invite's `--token-file`, now read into a buffer of its full size, and from stdin without the standard library's buffer; the S3 token document `--from-token-file` reads; the S3 secret key and the AWS credentials text read and written; the one-time secret `--secret-file` moves; the DNS credential's redactions; every field of a DNS credentials, app secrets, or cluster key file, on every refusal; and the text an error held before a secret was redacted from it.
-
-### Fixed
-
-- The hAlpha top-up's in-flight check measures a purchase's age by the earlier of the local clock and the `Date` of the purchases read, so when the API sends a `Date`, a local clock that runs fast no longer ages a purchase in flight out of the 15-minute window and lets a second buy through. A local clock set before 1970 is `internal`, whatever the `Date`.
-- The VM launch wait, the App Engine launch wait, and the hAlpha purchase follow wait for the server's `Retry-After` after a retryable failure, when it asks for longer than their interval; one that runs past `--wait-timeout` ends the wait at the deadline without another read. The three share one loop.
 
 ## [0.15.0] - 2026-11-09
 
