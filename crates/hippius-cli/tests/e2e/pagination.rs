@@ -186,15 +186,23 @@ const READ_WHOLE: &[(&[&str], &str, &str)] = &[
     ),
 ];
 
-/// The `... list` commands that are neither paged nor in [`READ_WHOLE`], each with why.
+/// The lists that take no page flags and follow every `next` page of each route within the
+/// caps `--all` has, printing one list (`TENETS.md` tenet 6 names them): the arguments and
+/// the routes, in the order they are read.
+const FOLLOWED_WHOLE: &[(&[&str], &[&str])] = &[(
+    &["s3", "tokens", "list"],
+    &[
+        "/api/objectstore/master-tokens/",
+        "/api/objectstore/sub-tokens/",
+    ],
+)];
+
+/// The `... list` commands that are neither paged nor in [`READ_WHOLE`] or
+/// [`FOLLOWED_WHOLE`], each with why.
 const NOT_READ_WHOLE: &[(&str, &str)] = &[
     (
         "account project-transfers list",
         "two lists in one answer; `project_transfers_refuse_a_next_link`",
-    ),
-    (
-        "s3 tokens list",
-        "two routes merged, every page followed within the caps",
     ),
     (
         "compute backups list",
@@ -338,8 +346,9 @@ fn run_hint(server: &Server, hint: &str) -> Value {
     Hipc::against(&Home::new(), server).run(&argv[1..]).ok()
 }
 
-/// Every `... list` in `hipc schema` that does not page is in [`READ_WHOLE`], or in
-/// [`NOT_READ_WHOLE`] with its reason, so a new list read whole cannot miss these tests.
+/// Every `... list` in `hipc schema` that does not page is in exactly one of [`READ_WHOLE`],
+/// [`FOLLOWED_WHOLE`], or [`NOT_READ_WHOLE`] with its reason, so a new list read whole cannot
+/// miss these tests.
 /// Only the `... list` commands: the schema does not say which commands print a list, so a
 /// list under another name, such as `drive plans`, is in [`READ_WHOLE`] by hand.
 #[test]
@@ -358,13 +367,61 @@ fn every_list_that_does_not_page_is_audited() {
         let read_whole = READ_WHOLE
             .iter()
             .any(|(args, _, _)| args.len() >= path.len() && args[..path.len()] == path[..]);
+        let followed = FOLLOWED_WHOLE.iter().any(|(args, _)| args[..] == path[..]);
         let exempt = NOT_READ_WHOLE
             .iter()
             .any(|(exempt, _)| *exempt == path.join(" "));
-        assert!(
-            read_whole != exempt,
-            "{path:?}: read whole {read_whole}, exempt {exempt}"
+        assert_eq!(
+            [read_whole, followed, exempt]
+                .iter()
+                .filter(|&&in_it| in_it)
+                .count(),
+            1,
+            "{path:?}: read whole {read_whole}, followed whole {followed}, exempt {exempt}"
         );
+    }
+}
+
+/// A list followed whole reads every page of each of its routes and prints them as one
+/// list whose `next_page_token` is null, and takes none of the page flags.
+#[test]
+fn every_list_followed_whole_reads_every_page_and_takes_no_page_flags() {
+    for (args, paths) in FOLLOWED_WHOLE {
+        let mut routes = Vec::new();
+        for (n, path) in paths.iter().enumerate() {
+            let page = |id: usize, next: Option<String>| {
+                json!({"count": 2, "next": next, "previous": null, "results": [{"id": id.to_string()}]})
+                    .to_string()
+            };
+            routes.push(route(
+                "GET",
+                &format!("{path}?page=2"),
+                Reply::json(200, &page(2 * n + 1, None)),
+            ));
+            routes.push(route(
+                "GET",
+                path,
+                Reply::json(200, &page(2 * n, Some(format!("{{base}}{path}?page=2")))),
+            ));
+        }
+        let server = Server::start(routes);
+        let doc = run(&server, args).ok();
+        let ids: Vec<&str> = doc["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect();
+        let expected: Vec<String> = (0..2 * paths.len()).map(|n| n.to_string()).collect();
+        assert_eq!(ids, expected, "{args:?}");
+        assert_eq!(doc["next_page_token"], Value::Null, "{args:?}");
+        assert_eq!(server.requests().len(), 2 * paths.len(), "{args:?}");
+        for flag in [["--limit", "5"], ["--page-token", "2"], ["--all", ""]] {
+            let mut argv = args.to_vec();
+            argv.extend(flag.iter().filter(|word| !word.is_empty()));
+            run(&server, &argv).fails(2, "usage");
+        }
+        assert_eq!(server.requests().len(), 2 * paths.len(), "{args:?}");
     }
 }
 
