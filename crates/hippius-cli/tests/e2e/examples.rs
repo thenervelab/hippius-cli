@@ -111,6 +111,13 @@ fn every_example(commands: &Commands) -> BTreeSet<String> {
 /// that answers every request with a 404. Returns the run and the number of requests the
 /// listener received.
 fn run_against_a_listener(args: &[&str]) -> (Run, usize) {
+    let server = Server::start(vec![any_request(Reply::not_found())]);
+    let run = run_against(&server, args);
+    (run, server.requests().len())
+}
+
+/// Runs `args` in a fresh home holding the files the examples name, against `server`.
+fn run_against(server: &Server, args: &[&str]) -> Run {
     let home = Home::new();
     home.file("token.txt", format!("{TOKEN}\n").as_bytes());
     home.file("secret.txt", b"example-secret\n");
@@ -165,11 +172,9 @@ fn run_against_a_listener(args: &[&str]) -> (Run, usize) {
     home.file("cloudflare.json", br#"{"api_token":"cf-example-token"}"#);
     home.file("compose.yaml", b"services:\n  web:\n    image: nginx\n");
     home.file("secrets.json", br#"{"DB_PASSWORD":"example"}"#);
-    let server = Server::start(vec![any_request(Reply::not_found())]);
-    let run = Hipc::against(&home, &server)
+    Hipc::against(&home, server)
         .current_dir(home.path())
-        .run(args);
-    (run, server.requests().len())
+        .run(args)
 }
 
 /// The `hipc schema` path that starts `args`, the longest one, so `compute vms list` is not
@@ -240,6 +245,94 @@ fn every_help_example_runs_as_typed_and_its_dry_run_sends_nothing() {
             assert_one_dry_run_shape(&run.json(), example, path, &confirmations);
         }
     }
+}
+
+/// The commands `hipc schema` marks as always confirmed that stop before the question when
+/// every read answers `{}`: the read names the target in the question, or decides it, and
+/// `{}` does not hold what it needs, so the run exits 1 having sent only reads. Each still
+/// sends no write, which the sweep checks.
+const STOP_AT_A_READ: &[&str] = &[
+    // The list a replace compares, or the member list a grant replace reads.
+    "account members update",
+    "cdn lists items update",
+    "cdn rules update",
+    "compute firewall update",
+    // The transfer, the project, or the accounts the question names.
+    "account project-transfers accept",
+    "account project-transfers cancel",
+    "account project-transfers decline",
+    "account projects transfer",
+    // The hAlpha quote and purchases the buy is checked against.
+    "billing top-up",
+    // The validate answer the launch is checked against.
+    "compute app-engine apps create",
+    // The VM, the cluster, the node pool, or the operation the question names.
+    "compute backups restore",
+    "compute kubernetes node-pools scale",
+    "compute kubernetes nodes replace",
+    "compute kubernetes operations cancel",
+    "compute kubernetes operations resume",
+];
+
+/// Every command `hipc schema` marks as always confirmed (`confirmation` true, no
+/// `confirmation_when`) refuses, run as each of its help examples without `--yes`, with exit
+/// 2 `confirmation_required`, and sends no write: the listener answers every request 200
+/// `{}`, so a call site that sent its write without asking would exit 0 and fail here,
+/// whatever the schema and the dry run say. Reads may run first (tenet 5); a command whose
+/// read gives it too little to ask is in [`STOP_AT_A_READ`], and must still send no write.
+#[test]
+fn every_confirmed_command_refuses_without_yes_and_sends_no_write() {
+    let commands = schema_commands();
+    let confirmations = schema_confirmations();
+    let always: BTreeSet<&str> = confirmations
+        .iter()
+        .filter(|(_, (confirmation, when))| *confirmation == true && when.is_null())
+        .map(|(path, _)| path.as_str())
+        .collect();
+    assert!(always.contains("compute vms delete"), "{always:?}");
+    let mut swept = BTreeSet::new();
+    let mut stopped = BTreeSet::new();
+    let mut report = Vec::new();
+    for example in every_example(&commands) {
+        let mut args: Vec<&str> = example.split(' ').skip(1).collect();
+        let path = path_of(&args, &commands);
+        if !always.contains(path) || args.contains(&"--dry-run") {
+            continue;
+        }
+        args.retain(|arg| *arg != "--yes");
+        let server = Server::start(vec![any_request(Reply::json(200, "{}"))]);
+        let run = run_against(&server, &args);
+        let writes: Vec<String> = server
+            .requests()
+            .iter()
+            .filter(|request| !["GET", "HEAD"].contains(&request.method.as_str()))
+            .filter(|request| !request.target.ends_with("/validate/"))
+            .map(|request| format!("{} {}", request.method, request.target))
+            .collect();
+        assert!(
+            writes.is_empty(),
+            "`{example}` without `--yes` sent {writes:?}"
+        );
+        let code = serde_json::from_str::<Value>(run.stderr())
+            .map_or(Value::Null, |error| error["error"]["code"].clone());
+        if run.code() == Some(2) && code == "confirmation_required" {
+            swept.insert(path);
+        } else if STOP_AT_A_READ.contains(&path) && run.code() == Some(1) {
+            stopped.insert(path);
+        } else {
+            report.push(format!("{path}: `{example}` exit {:?} {code}", run.code()));
+        }
+    }
+    assert!(report.is_empty(), "{}", report.join("\n"));
+    // The table holds no command that now reaches the question.
+    let listed: BTreeSet<&str> = STOP_AT_A_READ.iter().copied().collect();
+    assert_eq!(stopped, listed, "the commands that stop at a read");
+    // Every always-confirmed command has an example with `--yes`, so none is left out.
+    let missed: Vec<&&str> = always
+        .iter()
+        .filter(|path| !swept.contains(*path) && !stopped.contains(*path))
+        .collect();
+    assert!(missed.is_empty(), "no example runs {missed:?}");
 }
 
 /// The commands whose real run always sends more than one request, which a dry run lists
