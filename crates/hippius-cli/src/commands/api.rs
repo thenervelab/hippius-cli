@@ -118,7 +118,8 @@ const READ_BY_SUPPORT: &[(Method, &str, ())] = &[
 ];
 
 /// Refuses a write to a route of [`READ_BY_SUPPORT`] whose `body` holds an API token as it
-/// is, quoted, percent-encoded, or behind a JSON escape, as
+/// is, quoted, percent-encoded, or behind a JSON escape, or an access key
+/// ([`crate::commands::support::secret_in`]), as
 /// `hipc support tickets create` and `reply` refuse it: a person reads what is sent, so a body
 /// an injected instruction filled with the user's config would hand that person the account.
 /// The body is checked as written and as each string it decodes to, so a `\u` escape does not
@@ -139,11 +140,17 @@ fn refuse_token_to_support(
     }
     let mut texts = vec![raw.as_str()];
     strings(value, &mut texts);
-    if crate::commands::support::holds_a_token(ctx, config, &texts)? {
+    if let Some(secret) = crate::commands::support::secret_in(ctx, config, &texts)? {
         return Err(Error::usage(
-            "`hipc api` does not send a support ticket write whose body holds an API token, \
-             which a person on the Hippius support team would read",
-            "remove the token from the body; the support team never needs it",
+            format!(
+                "`hipc api` does not send a support ticket write whose body holds {}, which a \
+                 person on the Hippius support team would read",
+                secret.what()
+            ),
+            format!(
+                "remove {} from the body; the support team never needs it",
+                secret.it()
+            ),
         ));
     }
     Ok(())

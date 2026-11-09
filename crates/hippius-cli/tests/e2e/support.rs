@@ -442,6 +442,74 @@ fn a_ticket_text_that_holds_a_token_is_usage_and_sends_nothing() {
         .ok();
 }
 
+/// A text whose token whitespace splits, as a wrapped line or a pasted log column would,
+/// is refused as the token is; so is one that holds an access key, its 12 words in a row
+/// with spaces, line breaks, numbering, or commas between them. Prose of listed words that
+/// never reaches 12 in a row is sent. Neither refusal quotes the text.
+#[test]
+fn a_ticket_text_with_a_split_token_or_an_access_key_is_refused() {
+    let server = Server::start(vec![message_route(Reply::json(201, MESSAGE))]);
+    let home = Home::new();
+    let stored = "tok_stored_0123456789abcdef";
+    home.write_config(&format!(
+        "[profiles.other]\ntoken = \"{stored}\"\ntoken_origin = \"https://api.hippius.com\"\n"
+    ));
+    let reply = |text: &str| {
+        let file = body_file(&home, text);
+        Hipc::against(&home, &server).run(&[
+            "support",
+            "tickets",
+            "reply",
+            "7",
+            "--body-file",
+            &file,
+        ])
+    };
+    for text in [
+        "token: tok_stored_01234\n56789abcdef\n",
+        "token: tok_stored_ 0123456789abcdef",
+        "tok_stored_0123456789\r\n\tabcdef",
+    ] {
+        let error = reply(text).fails(2, "usage");
+        assert_eq!(
+            error["message"],
+            "the ticket text holds an API token, which a person on the Hippius support team \
+             would read",
+            "{text:?}"
+        );
+        assert!(!error.to_string().contains("6789"), "{error}");
+    }
+    let words: Vec<&str> = crate::common::PHRASES[0].split_whitespace().collect();
+    let mut numbered = String::new();
+    for (i, word) in words.iter().enumerate() {
+        numbered.push_str(&format!("{}. {word}\n", i + 1));
+    }
+    for text in [
+        format!("my key is {}", crate::common::PHRASES[0]),
+        numbered,
+        words.join(", "),
+        words.join("\n").to_uppercase(),
+    ] {
+        let error = reply(&text).fails(2, "usage");
+        assert_eq!(
+            error["message"],
+            "the ticket text holds what looks like an access key, which a person on the Hippius \
+             support team would read",
+            "{text:?}"
+        );
+        assert_eq!(
+            error["hint"],
+            "remove the 12 words from the subject and the message; the support team never needs it"
+        );
+        assert!(!error.to_string().contains("curtain"), "{error}");
+    }
+    assert!(server.requests().is_empty());
+    // Eleven listed words in a row, then one that is not listed, then more: no run of 12.
+    let eleven = "abandon ability able about above absent absorb abstract absurd abuse access";
+    reply(&format!("{eleven} zzz {eleven}")).ok();
+    assert_eq!(server.requests().len(), 1);
+}
+
 #[test]
 fn a_reply_to_a_missing_ticket_names_the_list() {
     let server = Server::start(vec![route(

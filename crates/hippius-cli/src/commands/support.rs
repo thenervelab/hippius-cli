@@ -10,6 +10,7 @@
 
 use hippius::{Code, Error, Method, Request, Result, phrase};
 use serde_json::{Map, Value, json};
+use zeroize::Zeroizing;
 
 use crate::cli::{
     Support, TicketBody, TicketCreate, TicketList, TicketMessages, TicketUpdateStatus, Tickets,
@@ -135,36 +136,90 @@ fn create_request(args: &TicketCreate, description: &str) -> Request {
 }
 
 /// The client for a ticket or a reply whose text is `texts`, after a refusal of text that
-/// holds an API token: `HIPPIUS_TOKEN`, or a token any profile of the config file stores, in
-/// any spelling an error redacts it in (tenet 9). A person reads what is sent, so a message an
-/// injected instruction filled with the user's config would hand that person the account.
-/// The refusal comes before the dry run, which would print the body, and never quotes the
-/// text.
+/// holds a secret ([`secret_in`]). A person reads what is sent, so a message an injected
+/// instruction filled with the user's config would hand that person the account. The refusal
+/// comes before the dry run, which would print the body, and never quotes the text.
 fn client_without_token_in(ctx: &Context<'_>, texts: &[&str]) -> Result<hippius::Client> {
     let config = context::config()?;
-    if holds_a_token(ctx, &config, texts)? {
+    if let Some(secret) = secret_in(ctx, &config, texts)? {
         return Err(Error::usage(
-            "the ticket text holds an API token, which a person on the Hippius support team \
-             would read",
-            "remove the token from the subject and the message; the support team never needs it",
+            format!(
+                "the ticket text holds {}, which a person on the Hippius support team would read",
+                secret.what()
+            ),
+            format!(
+                "remove {} from the subject and the message; the support team never needs it",
+                secret.it()
+            ),
         ));
     }
     ctx.authed_client(&config)
 }
 
-/// Whether any of `texts` holds an API token a person must not read: `HIPPIUS_TOKEN`, or a
-/// token any profile of `config` stores, in any spelling an error redacts it in (tenet 9).
-/// `hipc api` applies the same check to the ticket routes ([`crate::commands::api`]).
-pub(crate) fn holds_a_token(
+/// A secret [`secret_in`] finds in a text a person on the support team reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Secret {
+    /// `HIPPIUS_TOKEN`, or a token a profile of the config file stores.
+    Token,
+    /// What [`hippius::holds_phrase`] takes for an access key.
+    AccessKey,
+}
+
+impl Secret {
+    /// The secret as a refusal names it, after "holds".
+    pub(crate) fn what(self) -> &'static str {
+        match self {
+            Self::Token => "an API token",
+            Self::AccessKey => "what looks like an access key",
+        }
+    }
+
+    /// The secret as a hint names it, after "remove".
+    pub(crate) fn it(self) -> &'static str {
+        match self {
+            Self::Token => "the token",
+            Self::AccessKey => "the 12 words",
+        }
+    }
+}
+
+/// The secret any of `texts` holds that a person must not read, or `None`:
+///
+/// - `HIPPIUS_TOKEN`, or a token any profile of `config` stores, in any spelling an error
+///   redacts it in (tenet 9), also with the text's whitespace removed, so a token wrapped
+///   across lines or split by a space is found;
+/// - an access key: 12 words in a row on the BIP-39 list, with anything that is not a
+///   letter read as a space, so a numbered or comma-separated list of the words is found.
+///
+/// It guards against an accident, such as a pasted config file or a log, not against text
+/// written to hide a secret: an encoded or reordered one is not found. `hipc api` applies
+/// the same check to the support routes ([`crate::commands::api`]).
+pub(crate) fn secret_in(
     ctx: &Context<'_>,
     config: &hippius::ConfigFile,
     texts: &[&str],
-) -> Result<bool> {
+) -> Result<Option<Secret>> {
     let variable = ctx.overrides()?.token;
-    Ok(texts.iter().any(|text| {
+    let holds_token = |text: &str| {
         variable.as_ref().is_some_and(|token| token.is_in(text))
             || config.holds_a_stored_token(text)
-    }))
+    };
+    for text in texts {
+        // Cleared when dropped: it holds whatever secret the text does.
+        let joined: Zeroizing<String> = Zeroizing::new(text.split_whitespace().collect::<String>());
+        if holds_token(text) || holds_token(&joined) {
+            return Ok(Some(Secret::Token));
+        }
+        let words: Zeroizing<String> = Zeroizing::new(
+            text.chars()
+                .map(|c| if c.is_alphabetic() { c } else { ' ' })
+                .collect(),
+        );
+        if hippius::holds_phrase(&words) {
+            return Ok(Some(Secret::AccessKey));
+        }
+    }
+    Ok(None)
 }
 
 /// The message `--body-file` names, as written. Swagger gives the ticket's `description`

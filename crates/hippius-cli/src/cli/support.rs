@@ -35,7 +35,9 @@ pub(crate) enum Tickets {
     ///
     /// The message is read from a file, or from stdin with --body-file -, never from argv. A
     /// subject or message that holds an API token, HIPPIUS_TOKEN or one the config file stores,
-    /// as it is, quoted, or percent-encoded, is refused before anything is sent.
+    /// as it is, quoted, percent-encoded, or split by whitespace, or 12 access key words in a
+    /// row, is refused before anything is sent. The check catches an accident, such as a pasted
+    /// config file, not a secret encoded on purpose.
     #[command(after_help = examples(&[
         "hipc support tickets create --subject Refund --body-file message.txt --yes",
         "hipc support tickets create --subject Down --priority urgent --body-file message.txt --yes",
@@ -46,7 +48,7 @@ pub(crate) enum Tickets {
     ///
     /// The message is read as for create. A reply is not confirmed: the ticket already exists,
     /// and a person reads the reply there. A message that holds an API token, HIPPIUS_TOKEN or
-    /// one the config file stores, is refused, as it is for create.
+    /// one the config file stores, or an access key, is refused, as it is for create.
     #[command(after_help = examples(&[
         "hipc support tickets reply 42 --body-file message.txt",
     ]))]
