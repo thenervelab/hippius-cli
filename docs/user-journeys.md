@@ -287,7 +287,7 @@ scenario hub: read the registry; the write tier creates and deletes a CI key
   [read] hipc --output text hub artifacts get <repository> <reference>
   [dry-run] hipc --output text hub artifacts delete <repository> <reference> --yes --dry-run
   [dry-run] hipc --output text hub repositories delete <repository> --yes --dry-run
-  [read] hipc --output text hub keys list
+  [read] hipc --json hub keys list
   [read] hipc --json hub models list --limit 5
   [read] hipc --output text hub models get <model> --limit 5
   [read] hipc --output text hub models formats

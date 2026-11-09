@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 
-use crate::common::Home;
+use crate::common::{Home, no_server};
 
 const CATALOGUE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -36,6 +36,13 @@ fn repo() -> PathBuf {
 /// without the variables that would change what it does (the token, the origin, CI and
 /// agent detection).
 fn manual_test(home: &Home, args: &[&str]) -> Output {
+    manual_test_with(home, args, &[])
+}
+
+/// [`manual_test`] with the variables `env` set, after the others are removed. `--offline`
+/// is aimed at [`no_server`], a port held bound and never listening, unless `env` names
+/// another dead origin.
+fn manual_test_with(home: &Home, args: &[&str], env: &[(&str, &str)]) -> Output {
     let tmp = home.path().join("tmp");
     std::fs::create_dir_all(&tmp).expect("create TMPDIR");
     let mut command = Command::new(repo().join("scripts/manual_test.sh"));
@@ -45,6 +52,8 @@ fn manual_test(home: &Home, args: &[&str]) -> Output {
     command
         .env("HOME", home.path())
         .env("TMPDIR", &tmp)
+        .env("HIPC_MANUAL_TEST_DEAD_ORIGIN", no_server())
+        .envs(env.iter().copied())
         .current_dir(home.path())
         .args(args);
     let log = args
@@ -269,8 +278,9 @@ fn assert_clean_offline_run(output: &Output, log: &str, home: &Home) {
         log.contains("check: the log holds neither the token nor a revealed secret: PASS"),
         "{log}"
     );
+    // Offline every snapshot read fails as expected, so neither comparison is a pass.
     assert!(
-        log.contains("check: the account is as it was found: PASS"),
+        log.contains("check: the account is as it was found: SKIP (not read: "),
         "{log}"
     );
     // The temporary directory, which held the token, is gone.
@@ -2812,5 +2822,202 @@ fn what_the_server_made_for_a_purchase_is_reported_apart() {
     assert!(
         left.contains("\ns3-token db-224-backup-writer t2 left"),
         "{kept}"
+    );
+}
+
+/// The login stores the token without checking it, so the run checks it with one
+/// authenticated read before any scenario, and a refused token stops the run there with one
+/// failure that says where the token came from; offline there is nothing to ask.
+#[test]
+fn a_refused_token_stops_the_run_before_any_scenario() {
+    let home = Home::new();
+    let refused = concat!(
+        r#"printf '%s\n' '{"error":{"code":"auth","message":"the API refused the token","#,
+        r#""http_status":401}}' >&2; exit 1"#
+    );
+    // Only the local calls reach the real binary: anything else would go to the live API,
+    // so the stand-in refuses it, should the check ever let the run go on.
+    let (wrapper, calls) = scripted_hipc(
+        &home,
+        "",
+        &[
+            ("*\" auth status \"*", refused),
+            ("*\" version \"* | *\" schema \"* | *\" auth login \"*", ":"),
+            ("*", "echo 'not sent: the live API' >&2; exit 1"),
+        ],
+    );
+    let log = home.path().join("manual_test.log");
+    let output = manual_test_with(
+        &home,
+        &[
+            "--hipc",
+            wrapper.to_str().expect("UTF-8"),
+            "--log",
+            log.to_str().expect("UTF-8"),
+        ],
+        &[("HIPPIUS_TOKEN", "hipc-manual-test-refused-token")],
+    );
+    let log = std::fs::read_to_string(&log).expect("the log is written");
+    assert_eq!(output.status.code(), Some(1), "{log}");
+    assert!(log.contains("token: from HIPPIUS_TOKEN\n"), "{log}");
+    assert!(
+        log.contains(
+            "token: the token from HIPPIUS_TOKEN cannot be used: `hipc auth status` failed (auth)"
+        ),
+        "{log}"
+    );
+    assert_eq!(
+        failed_titles(&log),
+        ["the token from HIPPIUS_TOKEN cannot be used (auth)"],
+        "{log}"
+    );
+    assert!(!log.contains("hipc-manual-test-refused-token"), "{log}");
+    // Nothing past the check ran: no snapshot read and no scenario step.
+    let calls = real_calls(&calls);
+    assert_eq!(
+        calls.last().map(String::as_str),
+        Some("--json auth status"),
+        "{calls:?}"
+    );
+    assert!(!log.contains("==== snapshot"), "{log}");
+    // Offline the token is the stand-in, and the check says it asks no API.
+    let home = Home::new();
+    let (output, log) = offline(&home, env!("CARGO_BIN_EXE_hipc"), &["first-run"]);
+    assert_clean_offline_run(&output, &log, &home);
+    assert!(
+        log.contains("token: the offline stand-in, not checked: there is no API to ask"),
+        "{log}"
+    );
+}
+
+/// `--offline` refuses a dead origin that something listens on: it would receive the fake
+/// token and every request.
+#[test]
+fn offline_refuses_a_dead_origin_that_answers() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+    let origin = format!(
+        "http://{}",
+        listener.local_addr().expect("the bound address")
+    );
+    let home = Home::new();
+    let output = manual_test_with(
+        &home,
+        &[
+            "--offline",
+            "--hipc",
+            env!("CARGO_BIN_EXE_hipc"),
+            "first-run",
+        ],
+        &[("HIPC_MANUAL_TEST_DEAD_ORIGIN", &origin)],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "manual_test: something listens on {}, the origin --offline needs closed",
+            origin.trim_start_matches("http://")
+        )),
+        "{stderr}"
+    );
+}
+
+/// Two snapshots that each failed a read compare equal and prove nothing: offline, where every
+/// read fails, the account check is skipped and names the reads that gave nothing. A balance
+/// read that failed, or answered no `balance`, is no pass either.
+#[test]
+fn failed_snapshot_reads_are_not_a_pass() {
+    let home = Home::new();
+    let (output, log) = offline(&home, env!("CARGO_BIN_EXE_hipc"), &["first-run"]);
+    assert_clean_offline_run(&output, &log, &home);
+    assert!(
+        log.contains(
+            "check: the balance is unchanged: SKIP (no balance was read: {\"error\":\"unavailable\"}, \
+             then {\"error\":\"unavailable\"})"
+        ),
+        "{log}"
+    );
+    let unread = log
+        .split("check: the account is as it was found: SKIP (not read: ")
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .expect("the skip names the reads");
+    assert!(
+        unread.contains("balance") && unread.contains("s3-tokens"),
+        "{unread}"
+    );
+    // A balance read that answers without `balance` gives null twice, which is not a pass.
+    let home = Home::new();
+    let (wrapper, _) = scripted_hipc(
+        &home,
+        "",
+        &[("*\" billing balance \"*", "printf '%s\\n' '{}'; exit 0")],
+    );
+    let (output, log) = offline(&home, wrapper.to_str().expect("UTF-8"), &["first-run"]);
+    assert_clean_offline_run(&output, &log, &home);
+    assert!(
+        log.contains(
+            "check: the balance is unchanged: SKIP (no balance was read: null, then null)"
+        ),
+        "{log}"
+    );
+}
+
+/// An account with no Hub namespace answers the namespace's reads, its keys and its
+/// repositories 403 "You must call /api/registry/provision/ first."; the steps and the
+/// snapshot take that as a state, with a note, and nothing creates a namespace.
+#[test]
+fn an_account_without_a_hub_namespace_is_a_state_not_a_failure() {
+    let home = Home::new();
+    let refused = concat!(
+        r#"printf '%s\n' '{"error":{"code":"permission","message":"cannot list: the API says "#,
+        r#"`You must call /api/registry/provision/ first.`","hint":"run `hipc hub namespace "#,
+        r#"create <namespace> --reveal --yes` to create a Hub namespace","#,
+        r#""http_status":403}}' >&2; exit 1"#
+    );
+    let (wrapper, calls) = scripted_hipc(
+        &home,
+        "",
+        &[(
+            "*\" hub namespace get \"* | *\" hub namespace robot get \"* | \
+             *\" hub events list \"* | *\" hub usage \"* | *\" hub repositories list \"* | \
+             *\" hub keys list \"*",
+            refused,
+        )],
+    );
+    let (output, log) = offline(&home, wrapper.to_str().expect("UTF-8"), &["hub"]);
+    assert_clean_offline_run(&output, &log, &home);
+    assert_eq!(
+        log.matches("note: this account has no Hub namespace")
+            .count(),
+        6,
+        "{log}"
+    );
+    // The snapshot takes the state as the value of its two Hub reads.
+    let unread = log
+        .split("check: the account is as it was found: SKIP (not read: ")
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .expect("the skip names the reads");
+    assert!(
+        !unread.contains("hub-keys") && !unread.contains("hub-repositories"),
+        "{unread}"
+    );
+    assert!(
+        !real_calls(&calls)
+            .iter()
+            .any(|call| call.contains("provision") || call.contains("namespace create")),
+        "nothing creates a namespace"
+    );
+    // A 403 without the provision path is still a failure.
+    let home = Home::new();
+    let forbidden = concat!(
+        r#"printf '%s\n' '{"error":{"code":"permission","message":"cannot list: the API says "#,
+        r#"`You do not have permission.`","http_status":403}}' >&2; exit 1"#
+    );
+    let (wrapper, _) = scripted_hipc(&home, "", &[("*\" hub keys list \"*", forbidden)]);
+    let (_, log) = offline(&home, wrapper.to_str().expect("UTF-8"), &["hub"]);
+    assert!(
+        failed_titles(&log).contains(&"List the Hub keys".to_owned()),
+        "{log}"
     );
 }
