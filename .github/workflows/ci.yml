@@ -74,7 +74,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install
-      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177  # v2.87.30
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037  # v2.87.32
         with:
           tool: cargo-llvm-cov@0.9.1
           fallback: none
@@ -109,7 +109,7 @@ jobs:
         with:
           persist-credentials: false
       # A prebuilt binary. The cargo-deny action builds a Docker image on every run first.
-      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177  # v2.87.30
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037  # v2.87.32
         with:
           tool: cargo-deny@0.20.2
           fallback: none
@@ -129,7 +129,7 @@ jobs:
       # the pinned shellcheck runs rather than the image's. `fallback: none`, here and at
       # every other use of the action: its default is cargo-binstall, which a version
       # missing from the manifests would run instead, unchecked, with only a warning.
-      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177  # v2.87.30
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037  # v2.87.32
         with:
           tool: shellcheck@0.11.0,shfmt@3.14.1,zizmor@1.31.1
           fallback: none
