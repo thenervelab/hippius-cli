@@ -285,8 +285,14 @@ fn self_sign(error: Error) -> Error {
             "the account signs its own hAlpha buys (`self_sign`), and this version of `hipc` \
              cannot sign one yet",
         )
-        .with_hint("update `hipc` to a version that signs `Marketplace.buy_credits` itself")
+        .with_hint(SELF_SIGN_HINT)
 }
+
+/// [`self_sign`]'s hint: the top-ups that work for such an account today. No `hipc` release
+/// signs `Marketplace.buy_credits`, so the hint names none.
+const SELF_SIGN_HINT: &str = "top up with a card or Bitcoin instead: run `hipc billing top-up \
+     --amount <USD> --method card --yes`, or `--method bitcoin`, and pay at its \
+     `checkout_url`, or top up in the console at `https://console.hippius.com`";
 
 /// The buy, with the `min_credits` it sends and its key.
 fn buy_request(alpha: Planck, min_credits: &str, key: &str) -> Request {
