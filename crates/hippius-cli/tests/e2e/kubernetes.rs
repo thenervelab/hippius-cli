@@ -109,7 +109,7 @@ fn backups_envelope() -> Value {
     envelope
         .as_object_mut()
         .expect("the backups answer is an object")
-        .remove("snapshots");
+        .shift_remove("snapshots");
     envelope["items"] = snapshots;
     envelope["next_page_token"] = Value::Null;
     envelope

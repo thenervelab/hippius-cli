@@ -27,7 +27,7 @@ pub use crate::client::{
     Client, Method, Request, Response, follow, is_default_origin, without_query_values,
 };
 pub use crate::config::{
-    ConfigFile, HubMarker, Overrides, Settings, Token, config_path, take_split_link,
+    ConfigFile, HubMarker, Overrides, Settings, Token, config_path, on_lock_wait, take_split_link,
 };
 pub use crate::digest::sha256_hex;
 pub use crate::dns::{DnsCredentials, DnsProvider};

@@ -283,9 +283,97 @@ fn a_box_sealed_here_opens_and_the_newest_launch_drop_is_the_one_opened() {
     assert_eq!(opened.as_str(), "kind: Config\n");
     // A drop without `operation` is a launch drop too.
     let mut bare = kubeconfig_drop();
-    bare.as_object_mut().unwrap().remove("operation");
+    bare.as_object_mut().unwrap().shift_remove("operation");
     let opened = open(&key, &secrets(GUEST, &json!([bare]))).unwrap();
     assert_eq!(opened.as_str(), KUBECONFIG);
+}
+
+/// `created_at` is read as a time: a fraction makes a drop later, though `...:00.5Z` sorts
+/// before `...:00Z` as text, and a drop without a ciphertext or a signature is passed over for
+/// the newest one that has both.
+#[test]
+fn the_newest_launch_drop_is_found_by_its_time_among_those_that_can_be_opened() {
+    let key = vector_key();
+    let (ciphertext, signature) = guest_drop(b"kind: Config\n", range(1, 33), "kubeconfig");
+    let newer = drop_of(
+        "kubeconfig",
+        &ciphertext,
+        &signature,
+        "2026-10-01T00:00:00.5Z",
+    );
+    let older = drop_of(
+        "kubeconfig",
+        KUBECONFIG_CIPHERTEXT,
+        KUBECONFIG_SIGNATURE,
+        "2026-10-01T00:00:00Z",
+    );
+    let opened = open(&key, &secrets(GUEST, &json!([newer, older]))).unwrap();
+    assert_eq!(opened.as_str(), "kind: Config\n");
+    let opened = open(&key, &secrets(GUEST, &json!([older, newer]))).unwrap();
+    assert_eq!(opened.as_str(), "kind: Config\n");
+    // An offset is read too: 02:00 at +03:00 is before 00:00 UTC.
+    let mut east = newer.clone();
+    east["created_at"] = json!("2026-10-01T02:00:00+03:00");
+    let opened = open(&key, &secrets(GUEST, &json!([older, east]))).unwrap();
+    assert_eq!(opened.as_str(), KUBECONFIG);
+    // A time that is not one is older than any that is.
+    let mut garbled = newer.clone();
+    garbled["created_at"] = json!("2026-10-99T00:00:00Z");
+    let opened = open(&key, &secrets(GUEST, &json!([garbled, older]))).unwrap();
+    assert_eq!(opened.as_str(), KUBECONFIG);
+    for field in ["ciphertext", "signature"] {
+        let mut unusable = drop_of("kubeconfig", "", "", "2026-10-09T00:00:00Z");
+        unusable.as_object_mut().unwrap().shift_remove(field);
+        unusable[if field == "ciphertext" {
+            "signature"
+        } else {
+            "ciphertext"
+        }] = json!("x");
+        let opened = open(&key, &secrets(GUEST, &json!([unusable, older]))).unwrap();
+        assert_eq!(opened.as_str(), KUBECONFIG, "{field}");
+        unusable[field] = json!(null);
+        let opened = open(&key, &secrets(GUEST, &json!([older, unusable]))).unwrap();
+        assert_eq!(opened.as_str(), KUBECONFIG, "{field}");
+    }
+}
+
+#[test]
+fn an_rfc3339_time_is_a_real_date_with_a_real_offset() {
+    for (text, seconds, nanos) in [
+        ("2024-02-29T00:00:00Z", 1_709_164_800, 0),
+        ("2000-02-29T00:00:00Z", 951_782_400, 0),
+        ("2026-12-31T23:59:59Z", 1_798_761_599, 0),
+        ("2026-11-03T10:00:00.5Z", 1_793_700_000, 500_000_000),
+        (
+            "2026-11-03T10:00:00.123456789123Z",
+            1_793_700_000,
+            123_456_789,
+        ),
+        ("2026-11-03T13:59:00+03:59", 1_793_700_000, 0),
+        ("2026-11-03T10:00:00-00:00", 1_793_700_000, 0),
+    ] {
+        assert_eq!(rfc3339(text), Some((seconds, nanos)), "{text}");
+    }
+    for bad in [
+        "2026-02-29T00:00:00Z",
+        "2100-02-29T00:00:00Z",
+        "2026-02-31T00:00:00Z",
+        "2026-04-31T00:00:00Z",
+        "2026-11-03T10:00:00+24:00",
+        "2026-11-03T10:00:00+99:99",
+        "2026-11-03T10:00:00+02:60",
+        "2026-11-03T10:00:00+2:00",
+        "2026-11-03T10:00:00+002:00",
+        "2026-1-03T10:00:00Z",
+        "2026-11-3T10:00:00Z",
+        "26-11-03T10:00:00Z",
+        "2026-11-03T1:00:00Z",
+        "2026-11-03T10:00:00:00Z",
+        "2026-11-03-01T10:00:00Z",
+        "2026-11-03T10:00:00Z02:00",
+    ] {
+        assert_eq!(rfc3339(bad), None, "{bad}");
+    }
 }
 
 #[test]
@@ -435,7 +523,7 @@ fn a_key_file_is_matched_to_its_cluster_by_both_public_keys() {
                  saved when it created the cluster"
             )
         );
-        theirs.as_object_mut().unwrap().remove(field);
+        theirs.as_object_mut().unwrap().shift_remove(field);
         let error = key.matched(42, &theirs).unwrap_err();
         assert_eq!(error.code(), Code::Internal, "{field}");
         assert_eq!(
@@ -909,7 +997,7 @@ fn with(field: &str, value: Value) -> String {
 /// The vector key file without `field`.
 fn without(field: &str) -> String {
     let mut file: Value = serde_json::from_str(&vector_key_file()).unwrap();
-    file.as_object_mut().unwrap().remove(field);
+    file.as_object_mut().unwrap().shift_remove(field);
     file.to_string()
 }
 

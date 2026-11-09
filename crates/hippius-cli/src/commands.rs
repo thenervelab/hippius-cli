@@ -92,6 +92,22 @@ pub(crate) struct Input<'a> {
     pub(crate) what: &'static str,
 }
 
+/// A JSON value that holds a secret, every string in it cleared when dropped
+/// ([`hippius::clear_strings`]).
+pub(crate) struct Cleared(pub(crate) Value);
+
+impl Drop for Cleared {
+    fn drop(&mut self) {
+        hippius::clear_strings(&mut self.0);
+    }
+}
+
+/// What [`Input::open`] opened: stdin, or a regular file that passed the checks.
+enum Opened {
+    Stdin,
+    File(std::fs::File),
+}
+
 impl Input<'_> {
     /// Where the input comes from, for a message about what it holds.
     pub(crate) fn source(&self) -> Source {
@@ -130,16 +146,25 @@ impl Input<'_> {
 
     /// [`Input::read`] of `path`, the input's path or the target it links to.
     fn read_from(&self, path: &Path, limit: u64) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        match self.open(path)? {
+            Opened::Stdin => self.take(std::io::stdin().lock(), limit, &mut bytes)?,
+            Opened::File(file) => self.take(file, limit, &mut bytes)?,
+        }
+        Ok(bytes)
+    }
+
+    /// Opens `path` for [`Input::read`], held to its checks.
+    fn open(&self, path: &Path) -> Result<Opened> {
         if path == Path::new("-") {
-            let stdin = std::io::stdin();
             // A pipe or a terminal is never one of the two files; a redirect from one is.
-            let opened = stdin
+            let opened = std::io::stdin()
                 .as_fd()
                 .try_clone_to_owned()
                 .ok()
                 .map(std::fs::File::from);
             self.refuse_secret_store(opened.and_then(|file| file.metadata().ok()).as_ref())?;
-            return self.take(stdin.lock(), limit);
+            return Ok(Opened::Stdin);
         }
         // `-` is named because `/dev/stdin` and `<(...)` are refused too: on Linux the path
         // is a symlink into `/proc`, on macOS a pipe.
@@ -158,7 +183,7 @@ impl Input<'_> {
             hippius::OpenRegularError::Io(e) => self.unreadable(&e),
         })?;
         self.refuse_secret_store(file.metadata().ok().as_ref())?;
-        self.take(file, limit)
+        Ok(Opened::File(file))
     }
 
     /// [`Input::read_text`]: every file flag reads a regular file only, or stdin for `-`
@@ -220,17 +245,16 @@ impl Input<'_> {
         Ok(())
     }
 
-    /// At most `limit` bytes of `reader`, refusing more.
-    fn take(&self, reader: impl Read, limit: u64) -> Result<Vec<u8>> {
-        let mut bytes = Vec::new();
+    /// At most `limit` bytes of `reader`, read into `bytes`, refusing more.
+    fn take(&self, reader: impl Read, limit: u64, bytes: &mut Vec<u8>) -> Result<()> {
         reader
             .take(limit + 1)
-            .read_to_end(&mut bytes)
+            .read_to_end(bytes)
             .map_err(|e| self.unreadable(&e))?;
         if bytes.len() as u64 > limit {
             return Err(self.too_large(limit));
         }
-        Ok(bytes)
+        Ok(())
     }
 
     fn too_large(&self, limit: u64) -> Error {
@@ -259,36 +283,44 @@ impl Input<'_> {
         )
     }
 
-    /// Reads a secret, at most [`MAX_SECRET_FILE_BYTES`] of UTF-8 text.
-    pub(crate) fn read_secret(&self) -> Result<String> {
-        self.read_text(MAX_SECRET_FILE_BYTES)
-    }
-
-    /// [`Input::read_secret`] of stdin into a buffer that is cleared when dropped, for a
-    /// secret that must not outlive its use, such as an access key phrase piped in. The bytes
-    /// are read from the descriptor itself, not through the standard library's stdin buffer,
-    /// which would keep a copy for the life of the process, into a buffer that has its full
-    /// size before the read, so a read never moves the secret and leaves a copy behind.
-    pub(crate) fn read_cleared_stdin(&self) -> Result<Zeroizing<String>> {
-        let limit = MAX_SECRET_FILE_BYTES;
-        // The capacity holds the most `take` lets through, so the read never grows the buffer.
-        let mut bytes = Zeroizing::new(Vec::with_capacity(
-            usize::try_from(limit + 1).expect("64 KiB fits a usize"),
-        ));
-        let stdin = std::io::stdin();
-        let read = crate::hidden::Unbuffered(std::os::fd::AsFd::as_fd(&stdin))
-            .take(limit + 1)
-            .read_to_end(&mut bytes);
-        read.map_err(|e| self.unreadable(&e))?;
-        if bytes.len() as u64 > limit {
-            return Err(self.too_large(limit));
-        }
+    /// Reads a secret, at most [`MAX_SECRET_FILE_BYTES`] of UTF-8 text, from a file held to
+    /// the checks of [`Input::read`] or from stdin, into a buffer that is cleared when dropped.
+    /// stdin is read from the descriptor itself, not through the standard library's stdin
+    /// buffer, which would keep a copy for the life of the process. Every read goes into a
+    /// buffer that has its full size before the read, so a read never moves the secret and
+    /// leaves a copy behind.
+    pub(crate) fn read_secret(&self) -> Result<Zeroizing<String>> {
+        let mut bytes = self.read_cleared(MAX_SECRET_FILE_BYTES)?;
         if std::str::from_utf8(&bytes).is_err() {
             return Err(self.not_utf8());
         }
         Ok(Zeroizing::new(
             String::from_utf8(std::mem::take(&mut *bytes)).expect("checked: UTF-8"),
         ))
+    }
+
+    /// [`Input::read_secret`] as bytes, at most `limit`, for a document that holds a secret.
+    pub(crate) fn read_cleared(&self, limit: u64) -> Result<Zeroizing<Vec<u8>>> {
+        // The capacity holds the most `take` lets through, so the read never grows the buffer.
+        // Cleared when dropped, so a refusal clears what was read.
+        let mut bytes = Zeroizing::new(Vec::with_capacity(
+            usize::try_from(limit + 1).expect("a secret's limit fits a usize"),
+        ));
+        match self.open(self.path)? {
+            Opened::Stdin => {
+                let stdin = std::io::stdin();
+                self.take(crate::hidden::Unbuffered(stdin.as_fd()), limit, &mut bytes)?;
+            }
+            Opened::File(file) => self.take(file, limit, &mut bytes)?,
+        }
+        Ok(bytes)
+    }
+
+    /// [`Input::read_secret`] of stdin, for a secret that must not outlive its use, such as
+    /// an access key phrase piped in.
+    pub(crate) fn read_cleared_stdin(&self) -> Result<Zeroizing<String>> {
+        debug_assert_eq!(self.path, Path::new("-"), "only stdin");
+        self.read_secret()
     }
 
     /// Reads at most `limit` bytes of UTF-8 text.
@@ -465,7 +497,7 @@ pub(crate) const NEXT_STEP: &str = "next_step";
 pub(crate) fn drop_next_step(document: &mut Value) {
     match document {
         Value::Object(fields) => {
-            fields.remove(NEXT_STEP);
+            fields.shift_remove(NEXT_STEP);
             fields.values_mut().for_each(drop_next_step);
         }
         Value::Array(items) => items.iter_mut().for_each(drop_next_step),
@@ -618,7 +650,7 @@ pub(crate) fn keyed_list(answer: Value, request: &Request, key: &str) -> Result<
     let Value::Object(mut body) = answer else {
         return hippius::page(answer)?.complete_envelope(request.target());
     };
-    let Some(Value::Array(items)) = body.remove(key) else {
+    let Some(Value::Array(items)) = body.shift_remove(key) else {
         return Err(Error::internal(format!(
             "cannot {}: the API answered without a `{key}` list",
             request.action()

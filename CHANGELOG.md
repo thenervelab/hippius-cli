@@ -15,6 +15,19 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - The HTTP library is ureq 3.5. A user name or password in a proxy variable's URL (`HTTPS_PROXY=http://user:p%40ss@proxy:3128`) is now percent-decoded once before it is sent to the proxy, so a literal `%` in it must be written `%25`; a user name or password that decodes to invalid UTF-8 is refused with exit 2 `usage`, as a proxy URL the library cannot parse is.
 - The secp256k1, SHA-256, SHA-512, Keccak-256, HMAC-SHA-512, PBKDF2, and BLAKE2b crates move to their current releases. Every address, key, signature, and SHA-256 hash stays byte for byte as before, which known-answer tests check. The HMAC and SHA-512 state of an access-key login is now cleared from memory when dropped.
 
+### Fixed
+
+- A list's envelope, a dry run, and every document `hipc` takes a field out of keep the server's other fields in the order it sent them. With `serde_json`'s `preserve_order`, `Map::remove` moved the last field into the gap; a lint now refuses it.
+- `hipc s3 configure` locks the AWS config file as well as the credentials file, so two runs that share only the config file cannot lose each other's profile. When another run holds a lock, text mode prints a `note:` that names the file before it waits; JSON mode waits without a word. The same note covers the lock of the hipc config file.
+- `hipc s3 configure` reads section headers as botocore does: a line indented under an option continues that option's value and is not a header, and in the credentials file `[profile default]` is a profile of that name, not `default`. In the config file, `[profile <name>]` is split as botocore splits it, so `[profile "x"]` is `x`.
+- A new `~/.aws` or `~/.hippius` directory and a new AWS file get mode `0700` or `0600` whatever the umask, and a lock file is opened read-only: under `0277` they were read-only, and a later run could not write the profile or take the lock.
+- `hipc compute kubernetes clusters kubeconfig` picks the newest launch drop by its `created_at` time, so a time with a fraction is no longer older than the same second without one, and passes over a drop without a ciphertext or a signature for the newest one that has both.
+- An RFC 3339 time with a day its month does not have (`02-31`), an offset past `23:59`, or a field of the wrong width no longer reads as a time; the hAlpha in-flight check treats such a `created_at` as it treats any unreadable one, as in flight.
+
+### Security
+
+- More copies of secrets are cleared from memory when they are dropped: a secret read from `--token-file`, `--secret-key-file`, or an invite's `--token-file`, now read into a buffer of its full size, and from stdin without the standard library's buffer; the S3 token document `--from-token-file` reads; the S3 secret key and the AWS credentials text read and written; the one-time secret `--secret-file` moves; the DNS credential's redactions; every field of a DNS credentials, app secrets, or cluster key file, on every refusal; and the text an error held before a secret was redacted from it.
+
 ## [0.15.0] - 2026-11-09
 
 0.15.0 is the first public release of `hipc`. Earlier versions were private pre-releases named
