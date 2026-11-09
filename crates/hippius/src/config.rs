@@ -819,6 +819,20 @@ impl ConfigFile {
         self.profile_mut(profile).project = project.map(|id| id.as_str().to_owned());
     }
 
+    /// Clears the project stored in `profile` when it is still `project`, and says whether it
+    /// did. Inside [`ConfigFile::edit`] this is a compare-and-swap: a selection another run
+    /// stored after `project` was read is kept, not undone.
+    pub fn clear_project_if(&mut self, profile: &str, project: &str) -> bool {
+        let Some(stored) = self.document.profiles.get_mut(profile) else {
+            return false;
+        };
+        if stored.project.as_deref() != Some(project) {
+            return false;
+        }
+        stored.project = None;
+        true
+    }
+
     /// Stores the billing account selection in `profile`. The Default billing account
     /// (`None`) removes the field.
     pub fn set_billing(&mut self, profile: &str, billing: Option<&BillingId>) {
@@ -1762,6 +1776,27 @@ mod tests {
         file.set_account("default", &Selection::Own);
         let settings = file.settings(&Overrides::default()).unwrap();
         assert!(settings.project.is_none() && settings.billing.is_none());
+    }
+
+    /// A project is cleared only while the profile still stores it: another project, a
+    /// profile without one, and a profile that does not exist are left as they are.
+    #[test]
+    fn a_project_is_cleared_only_while_it_is_still_stored() {
+        let mut file = ConfigFile {
+            path: PathBuf::from("unused"),
+            document: Document::default(),
+        };
+        let stored = |file: &ConfigFile| file.document.profiles["default"].project.clone();
+        assert!(!file.clear_project_if("default", PROJECT));
+        file.set_project("default", None);
+        assert!(!file.clear_project_if("default", PROJECT));
+        let project = ProjectId::parse(PROJECT, &Source::Argument).unwrap();
+        file.set_project("default", project.as_ref());
+        assert!(!file.clear_project_if("default", "proj_ffffffffffffffffffff"));
+        assert!(!file.clear_project_if("other", PROJECT));
+        assert_eq!(stored(&file).as_deref(), Some(PROJECT));
+        assert!(file.clear_project_if("default", PROJECT));
+        assert_eq!(stored(&file), None);
     }
 
     /// The stored project and billing account are read only while the run acts in the
