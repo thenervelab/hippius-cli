@@ -16,7 +16,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 ### Fixed
 
 - `hipc account projects delete` clears the stored project only if it is still the archived one when the config file is locked, so a `hipc account projects use` another run stored meanwhile is kept.
-- `hipc compute vms create --open-port` sets the rules on a launched VM whose id starts with `-`; the hint of a failed rules update then puts the id after `--`.
+- `hipc compute vms create --open-port` sets the rules on a launched VM whose id starts with `-`. Every command a VM hint or warning prints (the failed rules update, `public-ip create`'s inbound warning, the firewall `409` hint, and the exposure `404` hint) puts such an id after `--`, so it runs as written.
 - An App Engine 403 that carries `app-engine-unavailable` in `code` rather than `error` gets the hint to run `hipc compute app-engine get` too.
 
 ## [0.15.0] - 2026-11-09

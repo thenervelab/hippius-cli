@@ -787,12 +787,8 @@ fn open_launched_ports(
                 hippius::SideEffects::Partial,
             )
             .with_hint(format!(
-                "run `hipc compute firewall update {}` with `{}` on stdin",
-                // An id clap would read as a flag goes after `--`.
-                match crate::cli::as_argument(vm_id, crate::cli::vm_id) {
-                    Some(id) => format!("{id} --rules-file - --yes"),
-                    None => format!("--rules-file - --yes -- {vm_id}"),
-                },
+                "run `{}` with `{}` on stdin",
+                crate::cli::with_id("compute firewall update", vm_id, "--rules-file - --yes"),
                 open_ports_rules(ports)
             )))
         }
@@ -804,7 +800,8 @@ fn open_launched_ports(
 fn inbound_blocked(vm_id: &str) -> String {
     format!(
         "all inbound traffic to the address is blocked until a firewall rule accepts it, which \
-         `hipc compute firewall update {vm_id} --rules-file <path>` adds"
+         `{}` adds",
+        crate::cli::with_id("compute firewall update", vm_id, "--rules-file <path>")
     )
 }
 
@@ -1322,8 +1319,9 @@ fn firewall_update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed> 
         let read_revision = args.base_revision.is_none() && !args.remove_others;
         match (error.http_status(), read_revision) {
             (Some(409), false) => error.with_hint(format!(
-                "run `hipc compute firewall get {vm_id}`, edit the rules it prints, and pass \
-                 its `revision` as `--base-revision`"
+                "run `{}`, edit the rules it prints, and pass its `revision` as \
+                 `--base-revision`",
+                crate::cli::with_id("compute firewall get", vm_id, "")
             )),
             (Some(409), true) => {
                 let again = phrase::command(ctx.args());
@@ -1689,7 +1687,7 @@ fn exposures(ctx: &Context<'_>, command: &Exposures) -> Result<Printed> {
                 Method::Delete,
                 format!("{}{exposure_id}/", expose_path(vm_id)),
             )
-            .listed_by(format!("hipc compute exposures list {vm_id}"))
+            .listed_by(crate::cli::with_id("compute exposures list", vm_id, ""))
             .about(format!(
                 "take down the exposure `{exposure_id}` of the VM `{vm_id}`"
             ));

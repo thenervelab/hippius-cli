@@ -109,7 +109,7 @@ pub(crate) enum Billing {
     /// first, and refuses when the quote is stale or not enabled, when --alpha is below its
     /// min_alpha, when --alpha and the 0.01 hAlpha kept for the fee are more than its
     /// native_balance, when a purchase from the last 15 minutes is still in flight, or when the
-    /// account signs its own buys (custodial false), which this version of hipc cannot do yet.
+    /// account signs its own buys (custodial false), which hipc cannot sign yet.
     /// The question names the address whose hAlpha is spent, the credits the quote gives,
     /// rounded down, and the minimum it accepts, 1 percent less; a price that falls further
     /// makes the chain refuse the buy. A person who was asked has the purchases read again
