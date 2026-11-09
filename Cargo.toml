@@ -51,8 +51,10 @@ crypto_box = { version = "0.9.1", default-features = false, features = ["salsa20
 # The drop message holds the hex SHA-256 of the sealed kubeconfig, and the SHA-512 of the
 # access key's HMAC and PBKDF2. 0.11, on digest 0.11 with sha3, hmac, blake2 and pbkdf2, which
 # move together. ed25519-dalek 2, crypto_box 0.9 and schnorrkel 0.11 still build sha2 0.10,
-# blake2 0.10 and digest 0.10, so the tree holds both digest families until they move.
-sha2 = { version = "0.11.0", default-features = false }
+# blake2 0.10, keccak 0.1 and digest 0.10, so the tree holds both digest families until they
+# move. zeroize: the hash state, which holds the access key's seed and chain codes mid-HMAC,
+# is cleared when dropped.
+sha2 = { version = "0.11.0", default-features = false, features = ["zeroize"] }
 # The request id of a signed node operation is a random v4 UUID. Already in the tree, under
 # rustls.
 getrandom = { version = "0.2.17", default-features = false, features = ["std"] }
@@ -87,8 +89,9 @@ pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }
 secp256k1 = { version = "0.33.1", default-features = false, features = ["std", "recovery"] }
 # Keccak-256, the hash of an Ethereum address and of an EIP-191 message.
 sha3 = { version = "0.12.0", default-features = false }
-# HMAC-SHA512, each BIP-32 step from the seed to the Ethereum key.
-hmac = { version = "0.13.0", default-features = false }
+# HMAC-SHA512, each BIP-32 step from the seed to the Ethereum key. zeroize: the keyed state
+# and the tag are cleared when dropped.
+hmac = { version = "0.13.0", default-features = false, features = ["zeroize"] }
 # BLAKE2b-512, the checksum of an SS58 address. crypto_box builds its own 0.10.
 blake2 = { version = "0.11.0", default-features = false }
 

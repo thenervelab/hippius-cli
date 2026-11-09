@@ -2630,8 +2630,7 @@ mod tests {
         let timeout = || NextTimeout {
             after: std::time::Duration::from_secs(1).into(),
             reason: ureq::Timeout::Global,
-            per_read: None,
-            per_write: None,
+            ..NextTimeout::default()
         };
         // Reading and checking the connection is not writing a request.
         assert!(!marked.await_input(timeout()).unwrap());
