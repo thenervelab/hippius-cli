@@ -39,6 +39,10 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
             if hippius::holds_phrase(&line) {
                 return output::failure(mode, &hippius::phrase_in_argv());
             }
+            // So is an API token the run knows: `HIPPIUS_TOKEN`, or one the config file stores.
+            if holds_a_known_token(&line) {
+                return output::failure(mode, &token_in_argv());
+            }
             return output::clap_error(mode, &error, args);
         }
     };
@@ -79,14 +83,44 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
             if let Some(note) = output::empty_note(&document) {
                 ctx.note(note);
             }
-            spec::add_confirmation(&path, &mut document);
+            // Only a run given `--dry-run` printed a dry run; a server's answer with the same
+            // fields is printed as it came.
+            let dry_run = cli.global.dry_run;
+            if dry_run {
+                spec::add_confirmation(&path, &mut document);
+            }
             output::add_warnings(mode, &mut document, &warnings);
-            output::document(mode, &document, ctx.side_effects())
+            output::document(mode, &document, ctx.side_effects(), dry_run)
         }
         Ok(Printed::Raw(bytes)) => output::raw(mode, &bytes, ctx.side_effects()),
         Ok(Printed::Body(bytes)) => output::body(&terminal, mode, &bytes, ctx.side_effects()),
         Err(error) => output::failure_warned(mode, &error, &warnings),
     }
+}
+
+/// Whether `line`, the command line, holds `HIPPIUS_TOKEN` or a token a profile of the config
+/// file stores, in any spelling an error would redact it in. Best effort: a config file that
+/// cannot be read holds no token here, and the error that follows names that file, not the
+/// command line.
+fn holds_a_known_token(line: &str) -> bool {
+    let variable = crate::context::env_os("HIPPIUS_TOKEN")
+        .and_then(|value| value.into_string().ok())
+        .and_then(|value| {
+            hippius::Token::new(&value, &hippius::Source::Variable("HIPPIUS_TOKEN")).ok()
+        });
+    variable.is_some_and(|token| token.is_in(line))
+        || crate::context::config().is_ok_and(|config| config.holds_a_stored_token(line))
+}
+
+/// The refusal of a command line that holds an API token ([`holds_a_known_token`]): `usage`,
+/// with nothing of the command line in it, as [`hippius::phrase_in_argv`] is for an access key.
+fn token_in_argv() -> hippius::Error {
+    hippius::Error::usage(
+        "the command line holds an API token, so it is not repeated here; treat the token as \
+         exposed to anyone who can read this machine's process list or shell history",
+        "pass a token with `hipc auth login --token-file <path>` or at its prompt, never on the \
+         command line, and replace an exposed one in the console settings",
+    )
 }
 
 /// The words of the command `matches` ran, after `hipc`, such as `["compute", "vms",

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use hippius::{
     AccessKeyId, AwsFiles, AwsProfile, Client, Error, Method, Request, Response, Result, SecretKey,
-    phrase, without_field,
+    phrase, without_fields,
 };
 use serde_json::{Map, Value, json};
 
@@ -473,7 +473,7 @@ fn list_tokens(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
             list::answered_as_asked(&page, page_number.as_deref().unwrap_or("1"), start_over)?;
             let next = page.next_page_token()?;
             for token in page.items {
-                let mut token = token_document(without_field(token, "secret"), kind);
+                let mut token = token_document(without_fields(token, &is_s3_secret), kind);
                 // Tenet 9: a listing shows `secret: null`, whatever the server sent.
                 if let Value::Object(fields) = &mut token {
                     fields.insert("secret".to_owned(), Value::Null);
@@ -523,7 +523,7 @@ fn issued_token(
         configure_note(ctx, &token, None);
         return Ok(token);
     };
-    let (token, written) = save_secret(path, token, &|key| key == "secret")?;
+    let (token, written) = save_secret(path, token, &is_s3_secret)?;
     configure_note(ctx, &token, written.then_some(path));
     Ok(token)
 }
@@ -595,7 +595,7 @@ fn revoke_token(ctx: &Context<'_>, target: &TokenTarget) -> Result<Printed> {
             let mut doc = Map::new();
             doc.insert("id".to_owned(), target.token_id.as_str().into());
             // A revoke issues no secret; one the server sent anyway is not printed (tenet 9).
-            if let Value::Object(body) = without_field(response.json()?, "secret") {
+            if let Value::Object(body) = without_fields(response.json()?, &is_s3_secret) {
                 doc.extend(body);
             }
             Ok(Value::Object(doc))
@@ -694,6 +694,11 @@ fn token_document(token: Value, kind: TokenKind) -> Value {
     let Value::Object(fields) = token else {
         return token;
     };
+    // Another spelling of the secret is printed as `secret`, which the list, the revoke,
+    // `--secret-file`, and `--from-token-file` know, unless the answer has `secret` already,
+    // or another spelling took the name: that one keeps its own, and `--secret-file` then
+    // refuses an answer with two different secrets.
+    let mut secret_named = fields.contains_key("secret");
     let mut out = Map::new();
     out.insert("kind".to_owned(), kind.code().into());
     for (name, value) in fields {
@@ -702,11 +707,29 @@ fn token_document(token: Value, kind: TokenKind) -> Value {
             "createdAt" => "created_at".to_owned(),
             "expiresAt" => "expires_at".to_owned(),
             "last4" => "secret_preview".to_owned(),
+            _ if !secret_named && is_s3_secret(&name) => {
+                secret_named = true;
+                "secret".to_owned()
+            }
             _ => name,
         };
         out.insert(name, value);
     }
     Value::Object(out)
+}
+
+/// Whether `key` names an S3 token's secret key: `secret`, as the API answers it, or a
+/// spelling of the secret access key another version of the answer could use
+/// (`secret_key`, `secretKey`, `secret_access_key`, `SecretAccessKey`), compared in lowercase
+/// without `_` and `-`. The list and the revoke drop them all, and `--secret-file` moves
+/// them all (tenet 9).
+fn is_s3_secret(key: &str) -> bool {
+    let key: String = key
+        .chars()
+        .filter(|c| !matches!(c, '_' | '-'))
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    matches!(key.as_str(), "secret" | "secretkey" | "secretaccesskey")
 }
 
 /// The largest token document read, in bytes. Arbitrary: a create answer is a few hundred

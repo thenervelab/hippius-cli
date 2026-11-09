@@ -747,7 +747,8 @@ pub(crate) struct Issued<'a> {
 /// # Errors
 ///
 /// `internal`, with nothing printed and `side_effects` `partial`, when the answer holds a
-/// `docker login` command outside the keys that are dropped, since a command can pass the
+/// `docker login` command outside the keys that are dropped, a `--secret-file` that cannot be
+/// written included, since a command can pass the
 /// secret in a way no check can list and could reach a shell history; or a login
 /// [`docker_login_command`] refuses. The write is done already, so the hint says to issue a
 /// new secret rather than to retry blindly.
@@ -773,11 +774,26 @@ fn issued_robot(ctx: &Context<'_>, body: Value, issued: Issued<'_>) -> Result<Va
     let body = without_keys(body, &|key| {
         LOGIN_COMMAND_KEYS.contains(&key.to_ascii_lowercase().as_str())
     });
+    // Checked before the secret goes to its file: a file that cannot be written puts the
+    // whole answer on stdout so the secret is not lost, and an answer that holds a `docker
+    // login` command must not reach stdout at all.
+    let login_command = holds_a_login_command(&body);
     // The secret goes to its file before any refusal below, which prints nothing: with
     // `--secret-file` the refused answer then loses no secret.
     let (mut body, saved) = match secret_file {
         Some(path) => {
-            let (body, written) = save_secret(path, body, &is_robot_secret)?;
+            let (body, written) = save_secret(path, body, &is_robot_secret).map_err(|error| {
+                if login_command {
+                    refused(format!(
+                        "{what} holds a `docker login` command, which may pass the secret where \
+                         it could be copied into a shell history, so `hipc` printed none of it, \
+                         and the secret could not be written to {} either; {done}",
+                        phrase::quote(path.display())
+                    ))
+                } else {
+                    error
+                }
+            })?;
             (body, written.then_some(path))
         }
         None => (body, None),
@@ -785,7 +801,7 @@ fn issued_robot(ctx: &Context<'_>, body: Value, issued: Issued<'_>) -> Result<Va
     let kept = saved
         .map(|path| format!("; the secret is in {}", phrase::quote(path.display())))
         .unwrap_or_default();
-    if holds_a_login_command(&body) {
+    if login_command {
         return Err(refused(format!(
             "{what} holds a `docker login` command, which may pass the secret where it could be \
              copied into a shell history, so `hipc` printed none of it; {done}{kept}"

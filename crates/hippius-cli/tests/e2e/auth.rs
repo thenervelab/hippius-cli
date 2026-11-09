@@ -92,7 +92,8 @@ fn login_says_why_the_token_file_cannot_be_read() {
         .fails(2, "usage");
     assert_eq!(
         error["message"],
-        format!("cannot read the token from `{path}`: it does not exist")
+        "cannot read the token from the file `--token-file` names: it does not exist; the path \
+         is not repeated here, in case it is the token itself"
     );
     // A directory is not a regular file, which every file flag reads.
     let path = home.path().to_str().unwrap();
@@ -1045,4 +1046,62 @@ fn login_names_a_profile_api_url_as_the_source() {
             .contains("the `api_url` of the profile `default`"),
         "{error}"
     );
+}
+
+/// A token passed where a path or no argument belongs is refused without being repeated: a
+/// stray word after `auth login`, a known token anywhere on a command line clap refuses, and
+/// a secret-file flag whose path names no file.
+#[test]
+fn a_token_in_the_wrong_place_is_never_repeated() {
+    let home = Home::new();
+    let pasted = "tok_pasted_in_the_wrong_place_0123456789";
+    let stored = "tok_stored_0123456789abcdef";
+    home.write_config(&format!("[profiles.default]\ntoken = \"{stored}\"\n"));
+    let cases: [(Vec<&str>, &str); 6] = [
+        (
+            vec!["auth", "login", pasted],
+            "`hipc auth login` takes no argument, so the word given is not repeated here",
+        ),
+        (
+            vec!["--output", "text", "auth", "login", "--yes", pasted],
+            "`hipc auth login` takes no argument, so the word given is not repeated here",
+        ),
+        (
+            vec!["version", stored],
+            "the command line holds an API token, so it is not repeated here",
+        ),
+        (
+            vec!["compute", "vms", "get", "--bogus", stored],
+            "the command line holds an API token, so it is not repeated here",
+        ),
+        (
+            vec!["auth", "login", "--token-file", pasted, "--yes"],
+            "cannot read the token from the file `--token-file` names: it does not exist; the \
+             path is not repeated here",
+        ),
+        (
+            vec![
+                "s3",
+                "configure",
+                "--access-key-id",
+                "hip_A",
+                "--secret-key-file",
+                pasted,
+                "--yes",
+            ],
+            "cannot read the secret key from the file `--secret-key-file` names",
+        ),
+    ];
+    for (args, says) in cases {
+        let run = Hipc::new(&home).run(&args);
+        assert_eq!(run.code(), Some(2), "{args:?}: {}", run.stderr());
+        let out = format!("{}{}", run.stdout(), run.stderr());
+        assert!(out.contains(says), "{args:?}: {out}");
+        assert!(!out.contains("0123456789"), "{args:?}: {out}");
+    }
+    // A flag clap does not know is still quoted, as is a word after another command.
+    let run = Hipc::new(&home).run(&["auth", "login", "--tokn-file", "x"]);
+    assert!(run.stderr().contains("`--tokn-file`"), "{}", run.stderr());
+    let run = Hipc::new(&home).run(&["version", "extra"]);
+    assert!(run.stderr().contains("`extra`"), "{}", run.stderr());
 }

@@ -258,9 +258,37 @@ impl Input<'_> {
         )
     }
 
-    /// Reads a secret, at most [`MAX_SECRET_FILE_BYTES`] of UTF-8 text.
+    /// Reads a secret, at most [`MAX_SECRET_FILE_BYTES`] of UTF-8 text. A path that cannot
+    /// be looked up is refused without being quoted ([`Input::unquoted_if_missing`]).
     pub(crate) fn read_secret(&self) -> Result<String> {
+        self.unquoted_if_missing()?;
         self.read_text(MAX_SECRET_FILE_BYTES)
+    }
+
+    /// Refuses a path that names no file, such as one that does not exist, without quoting
+    /// it: a secret passed in place of the file that holds it is no file, and a message that
+    /// quoted the path would copy the secret into a log or a transcript. stdin (`-`) passes.
+    fn unquoted_if_missing(&self) -> Result<()> {
+        if self.path == Path::new("-") {
+            return Ok(());
+        }
+        match std::fs::symlink_metadata(self.path) {
+            Ok(_) => Ok(()),
+            Err(error) => Err(Error::usage(
+                format!(
+                    "cannot read the {} from the file `{}` names: {}; the path is not repeated \
+                     here, in case it is the {} itself",
+                    self.what,
+                    self.flag,
+                    phrase::io_reason(&error),
+                    self.what
+                ),
+                format!(
+                    "pass `{}` the path of a file that holds the {}",
+                    self.flag, self.what
+                ),
+            )),
+        }
     }
 
     /// [`Input::read_secret`] of stdin into a buffer that is cleared when dropped, for a

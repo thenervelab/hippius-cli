@@ -4,6 +4,18 @@ All notable changes to `hipc`, named `hip` up to 0.14.0, are listed here. The fo
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `hipc api` applies `--public`, `--remove-others`, and `--change-isolation` to every write method of a guarded route, not only the one the API documents: a `PUT` of `/cdn/zones/<zone_id>/` that moves the origin needs `--public` as the `PATCH` does, and a `PUT` or `PATCH` of `/network/isolation/` needs `--change-isolation`. A `POST` or `DELETE` of `/cdn/lists/<name>/items/`, which adds or removes the items it names, needs no flag.
+- Every route table `hipc api` checks matches a path in any letter case, so `GET /Network/me/`, which may create the network, asks as `GET /network/me/` does, and a flag rule holds for `/CDN/zones/` too.
+- An error body drops `password`, `secret_key`, `secret_access_key`, `private_key`, `access_key`, and `api_key` from `details` with the other secret fields, each in any letter case and with `_`, `-`, or nothing between its words. A body that is one JSON string, such as `"Rate limit hit"`, is quoted in the message as `the API says ...`.
+- An S3 token answer that names its secret `secret_key`, `secretAccessKey`, or another spelling of the secret access key is treated as `secret`: `--secret-file` moves it, `--reveal` prints it as `secret`, and a list drops it.
+- A Hub key or robot answer that holds a `docker login` command and whose `--secret-file` cannot be written prints nothing, rather than the whole answer with the command in it.
+- A token on the command line is not repeated in an error: a word after `hipc auth login`, which takes none, a token the run knows (`HIPPIUS_TOKEN` or a stored one) anywhere on a command line `hipc` refuses, and the path of `--token-file`, `--secret-key-file`, or an invite's `--token-file` when it names no file. A path that holds an access key is named by its flag in every message.
+- A document is printed as a dry run, with `confirmation` and `confirmation_when`, only when the run was given `--dry-run`; a server's answer with `dry_run` and `requests` fields is printed as it came.
+
 ## [0.15.0] - 2026-11-09
 
 0.15.0 is the first public release of `hipc`. Earlier versions were private pre-releases named

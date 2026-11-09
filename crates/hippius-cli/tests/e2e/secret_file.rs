@@ -514,6 +514,104 @@ fn a_refused_hub_answer_keeps_the_secret_in_the_file() {
     }
 }
 
+/// A Hub answer that holds a `docker login` command under a key `hipc` does not drop, and
+/// whose `--secret-file` cannot be written, prints nothing: the whole answer, which a file
+/// that cannot be written otherwise puts on stdout, would carry the command.
+#[test]
+fn a_hub_answer_with_a_login_command_is_not_printed_when_the_file_fails() {
+    let rotate = issuers().remove(4);
+    let answer = json!({
+        "robot_login": "robot$acme",
+        "robot_secret": ROBOT_SECRET,
+        "help": "docker login -u robot$acme -p s3cr3t-rotated hub.hippius.com",
+    });
+    let home = Home::new();
+    let file = home.path().join("secret.txt");
+    let at = file.clone();
+    let server = server_for(
+        &rotate,
+        Reply::json(200, &answer.to_string())
+            .before(move || drop(std::fs::write(&at, "someone else's"))),
+    );
+    let run = run_into(&home, &server, &rotate, &file, &["--reveal", "--yes"]);
+    assert_eq!(run.code(), Some(1), "{}", run.stderr());
+    assert_eq!(run.stdout(), "");
+    no_secret_in(&run, ROBOT_SECRET);
+    let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
+    assert_eq!(error["error"]["code"], "internal");
+    assert_eq!(error["error"]["side_effects"], "partial");
+    let message = error["error"]["message"].as_str().expect("a message");
+    assert!(
+        message.contains("holds a `docker login` command")
+            && message.contains("could not be written to"),
+        "{message}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "someone else's");
+}
+
+/// An S3 token answer that names its secret another way (`secret_key`, `secretAccessKey`)
+/// is treated as `secret`: `--secret-file` moves it, a list drops it, and a document printed
+/// with `--reveal` names it `secret`.
+#[test]
+fn an_s3_secret_by_another_name_is_moved_and_dropped() {
+    for name in ["secret_key", "secretAccessKey", "SECRET_ACCESS_KEY"] {
+        let answer = json!({"accessKeyId": "hip_NEW1", name: S3_SECRET, "id": ID});
+        let issuer = issuers().remove(0);
+        let server = server_for(&issuer, Reply::json(201, &answer.to_string()));
+        let home = Home::new();
+        let file = home.path().join("secret.txt");
+        let run = run_into(&home, &server, &issuer, &file, &["--yes"]);
+        assert_eq!(run.code(), Some(0), "{name}: {}", run.stderr());
+        no_secret_in(&run, S3_SECRET);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), S3_SECRET, "{name}");
+        assert_eq!(
+            run.json()["secret_file"],
+            file.to_str().unwrap(),
+            "{name}: {}",
+            run.stdout()
+        );
+        let server = server_for(&issuer, Reply::json(201, &answer.to_string()));
+        let mut argv = issuer.argv.clone();
+        argv.extend(["--reveal", "--yes"]);
+        let doc = Hipc::against(&home, &server).run(&argv).ok();
+        assert_eq!(doc["secret"], S3_SECRET, "{name}");
+        assert!(doc.get(name).is_none(), "{name}: {doc}");
+        let listed = json!([answer]);
+        let server = Server::start(vec![
+            route(
+                "GET",
+                "/api/objectstore/master-tokens/",
+                Reply::json(200, "[]"),
+            ),
+            route(
+                "GET",
+                "/api/objectstore/sub-tokens/",
+                Reply::json(200, &listed.to_string()),
+            ),
+        ]);
+        let run = Hipc::against(&home, &server).run(&["s3", "tokens", "list"]);
+        assert_eq!(run.code(), Some(0), "{name}: {}", run.stderr());
+        no_secret_in(&run, S3_SECRET);
+        assert_eq!(run.json()["items"][0]["secret"], Value::Null, "{name}");
+    }
+    // Two spellings with two values: `--secret-file` cannot move one secret whole, so it
+    // writes no file and the whole answer goes on stdout, as for any two secrets.
+    let issuer = issuers().remove(0);
+    let answer =
+        json!({"accessKeyId": "hip_NEW1", "secret": S3_SECRET, "secretKey": "other", "id": ID});
+    let server = server_for(&issuer, Reply::json(201, &answer.to_string()));
+    let home = Home::new();
+    let file = home.path().join("secret.txt");
+    let run = run_into(&home, &server, &issuer, &file, &["--yes"]);
+    assert_eq!(run.code(), Some(1), "{}", run.stderr());
+    assert!(
+        run.stderr().contains("more than one secret"),
+        "{}",
+        run.stderr()
+    );
+    assert!(!file.exists());
+}
+
 /// The document of an S3 token create with `--secret-file` names the file in `secret_file`,
 /// and `s3 configure --from-token-file` reads the secret from there: a relative path from the
 /// current directory, as the create wrote it, not from the document's directory.
