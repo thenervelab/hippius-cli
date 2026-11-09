@@ -8,7 +8,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 ### Fixed
 
-- The hAlpha top-up's in-flight check measures a purchase's age by the earlier of the local clock and the `Date` of the purchases read, so when the API sends a `Date`, a local clock that runs fast no longer ages a purchase in flight out of the 15-minute window and lets a second buy through. A local clock set before 1970 with no `Date` to read is `internal`.
+- The hAlpha top-up's in-flight check measures a purchase's age by the earlier of the local clock and the `Date` of the purchases read, so when the API sends a `Date`, a local clock that runs fast no longer ages a purchase in flight out of the 15-minute window and lets a second buy through. A local clock set before 1970 is `internal`, whatever the `Date`.
 - The VM launch wait, the App Engine launch wait, and the hAlpha purchase follow wait for the server's `Retry-After` after a retryable failure, when it asks for longer than their interval; one that runs past `--wait-timeout` ends the wait at the deadline without another read. The three share one loop.
 
 ## [0.15.0] - 2026-11-09

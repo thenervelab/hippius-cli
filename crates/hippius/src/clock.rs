@@ -32,8 +32,8 @@ impl Now {
     ///
     /// # Errors
     ///
-    /// `internal` when there is no reading at all: the local clock is set before 1970 and the
-    /// answer had no `Date` `hipc` reads. `action` says what could not be done, as `cannot
+    /// `internal` when the local clock is set before 1970, whatever the `Date`: a `Date` alone
+    /// could be ahead of time and open a guard's window. `action` says what could not be done, as `cannot
     /// <action>`.
     pub fn of(date: Option<&str>, local: SystemTime, action: &str) -> Result<Self> {
         let server = date.and_then(http_date);
@@ -43,11 +43,12 @@ impl Now {
             .map(|since| since.as_secs());
         let (earliest, latest) = match (server, local) {
             (Some(server), Some(local)) => (server.min(local), server.max(local)),
-            (Some(one), _) | (None, Some(one)) => (one, one),
-            (None, None) => {
+            (None, Some(local)) => (local, local),
+            // A `Date` alone is not enough: with nothing to check it against, a `Date` ahead
+            // of time would open the window, so a local clock that is not a time refuses.
+            (_, None) => {
                 return Err(Error::internal(format!(
-                    "cannot {action}: the system clock is set before 1970, and the API's answer \
-                     had no `Date` to read the time from"
+                    "cannot {action}: the system clock is set before 1970"
                 ))
                 .with_hint(clock_hint()));
             }
@@ -92,15 +93,14 @@ mod tests {
             assert_eq!((now.earliest, now.latest), (SERVER + 9_999, SERVER + 9_999));
         }
         let before_1970 = UNIX_EPOCH - Duration::from_secs(1);
-        let now = Now::of(Some(DATE), before_1970, "act").unwrap();
-        assert_eq!((now.earliest, now.latest), (SERVER, SERVER));
-        let error = Now::of(None, before_1970, "check the thing").unwrap_err();
-        assert_eq!(error.code(), crate::Code::Internal);
-        assert_eq!(
-            error.to_string(),
-            "cannot check the thing: the system clock is set before 1970, and the API's answer \
-             had no `Date` to read the time from"
-        );
-        assert!(error.hint().unwrap().starts_with("check the system clock"));
+        for date in [None, Some(DATE)] {
+            let error = Now::of(date, before_1970, "check the thing").unwrap_err();
+            assert_eq!(error.code(), crate::Code::Internal);
+            assert_eq!(
+                error.to_string(),
+                "cannot check the thing: the system clock is set before 1970"
+            );
+            assert!(error.hint().unwrap().starts_with("check the system clock"));
+        }
     }
 }

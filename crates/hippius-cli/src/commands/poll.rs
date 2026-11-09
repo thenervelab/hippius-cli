@@ -82,6 +82,8 @@ pub(crate) fn poll_until<W: Wait>(
 ) -> Result<W::Output> {
     let mut failures = 0;
     let mut pause = schedule.first;
+    // Whether the pause is one the server asked for (`Retry-After`).
+    let mut asked = false;
     loop {
         if let Next::Stop(done) = wait.next() {
             return done;
@@ -92,7 +94,7 @@ pub(crate) fn poll_until<W: Wait>(
                 return wait.timed_out();
             }
             std::thread::sleep(pause.min(left));
-            if pause > schedule.interval && pause > left {
+            if asked && pause > left {
                 return wait.timed_out();
             }
         }
@@ -103,11 +105,13 @@ pub(crate) fn poll_until<W: Wait>(
             Ok(answer) => {
                 failures = 0;
                 pause = schedule.interval;
+                asked = false;
                 wait.take(answer)?;
             }
             Err(error) if error.is_retryable() && failures < MAX_POLL_FAILURES => {
                 failures += 1;
                 pause = after(&error, schedule.interval);
+                asked = error.retry_after_ms().is_some();
             }
             Err(error) => return Err(wait.failed(error)),
         }
