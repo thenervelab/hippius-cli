@@ -724,8 +724,9 @@ fn spec(path: &[&str]) -> Option<Spec> {
 const API_REFUSED_WHEN: &str = "the target is a full URL off the configured API origin, or \
                                 the request is `POST /api/account/deletion/`, any method of \
                                 `/api/auth/token/`, `GET` or `HEAD` \
-                                of `/api/kubernetes/clusters/<cluster_id>/secrets/`, `POST \
-                                /api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`, \
+                                of `/api/kubernetes/clusters/<cluster_id>/secrets/`, a `POST`, \
+                                `PUT`, or `PATCH` of \
+                                `/api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`, \
                                 `POST /api/registry/subscribe/`, or a `POST \
                                 /api/compute/app-engine/apps/`, a write of \
                                 `/api/compute/app-engine/apps/<vm_id>/compose/`, or a `POST \
@@ -2023,8 +2024,8 @@ mod tests {
             api["refused_when"],
             "the target is a full URL off the configured API origin, or the request is `POST \
              /api/account/deletion/`, any method of `/api/auth/token/`, `GET` or `HEAD` of \
-             `/api/kubernetes/clusters/<cluster_id>/secrets/`, `POST \
-             /api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`, `POST \
+             `/api/kubernetes/clusters/<cluster_id>/secrets/`, a `POST`, `PUT`, or `PATCH` of \
+             `/api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`, `POST \
              /api/registry/subscribe/`, or a `POST /api/compute/app-engine/apps/`, a write of \
              `/api/compute/app-engine/apps/<vm_id>/compose/`, or a `POST \
              /api/compute/app-engine/validate/` whose body sets `secrets` (a body that is not a \

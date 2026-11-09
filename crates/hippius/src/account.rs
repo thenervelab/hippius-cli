@@ -516,12 +516,36 @@ const ROUTE_RULES: &[(Method, &str, RouteRule)] = &[
                    with the cluster key file and writes it to a new file",
         },
     ),
+    // Swagger lists only `POST`, but any write would carry the credential, so each is
+    // refused.
     (
         Method::Post,
         "/api/cdn/zones/{id}/hostnames/{id}/dns-setup/",
         RouteRule::Refused {
             message: "`hipc api` does not send \
                       `POST /api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`: its body \
+                      and its answer hold a DNS provider credential",
+            hint: "run `hipc cdn hostnames dns-setup`, which reads the credential from a private \
+                   file and keeps it out of every output",
+        },
+    ),
+    (
+        Method::Put,
+        "/api/cdn/zones/{id}/hostnames/{id}/dns-setup/",
+        RouteRule::Refused {
+            message: "`hipc api` does not send \
+                      `PUT /api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`: its body \
+                      and its answer hold a DNS provider credential",
+            hint: "run `hipc cdn hostnames dns-setup`, which reads the credential from a private \
+                   file and keeps it out of every output",
+        },
+    ),
+    (
+        Method::Patch,
+        "/api/cdn/zones/{id}/hostnames/{id}/dns-setup/",
+        RouteRule::Refused {
+            message: "`hipc api` does not send \
+                      `PATCH /api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`: its body \
                       and its answer hold a DNS provider credential",
             hint: "run `hipc cdn hostnames dns-setup`, which reads the credential from a private \
                    file and keeps it out of every output",
@@ -728,10 +752,20 @@ fn rules_as_written(method: Method, path: &str) -> Vec<RouteRule> {
                     .iter()
                     .filter(on_route)
                     .find(|&&(route, _, rule)| applies(route, rule, method))
-                    .map(|&(_, _, rule)| rule),
+                    .map(|&(_, _, rule)| borrowed(rule, method)),
             }
         })
         .collect()
+}
+
+/// `rule`, borrowed from another write method's row for `method`. A `PUT` replaces the whole
+/// resource, so a field its body leaves out may be reset rather than kept: a rule that asks
+/// for a flag when the body sets a key asks for it whatever a `PUT` body sets.
+fn borrowed(rule: RouteRule, method: Method) -> RouteRule {
+    match (rule, method) {
+        (RouteRule::NeedsWhenSet(flags, _), Method::Put) => RouteRule::Needs(flags),
+        _ => rule,
+    }
 }
 
 /// Whether a row listed for `route` guards a request with `method` that no row of its path
@@ -1600,6 +1634,26 @@ pub(crate) mod tests {
                 "refused",
             ),
             (
+                Method::Put,
+                "/api/cdn/zones/z1/hostnames/cdn.example.com/dns-setup/",
+                "refused",
+            ),
+            (
+                Method::Patch,
+                "/api/cdn/zones/z1/hostnames/cdn.example.com/dns-setup/",
+                "refused",
+            ),
+            (
+                Method::Put,
+                "/api/cdn/zones/z1/hostnames/cdn.example.com/dns-setup",
+                "refused",
+            ),
+            (
+                Method::Patch,
+                "/api/cdn/zones/z1/hostnames/cdn.example.com/dns-setup",
+                "refused",
+            ),
+            (
                 Method::Post,
                 "/api/network/isolation/",
                 "--change-isolation",
@@ -1769,7 +1823,7 @@ pub(crate) mod tests {
         assert_rules_hold(&routes);
         assert_eq!(
             ROUTE_RULES.len(),
-            32,
+            34,
             "a new row needs cases in a rule test"
         );
     }
@@ -1792,7 +1846,14 @@ pub(crate) mod tests {
                     .iter()
                     .find(|&&(m, p, _)| m == method && p == path)
                     .or_else(from_another_write)
-                    .map(|&(_, _, rule)| rule.to_owned())
+                    .map(|&(m, _, rule)| {
+                        // A `PUT` borrows a body-conditional rule as unconditional.
+                        if m != method && method == Method::Put {
+                            rule.split(" if ").next().unwrap_or(rule).to_owned()
+                        } else {
+                            rule.to_owned()
+                        }
+                    })
                     .filter(|rule| !rule.is_empty());
                 assert_eq!(rule_name(method, path), expected, "{method} {path}");
                 for path in suffixed_forms(path) {
@@ -1824,9 +1885,16 @@ pub(crate) mod tests {
             let upper = path.to_ascii_uppercase().replace("/API/", "/api/");
             for form in [path.to_owned(), upper, slashless(path)] {
                 for method in [Method::Post, Method::Put, Method::Patch, Method::Delete] {
+                    // A `PUT` replaces the whole resource, so a rule conditional on a key the
+                    // body sets holds for it whatever the body sets.
+                    let expected = if method == Method::Put {
+                        rule.split(" if ").next().unwrap_or(rule)
+                    } else {
+                        rule
+                    };
                     assert_eq!(
                         rule_name(method, &form).as_deref(),
-                        Some(rule),
+                        Some(expected),
                         "{method} {form}"
                     );
                 }
@@ -1848,7 +1916,6 @@ pub(crate) mod tests {
             (Method::Put, "/api/account/deletion/"),
             (Method::Delete, "/api/account/deletion/"),
             (Method::Put, "/api/registry/subscribe/"),
-            (Method::Put, "/api/cdn/zones/z1/hostnames/h/dns-setup/"),
         ] {
             assert_eq!(rule_name(method, path), None, "{method} {path}");
         }

@@ -515,8 +515,9 @@ fn a_refused_hub_answer_keeps_the_secret_in_the_file() {
 }
 
 /// A Hub answer that holds a `docker login` command under a key `hipc` does not drop, and
-/// whose `--secret-file` cannot be written, prints nothing: the whole answer, which a file
-/// that cannot be written otherwise puts on stdout, would carry the command.
+/// whose `--secret-file` cannot be written, prints only the secret: the whole answer, which a
+/// file that cannot be written otherwise puts on stdout, would carry the command, and the
+/// secret must not be lost.
 #[test]
 fn a_hub_answer_with_a_login_command_is_not_printed_when_the_file_fails() {
     let rotate = issuers().remove(4);
@@ -535,15 +536,16 @@ fn a_hub_answer_with_a_login_command_is_not_printed_when_the_file_fails() {
     );
     let run = run_into(&home, &server, &rotate, &file, &["--reveal", "--yes"]);
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
-    assert_eq!(run.stdout(), "");
-    no_secret_in(&run, ROBOT_SECRET);
+    assert_eq!(run.json(), json!({"robot_secret": ROBOT_SECRET}));
+    assert!(!run.stdout().contains("docker"), "{}", run.stdout());
+    assert!(!run.stderr().contains(ROBOT_SECRET), "{}", run.stderr());
     let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
     assert_eq!(error["error"]["code"], "internal");
     assert_eq!(error["error"]["side_effects"], "partial");
     let message = error["error"]["message"].as_str().expect("a message");
     assert!(
         message.contains("holds a `docker login` command")
-            && message.contains("could not be written to"),
+            && message.contains("printed only the secret on stdout"),
         "{message}"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "someone else's");

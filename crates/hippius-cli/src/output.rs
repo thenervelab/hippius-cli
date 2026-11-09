@@ -288,22 +288,30 @@ pub(crate) fn clap_error(mode: Mode, error: &clap::Error, args: &[OsString]) -> 
         return raw(mode, rendered.as_bytes(), SideEffects::None);
     }
     let (path, mut command) = typed_command(args);
-    // `hipc auth login` takes no argument, and a word given to it is likely the token pasted in
-    // the wrong place, so it is not repeated: clap's message would quote it.
-    if path == "hipc auth login" && error.kind() == ErrorKind::UnknownArgument {
-        let positional = match error.get(ContextKind::InvalidArg) {
-            Some(ContextValue::String(word)) => !word.starts_with('-'),
-            _ => false,
+    // No `hipc auth` command takes an argument, and a word given to one that could not be a
+    // command name (only lowercase letters and `-`) is likely the token pasted in the wrong
+    // place, so it is not repeated: clap's message would quote it. A mistyped command name
+    // still gets the usual message and its nearest command.
+    if path == "hipc auth" || path.starts_with("hipc auth ") {
+        let word = match error.kind() {
+            ErrorKind::UnknownArgument => error.get(ContextKind::InvalidArg),
+            ErrorKind::InvalidSubcommand => error.get(ContextKind::InvalidSubcommand),
+            _ => None,
         };
-        if positional {
+        if let Some(ContextValue::String(word)) = word
+            && !word.starts_with('-')
+            && word.chars().any(|c| !(c.is_ascii_lowercase() || c == '-'))
+        {
             return failure(
                 mode,
                 &Error::usage(
-                    "`hipc auth login` takes no argument, so the word given is not repeated \
-                     here; if it is a token, treat it as exposed to anyone who can read this \
-                     machine's process list or shell history",
-                    "pass the token with `--token-file <path>` or at the prompt, never on the \
-                     command line",
+                    format!(
+                        "`{path}` takes no such argument, so the word given is not repeated \
+                         here; if it is a token, treat it as exposed to anyone who can read \
+                         this machine's process list or shell history"
+                    ),
+                    "pass the token with `hipc auth login --token-file <path>` or at its \
+                     prompt, never on the command line",
                 ),
             );
         }
@@ -941,7 +949,11 @@ mod text {
     pub(super) fn render(document: &Value, is_dry_run: bool) -> String {
         match document {
             Value::Array(items) => list(items),
-            Value::Object(map) if is_dry_run && map.contains_key("requests") => dry_run(map),
+            Value::Object(map)
+                if is_dry_run && map.contains_key("dry_run") && map.contains_key("requests") =>
+            {
+                dry_run(map)
+            }
             Value::Object(map) => match map.get("items") {
                 Some(Value::Array(items)) if map.contains_key("next_page_token") => {
                     let mut out = list(items);
