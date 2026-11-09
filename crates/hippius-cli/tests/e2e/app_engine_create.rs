@@ -878,6 +878,33 @@ fn a_refused_launch_keeps_what_to_fix_with_every_value_redacted() {
         error["hint"].as_str().unwrap().contains("app-engine get"),
         "{error}"
     );
+    // The slug in `code`, as compute bodies may carry it, is kept with secrets sent too, so
+    // the message names what the hint is about.
+    let server = Server::start(vec![
+        route(
+            "POST",
+            VALIDATE,
+            Reply::json(200, &validated(&["DB_PASSWORD", "API_KEY"])),
+        ),
+        route(
+            "POST",
+            APPS,
+            Reply::json(403, r#"{"code":"app-engine-unavailable"}"#),
+        ),
+    ]);
+    let error = Hipc::against(&files.home, &server)
+        .run(&with_secrets(&files, &["--yes"]))
+        .fails(1, "permission");
+    assert!(
+        error["hint"].as_str().unwrap().contains("app-engine get"),
+        "{error}"
+    );
+    assert_eq!(error["details"]["code"], "app-engine-unavailable");
+    assert_eq!(
+        error["message"],
+        "cannot launch an app VM of flavor `small` with a public IPv4: the API says \
+         `app-engine-unavailable`"
+    );
 }
 
 /// A launch answer whose `compose_sha256` is not the file's is internal, with the app on

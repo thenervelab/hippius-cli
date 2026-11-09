@@ -299,19 +299,26 @@ pub(crate) const STAYS_STOPPED: &str = "a power-off from inside the VM leaving i
 /// The launch clause of `--backup-interval`, for the VM and the app questions: how often, the
 /// failover, and that stored backups are billed, so neither question can leave the bill out.
 pub(crate) fn backups_clause(interval: BackupInterval, failover: Option<FailoverMode>) -> String {
-    let failover = match failover {
-        Some(FailoverMode::Auto) => {
-            " and failover `auto`, which restarts it on another server from its latest backup \
-             if its server dies, losing what was written after that backup"
-        }
-        Some(FailoverMode::Manual) => " and failover `manual`",
-        None => "",
-    };
+    let failover = failover.map_or(String::new(), |mode| {
+        format!(" and {}", failover_clause(mode))
+    });
     format!(
         "backups every {}{failover}, stored backups billed per GB-hour at the price that `hipc \
          compute backups options` shows",
         phrase::count(u64::from(interval.seconds()), "second")
     )
+}
+
+/// The words that name a backup failover, for the launch questions and the backup policy
+/// update: `auto` says what it loses.
+const fn failover_clause(mode: FailoverMode) -> &'static str {
+    match mode {
+        FailoverMode::Auto => {
+            "failover `auto`, which restarts it on another server from its latest backup if its \
+             server dies, losing what was written after that backup"
+        }
+        FailoverMode::Manual => "failover `manual`",
+    }
 }
 
 /// What a VM delete leaves billed (swagger, `DELETE /api/compute/vms/{vm_id}/`), for its
@@ -1842,15 +1849,9 @@ fn policy_update(ctx: &Context<'_>, client: &Client, args: &BackupPolicyUpdate) 
     let failover = match args.failover {
         Some(mode) => {
             body.insert("failover_mode".to_owned(), mode.code().into());
-            match mode {
-                FailoverMode::Auto => {
-                    ", with failover `auto`, which restarts it on another server from its \
-                     latest backup if its server dies"
-                }
-                FailoverMode::Manual => ", with failover `manual`",
-            }
+            format!(", with {}", failover_clause(mode))
         }
-        None => "",
+        None => String::new(),
     };
     let request = Request::new(Method::Put, backup_path(vm_id))
         .json(&Value::Object(body))

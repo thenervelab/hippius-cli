@@ -8,10 +8,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 ### Changed
 
-- `hipc billing top-up --method halpha` refused for an account that signs its own buys (`self_sign`) now hints at what works today, a card or Bitcoin top-up or the console, in place of a `hipc` version that does not exist.
+- `hipc billing top-up --method halpha` refused for an account that signs its own buys (`self_sign`) now says that a card or Bitcoin top-up, or one in the console, works, and its hint runs the card top-up, in place of naming a `hipc` version that does not exist.
 - `hipc s3 tokens list` is documented as a list read whole on purpose (tenet 6 and its help): it prints the master and the sub tokens of two routes as one list, follows every page of each within the caps `--all` has, and takes no page flags. Its behaviour is unchanged.
 - The help of `hipc cdn rules update`, `hipc account members update --grant`, and `hipc cdn lists items update` says that the route takes no version, so a change someone else makes between the read and the write is lost; for a member, a grant revoked in that window comes back if a `--grant` names it.
-- The `hipc compute app-engine apps create` question says that stored backups are billed per GB-hour at the price `hipc compute backups options` shows, and names where the OS disk tier's price is shown, as the `hipc compute vms create` question does.
+- The `hipc compute app-engine apps create` question says that stored backups are billed per GB-hour at the price `hipc compute backups options` shows, and names where the OS disk tier's price is shown, as the `hipc compute vms create` question does. The `hipc compute backups policy update --failover auto` question says, as the launch questions do, that what was written after the latest backup is lost; one clause now serves all three. An App Engine launch that sent secrets keeps a kebab `code` in a refusal's `details` and message, as it keeps `error`.
 
 ### Fixed
 

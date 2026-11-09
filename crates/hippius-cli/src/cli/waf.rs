@@ -568,8 +568,9 @@ pub(crate) enum ListItems {
     /// drop an item
     ///
     /// An item the list has now that the file leaves out is refused unless --remove-others is
-    /// passed. The route takes no version or If-Match, so the items are read, then written
-    /// whole: an item someone else adds between the read and the write is lost.
+    /// passed. The route takes no version or If-Match, so the items are written whole, after a
+    /// read unless --remove-others is passed: an item someone else adds before the write is
+    /// lost.
     #[command(after_help = examples(&[
         "hipc cdn lists items update blocked_ips --items-file items.txt --yes",
         "hipc cdn lists items update blocked_ips --items-file items.txt --remove-others --yes",
