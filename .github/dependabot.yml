@@ -29,6 +29,16 @@ updates:
         update-types: [version-update:semver-major, version-update:semver-minor]
       - dependency-name: getrandom
         update-types: [version-update:semver-major, version-update:semver-minor]
+      # The RustCrypto hashes share one digest release: a breaking sha2, sha3, hmac, blake2 or
+      # pbkdf2 alone does not build against the others, so they move together, by hand.
+      - dependency-name: sha3
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: hmac
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: blake2
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: pbkdf2
+        update-types: [version-update:semver-major, version-update:semver-minor]
   - package-ecosystem: github-actions
     directory: /
     schedule:

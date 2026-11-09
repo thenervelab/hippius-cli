@@ -34,7 +34,7 @@ toml = { version = "1.1", default-features = false, features = ["parse", "serde"
 rustls = { version = "0.23", default-features = false }
 # rustls: HTTPS to api.hippius.com with bundled roots and no system OpenSSL. No gzip: the
 # console's JSON answers are small.
-ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+ureq = { version = "3.5", default-features = false, features = ["rustls"] }
 # The Kubernetes cluster key (crates/hippius/src/kubernetes.rs): Ed25519 signatures over node
 # operations and the drop signatures, and libsodium sealed boxes for the kubeconfig. Both are
 # pure Rust and share curve25519-dalek 4, so the curve is built once. ed25519-dalek 3 moved to
@@ -48,9 +48,11 @@ ed25519-dalek = { version = "2.2", default-features = false, features = ["zeroiz
 # does not clear its 32 bytes when dropped (only the scalar), so hipc keeps the bytes itself
 # (`box_key` in crates/hippius/src/kubernetes.rs).
 crypto_box = { version = "0.9.1", default-features = false, features = ["salsa20", "seal", "rand_core"] }
-# The drop message holds the hex SHA-256 of the sealed kubeconfig; ed25519-dalek already
-# builds this crate.
-sha2 = { version = "0.10.9", default-features = false }
+# The drop message holds the hex SHA-256 of the sealed kubeconfig, and the SHA-512 of the
+# access key's HMAC and PBKDF2. 0.11, on digest 0.11 with sha3, hmac, blake2 and pbkdf2, which
+# move together. ed25519-dalek 2, crypto_box 0.9 and schnorrkel 0.11 still build sha2 0.10,
+# blake2 0.10 and digest 0.10, so the tree holds both digest families until they move.
+sha2 = { version = "0.11.0", default-features = false }
 # The request id of a signed node operation is a random v4 UUID. Already in the tree, under
 # rustls.
 getrandom = { version = "0.2.17", default-features = false, features = ["std"] }
@@ -75,20 +77,20 @@ unicode-normalization = { version = "0.1.24", default-features = false }
 schnorrkel = { version = "0.11.5", default-features = false, features = ["std", "getrandom"] }
 # PBKDF2-HMAC-SHA512 of the phrase's entropy, the Substrate mini secret as Substrate's
 # `from_phrase` makes it, into a buffer hipc clears (substrate-bip39 returns it in a plain
-# array). hmac: the HMAC form. 0.12 shares digest 0.10 with sha2.
-pbkdf2 = { version = "0.12.2", default-features = false, features = ["hmac"] }
+# array). hmac: the HMAC form. 0.13 shares digest 0.11 with sha2.
+pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }
 # The secp256k1 key of the Ethereum address and its EIP-191 signature: Bitcoin Core's
 # libsecp256k1, constant-time and the most reviewed implementation of the curve. cc builds its
 # C, as it builds ring's. The pure-Rust k256 was not taken: every k256 release needs either a
 # crypto-bigint that RUSTSEC-2026-0387 covers or one published less than two weeks ago.
 # recovery: the signature carries the `v` from which Ethereum recovers the address.
-secp256k1 = { version = "0.31.1", default-features = false, features = ["std", "recovery"] }
+secp256k1 = { version = "0.33.1", default-features = false, features = ["std", "recovery"] }
 # Keccak-256, the hash of an Ethereum address and of an EIP-191 message.
-sha3 = { version = "0.10.8", default-features = false }
+sha3 = { version = "0.12.0", default-features = false }
 # HMAC-SHA512, each BIP-32 step from the seed to the Ethereum key.
-hmac = { version = "0.12.1", default-features = false }
-# BLAKE2b-512, the checksum of an SS58 address. Already in the tree, through crypto_box.
-blake2 = { version = "0.10.6", default-features = false }
+hmac = { version = "0.13.0", default-features = false }
+# BLAKE2b-512, the checksum of an SS58 address. crypto_box builds its own 0.10.
+blake2 = { version = "0.11.0", default-features = false }
 
 [workspace.lints.rust]
 # The crates have no unsafe code and must not grow any.

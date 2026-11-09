@@ -4,6 +4,13 @@ All notable changes to `hipc`, named `hip` up to 0.14.0, are listed here. The fo
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The HTTP library is ureq 3.5. A user name or password in a proxy variable's URL (`HTTPS_PROXY=http://user:p%40ss@proxy:3128`) is now percent-decoded once before it is sent to the proxy, so a literal `%` in it must be written `%25`; a user name or password that decodes to invalid UTF-8 is refused with exit 2 `usage`, as a proxy URL the library cannot parse is.
+- The secp256k1, Keccak-256, HMAC-SHA-512, PBKDF2, and BLAKE2b crates of the access key move to their current releases. Every address, key, and signature stays byte for byte as before, which known-answer tests check.
+
 ## [0.15.0] - 2026-11-09
 
 0.15.0 is the first public release of `hipc`. Earlier versions were private pre-releases named

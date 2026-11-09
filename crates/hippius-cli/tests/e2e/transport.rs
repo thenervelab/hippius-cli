@@ -803,6 +803,8 @@ fn a_proxy_hipc_cannot_use_is_refused_before_sending() {
         ("all_proxy", "socks4://127.0.0.1:1"),
         ("HTTPS_PROXY", "ht!tp://u:p@[bad"),
         ("http_proxy", "socks5://127.0.0.1:1"),
+        // A password that percent-decodes to bytes that are not UTF-8.
+        ("https_proxy", "http://u:p%ff@127.0.0.1:1"),
     ] {
         let mut hipc = Hipc::new(&Home::new());
         // Only the variable under test is set, whatever the runner's environment holds.
@@ -841,6 +843,50 @@ fn a_proxy_hipc_cannot_use_is_refused_before_sending() {
         .env("HTTP_PROXY", "socks5://127.0.0.1:1")
         .run(&["api", "GET", "/x/", "--dry-run"])
         .ok();
+}
+
+/// The user name and password of a proxy URL are percent-decoded once, then sent to the proxy
+/// as Basic credentials on the `CONNECT`: `p%40ss` is the password `p@ss`.
+#[test]
+fn proxy_credentials_are_percent_decoded_once() {
+    let proxy = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+    let port = proxy.local_addr().expect("a bound address").port();
+    let (heads, head) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read as _;
+        if let Ok((mut stream, _)) = proxy.accept() {
+            let mut bytes = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !bytes.ends_with(b"\r\n\r\n") && stream.read_exact(&mut byte).is_ok() {
+                bytes.push(byte[0]);
+            }
+            drop(heads.send(String::from_utf8_lossy(&bytes).into_owned()));
+            // Closing without an answer ends the request.
+        }
+    });
+    let mut hipc = Hipc::new(&Home::new());
+    for other in PROXY_VARIABLES {
+        hipc = hipc.env_remove(other);
+    }
+    let run = hipc
+        .env("HIPPIUS_API_URL", "https://hipc-test.invalid")
+        .with_env_token("https://hipc-test.invalid", TOKEN)
+        .env(
+            "HTTPS_PROXY",
+            &format!("http://user:p%40ss@127.0.0.1:{port}"),
+        )
+        .run(&["api", "GET", "/x/", "--request-timeout", "5"]);
+    assert_ne!(run.code(), Some(0));
+    let head = head
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the proxy saw a CONNECT");
+    assert!(head.starts_with("CONNECT hipc-test.invalid:443 "), "{head}");
+    // base64("user:p@ss")
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("proxy-authorization: basic dxnlcjpwqhnz\r\n"),
+        "{head}"
+    );
 }
 
 /// Server text is quoted up to a fixed length, followed by how much more there is; `details`
