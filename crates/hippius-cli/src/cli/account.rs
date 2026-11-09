@@ -504,6 +504,10 @@ pub(crate) enum Members {
     /// flags leave out is refused, unless --remove-others is passed to remove it. To add one
     /// grant, read the member's grants with hipc account members list, then pass all of them.
     /// Without --grant the grants are kept, and only --manage-team and --billing-permission change.
+    ///
+    /// The route takes no version or If-Match, so the grants are read, then written whole: a
+    /// change another admin makes between the read and the write is lost, and a grant revoked
+    /// in that window is restored if a --grant flag names it.
     #[command(after_help = examples(&[
         "hipc account members update 12 --grant vms=operator --grant s3=viewer --yes",
         "hipc account members update 12 --grant vms=admin --remove-others --yes",
