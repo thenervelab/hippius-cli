@@ -232,8 +232,7 @@ pub const SECRET_ROUTES: &[(Method, &str)] = &[
 /// A path with a format suffix issues a secret when either of its forms does
 /// ([`classify`]).
 pub(crate) fn returns_secret(method: Method, path: &str) -> bool {
-    // In any letter case, for the reason [`route_rules`] gives.
-    listed(SECRET_ROUTES, method, path) || listed(SECRET_ROUTES, method, &path.to_ascii_lowercase())
+    listed(SECRET_ROUTES, method, path)
 }
 
 /// The reads that create something on the server, in the pattern language of
@@ -295,12 +294,16 @@ pub(crate) fn first_listed<'t, T>(
     };
     // The lower row wins, so `Reverse` makes it the larger outcome `classify` keeps.
     let at = |path: &str| classify(path, None, |form| row(form).map(|at| Some(Reverse(at))));
-    at(path)
-        .max(at(&path.to_ascii_lowercase()))
+    folded(path)
+        .iter()
+        .map(|path| at(path))
+        .max()
+        .flatten()
         .map(|Reverse(at)| &table[at].2)
 }
 
-/// Whether `table` lists `method` to `path`, matched as [`returns_secret`] describes.
+/// Whether `table` lists `method` to `path`, matched as [`returns_secret`] describes, and in
+/// any letter case ([`folded`]).
 fn listed(table: &[(Method, &str)], method: Method, path: &str) -> bool {
     let matches = |form: &str| {
         let form = with_trailing_slash(form);
@@ -308,7 +311,9 @@ fn listed(table: &[(Method, &str)], method: Method, path: &str) -> bool {
             .iter()
             .any(|&(route, pattern)| route == method && matches_pattern(pattern, &form))
     };
-    classify(path, false, |form| matches(form).then_some(true))
+    folded(path)
+        .iter()
+        .any(|path| classify(path, false, |form| matches(form).then_some(true)))
 }
 
 /// A flag `hipc api` needs beyond `--yes` to send a route whose effect reaches the whole
@@ -637,6 +642,18 @@ const ROUTE_RULES: &[(Method, &str, RouteRule)] = &[
         "/api/cdn/lists/{id}/items/",
         RouteRule::Needs(REMOVE_OTHERS),
     ),
+    // Swagger: a `POST` adds the items it names and a `DELETE` removes them; neither
+    // replaces the list, so neither takes the `PUT`'s flag.
+    (
+        Method::Post,
+        "/api/cdn/lists/{id}/items/",
+        RouteRule::Needs(&[]),
+    ),
+    (
+        Method::Delete,
+        "/api/cdn/lists/{id}/items/",
+        RouteRule::Needs(&[]),
+    ),
     (
         Method::Patch,
         "/api/cdn/lists/{id}/",
@@ -661,26 +678,37 @@ const ROUTE_RULES: &[(Method, &str, RouteRule)] = &[
 
 /// The rules on `method` to `path` (under `/api/`, no query), all of which apply: none or
 /// one, or for a path with a format suffix, the rule of each of its two forms that has one
-/// ([`classify`]). A path without its trailing `/` matches as if it had one, for the reason
-/// [`returns_secret`] gives. A refusal holds in any letter case too, as the secret guard
-/// does: the server matches case, but a front end that folds it would deliver
-/// `/api/Auth/token/` to the refused route.
+/// ([`classify`]), and for a path in another letter case, the rules of its lowercase form
+/// too ([`folded`]). A path without its trailing `/` matches as if it had one, for the reason
+/// [`returns_secret`] gives.
+///
+/// A row whose rule asks for a flag, and whose method writes, also applies to every other
+/// write method on its route that no row lists ([`applies`]): swagger names one method, but
+/// a view may take another (Django REST framework's update views take `PUT` beside `PATCH`),
+/// and a flag that a second method skipped would guard nothing. A refusal names its method
+/// in its message, so it is listed for each method it refuses.
 pub(crate) fn route_rules(method: Method, path: &str) -> Vec<RouteRule> {
-    let mut rules = rules_as_written(method, path);
-    let lower = path.to_ascii_lowercase();
-    if lower != path {
-        let refused = rules_as_written(method, &lower).into_iter().filter(|rule| {
-            matches!(
-                rule,
-                RouteRule::Refused { .. } | RouteRule::RefusedWhenSet { .. }
-            )
-        });
-        rules.extend(refused);
+    let mut rules = Vec::new();
+    for form in folded(path) {
+        rules.extend(rules_as_written(method, &form));
     }
     rules
 }
 
-/// [`route_rules`] for `path` in its own letter case.
+/// `path`, then its lowercase form when that differs: every route table matches both. The
+/// server matches letter case, but a front end that folds it would deliver
+/// `/api/Network/isolation/` to the isolation route, so a guard holds in any case.
+fn folded(path: &str) -> Vec<Cow<'_, str>> {
+    let lower = path.to_ascii_lowercase();
+    if lower == path {
+        vec![Cow::Borrowed(path)]
+    } else {
+        vec![Cow::Borrowed(path), Cow::Owned(lower)]
+    }
+}
+
+/// [`route_rules`] for `path` in its own letter case: for each form, the row that lists
+/// `method`, or else the first row that [`applies`] to it from another write method.
 fn rules_as_written(method: Method, path: &str) -> Vec<RouteRule> {
     let plain = without_format_suffix(path);
     [Some(path), plain.as_deref()]
@@ -688,12 +716,32 @@ fn rules_as_written(method: Method, path: &str) -> Vec<RouteRule> {
         .flatten()
         .filter_map(|form| {
             let form = with_trailing_slash(form);
-            ROUTE_RULES
+            let on_route =
+                |&&(_, pattern, _): &&(Method, &str, RouteRule)| matches_pattern(pattern, &form);
+            let own = ROUTE_RULES
                 .iter()
-                .find(|&&(route, pattern, _)| route == method && matches_pattern(pattern, &form))
-                .map(|&(_, _, rule)| rule)
+                .filter(on_route)
+                .find(|&&(route, _, _)| route == method);
+            match own {
+                Some(&(_, _, rule)) => Some(rule),
+                None => ROUTE_RULES
+                    .iter()
+                    .filter(on_route)
+                    .find(|&&(route, _, rule)| applies(route, rule, method))
+                    .map(|&(_, _, rule)| rule),
+            }
         })
         .collect()
+}
+
+/// Whether a row listed for `route` guards a request with `method` that no row of its path
+/// lists: both write, and the rule asks for a flag rather than refusing.
+fn applies(route: Method, rule: RouteRule, method: Method) -> bool {
+    let asks_for_a_flag = matches!(
+        rule,
+        RouteRule::Needs(_) | RouteRule::NeedsWhenSet(..) | RouteRule::NeedsUnlessFalse(..)
+    );
+    asks_for_a_flag && !route.is_read() && !method.is_read()
 }
 
 /// The outcome of a route table for `path` (its query ignored): `table` gives the outcome
@@ -1167,8 +1215,8 @@ pub(crate) mod tests {
             "refused if secrets"
         );
         assert!(returns_secret(Method::Post, "/api/Registry/provision/"));
-        // Only a refusal follows the folded case; a flag rule keeps the case as written.
-        assert_eq!(rule(Method::Post, "/api/CDN/zones/"), "");
+        // A flag rule follows the folded case too, as a refusal does.
+        assert_eq!(rule(Method::Post, "/api/CDN/zones/"), "--public");
         for method in [Method::Get, Method::Head] {
             assert_eq!(
                 rule(method, "/api/kubernetes/clusters/7/secrets.json"),
@@ -1454,6 +1502,7 @@ pub(crate) mod tests {
         };
         let mut rules: Vec<String> = route_rules(method, path)
             .into_iter()
+            .filter(|rule| !matches!(rule, RouteRule::Needs([])))
             .map(|rule| match rule {
                 RouteRule::Refused { .. } => "refused".to_owned(),
                 RouteRule::RefusedWhenSet { key, .. } => format!("refused if {key}"),
@@ -1504,10 +1553,11 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// Each route rule holds for its own method only, with or without its trailing
-    /// slash, and no other method on it is.
+    /// Each route rule holds for its own method, with or without its trailing slash; a rule
+    /// that asks for a flag on a write holds for every other write method of its route too,
+    /// and a refusal or a read's rule for no other method.
     #[test]
-    fn a_route_rule_matches_its_own_method_and_no_other() {
+    fn a_route_rule_matches_its_own_method_and_a_flag_every_write() {
         let routes = [
             (Method::Post, "/api/account/deletion/", "refused"),
             (Method::Post, "/api/account/deletion", "refused"),
@@ -1657,10 +1707,11 @@ pub(crate) mod tests {
     }
 
     /// The whole-list replaces of the WAF rules, rate limits and list items, and of an
-    /// operator node's storage: each holds for its own
-    /// method only, and the two rule tests together cover every row.
+    /// operator node's storage: each holds for its own method and every other write method,
+    /// but a list items `POST` or `DELETE`, which needs none (`""`), and the two rule tests
+    /// together cover every row.
     #[test]
-    fn an_uncurated_replace_rule_matches_its_own_method_and_no_other() {
+    fn an_uncurated_replace_rule_matches_its_own_method_and_every_write() {
         let routes = [
             (
                 Method::Put,
@@ -1682,6 +1733,8 @@ pub(crate) mod tests {
                 "/api/cdn/lists/blocked/items/",
                 "--remove-others",
             ),
+            (Method::Post, "/api/cdn/lists/blocked/items/", ""),
+            (Method::Delete, "/api/cdn/lists/blocked/items/", ""),
             (
                 Method::Patch,
                 "/api/cdn/lists/blocked/",
@@ -1716,7 +1769,7 @@ pub(crate) mod tests {
         assert_rules_hold(&routes);
         assert_eq!(
             ROUTE_RULES.len(),
-            30,
+            32,
             "a new row needs cases in a rule test"
         );
     }
@@ -1726,16 +1779,109 @@ pub(crate) mod tests {
     fn assert_rules_hold(routes: &[(Method, &str, &str)]) {
         for &(_, path, _) in routes {
             for method in METHODS {
+                // A flag rule of a write holds for the route's other write methods too.
+                let from_another_write = || {
+                    routes.iter().find(|&&(m, p, rule)| {
+                        p == path
+                            && !m.is_read()
+                            && !method.is_read()
+                            && !rule.starts_with("refused")
+                    })
+                };
                 let expected = routes
                     .iter()
                     .find(|&&(m, p, _)| m == method && p == path)
-                    .map(|&(_, _, rule)| rule.to_owned());
+                    .or_else(from_another_write)
+                    .map(|&(_, _, rule)| rule.to_owned())
+                    .filter(|rule| !rule.is_empty());
                 assert_eq!(rule_name(method, path), expected, "{method} {path}");
                 for path in suffixed_forms(path) {
                     assert_eq!(rule_name(method, &path), expected, "{method} {path}");
                 }
             }
         }
+    }
+
+    /// The rules the API documents for one write method hold for every write method of their
+    /// route, so a `PUT` where the API lists `PATCH` needs the same flag, and in any letter
+    /// case; a read needs none. A `POST` or `DELETE` of a list's items adds or removes the
+    /// items it names, so it needs no flag, while a `PUT` or `PATCH` of them does. A refusal
+    /// keeps its own method.
+    #[test]
+    fn a_flag_rule_holds_for_every_write_method_and_letter_case() {
+        let rules = [
+            ("/api/cdn/zones/z1/", "--public if origin"),
+            ("/api/accounts/members/7/", "--remove-others if grants"),
+            ("/api/cdn/lists/blocked/", "--remove-others if items"),
+            (
+                "/api/registry/me/publicity/",
+                "--public unless public is false",
+            ),
+            ("/api/network/isolation/", "--change-isolation"),
+            ("/api/compute/vms/vm-1/firewall/", "--remove-others"),
+        ];
+        for (path, rule) in rules {
+            let upper = path.to_ascii_uppercase().replace("/API/", "/api/");
+            for form in [path.to_owned(), upper, slashless(path)] {
+                for method in [Method::Post, Method::Put, Method::Patch, Method::Delete] {
+                    assert_eq!(
+                        rule_name(method, &form).as_deref(),
+                        Some(rule),
+                        "{method} {form}"
+                    );
+                }
+                for method in [Method::Get, Method::Head] {
+                    assert_eq!(rule_name(method, &form), None, "{method} {form}");
+                }
+            }
+        }
+        let items = "/api/cdn/lists/blocked/items/";
+        for (method, expected) in [
+            (Method::Post, None),
+            (Method::Delete, None),
+            (Method::Put, Some("--remove-others")),
+            (Method::Patch, Some("--remove-others")),
+        ] {
+            assert_eq!(rule_name(method, items).as_deref(), expected, "{method}");
+        }
+        for (method, path) in [
+            (Method::Put, "/api/account/deletion/"),
+            (Method::Delete, "/api/account/deletion/"),
+            (Method::Put, "/api/registry/subscribe/"),
+            (Method::Put, "/api/cdn/zones/z1/hostnames/h/dns-setup/"),
+        ] {
+            assert_eq!(rule_name(method, path), None, "{method} {path}");
+        }
+        // The route a refusal names is refused in any letter case too.
+        assert_eq!(
+            rule_name(Method::Post, "/api/Account/Deletion/").as_deref(),
+            Some("refused")
+        );
+    }
+
+    /// Every route table matches a path in any letter case: a front end that folds case
+    /// delivers `/api/Network/me/` to the network summary, whose first read creates the
+    /// network, and `/api/Registry/...` to a permanent delete.
+    #[test]
+    fn every_route_table_matches_in_any_letter_case() {
+        for path in ["/api/Network/me/", "/API/NETWORK/ME", "/api/network/ME/"] {
+            let path = path.replacen("/API/", "/api/", 1);
+            assert!(provisions(Method::Get, &path), "{path}");
+            assert!(provisions(Method::Head, &path), "{path}");
+        }
+        assert!(permanent(
+            Method::Delete,
+            "/api/Registry/Repositories/ns/app/"
+        ));
+        assert!(returns_secret(Method::Get, "/api/Auth/Token/"));
+        assert_eq!(
+            first_listed(
+                &[(Method::Get, "/api/x/{id}/", 7)],
+                Method::Get,
+                "/api/X/1/"
+            ),
+            Some(&7)
+        );
     }
 
     /// The curated commands' flags keep their codes in `hipc api`, and each code names the

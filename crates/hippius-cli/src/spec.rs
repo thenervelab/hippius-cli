@@ -173,7 +173,9 @@ const UNDO: Spec = Spec {
 const API_GUARDS: &[Guard] = &[
     Guard {
         code: Code::ChangeIsolationRequired,
-        when: Some("the request is `POST /api/network/isolation/`"),
+        when: Some(
+            "the request writes to `/api/network/isolation/` (any method but `GET` and `HEAD`)",
+        ),
     },
     Guard {
         code: Code::PublicRequired,
@@ -182,7 +184,8 @@ const API_GUARDS: &[Guard] = &[
              `PUT /api/objectstore/buckets/<name>/acl/set/`, a `PATCH` of \
              `/api/cdn/zones/<zone_id>/` whose body sets `origin`, or a \
              `PATCH /api/registry/me/publicity/` unless the body sets `public` to `false`; a \
-             body that is not a JSON object counts as setting the key",
+             body that is not a JSON object counts as setting the key, and each rule holds for \
+             every write method of its route, not only the one named",
         ),
     },
     Guard {
@@ -195,7 +198,9 @@ const API_GUARDS: &[Guard] = &[
              `/api/accounts/members/<id>/` whose body sets `grants`, a `PATCH` of \
              `/api/cdn/lists/<name>/` whose body sets `items`, or any other write `hipc` \
              guards that replaces a whole list or document; a body that is not a JSON \
-             object counts as setting the key",
+             object counts as setting the key, and each rule holds for every write method of \
+             its route, not only the one named, but a `POST` or `DELETE` of \
+             `/api/cdn/lists/<name>/items/`, which adds or removes the items it names",
         ),
     },
 ];
@@ -1048,8 +1053,9 @@ fn resolve(root: &clap::Command, words: &[String]) -> hippius::Result<Vec<String
 /// Adds to a dry run's document whether the real run asks for `--yes`, as `hipc schema` says
 /// it for the command at `path`: `confirmation`, and `confirmation_when` when that depends on
 /// what the real run reads or is given. A dry run sends nothing, so it cannot say more than
-/// the schema: a spend cap that asks only for a raise cannot know the cap in force. Only a
-/// dry run that lists `requests` gets them; a local change's dry run keeps its shape, `dry_run`
+/// the schema: a spend cap that asks only for a raise cannot know the cap in force. The caller
+/// calls it only for a run given `--dry-run`, and only a dry run that lists `requests` gets
+/// them; a local change's dry run keeps its shape, `dry_run`
 /// then the document a real run prints. Any other document is left as it is.
 pub(crate) fn add_confirmation(path: &[String], document: &mut Value) {
     if let Value::Object(fields) = document
@@ -2011,7 +2017,7 @@ mod tests {
         );
         assert_eq!(
             api["guards"][0]["when"],
-            "the request is `POST /api/network/isolation/`"
+            "the request writes to `/api/network/isolation/` (any method but `GET` and `HEAD`)"
         );
         assert_eq!(
             api["refused_when"],
