@@ -1575,6 +1575,8 @@ pub(crate) mod tests {
     #[test]
     fn a_route_rule_matches_its_own_method_and_a_flag_every_write() {
         let routes = [
+            (Method::Delete, "/api/account/deletion/", ""),
+            (Method::Delete, "/api/account/deletion", ""),
             (Method::Post, "/api/account/deletion/", "refused"),
             (Method::Post, "/api/account/deletion", "refused"),
             (Method::Get, "/api/auth/token/", "refused"),
@@ -1827,8 +1829,10 @@ pub(crate) mod tests {
                     .find(|&&(m, p, _)| m == method && p == path)
                     .or_else(from_another_write)
                     .map(|&(m, _, rule)| {
-                        // A `PUT` borrows a body-conditional rule as unconditional.
-                        if m != method && method == Method::Put {
+                        // A `PUT` borrows a body-conditional flag rule as unconditional; a
+                        // refusal stays conditional, since a body without the key sends no
+                        // secret.
+                        if m != method && method == Method::Put && !rule.starts_with("refused") {
                             rule.split(" if ").next().unwrap_or(rule).to_owned()
                         } else {
                             rule.to_owned()
