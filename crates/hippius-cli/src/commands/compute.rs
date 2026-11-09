@@ -1521,7 +1521,7 @@ fn firewall_rules(path: &Path) -> Result<(Vec<Value>, Vec<Entry>)> {
     };
     let rules = match serde_json::from_slice::<Value>(&bytes) {
         Ok(Value::Array(rules)) => rules,
-        Ok(Value::Object(mut document)) => match document.remove("rules") {
+        Ok(Value::Object(mut document)) => match document.shift_remove("rules") {
             Some(Value::Array(rules)) => rules,
             _ => return Err(not_rules()),
         },

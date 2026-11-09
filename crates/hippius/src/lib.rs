@@ -29,7 +29,7 @@ pub use crate::client::{
 };
 pub use crate::clock::Now;
 pub use crate::config::{
-    ConfigFile, HubMarker, Overrides, Settings, Token, config_path, take_split_link,
+    ConfigFile, HubMarker, Overrides, Settings, Token, config_path, on_lock_wait, take_split_link,
 };
 pub use crate::digest::sha256_hex;
 pub use crate::dns::{DnsCredentials, DnsProvider};
@@ -43,5 +43,6 @@ pub use crate::project::{BillingId, DEFAULT, ProjectId};
 pub use crate::regular::{OpenRegularError, open_regular};
 pub use crate::source::{Given, Source};
 pub use crate::wallet::{
-    AccessKey, LoginSignatures, holds_phrase, new_idempotency_key, phrase_in_argv, read_phrase_file,
+    AccessKey, LoginSignatures, holds_phrase, new_idempotency_key, phrase_in_argv,
+    read_hotkey_file, read_phrase_file,
 };

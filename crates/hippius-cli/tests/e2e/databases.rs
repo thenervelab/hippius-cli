@@ -242,7 +242,7 @@ fn events_and_refusals_print_the_list_envelope_without_credentials() {
     let enveloped = |text: &str, key: &str| {
         let mut doc = parsed(text);
         let items = doc[key].take();
-        doc.as_object_mut().unwrap().remove(key);
+        doc.as_object_mut().unwrap().shift_remove(key);
         doc["items"] = items;
         doc["next_page_token"] = Value::Null;
         doc
@@ -1204,7 +1204,10 @@ fn a_value_env_cannot_quote_writes_nothing_and_keeps_the_answer_on_stdout() {
 fn the_env_file_takes_the_answers_sslmode() {
     let mut answer = with_credentials(database("provisioning"));
     answer["connection"]["sslmode"] = "verify-full".into();
-    answer["connection"].as_object_mut().unwrap().remove("port");
+    answer["connection"]
+        .as_object_mut()
+        .unwrap()
+        .shift_remove("port");
     let server = Server::start(vec![route(
         "POST",
         "/api/databases/",
