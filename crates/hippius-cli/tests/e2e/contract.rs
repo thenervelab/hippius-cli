@@ -1706,7 +1706,7 @@ fn schema_usage(command: &Value) -> Usage {
 /// amount, a zone prefix, a WAF tier's zone count, and a dedicated disk, each the form its
 /// flag's value parser names. A directory is tried too: the run's own empty home, which
 /// `takes_twice` adds.
-const VALUE_CANDIDATES: [&str; 17] = [
+const VALUE_CANDIDATES: [&str; 18] = [
     "1",
     "/a/",
     "vms=operator",
@@ -1724,6 +1724,7 @@ const VALUE_CANDIDATES: [&str; 17] = [
     "default",
     "gpu=true:NoSchedule",
     "3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0c",
+    "5DfhGyQdFobKM8NsWvEeAKk5EQQgYe9AydgJ7rMB6E1EqRzV",
 ];
 
 /// Whether clap takes `flag` of the command at `path` twice, read from a run of

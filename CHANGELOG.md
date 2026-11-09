@@ -6,6 +6,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 ## [Unreleased]
 
+### Added
+
+- `hipc billing gamma` pays with the Bittensor gamma of subnet 75, through `/api/billing/gamma/`. `get` prints the Hippius spender a deposit must name, the minimum, and each linked hotkey with its deposit read from the chain. `hotkeys create --hotkey-file <path|->` links the hotkey whose BIP-39 words the file or stdin holds: it asks for the challenge, signs it with the hotkey's sr25519 key only when the message is exactly the API's link template for that hotkey, sends the signature, and clears the keys; the file is held to the config file's checks, and no message quotes a word. `hotkeys delete <hotkey>` unlinks one and is confirmed. `conversions create --hotkey <SS58> --amount <GAMMA>` burns gamma for the same amount in USD, is confirmed, and names the read that follows it; `--amount` is at least `0.1` with at most 9 decimals, checked before anything is sent, and an answer without a conversion id is `partial_failure` with the answer on stdout. `get` also prints `service_hotkey`, the hotkey `btcli gamma mint` takes to name the spender. `conversions list` pages like the other lists (`--limit`, `--page-token`, `--all`), and `conversions get <id>` reads one conversion. The API's `gamma_unavailable`, `gamma_personal_only`, `gamma_hotkey_not_found` and `gamma_conversion_not_found` refusals get a hint that names what helps. The routes act on the signed-in user's own account, so a membership is refused, as on the hAlpha routes. A dry run of the link reads the words, to name the hotkey, and lists both requests with placeholders.
+
 ### Changed
 
 - The HTTP library is ureq 3.5. A user name or password in a proxy variable's URL (`HTTPS_PROXY=http://user:p%40ss@proxy:3128`) is now percent-decoded once before it is sent to the proxy, so a literal `%` in it must be written `%25`; a user name or password that decodes to invalid UTF-8 is refused with exit 2 `usage`, as a proxy URL the library cannot parse is.
