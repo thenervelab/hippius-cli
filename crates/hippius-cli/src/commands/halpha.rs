@@ -342,10 +342,10 @@ fn refuse_in_flight(page: &Value, now: u64) -> Result<()> {
 }
 
 /// Reads the purchases list with `recent` and refuses a new buy while one is in flight
-/// ([`refuse_in_flight`]), measured by the API's clock, which dated the purchases: the
-/// answer's `Date`, or, when it and the local clock disagree by more than a few minutes, the
-/// earlier of the two (`hippius::Now`), so a local clock that runs fast does not age a
-/// purchase in flight out of the window.
+/// ([`refuse_in_flight`]), measured by the earlier of the answer's `Date` and the local clock
+/// (`hippius::Now`): the API dated the purchases by its own clock, so a local clock that runs
+/// fast cannot age a purchase in flight out of the window, and a `Date` ahead of time cannot
+/// either.
 fn check_in_flight(ctx: &Context<'_>, client: &Client, recent: &Request) -> Result<()> {
     let answer = ctx.send(client, recent)?;
     let action = "check the hAlpha purchases in flight";

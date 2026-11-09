@@ -384,7 +384,7 @@ fn box_key(secret: &[u8; KEY_BYTES]) -> crypto_box::SecretKey {
 /// How far the API's `Date` may be from the local clock, in seconds, and still date a
 /// signature: five minutes, the allowance Kerberos and AWS Signature Version 4 give a
 /// request's clock.
-pub(crate) const CLOCK_SKEW_SECS: u64 = 300;
+const CLOCK_SKEW_SECS: u64 = 300;
 
 /// The `iat` of an operation signed now. The backend checks `iat` and `exp` against its own
 /// clock, so the server's clock is used when the answer's `Date` holds a time `hipc` reads

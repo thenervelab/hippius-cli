@@ -8,14 +8,13 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::{Error, Result};
-use crate::kubernetes::{CLOCK_SKEW_SECS, clock_hint, http_date};
+use crate::kubernetes::{clock_hint, http_date};
 
-/// The time now, in seconds since 1970, as two readings: `earliest` and `latest` are the
-/// API's `Date` when it sent one within [`CLOCK_SKEW_SECS`] of the local clock, and the local
-/// clock when it sent none. When the two clocks disagree by more than that, which clock is
-/// wrong is not known, so `earliest` is the earlier of the two and `latest` the later: a
-/// guard reads the one that refuses more, so neither a fast local clock nor a `Date` ahead of
-/// time lets a repeat through.
+/// The time now, in seconds since 1970, as two readings: the earlier and the later of the
+/// API's `Date` and the local clock, or the one clock there is. Which clock is right is not
+/// known, and two API servers' clocks can differ too, so a guard reads the one that refuses
+/// more: neither a local clock that runs fast nor a `Date` ahead of time lets a repeat
+/// through.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Now {
     /// The earlier reading: for the age of something dated before now, which is then never
@@ -43,9 +42,7 @@ impl Now {
             .ok()
             .map(|since| since.as_secs());
         let (earliest, latest) = match (server, local) {
-            (Some(server), Some(local)) if server.abs_diff(local) > CLOCK_SKEW_SECS => {
-                (server.min(local), server.max(local))
-            }
+            (Some(server), Some(local)) => (server.min(local), server.max(local)),
             (Some(one), _) | (None, Some(one)) => (one, one),
             (None, None) => {
                 return Err(Error::internal(format!(
@@ -73,15 +70,11 @@ mod tests {
     }
 
     #[test]
-    fn the_apis_date_is_the_time_within_five_minutes_of_the_local_clock() {
-        for local in [SERVER, SERVER - 300, SERVER + 300] {
-            let now = Now::of(Some(DATE), at(local), "act").unwrap();
-            assert_eq!((now.earliest, now.latest), (SERVER, SERVER), "{local}");
-        }
-    }
-
-    #[test]
-    fn clocks_further_apart_give_both_readings() {
+    fn two_clocks_give_both_readings_however_close() {
+        let now = Now::of(Some(DATE), at(SERVER), "act").unwrap();
+        assert_eq!((now.earliest, now.latest), (SERVER, SERVER));
+        let now = Now::of(Some(DATE), at(SERVER + 30), "act").unwrap();
+        assert_eq!((now.earliest, now.latest), (SERVER, SERVER + 30));
         let now = Now::of(Some(DATE), at(SERVER + 301), "act").unwrap();
         assert_eq!((now.earliest, now.latest), (SERVER, SERVER + 301));
         let now = Now::of(Some(DATE), at(SERVER - 3_600), "act").unwrap();

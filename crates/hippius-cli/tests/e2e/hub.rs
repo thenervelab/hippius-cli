@@ -1544,44 +1544,6 @@ fn a_marker_from_a_clock_that_stepped_back_still_blocks() {
     );
 }
 
-/// The marker is aged by the API's clock, the `Date` of the subscriptions read: a marker
-/// written two minutes before that `Date` blocks, though by the local clock, which the server's
-/// `Date` here makes days fast, it is long past the window.
-#[test]
-fn the_marker_is_aged_by_the_apis_clock() {
-    // 2026-11-03T10:05:00Z.
-    let date = "Tue, 03 Nov 2026 10:05:00 GMT";
-    let server_now = 1_793_700_300;
-    let server = Server::start(vec![
-        plans(),
-        route(
-            "GET",
-            "/api/registry/subscriptions/",
-            Reply::json(200, "[]").header("Date", date),
-        ),
-        route(
-            "POST",
-            "/api/registry/subscribe/",
-            Reply::json(201, SUBMITTED),
-        ),
-    ]);
-    let home = Home::new();
-    subscribe_in(&home, &server, &["--plan", "builder", "--yes"]).ok();
-    move_marker(&home, server_now - 120);
-    let error =
-        subscribe_in(&home, &server, &["--plan", "builder", "--yes"]).fails(2, "replace_required");
-    assert!(
-        error["message"]
-            .as_str()
-            .unwrap()
-            .contains("last 10 minutes"),
-        "{error}"
-    );
-    // Eleven minutes before the `Date` is past the window by either clock.
-    move_marker(&home, server_now - 660);
-    subscribe_in(&home, &server, &["--plan", "builder", "--yes"]).ok();
-}
-
 #[test]
 fn a_subscribe_that_may_have_landed_keeps_its_marker() {
     let server = Server::start(vec![
