@@ -591,9 +591,9 @@ impl Error {
         self.redacted_all(&[secret])
     }
 
-    /// [`Error::redacted`] of each of `secrets` at once, in one longest-first pass over each
-    /// text ([`crate::json::redact_all`]), so a shorter secret never cuts a longer one or a
-    /// marker an earlier one wrote.
+    /// [`Error::redacted`] of each of `secrets` at once: each text gets one marker per span of
+    /// overlapping matches ([`crate::json::redact_all`]), so a shorter secret never cuts a
+    /// longer one or a marker an earlier one wrote.
     ///
     /// # Panics
     ///
@@ -1028,7 +1028,7 @@ mod tests {
         assert_eq!(plain.details(), None);
     }
 
-    /// Several secrets go in one longest-first pass over every text: a short one cuts neither
+    /// Several secrets are redacted at once in every text: a short one cuts neither
     /// a longer one that holds it nor a marker already written, whatever their order.
     #[test]
     fn several_secrets_are_redacted_in_one_pass() {

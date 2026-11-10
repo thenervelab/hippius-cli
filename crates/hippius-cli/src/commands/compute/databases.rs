@@ -384,8 +384,8 @@ fn withheld(object: &Value) -> Vec<String> {
     secrets
 }
 
-/// `value` with every one of `secrets` in its strings replaced by `<redacted>`, in one
-/// longest-first pass ([`hippius::redact_all`]): a field outside `credentials`, such as a
+/// `value` with every one of `secrets` in its strings replaced by `<redacted>`, all at once
+/// ([`hippius::redact_all`]): a field outside `credentials`, such as a
 /// `connection_string` that embeds the password, must not print what `--credentials-dir`
 /// moved to its files.
 fn redacted(value: Value, secrets: &[String]) -> Value {
@@ -526,7 +526,7 @@ fn document_or_raw(response: &Response) -> Result<Value> {
 mod tests {
     use serde_json::json;
 
-    /// The secrets moved to files go in one longest-first pass: a short one cuts neither a
+    /// The secrets moved to files are redacted at once: a short one cuts neither a
     /// longer one that holds it nor the marker a longer one wrote.
     #[test]
     fn moved_secrets_are_redacted_in_one_pass() {

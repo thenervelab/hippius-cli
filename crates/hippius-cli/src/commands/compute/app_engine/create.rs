@@ -259,8 +259,8 @@ fn check_secret_names(
     Ok(())
 }
 
-/// `text` with every text of `redactions` replaced by `<redacted>`, in one longest-first
-/// pass, so a short value never cuts a marker an earlier one wrote ([`hippius::redact_all`]).
+/// `text` with every text of `redactions` replaced by `<redacted>`, all at once, so a short
+/// value never cuts a marker another wrote ([`hippius::redact_all`]).
 fn redact_text(text: &str, redactions: &[String]) -> String {
     hippius::redact_all(text.to_owned(), redactions)
 }
@@ -862,7 +862,7 @@ mod tests {
         );
     }
 
-    /// One pass from the left, longest first: a short value cannot cut a marker already
+    /// All values at once: a short value cannot cut a marker already
     /// written, and a longer value that holds a shorter one is redacted whole.
     #[test]
     fn redaction_is_one_pass_longest_first() {

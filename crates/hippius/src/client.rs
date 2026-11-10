@@ -1800,9 +1800,11 @@ fn percent_encode(text: &str) -> String {
     percent_encode_keeping(text, b"")
 }
 
-/// [`percent_encode`], keeping the bytes of `kept` as they are too, in uppercase hex.
+/// [`percent_encode`], with uppercase hex, that also leaves the bytes of `kept`, which are
+/// ASCII, as they are.
 pub(crate) fn percent_encode_keeping(text: &str, kept: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    debug_assert!(kept.is_ascii(), "only ASCII bytes are kept");
     let mut out = String::with_capacity(text.len());
     for byte in text.bytes() {
         if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) || kept.contains(&byte) {

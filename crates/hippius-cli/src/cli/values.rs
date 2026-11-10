@@ -1,13 +1,15 @@
 //! The one rule of the name and id value parsers: a length, a set of characters, and whether
-//! the value may start with `-`. Every parser of a name or an id that is one word of a fixed
-//! alphabet holds its value to [`word`] (or [`is_word`], for a check made after parsing), and
-//! every numeric id to [`number`], so the rules cannot drift apart.
+//! the value may start with `-`. Every parser of a name or an id that is one word of one set of
+//! characters holds its value to [`word`] (or [`is_word`], for a check made after parsing), and
+//! every numeric id to [`number`], so the rules cannot drift apart. A value with a grammar of
+//! its own (a zone id, a hostname, an artifact reference, a repository or model name) keeps
+//! its own parser.
 
 use std::ops::RangeInclusive;
 
-/// The characters a name or id may hold. Every set but [`Charset::OneWord`] is ASCII with
-/// no `/`, `?`, `%`, `.` segment, or space, so a value of it cannot change a URL path it goes
-/// into.
+/// The characters a name or id may hold. Every set but [`Charset::OneWord`] is ASCII with no
+/// `/`, `?`, `%`, or space. [`Charset::LowerDotDash`] holds `.`, so a check that puts its value
+/// in a URL path refuses `..` itself, as the bucket check does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Charset {
     /// Letters of either case, digits, `-`, and `_`: an id the server issued.

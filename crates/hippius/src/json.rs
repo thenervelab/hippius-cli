@@ -295,37 +295,51 @@ pub fn without_fields(value: Value, withheld: &dyn Fn(&str) -> bool) -> Value {
 /// What [`redact_value`] writes in place of the secret.
 const REDACTED: &str = "<redacted>";
 
-/// `text` with every occurrence of each of `secrets` replaced by `<redacted>`, in one pass
-/// from the left that takes the longest secret matching at each place. So a shorter secret
-/// is never replaced inside a longer one that holds it, and none is replaced inside a
-/// `<redacted>` an earlier one wrote, as a pass per secret would do for a secret such as `d`.
-/// With one secret it is [`str::replace`]. The text that held a secret is cleared, not left in
-/// freed memory.
+/// `text` with every occurrence of each of `secrets` replaced by `<redacted>`. Every place any
+/// secret matches is found first, overlapping matches included, and matches that overlap are
+/// one span with one marker: so neither secret of two that overlap in the text shows a part of
+/// itself, a shorter secret is never replaced inside a longer one that holds it, and none is
+/// replaced inside a `<redacted>` another wrote, as a pass per secret would do for a secret
+/// such as `d`. With one secret whose matches cannot overlap it is [`str::replace`]. The text
+/// that held a secret is cleared, not left in freed memory.
 ///
 /// # Panics
 ///
 /// When a secret is empty, which would match between every two characters.
 pub fn redact_all<S: AsRef<str>>(text: String, secrets: &[S]) -> String {
-    let mut secrets: Vec<&str> = secrets.iter().map(AsRef::as_ref).collect();
-    assert!(
-        secrets.iter().all(|secret| !secret.is_empty()),
-        "an empty secret cannot be redacted"
-    );
-    if !secrets.iter().any(|secret| text.contains(secret)) {
-        return text;
-    }
-    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text.as_str();
-    while let Some(c) = rest.chars().next() {
-        if let Some(secret) = secrets.iter().find(|secret| rest.starts_with(**secret)) {
-            out.push_str(REDACTED);
-            rest = &rest[secret.len()..];
-        } else {
-            out.push(c);
-            rest = &rest[c.len_utf8()..];
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for secret in secrets {
+        let secret = secret.as_ref();
+        assert!(!secret.is_empty(), "an empty secret cannot be redacted");
+        let mut from = 0;
+        while let Some(at) = text[from..].find(secret) {
+            let start = from + at;
+            spans.push((start, start + secret.len()));
+            // The next match may start inside this one: one character on.
+            from = start + text[start..].chars().next().map_or(1, char::len_utf8);
         }
     }
+    if spans.is_empty() {
+        return text;
+    }
+    spans.sort_unstable();
+    let mut out = String::with_capacity(text.len());
+    let mut written = 0;
+    let mut spans = spans.into_iter().peekable();
+    while let Some((start, mut end)) = spans.next() {
+        // Every later span that starts before this one ends is part of it.
+        while let Some(&(next, next_end)) = spans.peek() {
+            if next >= end {
+                break;
+            }
+            end = end.max(next_end);
+            spans.next();
+        }
+        out.push_str(&text[written..start]);
+        out.push_str(REDACTED);
+        written = end;
+    }
+    out.push_str(&text[written..]);
     drop(zeroize::Zeroizing::new(text));
     out
 }
@@ -414,10 +428,10 @@ mod tests {
 
     use super::*;
 
-    /// One pass from the left, longest first, whatever order the secrets come in: a short
-    /// secret cuts neither a longer one that holds it nor a marker already written.
+    /// All secrets at once, whatever order they come in: a short secret cuts neither a longer
+    /// one that holds it nor a marker already written.
     #[test]
-    fn several_secrets_are_redacted_in_one_longest_first_pass() {
+    fn several_secrets_are_redacted_at_once() {
         let secrets = ["a", "dacted"];
         assert_eq!(
             redact_all("dacted a b".to_owned(), &secrets),
@@ -428,6 +442,25 @@ mod tests {
         assert_eq!(
             redact_all("tok-1 tok".to_owned(), &["tok", "tok-1"]),
             "<redacted> <redacted>"
+        );
+        // Two secrets that overlap in the text are one span, so neither shows a part of
+        // itself, whichever starts first.
+        assert_eq!(
+            redact_all("<xaBCDEFG>".to_owned(), &["xa", "aBCDEFG"]),
+            "<<redacted>>"
+        );
+        assert_eq!(
+            redact_all("aBCxyz".to_owned(), &["Cxyz", "aBC"]),
+            "<redacted>"
+        );
+        // A secret that overlaps itself is one span too; apart, each match is its own.
+        assert_eq!(
+            redact_all("aaa b aa".to_owned(), &["aa"]),
+            "<redacted> b <redacted>"
+        );
+        assert_eq!(
+            redact_all("abab".to_owned(), &["ab"]),
+            "<redacted><redacted>"
         );
         assert_eq!(redact_all("x".to_owned(), &[] as &[&str]), "x");
         // A pass per secret would cut the marker the first one wrote.

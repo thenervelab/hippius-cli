@@ -98,8 +98,8 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         // fields is printed as it came. A list command's dry run is a document too.
         Ok(Printed::Document(document)) if cli.global.dry_run => print(document, Layout::DryRun),
         Ok(Printed::Document(document)) => print(document, Layout::Document),
-        // Only a list command prints a list: a `get` whose answer holds `items` and
-        // `next_page_token` is one object, with no page hint.
+        // Only a command that prints a list envelope prints a list: a `get` whose answer holds
+        // `items` and `next_page_token` is one object, with no page hint.
         Ok(Printed::List(document)) => print(document, Layout::List),
         Ok(Printed::Raw(bytes)) => output::raw(mode, &bytes, ctx.side_effects()),
         Ok(Printed::Body(bytes)) => output::body(&terminal, mode, &bytes, ctx.side_effects()),

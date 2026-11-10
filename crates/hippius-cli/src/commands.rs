@@ -75,10 +75,11 @@ pub(crate) fn unreadable(action: &str) -> Error {
 pub(crate) enum Printed {
     /// A JSON document, rendered by the output mode.
     Document(Value),
-    /// The document of a list command: the list envelope (`TENETS.md` tenet 6), or the bare
-    /// array `--all` prints. Only a list command returns it, so text mode prints a table and
-    /// the `--page-token` hint for this and never for a `get` whose answer happens to hold
-    /// `items` and `next_page_token`.
+    /// The list envelope (`TENETS.md` tenet 6) of a command that prints one, or the bare
+    /// array `--all` prints: every list command, and `hipc hub subscription get`, which reads
+    /// the subscriptions whole as a list. Only such a command returns it, so text mode prints a
+    /// table and the `--page-token` hint for this and never for a `get` whose answer happens
+    /// to hold `items` and `next_page_token`.
     List(Value),
     /// Bytes hipc wrote that are the output itself, in every mode: a completion script, or
     /// the schema (which exists for programs, so it is JSON even on a terminal).

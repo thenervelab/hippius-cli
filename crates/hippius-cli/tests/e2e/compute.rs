@@ -643,7 +643,7 @@ fn a_placement_group_adds_exactly_its_field_to_the_body() {
         json!({"flavor": "small", "ssh_key_ids": [7], "placement_group": "web"})
     );
     let longest = "a".repeat(64);
-    for name in ["0-db-9", "-", longest.as_str()] {
+    for name in ["0-db-9", "db-", longest.as_str()] {
         let doc = create(&server, &["--placement-group", name, "--dry-run"]).ok();
         assert_eq!(draft(&doc)["body"]["placement_group"], name);
     }
@@ -670,6 +670,9 @@ fn a_bad_placement_group_is_usage_without_a_request() {
         "a b",
         "",
         "é",
+        // A name the caller picks does not start with `-`, which a command line reads as a
+        // flag.
+        "-",
         long.as_str(),
     ] {
         let error = create(&server, &["--placement-group", name, "--yes"]).fails(2, "usage");

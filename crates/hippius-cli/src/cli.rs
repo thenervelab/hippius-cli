@@ -1706,8 +1706,9 @@ mod tests {
             }
             match charset {
                 Slug => {
-                    assert!(parse("A_z").is_ok(), "{line:?}");
-                    assert!(parse("a-9").is_ok(), "{line:?}");
+                    for good in ["A_z", "a-9", "-", "_x"] {
+                        assert!(parse(good).is_ok(), "{line:?} {good:?}");
+                    }
                 }
                 LowerUnderscore => {
                     assert!(parse("a_z").is_ok(), "{line:?}");
