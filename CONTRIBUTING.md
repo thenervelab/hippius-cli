@@ -126,8 +126,8 @@ next, are listed in [docs/README.md](docs/README.md): the README, `docs/getting-
 - A change to a command's surface (a command, a flag, an effect, a confirmation, a guard, an
   error code) updates, in the same pull request: `CHANGELOG.md`; the README and
   `docs/getting-started.md` or `docs/agents.md` where they show the command; and, when an
-  agent's first steps change, the `llms.txt` and the CLI section of docs.hippius.com (live
-  with the public release), whose source is the public `hippius-doc` repository. The contract tests run every `hipc` command
+  agent's first steps change, the `llms.txt` and the CLI section of docs.hippius.com (once
+  it is published), whose source is the public `hippius-doc` repository. The contract tests run every `hipc` command
   the README, `docs/getting-started.md`, and `docs/agents.md` show, so a renamed command or
   flag fails until the pages follow.
 - Prose follows tenet 15: plain sentences, literals in backticks, no exclamation marks, no

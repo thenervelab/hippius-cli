@@ -5,7 +5,8 @@ use std::os::unix::fs::PermissionsExt as _;
 use serde_json::Value;
 
 use crate::common::{
-    ACCOUNTS, Hipc, Home, ME, MEMBER, Recorded, Reply, Server, TOKEN, draft, route, status_routes,
+    ACCOUNTS, Hipc, Home, ME, MEMBER, Recorded, Reply, Server, TOKEN, draft, no_server, route,
+    status_routes,
 };
 
 fn mode(path: &std::path::Path) -> u32 {
@@ -1034,7 +1035,10 @@ fn login_for_an_origin_other_than_the_default_needs_yes_and_names_its_source() {
 #[test]
 fn login_names_a_profile_api_url_as_the_source() {
     let home = Home::new();
-    home.write_config("[profiles.default]\napi_url = \"http://127.0.0.1:9\"\n");
+    home.write_config(&format!(
+        "[profiles.default]\napi_url = \"{}\"\n",
+        no_server()
+    ));
     let file = home.file("token", TOKEN.as_bytes());
     let error = Hipc::without_api_url(&home)
         .run(&["auth", "login", "--token-file", file.to_str().unwrap()])

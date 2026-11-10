@@ -289,3 +289,94 @@ fn the_pypi_wheels_wait_for_pypi_publish() {
         "{pyproject}"
     );
 }
+
+/// Every workflow file, by name.
+const WORKFLOWS: [(&str, &str); 4] = [
+    (
+        "ci.yml",
+        include_str!("../../../../.github/workflows/ci.yml"),
+    ),
+    (
+        "release-check.yml",
+        include_str!("../../../../.github/workflows/release-check.yml"),
+    ),
+    ("release.yml", RELEASE_WORKFLOW),
+    (
+        "scheduled.yml",
+        include_str!("../../../../.github/workflows/scheduled.yml"),
+    ),
+];
+
+/// Every job that runs on a runner sets `timeout-minutes`, so a hung step fails in minutes,
+/// not after GitHub's six hours. A job that calls a reusable workflow takes none; the called
+/// workflow's jobs set their own.
+#[test]
+fn every_job_has_a_timeout() {
+    for (file, workflow) in WORKFLOWS {
+        let body = workflow.split("\njobs:\n").nth(1).expect("a jobs section");
+        let mut jobs: Vec<(String, String)> = Vec::new();
+        for line in body.lines() {
+            match line
+                .strip_prefix("  ")
+                .and_then(|rest| rest.strip_suffix(':'))
+            {
+                Some(name) if !name.starts_with([' ', '#']) => {
+                    jobs.push((name.to_owned(), String::new()));
+                }
+                _ => {
+                    if let Some((_, text)) = jobs.last_mut() {
+                        text.push_str(line);
+                        text.push('\n');
+                    }
+                }
+            }
+        }
+        assert!(!jobs.is_empty(), "{file}");
+        for (name, text) in jobs {
+            if text.contains("\n    uses: ") || text.starts_with("    uses: ") {
+                continue;
+            }
+            let minutes = text
+                .lines()
+                .find_map(|line| line.strip_prefix("    timeout-minutes: "))
+                .unwrap_or_else(|| panic!("{file}: the job {name} sets no timeout-minutes"));
+            let minutes: u32 = minutes.parse().expect("a whole number of minutes");
+            assert!((1..=90).contains(&minutes), "{file}: {name}: {minutes}");
+        }
+    }
+}
+
+/// The release builds the wheels with the maturin that packaging/pypi/pyproject.toml pins,
+/// where Dependabot tracks it, so a bump there fails here until release.yml follows.
+#[test]
+fn the_wheels_are_built_with_the_maturin_pyproject_pins() {
+    let pyproject = include_str!("../../../../packaging/pypi/pyproject.toml");
+    let pinned = pyproject
+        .lines()
+        .find_map(|line| line.strip_prefix("requires = [\"maturin=="))
+        .and_then(|rest| rest.strip_suffix("\"]"))
+        .expect("pyproject.toml pins one exact maturin");
+    let used: Vec<&str> = RELEASE_WORKFLOW
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("maturin-version: v"))
+        .collect();
+    assert_eq!(used, [pinned]);
+    let dependabot = include_str!("../../../../.github/dependabot.yml");
+    assert!(
+        dependabot.contains("  - package-ecosystem: pip\n    directory: /packaging/pypi\n"),
+        "{dependabot}"
+    );
+}
+
+/// The release builds each tarball with `scripts/package.sh`, which `package.rs` checks, and
+/// every release build, the tarballs' and the wheels', and each release check's, remaps the
+/// runner's paths, so the same commit builds the same bytes.
+#[test]
+fn the_release_packs_with_the_package_script() {
+    let remap = "      - name: Remap the build paths\n";
+    assert_eq!(RELEASE_WORKFLOW.matches(remap).count(), 2);
+    assert_eq!(WORKFLOWS[1].1.matches(remap).count(), 2);
+    assert!(RELEASE_WORKFLOW.contains(
+        "\n          scripts/package.sh \"target/${TARGET}/release/hipc\" \"dist/hipc-${TARGET}.tar.gz\"\n"
+    ));
+}

@@ -28,6 +28,7 @@ env:
 jobs:
   fmt:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -37,6 +38,7 @@ jobs:
 
   clippy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -50,6 +52,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -61,14 +64,18 @@ jobs:
       # The runner's umask is 0022. Ubuntu's default for a user is 0002, under which a
       # directory a test creates without an explicit mode is writable by the group, and hipc
       # refuses it (a file open to the group is refused under either umask). The second run
-      # reuses the build and catches a test that relies on the umask.
-      - run: umask 0002 && cargo test --locked
+      # reuses the build and catches a test that relies on the umask. It runs only the tests
+      # whose files hipc reads or writes: the unit tests and the e2e suite, without the
+      # walkthrough runs of scripts/manual_test.sh, which sets its own umask 077. The script
+      # tests make their directories 0700 and their files with explicit modes.
+      - run: umask 0002 && cargo test --locked --lib --bins --test e2e -- --skip 'manual_test::'
 
   coverage:
     # Every line under src/ and build.rs must run under the test suite: unit tests and the
     # binary that the integration tests spawn both count. Linux, because the /dev/full test
     # is the only way to reach the failed-write path. On macOS the gate misses that path.
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -89,6 +96,7 @@ jobs:
 
   test-macos:
     runs-on: macos-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -100,6 +108,7 @@ jobs:
     # The only job that queries a service besides the toolchain and crate downloads: the
     # RustSec advisory database. No job contacts api.hippius.com.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       # cargo-deny reads Cargo.lock and the manifests, which any recent cargo can do, so the
       # stable toolchain on the runner image is enough and the pinned one is not downloaded.
@@ -120,6 +129,7 @@ jobs:
     # pull request so a script that fails shellcheck cannot merge. No cargo: the job needs
     # no toolchain, and the four tools are prebuilt, so it finishes in well under a minute.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

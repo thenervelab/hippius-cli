@@ -607,19 +607,19 @@ fn a_second_line_pasted_at_one_question_does_not_answer_the_next() {
 /// who declines it is never asked to paste the token, and nothing is stored.
 #[test]
 fn the_origin_question_comes_before_the_token_prompt() {
+    let origin = common::no_server();
     let home = Home::new();
     let login = run_at_a_terminal(
         &home,
         TEXT,
         &[],
-        &[("HIPPIUS_API_URL", common::NO_SERVER)],
+        &[("HIPPIUS_API_URL", origin)],
         &[(Some("continue? [y/N] "), b"n\r")],
     );
     assert_eq!(login.code, Some(2), "{:?}", login.shown);
     assert!(
         login.shown.starts_with(&format!(
-            "this will store the token for `{}`, named by `HIPPIUS_API_URL`",
-            common::NO_SERVER
+            "this will store the token for `{origin}`, named by `HIPPIUS_API_URL`"
         )),
         "{:?}",
         login.shown
@@ -640,7 +640,7 @@ fn the_origin_question_comes_before_the_token_prompt() {
         &home,
         TEXT,
         &[],
-        &[("HIPPIUS_API_URL", common::NO_SERVER)],
+        &[("HIPPIUS_API_URL", origin)],
         &[
             (Some("continue? [y/N] "), b"y\r"),
             (Some(PROMPT), format!("{TOKEN}\r").as_bytes()),

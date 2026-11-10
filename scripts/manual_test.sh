@@ -89,8 +89,13 @@ umask 077
 
 REPO="thenervelab/hippius-cli"
 # Port 9 is the discard port: nothing listens there, so every request is refused at once.
-# hipc accepts plain http only for a loopback host, which this is.
+# hipc accepts plain http only for a loopback host, which this is. The test suite names
+# another closed loopback port in HIPC_MANUAL_TEST_DEAD_ORIGIN, one it checked refuses
+# connections; only a plain-http 127.0.0.1 origin with a port is taken.
 DEAD_ORIGIN="http://127.0.0.1:9"
+if [[ "${HIPC_MANUAL_TEST_DEAD_ORIGIN:-}" =~ ^http://127\.0\.0\.1:[1-9][0-9]{0,4}$ ]]; then
+  DEAD_ORIGIN="$HIPC_MANUAL_TEST_DEAD_ORIGIN"
+fi
 OFFLINE_TOKEN="hipc-manual-test-offline-token-5f3a9c71"
 BAD_TOKEN="hipc-manual-test-bad-token"
 # A well-formed id that names nothing, for a delete whose create gave no id in --offline.
@@ -478,6 +483,14 @@ pause() {
 # on the hint: a 403 for a role that may not read the network can still name the create in
 # its hint, and is a real failure. Setting the network up cannot be undone, so no tier does
 # it.
+#
+# An account with no Hub namespace answers the namespace's reads, its keys and repositories
+# 403, "You must call /api/registry/provision/ first.", which hipc reports as `permission`
+# with a hint naming `hipc hub namespace create`. That is the state `hub_unprovisioned`,
+# matched on that whole sentence in the message or `details`, never on the hint or on the
+# path alone: "Only an owner may call /api/registry/provision/." is a real refusal. The
+# network's sentence is matched whole the same way.
+# Creating a namespace claims a name for good, so no tier does it either.
 error_code() {
   local code
   code="$(jq -er '.error.code' "$1" 2>/dev/null || true)"
@@ -486,11 +499,16 @@ error_code() {
   elif [[ "$code" == permission ]] &&
     jq -e '.error | (.http_status // 403) == 403 and
       (([.message, (.details | tostring)] | map(strings) | join(" ")
-        | test("/network/provision/")) or
+        | test("You must call /api/network/provision/ first\\.")) or
        ((.message | type) == "string" and
         (.message | endswith("the private network is not set up for this account"))))' \
       "$1" >/dev/null 2>&1; then
     code=network_unprovisioned
+  elif [[ "$code" == permission ]] &&
+    jq -e '.error | (.http_status // 403) == 403 and
+      ([.message, (.details | tostring)] | map(strings) | join(" ")
+        | test("You must call /api/registry/provision/ first\\."))' "$1" >/dev/null 2>&1; then
+    code=hub_unprovisioned
   fi
   [[ -z "$code" ]] || printf '%s\n' "$code"
 }
@@ -616,6 +634,10 @@ step() {
     if [[ $status != 0 && "$(error_code "$LAST_ERR")" == network_unprovisioned ]]; then
       say "note: this account's private network is not set up; setting it up cannot be undone," \
         "so no tier does it"
+    fi
+    if [[ $status != 0 && "$(error_code "$LAST_ERR")" == hub_unprovisioned ]]; then
+      say "note: this account has no Hub namespace; creating one claims a name for good, so" \
+        "no tier does it"
     fi
   else
     say "--- exit $status; expected $WANT: FAIL"
@@ -934,6 +956,31 @@ login() {
   step local ok "Log in" \
     "store the console token in the profile; --token-file - reads it from stdin, so it is never in argv" \
     -- hipc --output text auth login --token-file - ${extra[@]+"${extra[@]}"}
+}
+
+# The login stores the token without checking it, so a wrong or expired one would fail every
+# API step with the same 401. One authenticated read, in the snapshot home, checks it before
+# any scenario, and a refusal stops the run there. The token comes only from HIPPIUS_TOKEN;
+# a profile's stored token is never read.
+check_token() {
+  if [[ $OFFLINE == 1 ]]; then
+    say "token: the offline stand-in, not checked: there is no API to ask"
+    return 0
+  fi
+  say "token: from HIPPIUS_TOKEN"
+  if "$HIPC" --json auth status </dev/null >"$WORK/token-check.out" 2>"$WORK/token-check.err"; then
+    say "token: accepted (hipc auth status)"
+    return 0
+  fi
+  local code
+  code="$(error_code "$WORK/token-check.err")"
+  mask_secrets_in "$WORK/token-check.err"
+  show_file "$WORK/token-check.err"
+  say "token: the token from HIPPIUS_TOKEN cannot be used: \`hipc auth status\` failed" \
+    "(${code:-unknown}); no scenario ran. Create a token in the console settings, or check the" \
+    "network, and run again."
+  record FAIL "the token from HIPPIUS_TOKEN cannot be used (${code:-unknown})"
+  exit 1
 }
 
 logout() {
@@ -1287,9 +1334,9 @@ scenario_hub() {
   step dry-run ok "Preview claiming a namespace" \
     "see the request; a namespace is the account's one name in the registry, so none is claimed" \
     -- hipc --output text hub namespace create "$namespace" --reveal --yes --dry-run
-  step read net/not_found "Read the namespace" "see the namespace's name and limits" \
+  step read net/not_found,hub_unprovisioned "Read the namespace" "see the namespace's name and limits" \
     -- hipc --json hub namespace get
-  step read net/not_found "Read the robot login" "see the login a pipeline pushes with" \
+  step read net/not_found,hub_unprovisioned "Read the robot login" "see the login a pipeline pushes with" \
     -- hipc --json hub namespace robot get
   # Both change what every pipeline and every puller of the namespace sees, so they are dry
   # runs in every tier.
@@ -1299,11 +1346,11 @@ scenario_hub() {
   step dry-run ok "Preview rotating the robot secret" \
     "see the request; every docker login with the old secret would stop working" \
     -- hipc --output text hub namespace robot rotate --reveal --yes --dry-run
-  step read net/not_found "List the registry events" "see the namespace's audit trail" \
+  step read net/not_found,hub_unprovisioned "List the registry events" "see the namespace's audit trail" \
     -- hipc --json hub events list
-  step read net/not_found "Read the usage" "see storage and pulls against the plan" \
+  step read net/not_found,hub_unprovisioned "Read the usage" "see storage and pulls against the plan" \
     -- hipc --json hub usage
-  step read net "List the repositories" "see the images in the namespace" \
+  step read net/hub_unprovisioned "List the repositories" "see the images in the namespace" \
     -- hipc --json hub repositories list
   repository="$(pick "<repository>" "library/hipc-manual" 'first(rows // [] | .[] | .name)')"
   block_needs "$repository" "the namespace has no repository"
@@ -1321,7 +1368,9 @@ scenario_hub() {
   step dry-run ok "Preview deleting the repository" "see the request; nothing is deleted" \
     -- hipc --output text hub repositories delete "$repository" --yes --dry-run
   block_end
-  step read net "List the Hub keys" "see the CI keys that exist" -- hipc --output text hub keys list
+  # JSON, so a 403 for an account with no namespace can be told apart.
+  step read net/hub_unprovisioned "List the Hub keys" "see the CI keys that exist" \
+    -- hipc --json hub keys list
   step read net "List the models" "see the model index, first page" \
     -- hipc --json hub models list --limit 5
   model="$(pick "<model>" "library/hipc-manual" 'first(rows // [] | .[] | .name // .model)')"
@@ -2761,7 +2810,9 @@ list_snapshot() {
 # Runs one snapshot read in the snapshot home and writes what the snapshot keeps to
 # $WORK/snap.value. A read that fails, or a list that is not complete, fails the run:
 # without it the two snapshots could compare equal while the account changed. Offline,
-# every read fails with `unavailable`, as expected.
+# every read fails with `unavailable`, as expected. Each read that gave no value, offline
+# too, is named in $WORK/snap.unread, so the comparison of the two snapshots is not reported
+# as a pass it did not make.
 snapshot_read() {
   local name="$1" code
   shift
@@ -2773,6 +2824,7 @@ snapshot_read() {
       "$WORK/snap.value" >/dev/null; then
       say "snapshot: $name: FAIL, the answer is not JSON or not a complete list"
       record FAIL "snapshot read $name"
+      printf '%s\n' "$name" >>"$WORK/snap.unread"
     fi
     return 0
   fi
@@ -2792,6 +2844,13 @@ snapshot_read() {
     # the two snapshots still compare equal. Creating the network would be a write.
     return 0
   fi
+  if [[ "$name" == hub-keys || "$name" == hub-repositories ]] &&
+    [[ "$code" == hub_unprovisioned ]]; then
+    # An account with no Hub namespace: a state, as for the network. Creating one would be a
+    # write.
+    return 0
+  fi
+  printf '%s\n' "$name" >>"$WORK/snap.unread"
   if [[ $OFFLINE == 1 && "$code" == unavailable ]]; then
     return 0
   fi
@@ -2858,12 +2917,14 @@ setup() {
     say "hipc schema gives no error table; every expected error code will FAIL"
     record FAIL "hipc schema gives no error table"
   fi
-  # The script's own name for a network that was never set up: a 403, exit 1.
-  printf 'network_unprovisioned 1\n' >>"$WORK/exits"
+  # The script's own names for a network that was never set up and for an account with no Hub
+  # namespace: each a 403, exit 1.
+  printf 'network_unprovisioned 1\nhub_unprovisioned 1\n' >>"$WORK/exits"
   mkdir -p "$WORK/snapshot/home"
   H="$WORK/snapshot/home"
   enter_home "$H"
   login
+  check_token
   say ""
   say "==== snapshot of the account before the first scenario"
   take_snapshot "$WORK/before.json"
@@ -3266,7 +3327,17 @@ compare_snapshots() {
       record FAIL "the Drive plan this run bought is not cancelled"
     fi
   fi
-  if diff -u "$WORK/before.rest" "$WORK/after.rest" >"$WORK/snapshot.diff"; then
+  # Two snapshots that each failed the same read compare equal and prove nothing, so the
+  # check passes only when every read gave a value; a failed read already failed the run,
+  # except offline, where every read fails as expected.
+  local unread=""
+  if [[ -s "$WORK/snap.unread" ]]; then
+    unread="$(sort -u "$WORK/snap.unread" | paste -sd ' ' -)"
+  fi
+  if [[ -n "$unread" ]]; then
+    say "check: the account is as it was found: SKIP (not read: $unread)"
+    record SKIP "the account is as it was found"
+  elif diff -u "$WORK/before.rest" "$WORK/after.rest" >"$WORK/snapshot.diff"; then
     say "check: the account is as it was found: PASS"
     record PASS "the account is as it was found"
   else
@@ -3277,7 +3348,21 @@ compare_snapshots() {
   fi
   before="$(jq -c '.balance' "$WORK/before.json")"
   after="$(jq -c '.balance' "$WORK/after.json")"
-  if [[ "$before" == "$after" ]]; then
+  # A balance is a number or a decimal string. A failed read (an `error` object) or an answer
+  # without `balance` (null) on both sides would compare equal, so it is no pass: offline,
+  # where the read fails as expected, the check is skipped, and online it fails.
+  if ! jq -e '.balance | type == "string" or type == "number"' "$WORK/before.json" \
+    >/dev/null 2>&1 ||
+    ! jq -e '.balance | type == "string" or type == "number"' "$WORK/after.json" \
+      >/dev/null 2>&1; then
+    if [[ $OFFLINE == 1 ]]; then
+      say "check: the balance is unchanged: SKIP (no balance was read: $before, then $after)"
+      record SKIP "the balance is unchanged"
+    else
+      say "check: the balance is unchanged: FAIL (no balance was read: $before, then $after)"
+      record FAIL "no balance was read, so the balance check proves nothing"
+    fi
+  elif [[ "$before" == "$after" ]]; then
     say "check: the balance is unchanged ($before): PASS"
     record PASS "the balance is unchanged"
   elif [[ $SPENT == 1 ]]; then
@@ -3586,6 +3671,14 @@ done < <(compgen -e)
 # Offline, the bad-token checks set HIPPIUS_TOKEN for the dead origin, which it is bound to
 # here: without HIPPIUS_TOKEN_ORIGIN, hipc sends HIPPIUS_TOKEN to the default origin only.
 if [[ $OFFLINE == 1 ]]; then
+  # Something listening on the dead origin would receive the fake token and every request;
+  # bash's /dev/tcp connects and sends nothing, so the run checks first. Once: a listener
+  # started during the run is not caught. The tests' port is held (Linux) or freshly
+  # checked (macOS).
+  if (exec 3<>"/dev/tcp/127.0.0.1/${DEAD_ORIGIN##*:}") 2>/dev/null; then
+    die "something listens on ${DEAD_ORIGIN#http://}, the origin --offline needs closed;" \
+      "stop it and run again"
+  fi
   export HIPPIUS_API_URL="$DEAD_ORIGIN" HIPPIUS_TOKEN_ORIGIN="$DEAD_ORIGIN"
 fi
 if [[ -n "$HIPC" ]]; then

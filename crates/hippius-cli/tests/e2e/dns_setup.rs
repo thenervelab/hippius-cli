@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, TOKEN, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, TOKEN, draft, no_server, route};
 
 const ZONE: &str = "zab12cd34ef56";
 const HOST: &str = "cdn.example.com";
@@ -234,10 +234,10 @@ fn an_error_says_only_its_status() {
         .fails(1, "unavailable");
     assert_eq!(error["http_status"], Value::Null);
     assert!(
-        error["message"]
-            .as_str()
-            .unwrap()
-            .contains("the connection to `127.0.0.1:9`"),
+        error["message"].as_str().unwrap().contains(&format!(
+            "the connection to `{}`",
+            no_server().strip_prefix("http://").unwrap()
+        )),
         "{error}"
     );
 }

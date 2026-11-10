@@ -5,7 +5,7 @@
 //! the `--profile`, `--api-url`, and `--account` of the run, so the tests here, which point
 //! `hipc` at a server with `HIPPIUS_API_URL`, see `--api-url` in every one.
 
-use crate::common::{Hipc, Home, Reply, Run, Server, TOKEN, route};
+use crate::common::{Hipc, Home, Reply, Run, Server, TOKEN, no_server, route};
 
 const VM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 const ZONE: &str = "zab12cd34ef56";
@@ -249,11 +249,12 @@ fn a_login_points_at_auth_status_with_the_profile_and_origin_it_was_given() {
     // A variable may be set for the login only, so it is repeated as a flag would be.
     let env = [
         ("HIPPIUS_PROFILE", "work"),
-        ("HIPPIUS_API_URL", "http://127.0.0.1:9"),
+        ("HIPPIUS_API_URL", no_server()),
     ];
-    let both = "hipc --profile work --api-url http://127.0.0.1:9 auth status";
+    let both = format!("hipc --profile work --api-url {} auth status", no_server());
+    let both = both.as_str();
     assert_eq!(login(&home, &env, &[]), note(both));
-    let flags = ["--profile", "work", "--api-url", "http://127.0.0.1:9"];
+    let flags = ["--profile", "work", "--api-url", no_server()];
     assert_eq!(login(&home, &[], &flags), note(both));
     // An account is repeated too, for every next command.
     assert_eq!(

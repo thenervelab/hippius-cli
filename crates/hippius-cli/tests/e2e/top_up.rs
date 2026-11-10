@@ -2,7 +2,7 @@
 
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, no_server, route};
 
 const CARD: &str = "/api/billing/stripe/create-checkout-session/";
 const BITCOIN: &str = "/api/billing/btcpay/create-invoice/";
@@ -67,7 +67,7 @@ fn a_dry_run_shows_the_post_and_needs_no_token_or_yes() {
     let words = top_up("10000", "card", &["--dry-run"]);
     let post = json!({
         "method": "POST",
-        "url": format!("http://127.0.0.1:9{CARD}"),
+        "url": format!("{}{CARD}", no_server()),
         "account_header": null,
         "project_header": null,
         "billing_header": null,
@@ -78,7 +78,7 @@ fn a_dry_run_shows_the_post_and_needs_no_token_or_yes() {
     assert_eq!(Hipc::new(&Home::new()).run(&args(&words)).dry_ok(), doc);
     let words = top_up("100000.00", "bitcoin", &["--dry-run"]);
     let doc = Hipc::new(&Home::new()).run(&args(&words)).dry_ok();
-    assert_eq!(draft(&doc)["url"], format!("http://127.0.0.1:9{BITCOIN}"));
+    assert_eq!(draft(&doc)["url"], format!("{}{BITCOIN}", no_server()));
     assert_eq!(draft(&doc)["body"], json!({"amount": "100000.00"}));
     assert_eq!(doc["requests"].as_array().map(Vec::len), Some(1), "{doc}");
 }

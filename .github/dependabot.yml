@@ -39,6 +39,15 @@ updates:
         update-types: [version-update:semver-major, version-update:semver-minor]
       - dependency-name: pbkdf2
         update-types: [version-update:semver-major, version-update:semver-minor]
+  # maturin, which builds the PyPI wheels: packaging/pypi/pyproject.toml pins it, and
+  # release.yml repeats the pin as `maturin-version`, which Dependabot cannot read. A test
+  # fails until the two agree, so a bump here is finished by hand in release.yml.
+  - package-ecosystem: pip
+    directory: /packaging/pypi
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
   - package-ecosystem: github-actions
     directory: /
     schedule:

@@ -10,11 +10,12 @@ macOS (Apple silicon and Intel) and Linux (x86_64 and aarch64).
 
 ```sh
 brew install thenervelab/tap/hipc
-# or the install script: into ~/.local/bin, no root, checks the release's checksum
+# or the install script: into ~/.local/bin, no root, checks the release's checksum, and its
+# signature when cosign is installed (HIPC_INSTALL_REQUIRE_SIGNATURE=1 makes that required)
 curl -q --proto '=https' --tlsv1.2 -fsSL https://github.com/thenervelab/hippius-cli/releases/latest/download/install.sh | sh
 ```
 
-PyPI follows right after the first release: `pip install hippius-cli` (or `uv tool install hippius-cli`) will install the same `hipc` binary; the `hippius` package on PyPI is the Python SDK, a different project. Then check it:
+`hipc` is not on PyPI yet; once it is published there, `pip install hippius-cli` (or `uv tool install hippius-cli`) will install the same `hipc` binary. The `hippius` package on PyPI is the Python SDK, a different project, and the PyPI project `hipc` is unrelated to Hippius. Then check it:
 
 ```sh
 hipc version
