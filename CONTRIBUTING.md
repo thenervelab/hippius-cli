@@ -32,30 +32,34 @@ and workflow linters on every pull request.
 
 ```sh
 cargo fmt --all --check
-cargo clippy --all-targets --locked -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
-cargo test --locked
+cargo test --workspace --locked
 cargo deny check
 ```
 
 `cargo deny` comes from `cargo install --locked cargo-deny`. A change to a shell script also
 passes `shellcheck` and `shfmt -d -i 2`, and a change to a workflow passes `actionlint` and
-`zizmor`. CI runs all four as the lint job, with shellcheck 0.11.0, shfmt 3.14.1, actionlint
+`zizmor`; so does a change to the release action in `.github/actions`. CI runs all four as the lint job, with shellcheck 0.11.0, shfmt 3.14.1, actionlint
 1.7.12 and zizmor 1.31.1, so a local run with those versions matches it:
 
 ```sh
 shellcheck -s sh scripts/install.sh && shellcheck scripts/*.sh
 shfmt -d -i 2 scripts
 actionlint
-zizmor --offline .github/workflows
+zizmor --offline .github
 ```
 
 Coverage is a gate: every line under `src/` and `build.rs` runs under the test suite.
 
 ```sh
-cargo llvm-cov --locked --include-build-script --fail-uncovered-lines 0 \
+cargo llvm-cov --workspace --locked --include-build-script --fail-uncovered-lines 0 \
   --fail-uncovered-functions 20 --show-missing-lines
 ```
+
+On Linux, CI's coverage run is the test run: every test runs there once, under umask 0002
+(Ubuntu's default for a user) so a test that relies on a stricter umask fails. macOS runs
+the suite under its default 0022.
 
 The gate is the exit status and the `Uncovered Lines` list. The summary table's `Missed
 Lines` is not what it checks: that column scores each function by its best single copy (a
