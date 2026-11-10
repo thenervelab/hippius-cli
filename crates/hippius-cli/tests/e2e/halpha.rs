@@ -118,9 +118,22 @@ fn purchases(statuses: &[&str]) -> Route {
 }
 
 fn top_up(server: &Server, extra: &[&str]) -> crate::common::Run {
+    top_up_with(Hipc::against(&Home::new(), server), extra)
+}
+
+/// [`top_up`] with the real 3-second poll interval instead of the suite's short one, for a
+/// test that counts the reads a deadline leaves room for.
+fn top_up_at_the_real_interval(server: &Server, extra: &[&str]) -> crate::common::Run {
+    top_up_with(
+        Hipc::against(&Home::new(), server).env_remove("HIPC_TEST_POLL_INTERVAL_MS"),
+        extra,
+    )
+}
+
+fn top_up_with(hipc: Hipc, extra: &[&str]) -> crate::common::Run {
     let mut args = vec!["billing", "top-up", "--method", "halpha", "--alpha", "1.5"];
     args.extend_from_slice(extra);
-    Hipc::against(&Home::new(), server).run(&args)
+    hipc.run(&args)
 }
 
 #[test]
@@ -490,7 +503,7 @@ fn the_follow_stops_at_the_wait_timeout_with_the_row_it_has() {
         buy("queued"),
         purchases(&["submitted"]),
     ]);
-    let run = top_up(&server, &["--yes", "--wait-timeout", "1"]);
+    let run = top_up_at_the_real_interval(&server, &["--yes", "--wait-timeout", "1"]);
     assert_eq!(
         run.code(),
         Some(0),
