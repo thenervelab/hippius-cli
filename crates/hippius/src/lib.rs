@@ -42,6 +42,7 @@ pub use crate::client::{
 pub use crate::clock::Now;
 pub use crate::config::{
     ConfigFile, HubMarker, Overrides, Settings, Token, config_path, take_split_link,
+    take_unknown_keys_warning,
 };
 pub use crate::digest::sha256_hex;
 pub use crate::dns::{DnsCredentials, DnsProvider, redactions};

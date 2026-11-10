@@ -63,8 +63,11 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
     // Text mode warns on stderr; JSON mode, which writes no warning lines, adds the text to a
     // `warnings` array beside the document or the error, so an agent sees it too.
     let mut warnings = Vec::new();
-    if let Some(path) = hippius::take_split_link() {
-        let warning = split_link_warning(&path);
+    let split_link = hippius::take_split_link().map(|path| split_link_warning(&path));
+    for warning in split_link
+        .into_iter()
+        .chain(hippius::take_unknown_keys_warning())
+    {
         ctx.warning(&warning);
         warnings.push(warning);
     }

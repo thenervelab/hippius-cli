@@ -341,15 +341,15 @@ impl Mark {
             let in_window: Vec<(String, HubMarker)> = config
                 .hub_markers()
                 .filter(|(_, old)| {
-                    old.key == key
+                    old.key() == key
                         && at
-                            .checked_sub(old.at)
+                            .checked_sub(old.at())
                             .is_none_or(|age| age < MARKER_SECONDS)
                 })
                 .map(|(name, old)| (name.to_owned(), old.clone()))
                 .collect();
             let mut cancels: Vec<u64> = Vec::new();
-            for id in in_window.iter().flat_map(|(_, old)| &old.cancels) {
+            for id in in_window.iter().flat_map(|(_, old)| old.cancels()) {
                 if !cancels.contains(id) {
                     cancels.push(*id);
                 }
@@ -379,7 +379,7 @@ impl Mark {
                 // remove once the list shows the last subscribe.
                 if let Some((owner, _)) = in_window
                     .iter()
-                    .find(|(_, old)| old.at.saturating_sub(at) > MARKER_SECONDS)
+                    .find(|(_, old)| old.at().saturating_sub(at) > MARKER_SECONDS)
                 {
                     let marker = Source::Profile {
                         field: "hub_subscribe",
@@ -422,7 +422,7 @@ impl Mark {
                 )
                 .with_hint("wait a few minutes, then run `hipc hub subscription get`"));
             }
-            let marker = HubMarker { at, key, cancels };
+            let marker = HubMarker::new(at, key, cancels);
             config.set_hub_marker(profile, Some(marker.clone()));
             Ok((previous, marker))
         })?;

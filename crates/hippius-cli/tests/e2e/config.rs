@@ -2,6 +2,8 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 
+use serde_json::json;
+
 use crate::common::{self, Hipc, Home, Reply, Server, TOKEN, no_server, route, status_routes};
 
 fn chmod(path: &std::path::Path, mode: u32) {
@@ -90,11 +92,44 @@ fn a_broken_config_names_the_path_and_never_quotes_it() {
         .run(&["account", "use", "self"])
         .fails(2, "usage");
     assert!(error["message"].as_str().unwrap().contains("config.toml"));
-    let unknown = home.file("unknown.toml", b"[profiles.default]\nsurprise = 1\n");
-    Hipc::new(&home)
-        .env("HIPPIUS_CONFIG", unknown.to_str().unwrap())
-        .run(&["account", "use", "self"])
-        .fails(2, "usage");
+}
+
+/// A key this `hipc` does not know, such as one a newer `hipc` wrote, is accepted and kept
+/// when the file is rewritten, and a warning names where it is, once per run, never its name
+/// or value: in text mode on stderr, in JSON mode in `warnings`.
+#[test]
+fn a_config_key_this_hipc_does_not_know_is_kept_and_warned_about_once() {
+    let home = Home::new();
+    home.write_config(&format!(
+        "[profiles.default]\ntoken = \"{TOKEN}\"\nsurprise = \"s3cr3t-value\"\n"
+    ));
+    let warning = format!(
+        "the config file `{}` holds keys this hipc does not know, in the profile `default`; \
+         they are kept as they are, and a newer hipc may use them",
+        home.config().display()
+    );
+    let doc = Hipc::new(&home).run(&["account", "use", "self"]).ok();
+    assert_eq!(doc["warnings"], json!([warning]));
+    assert!(
+        home.config_text().contains("surprise = \"s3cr3t-value\""),
+        "{}",
+        home.config_text()
+    );
+    let run = Hipc::new(&home).run(&["--output", "text", "account", "use", "self"]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(
+        run.stderr()
+            .matches("holds keys this hipc does not know")
+            .count(),
+        1,
+        "{}",
+        run.stderr()
+    );
+    assert!(
+        !run.stderr().contains("s3cr3t") && !run.stderr().contains("surprise"),
+        "{}",
+        run.stderr()
+    );
 }
 
 #[test]

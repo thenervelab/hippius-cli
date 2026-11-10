@@ -240,17 +240,50 @@ impl Credential {
     }
 }
 
+/// The keys of a config table this `hipc` does not know, such as one a newer `hipc` wrote.
+/// They are kept as they were and written back on every save, so two versions can share one
+/// file (tenet 8). `Debug` counts them, since a value may be a token.
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+struct Unknown(BTreeMap<String, toml::Value>);
+
+impl fmt::Debug for Unknown {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Unknown({} keys)", self.0.len())
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Document {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     default_profile: Option<String>,
     #[serde(default)]
     profiles: BTreeMap<String, Profile>,
+    #[serde(flatten)]
+    unknown: Unknown,
+}
+
+impl Document {
+    /// Where the document holds keys this `hipc` does not know, as a warning names them: `the
+    /// top level`, `` the profile `work` ``, `` the `hub_subscribe` of the profile `work` ``.
+    /// The keys are not named, since one may be a token pasted in the wrong place.
+    fn unknown_places(&self) -> Vec<String> {
+        let top = (!self.unknown.0.is_empty()).then(|| "the top level".to_owned());
+        let profiles = self.profiles.iter().flat_map(|(name, profile)| {
+            let named = format!("the profile {}", quote(name));
+            let own = (!profile.unknown.0.is_empty()).then(|| named.clone());
+            let marker = profile
+                .hub_subscribe
+                .as_ref()
+                .filter(|marker| !marker.unknown.0.is_empty())
+                .map(|_| format!("the `hub_subscribe` of {named}"));
+            own.into_iter().chain(marker)
+        });
+        top.into_iter().chain(profiles).collect()
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Profile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     api_url: Option<String>,
@@ -272,6 +305,8 @@ struct Profile {
     /// (TENETS 11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hub_subscribe: Option<HubMarker>,
+    #[serde(flatten)]
+    unknown: Unknown,
 }
 
 impl fmt::Debug for Profile {
@@ -284,6 +319,7 @@ impl fmt::Debug for Profile {
             .field("project", &self.project)
             .field("billing", &self.billing)
             .field("hub_subscribe", &self.hub_subscribe)
+            .field("unknown", &self.unknown)
             .finish()
     }
 }
@@ -308,19 +344,48 @@ impl Drop for Profile {
 
 /// A Hub subscribe that was sent: when, as which origin and token, and which paid plans it
 /// cancelled first.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HubMarker {
     /// When it was sent, in Unix seconds.
-    pub at: u64,
+    at: u64,
     /// Who it was sent as (`Client::identity`: the origin and a token fingerprint), so a
     /// marker from another origin or token on the same profile name does not block this one.
-    pub key: String,
+    key: String,
     /// The paid subscriptions that run cancels before it subscribes. Inside the window the
     /// list can still show them as active, so a later `--replace` that sees only these has
     /// nothing new to cancel. Left out of the file when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cancels: Vec<u64>,
+    cancels: Vec<u64>,
+    /// Keys this `hipc` does not know, kept as they were.
+    #[serde(flatten)]
+    unknown: Unknown,
+}
+
+impl HubMarker {
+    /// A marker of a subscribe sent `at`, as `key`, that cancels `cancels` first.
+    pub fn new(at: u64, key: String, cancels: Vec<u64>) -> Self {
+        Self {
+            at,
+            key,
+            cancels,
+            unknown: Unknown::default(),
+        }
+    }
+
+    /// When it was sent, in Unix seconds.
+    pub fn at(&self) -> u64 {
+        self.at
+    }
+
+    /// Who it was sent as: the origin and a token fingerprint.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// The paid subscriptions that run cancels before it subscribes.
+    pub fn cancels(&self) -> &[u64] {
+        &self.cancels
+    }
 }
 
 /// The config file, loaded. Change it with [`ConfigFile::edit`].
@@ -402,6 +467,20 @@ pub fn take_split_link() -> Option<PathBuf> {
     SPLIT_LINK.with(|split| split.borrow_mut().take())
 }
 
+thread_local! {
+    /// The warning about the keys the last config file loaded on this thread holds and this
+    /// `hipc` does not know, until [`take_unknown_keys_warning`] takes it.
+    static UNKNOWN_KEYS: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The warning that the config file holds keys this `hipc` does not know, once, or `None`. A
+/// run loads the file more than once, and each load of a file with such keys sets it again, so
+/// the binary takes it once at the end of a run and warns once (tenet 8). Thread-local, so a
+/// test sees only its own loads.
+pub fn take_unknown_keys_warning() -> Option<String> {
+    UNKNOWN_KEYS.with(|warning| warning.borrow_mut().take())
+}
+
 impl ConfigFile {
     /// Reads the file at `path`. A missing file is an empty config.
     ///
@@ -436,7 +515,7 @@ impl ConfigFile {
                 format!("save {} as UTF-8 text", quote_path(&path)),
             )
         })?);
-        let document = toml::from_str(&text).map_err(|e: toml::de::Error| {
+        let document: Document = toml::from_str(&text).map_err(|e: toml::de::Error| {
             let line = e
                 .span()
                 .map_or(1, |span| text[..span.start].matches('\n').count() + 1);
@@ -449,6 +528,16 @@ impl ConfigFile {
                 format!("fix line {line} of {}", quote_path(&path)),
             )
         })?;
+        let places = document.unknown_places();
+        if !places.is_empty() {
+            let warning = format!(
+                "the config file {} holds keys this hipc does not know, in {}; they are kept as \
+                 they are, and a newer hipc may use them",
+                quote_path(&path),
+                crate::phrase::join(&places, "and")
+            );
+            UNKNOWN_KEYS.with(|unknown| *unknown.borrow_mut() = Some(warning));
+        }
         Ok(Self { path, document })
     }
 
@@ -733,12 +822,15 @@ impl ConfigFile {
         Ok(origin)
     }
 
-    /// Whether `profile` stores a token other than `token`: a login that would replace it. An
-    /// empty stored token, which a hand-edited file can hold, is no token, as in
+    /// Whether `profile` stores a token other than `token`: a login that would replace it. A
+    /// stored token is compared trimmed, as [`Token::new`] trims the one it sends, and an empty
+    /// one, which a hand-edited file can hold, is no token, as in
     /// [`ConfigFile::holds_a_stored_token`].
     pub fn stores_other_token(&self, profile: &str, token: &Token) -> bool {
-        self.stored_token(profile)
-            .is_some_and(|stored| !stored.is_empty() && stored != token.expose())
+        self.stored_token(profile).is_some_and(|stored| {
+            let stored = stored.trim();
+            !stored.is_empty() && stored != token.expose()
+        })
     }
 
     /// Whether `text` holds a token any profile of the file stores, in any spelling
@@ -854,15 +946,14 @@ impl ConfigFile {
 }
 
 /// What is wrong on a line of the config file, from the parser's `message`, as the end of a
-/// sentence that starts with the line: `has a key other than ...`.
+/// sentence that starts with the line: `has a value that is not a string`.
 ///
 /// The parser's own message quotes the key or the value it refused, either of which can be a
 /// token pasted in the wrong place, so none of it is repeated. Only what serde writes from the
-/// config types themselves is: the field names a table takes, and the name of a missing one.
+/// config types themselves is: the name of a missing field.
 /// A message this does not know is `does not parse`.
 fn config_problem(message: &str) -> String {
-    // The text between each pair of backticks: `` unknown field `x`, expected `a` or `b` ``
-    // gives `x`, `a`, and `b`.
+    // The text between each pair of backticks: `` missing field `key` `` gives `key`.
     let quoted = |text: &str| -> Vec<String> {
         text.split('`')
             .skip(1)
@@ -870,15 +961,6 @@ fn config_problem(message: &str) -> String {
             .map(crate::phrase::quote)
             .collect()
     };
-    if let Some((_, expected)) = message
-        .strip_prefix("unknown field ")
-        .and_then(|rest| rest.rsplit_once(", expected "))
-    {
-        return format!(
-            "has a key other than {}",
-            crate::phrase::join(&quoted(expected), "or")
-        );
-    }
     if let Some((_, expected)) = message
         .strip_prefix("invalid type: ")
         .and_then(|rest| rest.rsplit_once(", expected "))
@@ -1613,20 +1695,6 @@ mod tests {
     fn a_config_error_says_what_is_wrong_without_quoting_the_file() {
         for (text, problem) in [
             (
-                "[profiles.default]\ntoken = \"x\"\nfoo = 1\n",
-                "line 3 has a key other than `api_url`, `token`, `token_origin`, `account`, \
-                 `project`, `billing`, or `hub_subscribe`",
-            ),
-            (
-                "tok_s3cr3t = 1\n",
-                "line 1 has a key other than `default_profile` or `profiles`",
-            ),
-            // A key that spells serde's own words cannot get its text into the list.
-            (
-                "\"x`, expected `s3cr3t\" = 1\n",
-                "line 1 has a key other than `default_profile` or `profiles`",
-            ),
-            (
                 "[profiles.default]\ntoken = 5\n",
                 "line 2 has a value that is not a string",
             ),
@@ -1664,6 +1732,46 @@ mod tests {
             );
             assert!(!error.to_string().contains("s3cr3t"), "{error}");
         }
+    }
+
+    /// A key this `hipc` does not know, at any level, is kept as it was through a load and a
+    /// save, and named by where it is in a warning taken once, never by its name or value.
+    #[test]
+    fn unknown_keys_are_kept_and_warned_about_once_without_being_quoted() {
+        drop(take_unknown_keys_warning());
+        let text = "tok_s3cr3t = 1\n\n[profiles.default]\ntoken = \"x\"\napi_version = 2\n\n\
+                    [profiles.default.hub_subscribe]\nat = 1\nkey = \"k\"\nseen = \"s3cr3t\"\n\n\
+                    [profiles.plain]\naccount = \"a\"\n\n[profiles.\"we ird\".extra]\nnested = true\n";
+        let config = ConfigFile::parse(PathBuf::from("c.toml"), Some(text.into())).unwrap();
+        assert_eq!(
+            take_unknown_keys_warning().as_deref(),
+            Some(
+                "the config file `c.toml` holds keys this hipc does not know, in the top level, \
+                 the profile `default`, the `hub_subscribe` of the profile `default`, and the \
+                 profile `we ird`; they are kept as they are, and a newer hipc may use them"
+            )
+        );
+        assert_eq!(take_unknown_keys_warning(), None, "taken once");
+        assert!(!format!("{config:?}").contains("s3cr3t"));
+        let saved = toml::to_string(&config.document).unwrap();
+        let again: toml::Table = toml::from_str(&saved).unwrap();
+        assert_eq!(again, toml::from_str::<toml::Table>(text).unwrap());
+        ConfigFile::parse(PathBuf::from("c.toml"), Some("[profiles.default]\n".into())).unwrap();
+        assert_eq!(take_unknown_keys_warning(), None, "a file of known keys");
+    }
+
+    /// A hand-edited token with spaces around it is sent trimmed, so a login with the same
+    /// token does not replace another one, and a blank one is no token.
+    #[test]
+    fn a_stored_token_is_compared_trimmed() {
+        let text = "[profiles.padded]\ntoken = \"  tok_same_0123456789 \"\n\
+                    [profiles.blank]\ntoken = \"   \"\n";
+        let config = ConfigFile::parse(PathBuf::from("c.toml"), Some(text.into())).unwrap();
+        let same = Token::new("tok_same_0123456789", &Source::Argument).unwrap();
+        let other = Token::new("tok_other_0123456789", &Source::Argument).unwrap();
+        assert!(!config.stores_other_token("padded", &same));
+        assert!(config.stores_other_token("padded", &other));
+        assert!(!config.stores_other_token("blank", &other));
     }
 
     #[test]
