@@ -35,7 +35,7 @@ pub(crate) enum Firewall {
     /// "web"}]}. A port is 1 to 65535 or a range such as 8000-8080, a source is an IPv4 CIDR,
     /// the protocol is tcp, udp, or icmp (which takes no ports), and enabled is true when
     /// left out.
-    #[allow(
+    #[expect(
         clippy::doc_link_with_quotes,
         reason = "the help shows an example file, whose JSON arrays of strings look like links"
     )]

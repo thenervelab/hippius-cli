@@ -304,7 +304,7 @@ pub(crate) enum WafRules {
     /// With --check the server compiles the list and answers whether it is valid, its size, and
     /// the tier's limit, publishing nothing; that needs no --yes. An invalid list exits 1
     /// validation, with the server's answer in error.details.
-    #[allow(
+    #[expect(
         clippy::doc_link_with_quotes,
         reason = "the help shows an example file, whose JSON arrays of strings look like links"
     )]
@@ -374,10 +374,6 @@ pub(crate) enum WafRateLimits {
     /// With --check the server compiles the list and answers whether it is valid, its size, and
     /// the tier's limit, publishing nothing; that needs no --yes. An invalid list exits 1
     /// validation, with the server's answer in error.details.
-    #[allow(
-        clippy::doc_link_with_quotes,
-        reason = "the help shows an example file, whose JSON arrays of strings look like links"
-    )]
     #[command(after_help = examples(&[
         "hipc cdn waf rate-limits update zab12cd34ef56 --rules-file rate-limits.json --check",
         "hipc cdn waf rate-limits update zab12cd34ef56 --rules-file rate-limits.json --yes",
