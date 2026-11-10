@@ -14,7 +14,7 @@ curl -q --proto '=https' --tlsv1.2 -fsSL https://github.com/thenervelab/hippius-
 
 - The Homebrew formula replaces the old IPFS-era `hipc`, so `brew upgrade` moves a machine onto this one.
 - The script installs to `~/.local/bin` (or `$HIPC_INSTALL_DIR`) with no root, checks `SHA256SUMS`, and checks the signature when `cosign` is on `PATH` (`HIPC_INSTALL_REQUIRE_SIGNATURE=1` makes that required). End the pipe with `sh -s -- 0.15.0` to pin a version.
-- `hipc` is not on PyPI yet; once it is published there, `pip install hippius-cli` will install the same `hipc` binary. The `hippius` package on PyPI is the Python SDK, a different project, and the PyPI project `hipc` is unrelated to Hippius.
+- On PyPI the package is `hippius` and the command it installs is `hipc`, with wheels for macOS and Linux: `pip install hippius`, `uv tool install hippius`, or `pipx install hippius` installs the same `hipc` command. The PyPI project `hipc` is unrelated to Hippius.
 - From source: `cargo install --locked --git https://github.com/thenervelab/hippius-cli hippius-cli`.
 - To uninstall, remove the binary; remove `~/.hippius` too to forget the token.
 

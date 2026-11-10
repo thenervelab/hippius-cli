@@ -35,6 +35,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 - The hints for flags renamed and commands moved before 1.0 are gone. An old flag (`hipc api --input`) or an old command path (`hipc hub namespace provision`, `hipc network groups` alone) is now a plain `usage` error whose hint is the help of the command it reached, as any unknown word is.
 
+- The PyPI package is now `hippius` (`pip install hippius`, `uv tool install hippius`, or `pipx install hippius`), not `hippius-cli`; the command it installs is still `hipc`. The release workflow builds and uploads the wheels to the PyPI project `hippius` when the repository variable `PYPI_PUBLISH` is `true`. The README, `docs/getting-started.md`, `docs/agents.md`, and the wheel's own README say so.
+- The README and `docs/getting-started.md` say that the PyPI project `hipc` is unrelated to Hippius; the README says the install script checks the release signature when `cosign` is installed, and `HIPC_INSTALL_REQUIRE_SIGNATURE=1` makes that required. `docs/README.md` no longer promises a CLI section on docs.hippius.com with the release.
+- The release tarballs are reproducible: `scripts/package.sh` packs each with its members in a fixed order, owned by `0:0`, with fixed modes and the commit's time, and gzip storing no name or time; the binaries are built with the checkout and cargo paths remapped, on pinned runner images. The release runs the arm64 macOS binary before it is packed, as it runs the Linux ones, and every workflow job has a timeout.
+- `scripts/manual_test.sh` checks the token with `hipc auth status` before the first scenario, says it came from `HIPPIUS_TOKEN`, and stops with one failure when it is refused. An account with no Hub namespace is the state `hub_unprovisioned`, as an account with no private network is, and not a failure. The account and balance comparisons are no longer a pass when a snapshot read failed or gave no balance: offline they are skipped, and online a missing balance fails. `--offline` refuses to run when something listens on its dead origin.
+
 ### Fixed
 
 - Text mode prints a `get` whose answer holds `items` and `next_page_token` as the one object it is, with no table and no `next page: --page-token` hint, which the command does not take. Only a command that prints a list envelope prints a list, and only its empty list gets the `no items` note.
@@ -54,10 +59,6 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 ### Security
 
 - More copies of secrets are cleared from memory when they are dropped: a secret read from `--token-file`, `--secret-key-file`, or an invite's `--token-file`, now read into a buffer of its full size, and from stdin without the standard library's buffer; the S3 token document `--from-token-file` reads; the S3 secret key and the AWS credentials text read and written; the one-time secret `--secret-file` moves; the DNS credential's redactions; every field of a DNS credentials, app secrets, or cluster key file, on every refusal; and the text an error held before a secret was redacted from it.
-
-- The README and `docs/getting-started.md` say that `hipc` is not on PyPI yet, and that the PyPI project `hipc` is unrelated to Hippius; the README says the install script checks the release signature when `cosign` is installed, and `HIPC_INSTALL_REQUIRE_SIGNATURE=1` makes that required. `docs/README.md` no longer promises a CLI section on docs.hippius.com with the release.
-- The release tarballs are reproducible: `scripts/package.sh` packs each with its members in a fixed order, owned by `0:0`, with fixed modes and the commit's time, and gzip storing no name or time; the binaries are built with the checkout and cargo paths remapped, on pinned runner images. The release runs the arm64 macOS binary before it is packed, as it runs the Linux ones, and every workflow job has a timeout.
-- `scripts/manual_test.sh` checks the token with `hipc auth status` before the first scenario, says it came from `HIPPIUS_TOKEN`, and stops with one failure when it is refused. An account with no Hub namespace is the state `hub_unprovisioned`, as an account with no private network is, and not a failure. The account and balance comparisons are no longer a pass when a snapshot read failed or gave no balance: offline they are skipped, and online a missing balance fails. `--offline` refuses to run when something listens on its dead origin.
 
 ## [0.15.0] - 2026-11-09
 
