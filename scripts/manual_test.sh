@@ -67,7 +67,8 @@
 # resource), and the directory, which also holds the stored token, is left behind; delete
 # the resources it names by hand. A `runner-max`, `runner-cap` or `billing-name` line is not a
 # resource but a change: put it back, from the value in `restore/<kind>.<id>` beside the
-# ledger (for `runner-cap`, the body to send with `hipc api PUT /runners/limit/`). Then
+# ledger (for `runner-cap`, the body to send with `hipc api PUT` to the route of `hipc compute
+# runners limit update`, which `hipc schema compute runners limit update` names). Then
 # delete the directory.
 #
 # Written for bash 3.2, the macOS /bin/bash: no associative arrays, no mapfile, and empty
@@ -901,6 +902,15 @@ spend_gate() {
     BLOCK_SKIP="the purchase was declined"
     record SKIP "spend: $what"
   fi
+}
+
+# api_route <command path> <method> [value...]: the route `hipc schema` lists for the command,
+# for a step that sends it through `hipc api`, so the script keeps no copy of the path. With
+# no binary to ask, as in --list mode, a placeholder that names the command's route.
+api_route() {
+  local route
+  route="$(schema_route "$HIPC" "$@" | head -n 1)"
+  printf '%s' "${route:-<the $2 route of hipc $1>}"
 }
 
 # Whether the binary under test has a command, from its schema; the spend tier uses it for
@@ -1956,7 +1966,8 @@ runner_cap_change() {
     -- hipc --json compute runners limit get
   check online "the cap is the new one" -- shows "$RUNNER_CAP_IS" limit "$higher"
   step undo net "Put the runner spend cap back" "the server's own monthly_cap, read before" \
-    -- hipc --json api PUT /runners/limit/ --body-file "$H/runner-limit.json" --yes
+    -- hipc --json api PUT "$(api_route "compute runners limit update" PUT)" \
+    --body-file "$H/runner-limit.json" --yes
   local restored=$LAST_EXIT
   step read net "Read the runner limit" "confirm it is back" \
     -- hipc --json compute runners limit get
@@ -2610,11 +2621,11 @@ scenario_agent() {
     -- hipc --json compute ssh-keys list --all
   check online "the answer is one array" -- stdout_is_array
   step read net "Call a route directly" "hipc api sends a GET with the token and prints it" \
-    -- hipc --json api GET /api/services/status/
+    -- hipc --json api GET "$(api_route status GET)"
   check always "the answer is JSON" -- answer_is_json
   step error err:confirmation_required "Send a write through hipc api without --yes" \
     "a method other than GET or HEAD is confirmed, so nothing is sent" \
-    -- hipc --json api DELETE "/api/objectstore/buckets/$bucket/"
+    -- hipc --json api DELETE "$(api_route "s3 buckets delete" DELETE "$bucket")"
   step error net-err:auth "Use a bad token" "a wrong token is exit 1 with the code auth" \
     -- "HIPPIUS_TOKEN=$BAD_TOKEN" hipc --json auth status
   step error err:confirmation_required "Delete without --yes" \
@@ -3043,7 +3054,7 @@ cleanup_undo() {
 # Puts back what a change step of kind $1 changed on the resource $2, from the value
 # change_begin saved, and proves it by a read.
 cleanup_restore() {
-  local kind="$1" id="$2" value filter code hand=""
+  local kind="$1" id="$2" value filter code hand="" route
   local -a undo=() read=()
   value="$(cat "$WORK/restore/$kind.$id")"
   case "$kind" in
@@ -3054,8 +3065,9 @@ cleanup_restore() {
     ;;
   runner-cap)
     printf '%s\n' "$value" >"$WORK/restore/runner-cap.body"
-    undo=(api PUT /runners/limit/ --body-file "$WORK/restore/runner-cap.body")
-    hand="printf '%s\\n' $(quote_word "$value") | hipc api PUT /runners/limit/ --body-file - --yes"
+    route="$(api_route "compute runners limit update" PUT)"
+    undo=(api PUT "$route" --body-file "$WORK/restore/runner-cap.body")
+    hand="printf '%s\\n' $(quote_word "$value") | hipc api PUT $route --body-file - --yes"
     read=(compute runners limit get)
     filter="$RUNNER_CAP_BACK"
     ;;

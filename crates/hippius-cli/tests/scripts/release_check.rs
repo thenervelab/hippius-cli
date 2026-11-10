@@ -54,7 +54,7 @@ fn a_run_where_everything_fails_still_reports_every_group() {
         dir.path(),
         "hipc",
         r#"case "$*" in
-schema) echo '{"schema_version":3,"commands":[{"path":["version"],"effect":"read_only","args":[],"flags":[]}],"global_flags":[]}' ;;
+schema) echo '{"schema_version":4,"commands":[{"path":["version"],"effect":"read_only","args":[],"flags":[]}],"global_flags":[]}' ;;
 *) exit 1 ;;
 esac"#,
     );

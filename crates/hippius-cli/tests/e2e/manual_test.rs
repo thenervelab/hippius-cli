@@ -227,12 +227,14 @@ fn scripted_hipc(home: &Home, prelude: &str, cases: &[(&str, &str)]) -> (PathBuf
     (fake_hipc(home, &body), calls)
 }
 
-/// The calls a stand-in recorded that were sent for real: no `--dry-run`.
+/// The calls a stand-in recorded that were sent for real: no `--dry-run`, and no `hipc
+/// schema`, which the script asks for a route and which reads only the binary.
 fn real_calls(calls: &Path) -> Vec<String> {
     std::fs::read_to_string(calls)
         .unwrap_or_default()
         .lines()
         .filter(|line| !line.split_whitespace().any(|word| word == "--dry-run"))
+        .filter(|line| !line.starts_with("schema "))
         .map(str::to_owned)
         .collect()
 }
@@ -309,7 +311,18 @@ fn assert_clean_offline_run(output: &Output, log: &str, home: &Home) {
 #[test]
 fn the_catalogue_lists_the_commands_the_script_runs() {
     let home = Home::new();
-    let output = manual_test(&home, &["--list", "--tier", "write"]);
+    // With the binary, so the steps that send a route through `hipc api` show the route
+    // `hipc schema` lists, as a run would send it.
+    let output = manual_test(
+        &home,
+        &[
+            "--list",
+            "--tier",
+            "write",
+            "--hipc",
+            env!("CARGO_BIN_EXE_hipc"),
+        ],
+    );
     assert!(output.status.success());
     let listing = stdout(&output);
     let expected: Vec<&str> = listing.trim_end().split("\n\n").collect();
@@ -696,7 +709,7 @@ fn the_trap_puts_back_the_spend_cap_and_a_billing_account_name() {
                 "*\" compute runners limit update --monthly-cap 21 \"*",
                 "exit 0",
             ),
-            ("*\" api PUT /runners/limit/ \"*", &cap_back),
+            ("*\" api PUT /api/runners/limit/ \"*", &cap_back),
             (
                 "*\" account billing-accounts list \"*",
                 "printf '%s\\n' '{\"billing_accounts\":[{\"id\":\"default\",\"name\":\"Default\"},\
@@ -731,7 +744,11 @@ fn the_trap_puts_back_the_spend_cap_and_a_billing_account_name() {
     );
     let sent = real_calls(&calls);
     let count = |needle: &str| sent.iter().filter(|call| call.contains(needle)).count();
-    assert_eq!(count("api PUT /runners/limit/ --body-file "), 2, "{sent:?}");
+    assert_eq!(
+        count("api PUT /api/runners/limit/ --body-file "),
+        2,
+        "{sent:?}"
+    );
     assert_eq!(
         count("account billing-accounts update bill_0123456789abcdef0123 --name Ops team"),
         2,
@@ -781,7 +798,7 @@ fn no_cap_and_a_name_hipc_would_trim_are_left_alone() {
     let sent = real_calls(&calls);
     assert!(
         !sent.iter().any(|call| call.contains("runners limit update")
-            || call.contains("api PUT /runners/limit/")
+            || call.contains("api PUT /api/runners/limit/")
             || call.contains("billing-accounts update")),
         "{sent:?}"
     );
