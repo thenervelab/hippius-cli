@@ -37,7 +37,7 @@ fn workspace(version: &str) -> String {
 #[test]
 fn an_x_y_z_version_passes_and_is_printed() {
     let dir = TempDir::new();
-    // A 0.x version passes: every release of `hipc` is above the project's earlier ones.
+    // A 0.x version passes: the check reads the version, and sets no floor.
     for version in ["0.15.0", "0.2.77", "1.0.0", "1.2.3", "12.0.0", "01.0.0"] {
         let out = check_manifest(&dir, &workspace(version));
 
