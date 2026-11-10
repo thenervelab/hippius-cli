@@ -23,7 +23,7 @@ use crate::cli::{
 use crate::commands::credits::{AmountPath, shown_in_credits};
 use crate::commands::files::write_output_file;
 use crate::commands::{
-    Printed, dry_run_requests, failed_part, halpha, list, print_body, print_with,
+    Printed, dry_run_requests, failed_part, gamma, halpha, list, print_body, print_with,
 };
 use crate::context::{Context, Gate, Step, Write};
 
@@ -101,6 +101,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Billing) -> Result<Printed> {
             "an auto-reload history read",
         ),
         Billing::NativeQuote => halpha::native_quote(ctx),
+        Billing::Gamma(command) => gamma::run(ctx, command),
         Billing::TopUp(top_up) => start_top_up(ctx, top_up),
     }
 }

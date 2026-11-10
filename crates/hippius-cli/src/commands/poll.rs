@@ -1,0 +1,127 @@
+//! The one wait loop of the commands that wait for what the server does after a write: the
+//! VM launch wait, the App Engine launch wait, and the hAlpha purchase follow. Each reads one
+//! route again and again until what it reads says the wait is over, its deadline passes, or
+//! a read fails for good.
+
+use std::time::{Duration, Instant};
+
+use hippius::{Client, Error, Request, Result};
+use serde_json::Value;
+
+use crate::context::Context;
+
+/// How many reads in a row may fail with a retryable error (a 502, 503, 504, 425 or 429, a
+/// timeout, or a failed connection; a 500 ends the wait at once) before the wait gives up: a
+/// read cannot launch or buy twice, so a passing outage, such as a restart behind the API, is
+/// waited out. The wait's own deadline bounds reads that time out.
+pub(crate) const MAX_POLL_FAILURES: u32 = 3;
+
+/// What a wait does next, from what it holds.
+pub(crate) enum Next<T> {
+    /// The wait is over, with this result.
+    Stop(Result<T>),
+    /// The wait goes on: read again.
+    Poll,
+}
+
+/// A wait: what it holds, what one answer changes, and how it ends.
+pub(crate) trait Wait {
+    /// What the wait gives once it is over.
+    type Output;
+
+    /// Whether the wait is over, from what it holds: first what it starts from, then after
+    /// each read.
+    fn next(&mut self) -> Next<Self::Output>;
+
+    /// Takes the document one read answered. An error ends the wait with it.
+    ///
+    /// # Errors
+    ///
+    /// What the wait refuses in the answer, such as the document of another VM.
+    fn take(&mut self, answer: Value) -> Result<()>;
+
+    /// The result once the deadline has passed and the wait is not over.
+    ///
+    /// # Errors
+    ///
+    /// The wait's timeout, when running out of time is a failure.
+    fn timed_out(self) -> Result<Self::Output>;
+
+    /// The error once a read fails for good: a failure that is not retryable, or the one past
+    /// [`MAX_POLL_FAILURES`] in a row.
+    fn failed(self, error: Error) -> Error;
+}
+
+/// When a wait reads.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Schedule {
+    /// The pause before the first read. A read with no pause before it is sent whatever the
+    /// deadline: the hAlpha follow reads the purchase once even with no time left.
+    pub(crate) first: Duration,
+    /// The pause between two reads.
+    pub(crate) interval: Duration,
+    /// When the wait gives up.
+    pub(crate) deadline: Instant,
+}
+
+/// Reads `request` until `wait` says it is over ([`Wait::next`]), the deadline passes
+/// ([`Wait::timed_out`]), or a read fails for good ([`Wait::failed`]).
+///
+/// A pause never runs past the deadline. A read that fails with a retryable error is tried
+/// again, up to [`MAX_POLL_FAILURES`] in a row, after the interval, or after the server's
+/// `Retry-After` when it asks for longer; when what it asks for runs past the deadline, the
+/// wait sleeps until the deadline and ends there, without the read the server asked it not to
+/// send. A read can end up to `--request-timeout` past the deadline, because a request is not
+/// cut short.
+pub(crate) fn poll_until<W: Wait>(
+    ctx: &Context<'_>,
+    client: &Client,
+    request: &Request,
+    schedule: Schedule,
+    mut wait: W,
+) -> Result<W::Output> {
+    let mut failures = 0;
+    let mut pause = schedule.first;
+    // Whether the pause is one the server asked for (`Retry-After`).
+    let mut asked = false;
+    loop {
+        if let Next::Stop(done) = wait.next() {
+            return done;
+        }
+        if !pause.is_zero() {
+            let left = schedule.deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return wait.timed_out();
+            }
+            std::thread::sleep(pause.min(left));
+            if asked && pause > left {
+                return wait.timed_out();
+            }
+        }
+        match ctx
+            .send(client, request)
+            .and_then(|response| response.document())
+        {
+            Ok(answer) => {
+                failures = 0;
+                pause = schedule.interval;
+                asked = false;
+                wait.take(answer)?;
+            }
+            Err(error) if error.is_retryable() && failures < MAX_POLL_FAILURES => {
+                failures += 1;
+                pause = after(&error, schedule.interval);
+                asked = error.retry_after_ms().is_some();
+            }
+            Err(error) => return Err(wait.failed(error)),
+        }
+    }
+}
+
+/// The pause before the read after `error`, a retryable failure: the server's `Retry-After`
+/// when it asks for longer than `interval`, else `interval`.
+fn after(error: &Error, interval: Duration) -> Duration {
+    error
+        .retry_after_ms()
+        .map_or(interval, |ms| interval.max(Duration::from_millis(ms)))
+}

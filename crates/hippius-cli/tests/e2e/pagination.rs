@@ -215,7 +215,7 @@ const NOT_READ_WHOLE: &[(&str, &str)] = &[
 ];
 
 /// The lists swagger pages, and so the only ones that take the page flags: by `page` and
-/// `page_size` (`/billing/transactions/`, `/billing/invoices/`, `/drive/subscription/history/`,
+/// `page_size` (`/billing/transactions/`, `/billing/invoices/`, `/billing/gamma/conversions/`, `/drive/subscription/history/`,
 /// `/s3/subscription/history/`, `/ssh-keys/`, `/support/tickets/`,
 /// `/support/tickets/{id}/messages/`), by
 /// `continuation_token` (`/objectstore/buckets/{name}/objects/`), by the `before` cursor at
@@ -228,6 +228,10 @@ const PAGED: &[(&str, &[&str])] = &[
     ),
     (
         "billing invoices list",
+        &["--limit", "--page-token", "--all"],
+    ),
+    (
+        "billing gamma conversions list",
         &["--limit", "--page-token", "--all"],
     ),
     (
@@ -264,6 +268,10 @@ const PAGED: &[(&str, &[&str])] = &[
 const PAGED_BY_NUMBER: &[(&[&str], &str)] = &[
     (&["billing", "transactions"], "/api/billing/transactions/"),
     (&["billing", "invoices", "list"], "/api/billing/invoices/"),
+    (
+        &["billing", "gamma", "conversions", "list"],
+        "/api/billing/gamma/conversions/",
+    ),
     (
         &["drive", "subscription", "history"],
         "/api/drive/subscription/history/",

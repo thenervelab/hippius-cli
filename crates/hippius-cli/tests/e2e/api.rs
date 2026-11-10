@@ -1344,6 +1344,98 @@ fn a_network_isolation_change_needs_change_isolation_first() {
     assert_eq!(requests[1].json()["mode"], "deny_intra");
 }
 
+/// A guard the API documents for one write method holds for every write method of its
+/// route, and in any letter case: a `PUT` where swagger lists `PATCH` still needs the flag,
+/// and so does a path a case-folding front end would deliver to the route. Nothing is sent.
+/// (A dry run needs none of the flags, as everywhere.)
+#[test]
+fn a_guard_holds_for_every_write_method_and_letter_case() {
+    let server = Server::start(vec![]);
+    let home = Home::new();
+    let file = |name: &str, body: &[u8]| home.file(name, body).to_str().unwrap().to_owned();
+    let origin = file("origin.json", br#"{"origin":{"bucket":"b"}}"#);
+    let grants = file("grants.json", br#"{"grants":[]}"#);
+    let items = file("items.json", br#"{"items":[]}"#);
+    let public = file("public.json", br#"{"public":true}"#);
+    let mode = file("mode.json", br#"{"mode":"deny_intra"}"#);
+    let cases: [(&str, &str, &str, &str); 9] = [
+        ("PUT", "/cdn/zones/z1/", &origin, "public_required"),
+        ("POST", "/cdn/zones/z1/", &origin, "public_required"),
+        (
+            "PUT",
+            "/accounts/members/7/",
+            &grants,
+            "remove_others_required",
+        ),
+        (
+            "PUT",
+            "/cdn/lists/blocked/",
+            &items,
+            "remove_others_required",
+        ),
+        ("PUT", "/registry/me/publicity/", &public, "public_required"),
+        (
+            "PUT",
+            "/network/isolation/",
+            &mode,
+            "change_isolation_required",
+        ),
+        (
+            "PATCH",
+            "/network/isolation/",
+            &mode,
+            "change_isolation_required",
+        ),
+        (
+            "POST",
+            "/Network/Isolation/",
+            &mode,
+            "change_isolation_required",
+        ),
+        ("PATCH", "/CDN/zones/z1/", &origin, "public_required"),
+    ];
+    for (method, path, body, code) in cases {
+        let argv = ["api", method, path, BODY, body, "--yes"];
+        Hipc::against(&home, &server).run(&argv).fails(2, code);
+    }
+    // A refusal holds for every write method too, and its message names the method sent.
+    let error = Hipc::against(&home, &server)
+        .run(&[
+            "api",
+            "PUT",
+            "/cdn/zones/z1/hostnames/cdn.example.com/dns-setup/",
+            "--yes",
+        ])
+        .fails(2, "usage");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("`hipc api` does not send `PUT /api/cdn/zones/<zone_id>/hostnames/"),
+        "{error}"
+    );
+    Hipc::against(&home, &server)
+        .run(&["api", "PATCH", "/registry/subscribe/", "--yes"])
+        .fails(2, "usage");
+    // The network summary's first read creates the network, in any letter case.
+    for path in ["/Network/me/", "/NETWORK/ME"] {
+        Hipc::against(&home, &server)
+            .run(&["api", "GET", path])
+            .fails(2, "confirmation_required");
+    }
+    assert!(server.requests().is_empty());
+    // A `DELETE` of the deletion request withdraws it, and is sent.
+    let withdraw = Server::start(vec![route(
+        "DELETE",
+        "/api/account/deletion/",
+        Reply::json(200, "{}"),
+    )]);
+    Hipc::against(&home, &withdraw)
+        .run(&["api", "DELETE", "/account/deletion/", "--yes"])
+        .ok();
+    assert_eq!(withdraw.requests().len(), 1);
+}
+
 /// A CDN zone create, and a zone PATCH that moves the origin, need `--public` as the
 /// curated `cdn zones create` and `update` do, with the same code, before the account
 /// refusal, the token, and the question.
@@ -2043,6 +2135,59 @@ fn the_neighbours_of_the_network_get_stay_reads() {
             request.target
         );
     }
+}
+
+/// A support write through `hipc api` whose body holds an access key, or a token split by
+/// whitespace, is refused as one with the token whole is, and the refusal quotes neither.
+#[test]
+fn a_support_write_with_an_access_key_or_a_split_token_is_refused() {
+    let server = Server::start(vec![route(
+        "POST",
+        "/api/support/tickets/7/messages/",
+        Reply::json(201, "{}"),
+    )]);
+    let home = Home::new();
+    let stored = "tok_stored_0123456789";
+    home.write_config(&format!(
+        "[profiles.other]\ntoken = \"{stored}\"\ntoken_origin = \"https://api.hippius.com\"\n"
+    ));
+    let wrapped = format!("{}\n{}", &stored[..8], &stored[8..]);
+    for (body, what, it) in [
+        (
+            json!({ "body": crate::common::PHRASES[0] }).to_string(),
+            "what looks like an access key",
+            "the 12 words",
+        ),
+        (
+            json!({ "body": wrapped }).to_string(),
+            "an API token",
+            "the token",
+        ),
+    ] {
+        let file = home.file("body.json", body.as_bytes());
+        let argv = [
+            "api",
+            "POST",
+            "/support/tickets/7/messages/",
+            BODY,
+            file.to_str().unwrap(),
+            "--yes",
+        ];
+        let error = Hipc::against(&home, &server).run(&argv).fails(2, "usage");
+        assert_eq!(
+            error["message"],
+            format!(
+                "`hipc api` does not send a support ticket write whose body holds {what}, which \
+                 a person on the Hippius support team would read"
+            )
+        );
+        assert_eq!(
+            error["hint"],
+            format!("remove {it} from the body; the support team never needs it")
+        );
+        assert!(!error.to_string().contains("curtain"), "{error}");
+    }
+    assert!(server.requests().is_empty());
 }
 
 /// A support write through `hipc api` (any method but `GET` and `HEAD` under `/api/support/`)

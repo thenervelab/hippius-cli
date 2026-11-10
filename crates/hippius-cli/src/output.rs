@@ -176,9 +176,11 @@ fn is_automation(ci: Option<&OsStr>, ai_agent: Option<&OsStr>) -> bool {
 }
 
 /// Prints a success document and returns exit 0. `done` is what the command did to the
-/// server, which a failure to write the document must still report.
-pub(crate) fn document(mode: Mode, document: &Value, done: SideEffects) -> ExitCode {
-    stdout(mode, render(mode, document).as_bytes(), done)
+/// server, which a failure to write the document must still report. `dry_run` is whether the
+/// run was given `--dry-run`: only then is a document with `requests` rendered as a dry run,
+/// so a server's answer with those fields is printed as any other answer.
+pub(crate) fn document(mode: Mode, document: &Value, done: SideEffects, dry_run: bool) -> ExitCode {
+    stdout(mode, render(mode, document, dry_run).as_bytes(), done)
 }
 
 /// Prints bytes that are the output itself in every mode, such as a completion script, and
@@ -242,7 +244,7 @@ pub(crate) fn failure_warned(mode: Mode, error: &Error, warnings: &[String]) -> 
     // A partial failure still prints what succeeded, so no id or row is lost (tenet 3).
     // A failure to write it does not change the exit code, which already says failure.
     if let Some(done) = done_on_failure(error) {
-        drop(write_stdout(render(mode, &done).as_bytes()));
+        drop(write_stdout(render(mode, &done, false).as_bytes()));
     }
     stderr(&render_failure(mode, error, warnings));
     ExitCode::from(error.code().exit_code())
@@ -286,6 +288,44 @@ pub(crate) fn clap_error(mode: Mode, error: &clap::Error, args: &[OsString]) -> 
         return raw(mode, rendered.as_bytes(), SideEffects::None);
     }
     let (path, mut command) = typed_command(args);
+    // No `hipc auth` command takes an argument, and a word given to one, or as any command's
+    // name, that is too long to be a command name is likely the token pasted in the wrong
+    // place, so it is not repeated: clap's message would quote it. A mistyped command name
+    // still gets the usual message and its nearest command.
+    let auth = path == "hipc auth" || path.starts_with("hipc auth ");
+    // Only the errors that quote a word the caller gave; a missing subcommand's context names
+    // the command instead.
+    let refuses_a_word = matches!(
+        error.kind(),
+        ErrorKind::UnknownArgument | ErrorKind::InvalidValue | ErrorKind::InvalidSubcommand
+    );
+    let quoted = [
+        ContextKind::InvalidArg,
+        ContextKind::InvalidValue,
+        ContextKind::InvalidSubcommand,
+    ]
+    .into_iter()
+    .filter(|&kind| auth || kind == ContextKind::InvalidSubcommand)
+    .filter_map(|kind| match error.get(kind) {
+        Some(ContextValue::String(word)) => Some(word.as_str()),
+        _ => None,
+    });
+    // A console token is 40 characters; no command name is 20.
+    let token_shaped = |word: &str| !word.starts_with('-') && word.chars().count() >= 20;
+    if refuses_a_word && quoted.into_iter().any(token_shaped) {
+        return failure(
+            mode,
+            &Error::usage(
+                format!(
+                    "`{path}` takes no such argument or value, so the word given is not \
+                     repeated here; if it is a token, treat it as exposed to anyone who can \
+                     read this machine's process list or shell history"
+                ),
+                "pass the token with `hipc auth login --token-file <path>` or at its \
+                 prompt, never on the command line",
+            ),
+        );
+    }
     let missing_subcommand = is_missing_subcommand(error);
     let unknown = unknown_subcommand(error);
     let message = if missing_subcommand {
@@ -840,10 +880,10 @@ fn escape_lines(text: &str) -> String {
         .join("\n")
 }
 
-fn render(mode: Mode, document: &Value) -> String {
+fn render(mode: Mode, document: &Value, dry_run: bool) -> String {
     match mode {
         Mode::Json => format!("{}\n", json_text(document)),
-        Mode::Text => text::render(document),
+        Mode::Text => text::render(document, dry_run),
     }
 }
 
@@ -914,10 +954,16 @@ pub(crate) fn empty_note(document: &Value) -> Option<&'static str> {
 mod text {
     use serde_json::{Map, Value};
 
-    pub(super) fn render(document: &Value) -> String {
+    /// `document` as text; with `is_dry_run`, the run's `--dry-run`, a document that lists
+    /// `requests` is a dry run's ([`dry_run`]).
+    pub(super) fn render(document: &Value, is_dry_run: bool) -> String {
         match document {
             Value::Array(items) => list(items),
-            Value::Object(map) if map.contains_key("dry_run") && map.contains_key("requests") => {
+            Value::Object(map)
+                if is_dry_run
+                    && map.contains_key("dry_run")
+                    && map.get("requests").is_some_and(Value::is_array) =>
+            {
                 dry_run(map)
             }
             Value::Object(map) => match map.get("items") {
@@ -1571,7 +1617,7 @@ mod tests {
     fn render_json_is_one_compact_line() {
         let doc = json!({"a": [1, 2], "b": {"c": null}});
         assert_eq!(
-            render(Mode::Json, &doc),
+            render(Mode::Json, &doc, false),
             "{\"a\":[1,2],\"b\":{\"c\":null}}\n"
         );
     }
@@ -1583,7 +1629,7 @@ mod tests {
             "next_page_token": "2"
         });
         assert_eq!(
-            text::render(&doc),
+            text::render(&doc, false),
             "id   name\na    first\nbbb  -\nnext page: --page-token 2\n"
         );
     }
@@ -1599,30 +1645,32 @@ mod tests {
             ]
         });
         assert_eq!(
-            text::render(&doc),
+            text::render(&doc, true),
             "dry_run  true\n\nmethod  GET\nurl     https://x/a\n\nmethod  PUT\nbody    {\"k\":1}\n"
         );
+        // The same fields in a real run's answer, such as a server's, are a plain block.
+        assert!(text::render(&doc, false).starts_with("dry_run   true\nrequests  "));
     }
 
     #[test]
     fn text_block_for_one_object() {
         let doc = json!({"version": "0.1.0", "target": "aarch64-apple-darwin"});
         assert_eq!(
-            text::render(&doc),
+            text::render(&doc, false),
             "version  0.1.0\ntarget   aarch64-apple-darwin\n"
         );
     }
 
     #[test]
     fn text_scalars_arrays_and_nested_values() {
-        assert_eq!(text::render(&json!("plain")), "plain\n");
-        assert_eq!(text::render(&json!(null)), "-\n");
-        assert_eq!(text::render(&json!(42)), "42\n");
-        assert_eq!(text::render(&json!(["a", 1, null])), "a\n1\n-\n");
-        assert_eq!(text::render(&json!([])), "");
-        assert_eq!(text::render(&json!({})), "");
+        assert_eq!(text::render(&json!("plain"), false), "plain\n");
+        assert_eq!(text::render(&json!(null), false), "-\n");
+        assert_eq!(text::render(&json!(42), false), "42\n");
+        assert_eq!(text::render(&json!(["a", 1, null]), false), "a\n1\n-\n");
+        assert_eq!(text::render(&json!([]), false), "");
+        assert_eq!(text::render(&json!({}), false), "");
         assert_eq!(
-            text::render(&json!({"path": ["a", "b"], "ok": true})),
+            text::render(&json!({"path": ["a", "b"], "ok": true}), false),
             "path  [\"a\",\"b\"]\nok    true\n"
         );
     }
@@ -1630,20 +1678,20 @@ mod tests {
     #[test]
     fn text_table_takes_the_union_of_columns_in_first_seen_order() {
         let doc = json!([{"a": 1}, {"b": 2, "a": 3}]);
-        assert_eq!(text::render(&doc), "a  b\n1\n3  2\n");
+        assert_eq!(text::render(&doc, false), "a  b\n1\n3  2\n");
     }
 
     #[test]
     fn a_list_mixing_objects_and_scalars_prints_every_item() {
         let doc = json!([{"a": 1}, "loose", 7]);
-        assert_eq!(text::render(&doc), "{\"a\":1}\nloose\n7\n");
+        assert_eq!(text::render(&doc, false), "{\"a\":1}\nloose\n7\n");
     }
 
     #[test]
     fn items_without_a_page_token_field_is_a_plain_object() {
-        assert_eq!(text::render(&json!({"items": [1]})), "items  [1]\n");
+        assert_eq!(text::render(&json!({"items": [1]}), false), "items  [1]\n");
         let last_page = json!({"items": [{"id": "a"}], "next_page_token": null});
-        assert_eq!(text::render(&last_page), "id\na\n");
+        assert_eq!(text::render(&last_page, false), "id\na\n");
     }
 
     /// Only a list with nothing on it and no later page, or an empty object, gets
@@ -1679,7 +1727,7 @@ mod tests {
             "partial_failure": true
         });
         assert_eq!(
-            text::render(&doc),
+            text::render(&doc, false),
             "id\na\nsharing_enabled: true\npartial_failure: true\nnext page: --page-token 2\n"
         );
     }
@@ -1708,10 +1756,13 @@ mod tests {
     #[test]
     fn text_escapes_control_characters_everywhere() {
         let doc = json!({"na\tme": "line\nbreak \u{1b}[31mred"});
-        assert_eq!(text::render(&doc), "na\\tme  line\\nbreak \\u{1b}[31mred\n");
+        assert_eq!(
+            text::render(&doc, false),
+            "na\\tme  line\\nbreak \\u{1b}[31mred\n"
+        );
         let doc = json!({"items": [{"k\n": "v"}], "next_page_token": "x\ry"});
         assert_eq!(
-            text::render(&doc),
+            text::render(&doc, false),
             "k\\n\nv\nnext page: --page-token x\\ry\n"
         );
     }
@@ -1720,14 +1771,17 @@ mod tests {
     fn text_escapes_characters_that_reorder_or_hide_text() {
         // U+202E reverses what follows, U+200B is invisible, U+009B is a C1 control.
         let doc = json!({"name": "a\u{202E}gpj.exe\u{202C} b\u{200B}c \u{9b}2J \u{2028}"});
-        let rendered = text::render(&doc);
+        let rendered = text::render(&doc, false);
         for c in ['\u{202E}', '\u{202C}', '\u{200B}', '\u{9b}', '\u{2028}'] {
             assert!(!rendered.contains(c), "{c:?} in {rendered:?}");
         }
         assert!(rendered.contains("\\u{202e}gpj.exe"), "{rendered}");
-        assert!(text::render(&json!({"name": "ünïcødé ✓"})).contains("ünïcødé ✓"));
+        assert!(text::render(&json!({"name": "ünïcødé ✓"}), false).contains("ünïcødé ✓"));
         // Invisible fillers and tag characters make one name look like another.
-        let filler = text::render(&json!({"name": "prod\u{3164}", "tag": "a\u{E0041}b\u{E0100}"}));
+        let filler = text::render(
+            &json!({"name": "prod\u{3164}", "tag": "a\u{E0041}b\u{E0100}"}),
+            false,
+        );
         for c in ['\u{3164}', '\u{E0041}', '\u{E0100}'] {
             assert!(!filler.contains(c), "{c:?} in {filler:?}");
         }
@@ -1744,8 +1798,10 @@ mod tests {
         assert_eq!(json, r#"{"t":"a\udb40\udc41b\udb40\udd00"}"#);
         assert_eq!(serde_json::from_str::<Value>(&json).unwrap(), astral);
         // Inside an array or object cell too, which serde_json does not escape.
-        let nested =
-            text::render(&json!({"items": [{"ports": ["a\u{202E}b"]}], "next_page_token": null}));
+        let nested = text::render(
+            &json!({"items": [{"ports": ["a\u{202E}b"]}], "next_page_token": null}),
+            false,
+        );
         assert!(!nested.contains('\u{202E}'), "{nested:?}");
     }
 
@@ -1776,8 +1832,8 @@ mod tests {
     #[test]
     fn text_pads_by_characters_not_bytes() {
         let doc = json!([{"name": "é", "n": 1}, {"name": "ab", "n": 2}]);
-        assert_eq!(text::render(&doc), "name  n\né     1\nab    2\n");
+        assert_eq!(text::render(&doc, false), "name  n\né     1\nab    2\n");
         let doc = json!({"é": 1, "ab": 2});
-        assert_eq!(text::render(&doc), "é   1\nab  2\n");
+        assert_eq!(text::render(&doc, false), "é   1\nab  2\n");
     }
 }

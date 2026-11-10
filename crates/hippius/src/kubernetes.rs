@@ -421,7 +421,7 @@ fn issued_at(date: Option<&str>, now: SystemTime) -> Result<u64> {
 /// The hint of a refusal to date a signature: the clock is the one thing the caller can fix,
 /// and a server whose `Date` is far off is a bug to report, so the hint keeps both halves of
 /// the `internal` hint it replaces.
-fn clock_hint() -> String {
+pub(crate) fn clock_hint() -> String {
     format!(
         "check the system clock, then run this again with `--debug` and report what it \
          prints at `{}`",
@@ -435,7 +435,7 @@ fn clock_hint() -> String {
 /// forms that section lets a recipient read are left out on purpose: no server `hipc` talks to
 /// sends them, and without a time the caller uses its own clock. The day is checked against
 /// the month's length (no 31 Feb), and the weekday is not checked against the date.
-fn http_date(date: &str) -> Option<u64> {
+pub(crate) fn http_date(date: &str) -> Option<u64> {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
@@ -451,15 +451,22 @@ fn http_date(date: &str) -> Option<u64> {
     let month = MONTHS.iter().position(|m| *m == month)? as u64 + 1;
     let [day, hour, minute, second] = [day, hour, minute, second].map(|text| digits(text, 2));
     let (day, hour, minute, second) = (day?, hour?, minute?, second?);
-    let year = digits(year, 4)?;
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    civil_seconds(digits(year, 4)?, month, day, [hour, minute, second])
+}
+
+/// Seconds since the Unix epoch of a UTC date and time of day, or `None` for a date before
+/// 1970 or one that does not exist: a month outside 1 to 12, a day past the month's length
+/// (no 31 Feb, and 29 Feb only in a leap year), an hour past 23, or a minute past 59. A second
+/// of 60 is a leap second, which both IMF-fixdate and RFC 3339 allow.
+fn civil_seconds(year: u64, month: u64, day: u64, [hour, minute, second]: [u64; 3]) -> Option<u64> {
+    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
     let last_day = match month {
         2 if leap => 29,
         2 => 28,
         4 | 6 | 9 | 11 => 30,
-        _ => 31,
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        _ => return None,
     };
-    // 60 is a leap second, which IMF-fixdate allows.
     if year < 1970 || !(1..=last_day).contains(&day) || hour > 23 || minute > 59 || second > 60 {
         return None;
     }
@@ -476,49 +483,56 @@ fn digits(text: &str, width: usize) -> Option<u64> {
 
 /// The seconds since 1970 of an RFC 3339 time as the API writes it,
 /// `YYYY-MM-DDTHH:MM:SS`, an optional fraction, and `Z` or an offset `+HH:MM` or `-HH:MM`;
-/// `None` for any other text or a time before 1970.
+/// `None` for any other text, a date or an offset that does not exist (`02-31`, `+24:00`), or
+/// a time before 1970.
 pub fn rfc3339_seconds(text: &str) -> Option<u64> {
-    let digits = |part: &str| -> Option<u64> {
-        (!part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-            .then(|| part.parse().ok())
-            .flatten()
-    };
+    rfc3339(text).map(|(seconds, _)| seconds)
+}
+
+/// [`rfc3339_seconds`] with the fraction of a second, in nanoseconds: digits past the ninth
+/// are dropped, so two times that differ only there compare equal.
+fn rfc3339(text: &str) -> Option<(u64, u32)> {
     let (date, rest) = text.split_once('T')?;
     let (time, zone) = rest.split_at(rest.find(['Z', '+', '-'])?);
-    let mut date = date.splitn(3, '-').map(digits);
-    let (year, month, day) = (date.next()??, date.next()??, date.next()??);
-    let clock = time.split_once('.').map_or(time, |(whole, fraction)| {
-        if digits(fraction).is_some() {
-            whole
-        } else {
-            ""
-        }
-    });
-    let mut clock = clock.splitn(3, ':').map(digits);
-    let (hour, minute, second) = (clock.next()??, clock.next()??, clock.next()??);
-    if year < 1970
-        || !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
-        || hour > 23
-        || minute > 59
-        || second > 60
-    {
+    let date: Vec<&str> = date.split('-').collect();
+    let [year, month, day] = date[..] else {
+        return None;
+    };
+    let (clock, fraction) = time.split_once('.').unwrap_or((time, "0"));
+    if fraction.is_empty() || !fraction.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
+    let nanos = format!("{:0<9}", &fraction[..fraction.len().min(9)])
+        .parse()
+        .ok()?;
+    let clock: Vec<&str> = clock.split(':').collect();
+    let [hour, minute, second] = clock[..] else {
+        return None;
+    };
+    let local = civil_seconds(
+        digits(year, 4)?,
+        digits(month, 2)?,
+        digits(day, 2)?,
+        [digits(hour, 2)?, digits(minute, 2)?, digits(second, 2)?],
+    )?;
     let offset = if zone == "Z" {
-        0_i64
+        0
     } else {
         let (sign, hm) = zone.split_at(1);
         let (h, m) = hm.split_once(':')?;
-        let seconds = i64::try_from(digits(h)? * 3600 + digits(m)? * 60).ok()?;
+        let (h, m) = (digits(h, 2)?, digits(m, 2)?);
+        if h > 23 || m > 59 {
+            return None;
+        }
+        let seconds = i64::try_from(h * 3600 + m * 60).ok()?;
         match sign {
             "+" => seconds,
             "-" => -seconds,
             _ => return None,
         }
     };
-    let local = days_since_epoch(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second;
-    u64::try_from(i64::try_from(local).ok()? - offset).ok()
+    let seconds = u64::try_from(i64::try_from(local).ok()? - offset).ok()?;
+    Some((seconds, nanos))
 }
 
 /// The days from 1970-01-01 to `year`-`month`-`day` in the proleptic Gregorian calendar, for a
@@ -552,11 +566,14 @@ fn key_file_hint(flag: &str) -> String {
 }
 
 /// Takes the string `field` out of `fields`, to be cleared when dropped, or `None` when it is
-/// missing or not a string.
+/// missing or not a string, which is cleared now.
 fn secret_text(fields: &mut Map<String, Value>, field: &str) -> Option<Zeroizing<String>> {
-    match fields.remove(field)? {
+    match fields.shift_remove(field)? {
         Value::String(text) => Some(Zeroizing::new(text)),
-        _ => None,
+        other => {
+            crate::dns::clear_owned(other);
+            None
+        }
     }
 }
 
@@ -570,7 +587,9 @@ fn decode_key(text: &str) -> Option<Zeroizing<[u8; KEY_BYTES]>> {
 }
 
 /// The ciphertext and signature of the newest drop of `kind` made at launch, the one with no
-/// `operation`, ordered by `created_at` as text, the way the console picks it.
+/// `operation`, among the drops that have both. Newest is by `created_at` read as a time, so
+/// `...:00Z` and `...:00.5Z` order as the times they are, not as text; a drop whose
+/// `created_at` is not an RFC 3339 time counts as older than any that is.
 fn launch_drop<'a>(secrets: &'a Value, kind: &str) -> Option<(&'a str, &'a str)> {
     let text = |drop: &'a Value, field: &str| drop.get(field).and_then(Value::as_str);
     secrets
@@ -580,8 +599,12 @@ fn launch_drop<'a>(secrets: &'a Value, kind: &str) -> Option<(&'a str, &'a str)>
         .filter(|drop| {
             text(drop, "kind") == Some(kind) && drop.get("operation").is_none_or(Value::is_null)
         })
-        .max_by_key(|drop| text(drop, "created_at").unwrap_or(""))
-        .and_then(|drop| Some((text(drop, "ciphertext")?, text(drop, "signature")?)))
+        .filter_map(|drop| {
+            let pair = (text(drop, "ciphertext")?, text(drop, "signature")?);
+            Some((text(drop, "created_at").and_then(rfc3339), pair))
+        })
+        .max_by_key(|(created_at, _)| *created_at)
+        .map(|(_, pair)| pair)
 }
 
 /// Whether `signature` is the guest key's Ed25519 signature over the drop message of

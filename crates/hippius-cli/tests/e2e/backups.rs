@@ -106,7 +106,10 @@ fn the_reads_print_the_object_as_sent_in_json_and_text() {
     // The list is the envelope of `restore_points`, with the answer's other fields beside it.
     let mut envelope = parsed(BACKUPS);
     let points = envelope["restore_points"].take();
-    envelope.as_object_mut().unwrap().remove("restore_points");
+    envelope
+        .as_object_mut()
+        .unwrap()
+        .shift_remove("restore_points");
     envelope["items"] = points;
     envelope["next_page_token"] = Value::Null;
     assert_eq!(hipc(&server, &["list", VM]).ok(), envelope);

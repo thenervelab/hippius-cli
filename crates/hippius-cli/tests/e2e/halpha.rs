@@ -279,6 +279,40 @@ fn a_purchase_in_flight_blocks_a_second_buy() {
     );
 }
 
+/// The in-flight window is measured by the API's clock, the purchases read's `Date`: a
+/// purchase created a minute before that `Date` blocks a second buy, though by the local
+/// clock, which the server's `Date` here makes days fast, it is long out of the window.
+#[test]
+fn the_in_flight_window_is_measured_by_the_apis_clock() {
+    let list = json!({"count": 1, "results": [
+        {"id": "p_7", "status": "submitted", "created_at": "2026-11-03T10:00:00Z"}
+    ]});
+    let server = Server::start(vec![
+        quote(&json!({})),
+        route(
+            "GET",
+            PURCHASES,
+            Reply::json(200, &list.to_string()).header("Date", "Tue, 03 Nov 2026 10:01:00 GMT"),
+        ),
+    ]);
+    let error = top_up(&server, &["--yes"]).fails(1, "conflict");
+    assert_eq!(
+        error["message"],
+        "the purchase `p_7` is still `submitted`, and a second buy now could spend twice"
+    );
+    // Sixteen minutes before the `Date` is out of the window by either clock.
+    let server = Server::start(vec![
+        quote(&json!({})),
+        route(
+            "GET",
+            PURCHASES,
+            Reply::json(200, &list.to_string()).header("Date", "Tue, 03 Nov 2026 10:16:00 GMT"),
+        ),
+        buy("completed"),
+    ]);
+    top_up(&server, &["--yes"]).ok();
+}
+
 /// A retry resends the first run's exact amounts under its key: it reads the quote but not
 /// the list, and no refusal but the floor of its `--min-credits` and a self-signing account
 /// applies, even a quote that is off or a balance the first buy spent.

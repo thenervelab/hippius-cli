@@ -16,7 +16,8 @@ use std::io::{self, Read};
 use std::os::fd::{AsFd as _, BorrowedFd};
 
 use rustix::termios::{
-    InputModes, LocalModes, OptionalActions, SpecialCodeIndex, Termios, tcgetattr, tcsetattr,
+    InputModes, LocalModes, OptionalActions, QueueSelector, SpecialCodeIndex, Termios, tcflush,
+    tcgetattr, tcsetattr,
 };
 use zeroize::Zeroizing;
 
@@ -53,6 +54,14 @@ fn read_line_from(fd: BorrowedFd<'_>, ask: impl FnOnce()) -> io::Result<Typed> {
     let _quiet = Quiet::new(fd)?;
     ask();
     read_typed(&mut Unbuffered(fd))
+}
+
+/// Discards what was typed at the terminal on stdin and not read yet, before a question is
+/// shown, so only an answer typed after it can answer it. Best effort: a terminal that
+/// refuses the flush is asked anyway, as it was before the flush existed. The caller has
+/// checked that stdin is a terminal ([`crate::output::Terminal::can_prompt`]).
+pub(crate) fn discard_typed_ahead() {
+    let _best_effort = tcflush(io::stdin().as_fd(), QueueSelector::IFlush);
 }
 
 /// A descriptor read with `read(2)` and no buffer, so no copy of what it reads is kept
