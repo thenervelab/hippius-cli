@@ -8,6 +8,7 @@ mod account;
 mod app_secrets;
 mod aws;
 mod client;
+mod clock;
 mod config;
 mod digest;
 mod dns;
@@ -26,6 +27,7 @@ pub use crate::aws::{AccessKeyId, AwsFiles, AwsProfile, SecretKey, configure};
 pub use crate::client::{
     Client, Method, Request, Response, follow, is_default_origin, without_query_values,
 };
+pub use crate::clock::Now;
 pub use crate::config::{
     ConfigFile, HubMarker, Overrides, Settings, Token, config_path, on_lock_wait, take_split_link,
 };
