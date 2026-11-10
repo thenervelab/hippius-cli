@@ -2,7 +2,7 @@
 
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, TOKEN, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Server, TOKEN, api, draft, route};
 
 /// The flag that sends a request body from a file.
 const BODY: &str = "--body-file";
@@ -621,22 +621,20 @@ fn all_follows_a_next_link_given_as_a_path() {
 
 #[test]
 fn all_stops_after_a_thousand_pages() {
-    let (url, server) = crate::common::endless_pages(|base, served| {
+    let server = crate::common::endless_pages(&api("/e/"), |served| {
         format!(
-            r#"{{"next":"{base}/api/e/?page={}","results":[]}}"#,
+            r#"{{"next":"{{base}}/api/e/?page={}","results":[]}}"#,
             served + 1
         )
     });
-    let error = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, TOKEN)
+    let error = Hipc::against(&Home::new(), &server)
         .run(&["api", "GET", "/e/", "--all"])
         .fails(1, "internal");
     assert!(
         error["message"].as_str().unwrap().contains("1000 pages"),
         "{error}"
     );
-    assert_eq!(server.join().unwrap(), 1000);
+    assert_eq!(server.requests().len(), 1000);
 }
 
 #[test]
@@ -1113,8 +1111,7 @@ fn a_cluster_secrets_read_is_never_sent() {
     }
     // Before the token. The route takes a membership and a project, so no selector here
     // could show the order against the account refusals; the account deletion test does.
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&["api", "GET", "/kubernetes/clusters/7/secrets/"])
         .fails(2, "usage");
     assert!(server.requests().is_empty());
@@ -1157,8 +1154,7 @@ fn a_dns_setup_is_never_sent() {
         }
     }
     // Before the token: with none configured, the refusal is still `usage`.
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&[
             "api",
             "POST",
@@ -1479,8 +1475,7 @@ fn a_zone_that_may_publish_a_bucket_needs_public_first() {
             .env("HIPPIUS_ACCOUNT", MEMBER)
             .run(&argv)
             .fails(2, "public_required");
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&Home::new(), &server)
             .run(&argv)
             .fails(2, "public_required");
     }
@@ -1594,8 +1589,7 @@ fn a_whole_list_replace_needs_remove_others_first() {
             .env("HIPPIUS_ACCOUNT", MEMBER)
             .run(&argv)
             .fails(2, "remove_others_required");
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&Home::new(), &server)
             .run(&argv)
             .fails(2, "remove_others_required");
         // With the flag, the question still applies; a dry run needs no flag and reads
@@ -2044,7 +2038,11 @@ fn a_stored_project_is_refused_on_the_network_get() {
     let doc = Hipc::against(&home, &server)
         .run(&["api", "GET", "/network/me/", "--dry-run"])
         .ok();
-    assert_eq!(doc["billing_header"], serde_json::Value::Null);
+    assert_eq!(
+        draft(&doc).get("billing_header"),
+        Some(&serde_json::Value::Null),
+        "{doc}"
+    );
     Hipc::against(&home, &server)
         .run(&["api", "GET", "/network/me/", "--yes"])
         .ok();

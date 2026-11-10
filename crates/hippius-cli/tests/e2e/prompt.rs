@@ -2,33 +2,12 @@
 //! terminal (tenets 3, 5, and 15): `hipc` runs with its stdin and stdout on
 //! a pseudo-terminal, and stderr on it or on a pipe.
 
-use std::fs::{File, OpenOptions};
-use std::io::{Read as _, Write as _};
-use std::os::fd::OwnedFd;
+use std::fs::File;
+use std::io::Write as _;
 use std::process::{Output, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
-use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
-
+use crate::common::terminal::{Screen, pty};
 use crate::common::{self, Home, Reply, Server, TOKEN, no_server, route, route_each};
-
-/// A pseudo-terminal: the side `hipc` sees as its terminal, and the side the test types
-/// into and reads from.
-fn pty() -> (OwnedFd, File) {
-    let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).expect("open a pty");
-    grantpt(&master).expect("grant the pty");
-    unlockpt(&master).expect("unlock the pty");
-    let name = ptsname(&master, Vec::new()).expect("the pty has a name");
-    let terminal = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(name.to_str().expect("a pty name is UTF-8"))
-        .expect("open the terminal side of the pty");
-    (master, terminal)
-}
 
 /// Runs `hipc --output text auth logout` at a terminal, as `at_a_terminal` does.
 fn logout_at_a_terminal(typed: &[u8], stderr_on_terminal: bool) -> (Output, String) {
@@ -67,80 +46,27 @@ fn at_a_terminal(
     // `command` holds the copies of the terminal side it was given until dropped.
     drop(command);
     let mut keyboard = File::from(master);
-    // The test keeps its own terminal-side handle open until the screen is read: macOS
-    // drops what is buffered on the terminal once the last terminal-side handle closes,
-    // so a command that exits at once (`version`) could leave an empty screen. With the
-    // handle open, a read never ends on its own, so the reader polls with a timeout and
-    // stops once `hipc` has exited and nothing more arrives.
-    let exited = Arc::new(AtomicBool::new(false));
-    let shown = Arc::new(Mutex::new(Vec::new()));
-    let screen = keyboard.try_clone().expect("clone the keyboard side");
-    let reader = {
-        let (exited, shown) = (Arc::clone(&exited), Arc::clone(&shown));
-        std::thread::spawn(move || {
-            let mut screen = screen;
-            let mut buffer = [0_u8; 4096];
-            // 50 ms: arbitrary. It only adds latency after the exit; correctness does
-            // not depend on it.
-            let tick = Timespec {
-                tv_sec: 0,
-                tv_nsec: 50_000_000,
-            };
-            loop {
-                // Load the flag before polling: if it was already set, all of `hipc`'s
-                // output is buffered, so a poll that times out means the screen is drained.
-                let done = exited.load(Ordering::Acquire);
-                let mut fds = [PollFd::new(&screen, PollFlags::IN)];
-                let ready = poll(&mut fds, Some(&tick)).expect("poll the terminal");
-                if ready == 0 {
-                    if done {
-                        break;
-                    }
-                    continue;
-                }
-                match screen.read(&mut buffer) {
-                    Ok(0) => break,
-                    Err(error) => {
-                        panic!("read the terminal while its terminal side is open: {error}")
-                    }
-                    Ok(n) => shown
-                        .lock()
-                        .expect("the screen lock")
-                        .extend_from_slice(&buffer[..n]),
-                }
-            }
-        })
-    };
-    let questions = || {
-        String::from_utf8_lossy(&shown.lock().expect("the screen lock"))
-            .matches("[y/N] ")
-            .count()
-    };
-    // 30 s: arbitrary, far beyond a debug build's start on a loaded host.
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let screen = Screen::read(&keyboard);
     for (answered, line) in typed.split_inclusive(|&b| b == b'\n').enumerate() {
-        while questions() <= answered {
-            if child.try_wait().expect("poll hipc").is_some() {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "question {answered} never appeared"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        if child.try_wait().expect("poll hipc").is_some() {
+        let asked = screen.wait_until(
+            &format!("question {answered}"),
+            |shown| shown.matches("[y/N] ").count() > answered,
+            || child.try_wait().expect("poll hipc").is_some(),
+        );
+        if !asked {
             break;
         }
         keyboard.write_all(line).expect("type into the terminal");
     }
-    let output = child.wait_with_output().expect("wait for hipc");
-    // Release pairs with the reader's Acquire, so a reader that sees `true` polls after
-    // `hipc`'s exit was reaped.
-    exited.store(true, Ordering::Release);
-    reader.join().expect("the screen reader does not panic");
+    let output = common::finish(child, None, args);
+    // On the terminal, stderr is part of the screen, which `close` checks.
+    let output = if stderr_on_terminal {
+        output
+    } else {
+        common::check_output(output)
+    };
+    let shown = screen.close();
     drop(terminal);
-    let shown = String::from_utf8_lossy(&shown.lock().expect("the screen lock")).replace('\r', "");
     (output, shown)
 }
 
@@ -812,45 +738,17 @@ fn while_another_run_changes_the_token(
         .stdin(side())
         .stdout(side())
         .stderr(side());
-    let mut child = command.spawn().expect("spawn hipc");
+    let child = command.spawn().expect("spawn hipc");
     drop(command);
     let mut keyboard = File::from(master);
-    let mut shown = Vec::new();
-    // 50 ms: arbitrary, as in `at_a_terminal`. The deadline only bounds a failing test.
-    let tick = Timespec {
-        tv_sec: 0,
-        tv_nsec: 50_000_000,
-    };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    let read_some = |shown: &mut Vec<u8>, keyboard: &mut File| -> bool {
-        let mut fds = [PollFd::new(&*keyboard, PollFlags::IN)];
-        if poll(&mut fds, Some(&tick)).expect("poll the terminal") == 0 {
-            return false;
-        }
-        let mut buffer = [0_u8; 4096];
-        let n = keyboard.read(&mut buffer).expect("read the terminal");
-        shown.extend_from_slice(&buffer[..n]);
-        n > 0
-    };
-    while !String::from_utf8_lossy(&shown).contains("[y/N] ") {
-        assert!(std::time::Instant::now() < deadline, "no prompt: {shown:?}");
-        read_some(&mut shown, &mut keyboard);
-    }
+    let screen = Screen::read(&keyboard);
+    screen.wait_until("the prompt", |shown| shown.contains("[y/N] "), || false);
     meanwhile();
     keyboard.write_all(b"y\n").expect("type into the terminal");
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("poll hipc") {
-            break status;
-        }
-        assert!(std::time::Instant::now() < deadline, "hipc never exits");
-        read_some(&mut shown, &mut keyboard);
-    };
-    while read_some(&mut shown, &mut keyboard) {}
+    let status = common::finish(child, None, args).status;
+    let shown = screen.close();
     drop(terminal);
-    (
-        status.code(),
-        String::from_utf8_lossy(&shown).replace('\r', ""),
-    )
+    (status.code(), shown)
 }
 
 /// Stores `token` in the default profile of `home`, as a second `hipc` run would.

@@ -3,11 +3,11 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, command, draft, route};
+use crate::common::{self, Hipc, Home, MEMBER, Reply, Server, command, draft, route};
 
 const PDF_PATH: &str = "/api/billing/invoices/12/pdf/";
 
@@ -274,6 +274,9 @@ fn a_path_in_a_missing_directory_is_usage_before_anything_is_sent() {
 /// the download; it is still usage, since the caller must name another path.
 #[test]
 fn a_directory_that_cannot_be_written_is_usage_and_leaves_no_file() {
+    if !common::permission_bits_apply() {
+        return;
+    }
     let server = pdf_server();
     let home = Home::new();
     let locked = home.path().join("locked");
@@ -312,8 +315,9 @@ fn get_under_sh(home: &Home, server: &Server, setup: &str, output: &Path) -> Out
         .arg(hipc.get_program())
         .args(["billing", "invoices", "get", "12", "--output-file"])
         .arg(output)
-        .output()
-        .expect("run hipc under sh")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::common::finished(&mut shell)
 }
 
 /// The mode is exactly 0600 whatever the umask, which masks the mode `open` is given.

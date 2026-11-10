@@ -2,17 +2,24 @@
 //! temporary home, and a builder that runs the `hipc` binary against both.
 
 use std::ffi::OsString;
-use std::io::{BufRead as _, BufReader, ErrorKind, Read as _, Write as _};
+use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hippius::{Client, ConfigFile, Given, Method, Overrides, Request, Settings, Source, Token};
 use serde_json::Value;
+
+mod fixtures;
+pub(crate) mod terminal;
+mod watchdog;
+
+pub(crate) use fixtures::{BILLING, OWN_ACCOUNT, PROJECT, VM, api, parsed, permission_bits_apply};
+pub(crate) use watchdog::{finish, finished};
 
 /// The token every test uses. Every run asserts it never appears in any output.
 pub(crate) const TOKEN: &str = "tok_secret_0123456789abcdefghijklmnopqrstuv";
@@ -119,6 +126,8 @@ pub(crate) struct Recorded {
     pub(crate) body: Vec<u8>,
     /// Whether a route matched, or the server made up its 404.
     routed: bool,
+    /// When the server finished reading it.
+    pub(crate) received: Instant,
 }
 
 impl Recorded {
@@ -189,6 +198,21 @@ pub(crate) struct Reply {
     /// so a test can change the world between what `hipc` checked first and what it does
     /// with the answer.
     before: Option<Hook>,
+    /// Written as it is instead of an answer, before the connection is held as [`Reply::never`]
+    /// holds it.
+    raw: Option<Vec<u8>>,
+    /// Makes the answer from the request ([`Reply::from_fn`]).
+    answer: Option<Answer>,
+}
+
+/// What [`Reply::from_fn`] answers with.
+#[derive(Clone)]
+pub(crate) struct Answer(Arc<dyn Fn(&Recorded) -> Reply + Send + Sync>);
+
+impl std::fmt::Debug for Answer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Answer")
+    }
 }
 
 /// A step [`Reply::before`] runs.
@@ -214,6 +238,28 @@ impl Reply {
             headers: vec![("Content-Type".into(), content_type.into())],
             never: false,
             before: None,
+            raw: None,
+            answer: None,
+        }
+    }
+
+    /// The answer `answer` makes from each request, for a test whose answer depends on the
+    /// request: the page it asks for, or how many came before it. A reply `answer` returns
+    /// is sent as it is, its own `from_fn` ignored.
+    pub(crate) fn from_fn(answer: impl Fn(&Recorded) -> Self + Send + Sync + 'static) -> Self {
+        Self {
+            answer: Some(Answer(Arc::new(answer))),
+            ..Self::json(200, "")
+        }
+    }
+
+    /// `bytes` as they are, a status line and headers included, then nothing until the
+    /// client gives up and closes: for an answer no well-formed reply gives, such as a body
+    /// shorter than its `Content-Length`.
+    pub(crate) fn raw(bytes: &[u8]) -> Self {
+        Self {
+            raw: Some(bytes.to_vec()),
+            ..Self::json(200, "")
         }
     }
 
@@ -408,6 +454,10 @@ fn serve(stream: &TcpStream, routes: &[Route], recorded: &Mutex<Vec<Recorded>>, 
             r.replies[n.min(r.replies.len() - 1)].clone()
         },
     );
+    let reply = match &reply.answer {
+        Some(Answer(answer)) => answer(&request),
+        None => reply,
+    };
     recorded
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -415,7 +465,11 @@ fn serve(stream: &TcpStream, routes: &[Route], recorded: &Mutex<Vec<Recorded>>, 
     if let Some(Hook(step)) = &reply.before {
         step();
     }
-    if reply.never {
+    let mut stream = stream;
+    if let Some(raw) = &reply.raw {
+        drop(stream.write_all(raw));
+    }
+    if reply.never || reply.raw.is_some() {
         // Reads until the client closes the connection after its timeout.
         let mut rest = Vec::new();
         drop(reader.read_to_end(&mut rest));
@@ -434,7 +488,6 @@ fn serve(stream: &TcpStream, routes: &[Route], recorded: &Mutex<Vec<Recorded>>, 
         head.push_str(&format!("{name}: {value}\r\n"));
     }
     head.push_str("\r\n");
-    let mut stream = stream;
     drop(stream.write_all(head.as_bytes()));
     drop(stream.write_all(&body));
 }
@@ -462,6 +515,7 @@ fn read_request(reader: &mut BufReader<&TcpStream>) -> Option<Recorded> {
         headers,
         body: Vec::new(),
         routed: false,
+        received: Instant::now(),
     };
     // The server thread reads the first of a repeated header and never panics: a panic
     // there would end the accept loop, not fail the test.
@@ -481,6 +535,7 @@ fn read_request(reader: &mut BufReader<&TcpStream>) -> Option<Recorded> {
         reader.read_exact(&mut body).ok()?;
         body
     };
+    request.received = Instant::now();
     Some(request)
 }
 
@@ -569,8 +624,29 @@ impl Home {
 }
 
 impl Drop for Home {
+    /// Removes the home, after making each directory in it the owner's again when the first
+    /// try fails: a test that failed while a directory was mode 0500 or 0000 leaves no
+    /// copy of its token behind.
     fn drop(&mut self) {
-        drop(std::fs::remove_dir_all(&self.path));
+        // Best effort: a home left behind under the temp directory fails no test, and a
+        // drop that panicked would hide the test's own failure.
+        if std::fs::remove_dir_all(&self.path).is_err() {
+            reopen(&self.path);
+            drop(std::fs::remove_dir_all(&self.path));
+        }
+    }
+}
+
+/// Gives the owner every permission on `dir` and each directory under it.
+fn reopen(dir: &Path) {
+    drop(std::fs::set_permissions(
+        dir,
+        std::fs::Permissions::from_mode(0o700),
+    ));
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            reopen(&entry.path());
+        }
     }
 }
 
@@ -579,6 +655,8 @@ impl Drop for Home {
 pub(crate) struct Hipc {
     command: Command,
     stdin: Option<Vec<u8>>,
+    /// Where stdout goes instead of a pipe ([`Hipc::stdout_to`]).
+    stdout: Option<std::fs::File>,
     /// The server [`Hipc::against`] named, whose requests from this run are checked.
     server: Option<Watched>,
 }
@@ -597,7 +675,7 @@ pub(crate) use crate::dead_port::no_server;
 /// The proxy variables of the developer's shell, which a test must not inherit: a test of an
 /// https origin would go through that proxy, and `NO_PROXY` could exempt the default origin
 /// from the stand-in proxy of [`Hipc::without_api_url`].
-const PROXY_VARIABLES: [&str; 8] = [
+pub(crate) const PROXY_VARIABLES: [&str; 8] = [
     "ALL_PROXY",
     "all_proxy",
     "HTTPS_PROXY",
@@ -608,11 +686,11 @@ const PROXY_VARIABLES: [&str; 8] = [
     "no_proxy",
 ];
 
-/// The `hipc` binary with the clean environment every test starts from: no `CI` or
-/// `AI_AGENT`, no `HIPPIUS_*`, AWS file, or proxy variables from the parent, `HOME` set to the
-/// test home, and `HIPPIUS_API_URL` and `HIPPIUS_TOKEN_ORIGIN` set to [`no_server()`]. A test that
-/// runs `hipc` some other way than
-/// [`Hipc`] (a terminal, a closed or full stdout) starts here too.
+/// The `hipc` binary with stdin empty and the clean environment every test starts from: no
+/// `CI` or `AI_AGENT`, no `HIPPIUS_*`, AWS file, or proxy variables from the parent, `HOME`
+/// set to the test home, and `HIPPIUS_API_URL` and `HIPPIUS_TOKEN_ORIGIN` set to
+/// [`no_server()`]. A test that runs `hipc` some other way than [`Hipc`] (a terminal, a
+/// closed stdout) starts here too, and ends with [`finished`] or [`finish`].
 pub(crate) fn command(home: &Home) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_hipc"));
     for name in [
@@ -639,7 +717,8 @@ pub(crate) fn command(home: &Home) -> Command {
     command
         .env("HOME", home.path())
         .env("HIPPIUS_API_URL", no_server())
-        .env("HIPPIUS_TOKEN_ORIGIN", no_server());
+        .env("HIPPIUS_TOKEN_ORIGIN", no_server())
+        .stdin(Stdio::null());
     command
 }
 
@@ -648,8 +727,29 @@ impl Hipc {
         Self {
             command: command(home),
             stdin: None,
+            stdout: None,
             server: None,
         }
+    }
+
+    /// Points `hipc` at a test server with no token, as a person who never logged in runs
+    /// it, or one whose token is stored in the config. Each request the run sends there is
+    /// checked against the settings it runs with ([`Expected`]), as with [`Hipc::against`].
+    pub(crate) fn tokenless(home: &Home, server: &Server) -> Self {
+        Self::new(home)
+            .env("HIPPIUS_API_URL", server.url())
+            .watching(server)
+    }
+
+    /// Checks each request this run sends to `server` against the settings it runs with
+    /// ([`Expected`]), for a run that names the server some other way, such as `--api-url`
+    /// or a profile.
+    pub(crate) fn watching(mut self, server: &Server) -> Self {
+        self.server = Some(Watched {
+            url: server.url.clone(),
+            requests: Arc::clone(&server.requests),
+        });
+        self
     }
 
     /// [`Hipc::new`] with `HIPPIUS_API_URL` unset, so the origin comes from `--api-url`, the
@@ -677,14 +777,7 @@ impl Hipc {
     /// server's origin by `HIPPIUS_TOKEN_ORIGIN`. Each request the run sends there is checked
     /// against the settings it runs with ([`Expected`]).
     pub(crate) fn against(home: &Home, server: &Server) -> Self {
-        let mut hipc = Self::new(home)
-            .env("HIPPIUS_API_URL", server.url())
-            .with_env_token(server.url(), TOKEN);
-        hipc.server = Some(Watched {
-            url: server.url.clone(),
-            requests: Arc::clone(&server.requests),
-        });
-        hipc
+        Self::tokenless(home, server).with_env_token(server.url(), TOKEN)
     }
 
     /// `token` in `HIPPIUS_TOKEN`, bound to `origin` by `HIPPIUS_TOKEN_ORIGIN`, so `hipc`
@@ -722,6 +815,19 @@ impl Hipc {
         self
     }
 
+    /// Reads stdin from `file`, such as a directory or the config file, which a test cannot
+    /// write into a pipe.
+    pub(crate) fn stdin_from(mut self, file: std::fs::File) -> Self {
+        self.command.stdin(file);
+        self
+    }
+
+    /// Sends stdout to `file` instead of a pipe, so the run's stdout reads as empty.
+    pub(crate) fn stdout_to(mut self, file: std::fs::File) -> Self {
+        self.stdout = Some(file);
+        self
+    }
+
     pub(crate) fn run(mut self, args: &[&str]) -> Run {
         // Resolved before the run, which may rewrite the config file.
         let expected = self.server.as_ref().map(|server| {
@@ -729,25 +835,13 @@ impl Hipc {
             (server, sent_before, self.expected(args))
         });
         self.command.args(args);
-        self.command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        self.command.stdin(if self.stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        });
-        let mut child = self.command.spawn().expect("spawn hipc");
-        if let Some(bytes) = self.stdin.take() {
-            let mut pipe = child.stdin.take().expect("a piped stdin");
-            // `hipc` may refuse, and exit, before it reads its stdin, closing the pipe while
-            // this write is under way; what it did is in its output, which is what a test checks.
-            if let Err(error) = pipe.write_all(&bytes) {
-                let kind = error.kind();
-                assert_eq!(kind, ErrorKind::BrokenPipe, "write hipc's stdin: {error}");
-            }
+        let stdout = self.stdout.take().map_or_else(Stdio::piped, Stdio::from);
+        self.command.stdout(stdout).stderr(Stdio::piped());
+        if self.stdin.is_some() {
+            self.command.stdin(Stdio::piped());
         }
-        let run = Run(child.wait_with_output().expect("wait for hipc"));
-        run.assert_no_secret();
-        run.assert_one_voice();
+        let child = self.command.spawn().expect("spawn hipc");
+        let run = Run(check_output(finish(child, self.stdin.take(), args)));
         if let Some((server, sent_before, expected)) = expected {
             for request in &snapshot(&server.requests)[sent_before..] {
                 expected.check(&server.url, request);
@@ -950,6 +1044,31 @@ fn identity(resolved: &Resolved, authorization: &str) -> String {
         .identity()
 }
 
+/// The checks [`Hipc::run`] makes of every run's output, for a test that runs `hipc` some
+/// other way: no test secret on stdout or stderr, and stderr in one voice (tenet 15).
+pub(crate) fn check_output(output: Output) -> Output {
+    let run = Run(output);
+    run.assert_no_secret();
+    run.assert_one_voice();
+    run.0
+}
+
+/// Fails when `text`, the output of a run, holds the test token, a cluster secret key, or
+/// four words of an access key phrase in order.
+pub(crate) fn assert_no_secret_in(text: &str) {
+    assert!(
+        !text.contains(TOKEN),
+        "the token leaked into output: {text}"
+    );
+    for secret in CLUSTER_SECRETS {
+        assert!(
+            !text.contains(secret),
+            "a cluster secret key leaked into output: {text}"
+        );
+    }
+    assert_no_phrase(text, "the output");
+}
+
 /// The result of one `hipc` run.
 pub(crate) struct Run(Output);
 
@@ -1003,18 +1122,7 @@ impl Run {
     /// No test token in any output, whatever the outcome.
     fn assert_no_secret(&self) {
         let all = [&self.0.stdout[..], &self.0.stderr[..]].concat();
-        let text = String::from_utf8_lossy(&all);
-        assert!(
-            !text.contains(TOKEN),
-            "the token leaked into output: {text}"
-        );
-        for secret in CLUSTER_SECRETS {
-            assert!(
-                !text.contains(secret),
-                "a cluster secret key leaked into output: {text}"
-            );
-        }
-        assert_no_phrase(&text, "the output");
+        assert_no_secret_in(&String::from_utf8_lossy(&all));
     }
 
     /// Every run's stderr speaks with one voice (tenet 15). A JSON error object has a
@@ -1025,9 +1133,14 @@ impl Run {
     fn assert_one_voice(&self) {
         let stderr = String::from_utf8_lossy(&self.0.stderr);
         let lines: Vec<&str> = stderr.lines().collect();
+        // A JSON document's `warnings` are text too (tenet 15).
+        if let Ok(document) = serde_json::from_slice::<Value>(&self.0.stdout) {
+            assert_warnings(&document);
+        }
         // In JSON mode the error object is the last line, after any `--debug` lines.
         if let [debug @ .., line] = &lines[..]
             && let Ok(object) = serde_json::from_str::<Value>(line)
+            && object.get("error").is_some()
         {
             for other in debug {
                 assert!(
@@ -1044,6 +1157,7 @@ impl Run {
             }
             assert_voice(error["message"].as_str().expect("a message"));
             hint.map(assert_voice);
+            assert_warnings(&object);
             return;
         }
         // A command line without its subcommand prints that command's help after a blank
@@ -1072,6 +1186,19 @@ impl Run {
                 ),
             }
         }
+    }
+}
+
+/// Checks each text of the top-level `warnings` array a JSON document or error object may
+/// carry (tenet 15) against the phrasing rules of [`assert_voice`].
+fn assert_warnings(object: &Value) {
+    for warning in object
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        assert_voice(warning.as_str().expect("a warning is a text"));
     }
 }
 
@@ -1161,6 +1288,32 @@ fn the_stderr_checker_refuses_an_exit_2_without_a_hint() {
     run(1, "error: cannot get the VM `v`: the API answered 500\n").assert_one_voice();
 }
 
+/// The stderr checker takes the JSON branch only for an error object, and checks the
+/// `warnings` of an error object and of a document on stdout.
+#[test]
+fn the_output_checker_reads_warnings_and_takes_json_only_for_an_error() {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    let run = |code: i32, stdout: &str, stderr: &str| {
+        Run(Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        })
+    };
+    let error = r#"{"error":{"code":"conflict","message":"the name is taken"#;
+    for (code, stdout, stderr) in [
+        (1, "", "42\n"),
+        (0, r#"{"warnings":["Bad."]}"#, ""),
+        (1, "", &format!(r#"{error}"}},"warnings":["Bad."]}}"#)),
+    ] {
+        let checked = std::panic::catch_unwind(|| run(code, stdout, stderr).assert_one_voice());
+        assert!(checked.is_err(), "accepted: {stdout:?} {stderr:?}");
+    }
+    run(0, r#"{"warnings":["the file has another link"]}"#, "").assert_one_voice();
+    run(1, "", &format!("{error}\"}}}}\n")).assert_one_voice();
+}
+
 /// A routed GET of `target` with one user agent, then `headers`.
 fn recorded(target: &str, headers: &[(&str, &str)]) -> Recorded {
     let mut all = vec![("user-agent".to_owned(), USER_AGENT.to_owned())];
@@ -1175,6 +1328,7 @@ fn recorded(target: &str, headers: &[(&str, &str)]) -> Recorded {
         headers: all,
         body: Vec::new(),
         routed: true,
+        received: Instant::now(),
     }
 }
 
@@ -1359,55 +1513,17 @@ fn outside_backticks(text: &str) -> String {
     text.split('`').step_by(2).collect::<Vec<_>>().join(" ")
 }
 
-/// How long [`endless_pages`] waits for each request: a cap lower than 1000 then ends its
-/// thread rather than hang the test in `join`, and the count it returns fails the test.
-const ACCEPT_DEADLINE: Duration = Duration::from_secs(30);
-
-/// A server whose every page links to a new page, forever: `body` writes page `served`
-/// (from 1) of the server at `base`, naming page `served + 1` as the next.
-pub(crate) fn endless_pages(
-    body: fn(&str, usize) -> String,
-) -> (String, std::thread::JoinHandle<usize>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-    let url = format!("http://{}", listener.local_addr().expect("a bound address"));
-    let base = url.clone();
-    listener
-        .set_nonblocking(true)
-        .expect("make the listener nonblocking");
-    let handle = std::thread::spawn(move || {
-        let mut served = 0;
-        // Serves exactly 1000 pages, hipc's cap, then closes: without the cap, hipc's next
-        // request fails to connect (a wrong error code, `unavailable`).
-        'pages: for _ in 0..1000 {
-            let started = std::time::Instant::now();
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error)
-                        if error.kind() == ErrorKind::WouldBlock
-                            && started.elapsed() < ACCEPT_DEADLINE =>
-                    {
-                        std::thread::sleep(Duration::from_millis(2));
-                    }
-                    Err(_) => break 'pages,
-                }
-            };
-            // An accepted socket inherits the listener's mode on macOS, not on Linux.
-            stream
-                .set_nonblocking(false)
-                .expect("make the stream blocking");
-            let mut buf = [0_u8; 4096];
-            drop(stream.read(&mut buf));
-            served += 1;
-            let body = body(&base, served);
-            let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                 Connection: close\r\n\r\n",
-                body.len()
-            );
-            drop(stream.write_all(format!("{head}{body}").as_bytes()));
-        }
-        served
-    });
-    (url, handle)
+/// A server whose every `GET path` answer is a page linking to a new page, for ever:
+/// `body(n)` writes the n-th page served (from 1), naming page `n + 1` as the next, with
+/// `{base}` for the server's URL.
+pub(crate) fn endless_pages(path: &str, body: fn(usize) -> String) -> Server {
+    let served = AtomicUsize::new(0);
+    Server::start(vec![route(
+        "GET",
+        path,
+        Reply::from_fn(move |_| {
+            let page = served.fetch_add(1, Ordering::Relaxed) + 1;
+            Reply::json(200, &body(page))
+        }),
+    )])
 }

@@ -3,9 +3,8 @@
 //! `bash` and `jq`, as the script does.
 
 use std::collections::BTreeSet;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Read, Write as _};
-use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -13,9 +12,8 @@ use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
-
-use crate::common::{Home, no_server};
+use crate::common::terminal::pty;
+use crate::common::{Home, PROXY_VARIABLES, no_server};
 
 const CATALOGUE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -31,44 +29,42 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Runs the script with `HOME` and `TMPDIR` inside `home`, so nothing reads the developer's
-/// own config and a test can see that the script's temporary directory is removed, and
-/// without the variables that would change what it does (the token, the origin, CI and
-/// agent detection).
+/// Runs the script as [`script`] sets it up, so nothing reads the developer's own config and
+/// a test can see that the script's temporary directory is removed.
 fn manual_test(home: &Home, args: &[&str]) -> Output {
     manual_test_with(home, args, &[])
 }
 
-/// [`manual_test`] with the variables `env` set, after the others are removed. `--offline`
-/// is aimed at [`no_server`], a loopback port that refuses connections, unless `env` names
-/// another dead origin.
-fn manual_test_with(home: &Home, args: &[&str], env: &[(&str, &str)]) -> Output {
+/// The script, run in `home` with `HOME` and `TMPDIR` inside it, and without the variables
+/// that would change what it does: the token, the origin, CI and agent detection, and the
+/// developer's proxies. `--offline` is aimed at [`no_server`], a loopback port that refuses
+/// connections, never a fixed port where something may listen.
+fn script(home: &Home) -> Command {
     let tmp = home.path().join("tmp");
     std::fs::create_dir_all(&tmp).expect("create TMPDIR");
     let mut command = Command::new(repo().join("scripts/manual_test.sh"));
-    for name in ["HIPPIUS_TOKEN", "HIPPIUS_API_URL", "CI", "AI_AGENT"] {
+    for name in ["HIPPIUS_TOKEN", "HIPPIUS_API_URL", "CI", "AI_AGENT"]
+        .into_iter()
+        .chain(PROXY_VARIABLES)
+    {
         command.env_remove(name);
     }
     // A run without `--offline` aims at the default origin; every request it might send goes
     // to a proxy that refuses it, so no test can reach the live API.
-    for name in [
-        "HTTPS_PROXY",
-        "https_proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-        "NO_PROXY",
-        "no_proxy",
-    ] {
-        command.env_remove(name);
-    }
     command
         .env("ALL_PROXY", no_server())
         .env("HOME", home.path())
         .env("TMPDIR", &tmp)
         .env("HIPC_MANUAL_TEST_DEAD_ORIGIN", no_server())
-        .envs(env.iter().copied())
-        .current_dir(home.path())
-        .args(args);
+        .current_dir(home.path());
+    command
+}
+
+/// [`manual_test`] with the variables `env` set over those of [`script`]: `env` may name
+/// another dead origin.
+fn manual_test_with(home: &Home, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut command = script(home);
+    command.envs(env.iter().copied()).args(args);
     let log = args
         .iter()
         .position(|arg| *arg == "--log")
@@ -948,15 +944,10 @@ fn a_bought_plan_is_cancelled_through_a_425() {
             ("*\" drive subscription cancel \"*", &confirming),
         ],
     );
-    let mut command = Command::new(repo().join("scripts/manual_test.sh"));
-    let tmp = home.path().join("tmp");
-    std::fs::create_dir_all(&tmp).expect("create TMPDIR");
+    let mut command = script(&home);
     let log_path = home.path().join("manual_test.log");
     command
-        .env("HOME", home.path())
-        .env("TMPDIR", &tmp)
         .env("HIPC_MANUAL_RETRY_SECONDS", "0")
-        .current_dir(home.path())
         .args(["--offline", "--tier", "spend", "--yes-spend", "--hipc"])
         .arg(&wrapper)
         .arg("--log")
@@ -1350,16 +1341,8 @@ fn a_purchase_runs_only_after_a_y_at_the_terminal() {
     let (wrapper, _) = scripted_hipc(&home, "", &[FREE_DRIVE]);
     let (master, terminal) = pty();
     let log = home.path().join("manual_test.log");
-    let mut command = Command::new(repo().join("scripts/manual_test.sh"));
-    for name in ["HIPPIUS_TOKEN", "HIPPIUS_API_URL", "CI", "AI_AGENT"] {
-        command.env_remove(name);
-    }
-    let tmp = home.path().join("tmp");
-    std::fs::create_dir_all(&tmp).expect("create TMPDIR");
+    let mut command = script(&home);
     command
-        .env("HOME", home.path())
-        .env("TMPDIR", &tmp)
-        .current_dir(home.path())
         .args(["--offline", "--tier", "spend", "--hipc"])
         .arg(&wrapper)
         .arg("--log")
@@ -1404,21 +1387,6 @@ fn a_purchase_runs_only_after_a_y_at_the_terminal() {
     );
     assert!(!log.contains("cleanup: drive-sub"), "{log}");
     assert!(log.contains("cleanup: ticket hipc-manual-"), "{log}");
-}
-
-/// A pseudo-terminal: the side the script sees as its stdin, and the side the test types
-/// into.
-fn pty() -> (OwnedFd, File) {
-    let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).expect("open a pty");
-    grantpt(&master).expect("grant the pty");
-    unlockpt(&master).expect("unlock the pty");
-    let name = ptsname(&master, Vec::new()).expect("the pty has a name");
-    let terminal = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(name.to_str().expect("a pty name is UTF-8"))
-        .expect("open the terminal side of the pty");
-    (master, terminal)
 }
 
 /// The global flags that take a value, and those that do not; the guard checks both lists
@@ -1700,13 +1668,11 @@ fn bad_arguments_exit_2_before_anything_runs() {
 #[test]
 fn xtrace_is_refused() {
     let home = Home::new();
-    let mut command = Command::new(repo().join("scripts/manual_test.sh"));
+    let mut command = script(&home);
     command
-        .env("HOME", home.path())
         .env("SHELLOPTS", "xtrace")
         .env("HIPPIUS_TOKEN", OFFLINE_TOKEN)
-        .args(["--offline", "--hipc", env!("CARGO_BIN_EXE_hipc")])
-        .current_dir(home.path());
+        .args(["--offline", "--hipc", env!("CARGO_BIN_EXE_hipc")]);
     let output = bounded(&mut command, Stdio::null(), None);
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1747,19 +1713,10 @@ fn jq(filter: &str, input: &str) -> String {
 
 /// An offline run, as `offline`, with the 425 retries 0 seconds apart.
 fn offline_fast_retry(home: &Home, hipc: &Path, args: &[&str]) -> (Output, String) {
-    let tmp = home.path().join("tmp");
-    std::fs::create_dir_all(&tmp).expect("create TMPDIR");
     let log_path = home.path().join("manual_test.log");
-    let mut command = Command::new(repo().join("scripts/manual_test.sh"));
+    let mut command = script(home);
     command
-        .env("HOME", home.path())
-        .env("TMPDIR", &tmp)
         .env("HIPC_MANUAL_RETRY_SECONDS", "0")
-        .env_remove("HIPPIUS_TOKEN")
-        .env_remove("HIPPIUS_API_URL")
-        .env_remove("CI")
-        .env_remove("AI_AGENT")
-        .current_dir(home.path())
         .arg("--offline")
         .arg("--hipc")
         .arg(hipc)

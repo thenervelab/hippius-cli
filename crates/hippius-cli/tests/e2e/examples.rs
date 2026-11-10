@@ -22,10 +22,12 @@ type Commands = BTreeMap<String, Option<String>>;
 /// Runs `hipc args` in a clean home with no server, and returns stdout.
 fn stdout_of(args: &[&str]) -> String {
     let home = Home::new();
-    let out = common::command(&home)
-        .args(args)
-        .output()
-        .expect("the hipc binary built by cargo runs");
+    let out = common::finished(
+        common::command(&home)
+            .args(args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+    );
     assert_eq!(out.status.code(), Some(0), "hipc {args:?}");
     String::from_utf8(out.stdout).expect("output is UTF-8")
 }

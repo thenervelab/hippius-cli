@@ -25,8 +25,7 @@ fn created() -> String {
 fn plans_are_the_catalog_object_and_need_no_token() {
     let body = r#"{"plans":[{"code":"pro"}],"pay_as_you_go":{"price_per_tb_month":6}}"#;
     let server = Server::start(vec![route("GET", "/api/s3/plans/", Reply::json(200, body))]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .run(&["s3", "plans"])
         .ok();
     assert_eq!(doc["pay_as_you_go"]["price_per_tb_month"], 6);
@@ -1025,8 +1024,7 @@ fn s3_account_routes_need_a_token() {
         &["s3", "tokens", "list"],
         &["s3", "subscription", "get"],
     ] {
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&Home::new(), &server)
             .run(args)
             .fails(1, "auth");
     }
@@ -1101,8 +1099,9 @@ fn configure_under_sh(home: &Home, setup: &str, secret: &std::path::Path) -> std
         ])
         .arg("--secret-key-file")
         .arg(secret)
-        .output()
-        .expect("run hipc under sh")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    crate::common::finished(&mut shell)
 }
 
 /// A umask that clears the owner's write bit does not leave the new `.aws` directory or files
@@ -1178,7 +1177,7 @@ fn configure_says_when_it_waits_for_another_runs_lock() {
             "{output}: written while it waits"
         );
         drop(lock);
-        let run = child.wait_with_output().expect("wait for hipc");
+        let run = crate::common::finish(child, None, &["s3", "configure"]);
         let stderr = reader.join().expect("the stderr reader");
         assert_eq!(run.status.code(), Some(0), "{output}: {stderr}");
         let credentials = std::fs::read_to_string(aws.join("credentials")).unwrap();

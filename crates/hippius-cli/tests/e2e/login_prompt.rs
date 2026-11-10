@@ -1,20 +1,15 @@
 //! `hipc auth login` without `--token-file` at a real terminal: it asks for the token, reads it
 //! with echo off, and puts the terminal back as it was (tenets 5 and 8).
 
-use std::fs::{File, OpenOptions};
-use std::io::{Read as _, Write as _};
-use std::os::fd::OwnedFd;
+use std::fs::File;
+use std::io::Write as _;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
-use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use rustix::termios::{LocalModes, tcgetattr};
 
 use serde_json::json;
 
+use crate::common::terminal::{Screen, pty};
 use crate::common::{self, ACCOUNTS, Home, PHRASES, Reply, Server, TOKEN, route};
 
 /// The extra flags and the variables of one run.
@@ -25,19 +20,6 @@ const PROMPT: &str =
 
 /// The flags of a run in text mode, where a person can be asked.
 const TEXT: &[&str] = &["--output", "text"];
-
-fn pty() -> (OwnedFd, File) {
-    let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).expect("open a pty");
-    grantpt(&master).expect("grant the pty");
-    unlockpt(&master).expect("unlock the pty");
-    let name = ptsname(&master, Vec::new()).expect("the pty has a name");
-    let terminal = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(name.to_str().expect("a pty name is UTF-8"))
-        .expect("open the terminal side of the pty");
-    (master, terminal)
-}
 
 /// What one login at a terminal did: its exit code, what the terminal showed (line breaks
 /// as `\n`), and whether the terminal echoes again after it.
@@ -82,74 +64,22 @@ fn run_at_a_terminal(
         .stdin(side())
         .stdout(side())
         .stderr(side());
-    let mut child = command.spawn().expect("spawn hipc");
+    let child = command.spawn().expect("spawn hipc");
     drop(command);
     let mut keyboard = File::from(master);
-    let screen = keyboard.try_clone().expect("clone the keyboard side");
-    let shown = Arc::new(Mutex::new(Vec::new()));
-    let exited = Arc::new(AtomicBool::new(false));
-    // As in `prompt::at_a_terminal`: the reader polls, and stops once `hipc` has exited and
-    // nothing more arrives.
-    let reader = {
-        let (shown, exited) = (Arc::clone(&shown), Arc::clone(&exited));
-        std::thread::spawn(move || {
-            let mut screen = screen;
-            let mut buffer = [0_u8; 4096];
-            let tick = Timespec {
-                tv_sec: 0,
-                tv_nsec: 50_000_000,
-            };
-            loop {
-                let done = exited.load(Ordering::Acquire);
-                let mut fds = [PollFd::new(&screen, PollFlags::IN)];
-                if poll(&mut fds, Some(&tick)).expect("poll the terminal") == 0 {
-                    if done {
-                        break;
-                    }
-                    continue;
-                }
-                match screen.read(&mut buffer) {
-                    Ok(0) => break,
-                    Err(error) => panic!("read the terminal: {error}"),
-                    Ok(n) => shown
-                        .lock()
-                        .expect("the screen lock")
-                        .extend_from_slice(&buffer[..n]),
-                }
-            }
-        })
-    };
+    let screen = Screen::read(&keyboard);
     for (wait_for, typed) in steps {
         if let Some(text) = wait_for {
-            // 30 s: arbitrary, far beyond a debug build's start on a loaded host.
-            let deadline = Instant::now() + Duration::from_secs(30);
-            while !String::from_utf8_lossy(&shown.lock().expect("the screen lock")).contains(text) {
-                assert!(Instant::now() < deadline, "{text:?} never appeared");
-                std::thread::sleep(Duration::from_millis(20));
-            }
+            screen.wait_until(&format!("{text:?}"), |shown| shown.contains(text), || false);
         }
         keyboard.write_all(typed).expect("type into the terminal");
     }
-    // A login that waits for input nobody types is killed, so the test fails instead of
-    // hanging: 30 s, as above.
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("poll hipc") {
-            break status;
-        }
-        if Instant::now() > deadline {
-            child.kill().expect("kill a waiting hipc");
-            break child.wait().expect("wait for the killed hipc");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    exited.store(true, Ordering::Release);
-    reader.join().expect("the screen reader does not panic");
+    let status = common::finish(child, None, &["auth", "login"]).status;
+    let shown = screen.close();
     let echo_after = tcgetattr(&terminal)
         .expect("read the terminal's mode")
         .local_modes
         .contains(LocalModes::ECHO);
-    let shown = String::from_utf8_lossy(&shown.lock().expect("the screen lock")).replace('\r', "");
     Login {
         code: status.code(),
         shown,

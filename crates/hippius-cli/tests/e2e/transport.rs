@@ -1,7 +1,7 @@
 //! The HTTP rules every command shares: the API origin, the status map, retry hints,
 //! redirects, timeouts, and `--debug`.
 
-use crate::common::{Hipc, Home, Reply, Server, TOKEN, route};
+use crate::common::{Hipc, Home, PROXY_VARIABLES, Reply, Server, TOKEN, route};
 
 #[test]
 fn every_request_names_hip_and_its_version() {
@@ -198,8 +198,7 @@ fn an_error_answer_that_echoes_the_token_never_prints_it() {
         "/api/plain/",
         Reply::json(404, r#"{"detail":"no <redacted> here"}"#),
     )]);
-    let error = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", plain.url())
+    let error = Hipc::tokenless(&home, &plain)
         .run(&["api", "GET", "/plain/"])
         .fails(1, "not_found");
     assert_eq!(error["details"]["detail"], "no <redacted> here");
@@ -300,12 +299,8 @@ fn debug_prints_method_url_and_status_and_never_a_secret() {
     let lines: Vec<&str> = run.stderr().lines().collect();
     assert_eq!(lines[1], "debug: -> 404");
     assert!(lines[2].starts_with("{\"error\""));
-    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://127.0.0.1:{}", closed.local_addr().unwrap().port());
-    drop(closed);
-    let run = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", &url)
-        .run(&["api", "GET", "/x/", "--debug"]);
+    // `Hipc::new` points `hipc` at the closed origin.
+    let run = Hipc::new(&home).run(&["api", "GET", "/x/", "--debug"]);
     assert!(
         run.stderr().contains("debug: -> no answer (unavailable)"),
         "{}",
@@ -320,9 +315,7 @@ fn a_public_route_works_without_a_token_and_sends_no_authorization() {
         "/api/drive/plans/",
         Reply::json(200, "[]"),
     )]);
-    let run = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
-        .run(&["api", "GET", "/drive/plans/"]);
+    let run = Hipc::tokenless(&Home::new(), &server).run(&["api", "GET", "/drive/plans/"]);
     assert_eq!(run.code(), Some(0));
     assert_eq!(server.only_request().header("authorization"), None);
 }
@@ -486,38 +479,22 @@ fn all_reports_the_real_refusal_of_a_next_link_on_the_api_origin() {
     );
 }
 
-/// A server that sends a status line and headers with `Content-Length: 100`, one byte of
-/// body, and then nothing, so the body read times out after the status arrived.
-fn stalled_body(status: &str) -> (String, std::thread::JoinHandle<()>) {
-    use std::io::{Read as _, Write as _};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-    let url = format!("http://{}", listener.local_addr().expect("a bound address"));
-    let status = status.to_owned();
-    let handle = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("hipc connects");
-        let mut buf = [0_u8; 4096];
-        let _ = stream.read(&mut buf).expect("read the request");
-        // The request id echoes the token, which no error may print.
-        let head = format!(
-            "HTTP/1.1 {status}\r\nX-Request-Id: req-{TOKEN}\r\nContent-Length: 100\r\n\r\n{{"
-        );
-        stream.write_all(head.as_bytes()).expect("write the head");
-        // Hold the connection until the client gives up; how the read ends does not
-        // matter.
-        drop(stream.read(&mut buf));
-    });
-    (url, handle)
+/// A server that answers the POST with a status line and headers with `Content-Length:
+/// 100`, one byte of body, and then nothing, so the body read times out after the status
+/// arrived. The request id echoes the token, which no error may print.
+fn stalled_body(status: &str) -> Server {
+    let head =
+        format!("HTTP/1.1 {status}\r\nX-Request-Id: req-{TOKEN}\r\nContent-Length: 100\r\n\r\n{{");
+    Server::start(vec![route("POST", "/api/x/", Reply::raw(head.as_bytes()))])
 }
 
 #[test]
 fn a_write_whose_2xx_body_stalls_was_done_and_is_not_retryable() {
-    let (url, server) = stalled_body("201 Created");
-    let error = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, TOKEN)
+    let server = stalled_body("201 Created");
+    let error = Hipc::against(&Home::new(), &server)
         .run(&["--request-timeout", "1", "api", "POST", "/x/", "--yes"])
         .fails(1, "timeout");
-    server.join().unwrap();
+    assert_eq!(server.requests().len(), 1);
     assert_eq!(error["http_status"], 201);
     assert_eq!(error["side_effects"], "partial");
     assert_eq!(error["retryable"], false);
@@ -526,13 +503,11 @@ fn a_write_whose_2xx_body_stalls_was_done_and_is_not_retryable() {
 
 #[test]
 fn a_refused_write_whose_body_stalls_is_still_that_refusal() {
-    let (url, server) = stalled_body("409 Conflict");
-    let error = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, TOKEN)
+    let server = stalled_body("409 Conflict");
+    let error = Hipc::against(&Home::new(), &server)
         .run(&["--request-timeout", "1", "api", "POST", "/x/", "--yes"])
         .fails(1, "conflict");
-    server.join().unwrap();
+    assert_eq!(server.requests().len(), 1);
     assert_eq!(error["side_effects"], "none");
     assert_eq!(error["retryable"], false);
 }
@@ -778,18 +753,6 @@ fn a_refused_2xx_that_echoes_the_token_never_prints_it() {
     assert_eq!(error["details"]["echo"], "Token <redacted>");
     assert_eq!(error["request_id"], "req-<redacted>");
 }
-
-/// The proxy variables the HTTP library reads, and `NO_PROXY`.
-const PROXY_VARIABLES: [&str; 8] = [
-    "ALL_PROXY",
-    "all_proxy",
-    "HTTPS_PROXY",
-    "https_proxy",
-    "HTTP_PROXY",
-    "http_proxy",
-    "NO_PROXY",
-    "no_proxy",
-];
 
 /// A proxy the HTTP library cannot use, a SOCKS proxy or a URL it cannot parse, would be
 /// skipped and the request sent directly, around the proxy: `hipc` refuses before sending,

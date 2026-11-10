@@ -103,16 +103,14 @@ fn login_says_why_the_token_file_cannot_be_read() {
         .fails(2, "usage");
     assert_eq!(error["message"], format!("`{path}` is not a regular file"));
     // Stdin is read whatever it is; a read that fails is named with its reason.
-    let output = crate::common::command(&home)
-        .args(["--json", "auth", "login", "--token-file", "-"])
-        .stdin(std::fs::File::open(home.path()).unwrap())
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8(output.stderr).unwrap();
+    let error = Hipc::new(&home)
+        .stdin_from(std::fs::File::open(home.path()).unwrap())
+        .run(&["--json", "auth", "login", "--token-file", "-"])
+        .fails(2, "usage");
+    let message = error["message"].as_str().unwrap();
     assert!(
-        stderr.contains("cannot read the token from stdin: it is a directory"),
-        "{stderr}"
+        message.contains("cannot read the token from stdin: it is a directory"),
+        "{message}"
     );
 }
 
@@ -371,8 +369,7 @@ fn status_with_a_stored_token() {
     let server = Server::start(status_routes());
     let home = Home::new();
     let token_file = home.file("token", b"stored-token-abcd");
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&home, &server)
         .run(&[
             "auth",
             "login",
@@ -381,8 +378,7 @@ fn status_with_a_stored_token() {
             token_file.to_str().unwrap(),
         ])
         .ok();
-    let doc = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&home, &server)
         .run(&["auth", "status"])
         .ok();
     assert_eq!(doc["token_preview"], "abcd");
@@ -423,8 +419,7 @@ fn status_with_a_rejected_token_is_auth() {
         "[profiles.default]\ntoken = \"stored-token-abcd\"\ntoken_origin = \"{}\"\n",
         server.url()
     ));
-    let error = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    let error = Hipc::tokenless(&home, &server)
         .run(&["auth", "status"])
         .fails(1, "auth");
     assert_eq!(
@@ -437,8 +432,7 @@ fn status_with_a_rejected_token_is_auth() {
 fn status_without_any_token_sends_nothing() {
     let server = Server::start(vec![]);
     let home = Home::new();
-    let error = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    let error = Hipc::tokenless(&home, &server)
         .run(&["auth", "status"])
         .fails(1, "auth");
     assert!(error["hint"].as_str().unwrap().contains("hipc auth login"));
@@ -592,8 +586,7 @@ fn logout_dry_run_keeps_the_token() {
 #[test]
 fn a_short_token_has_no_preview() {
     let server = Server::start(status_routes());
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .with_env_token(server.url(), "short")
         .run(&["auth", "status"])
         .ok();
@@ -621,22 +614,16 @@ fn a_stored_token_is_sent_only_to_the_origin_it_was_stored_for() {
         api.url(),
         "printed as stored, normalized"
     );
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", api.url())
-        .run(&["auth", "status"])
-        .ok();
+    Hipc::tokenless(&home, &api).run(&["auth", "status"]).ok();
     assert_eq!(
         api.requests()[0].header("authorization"),
         Some(&*format!("Token {TOKEN}"))
     );
     // Another origin, by flag or by variable: the stored token is withheld, nothing is sent.
     for (hipc, args) in [
+        (Hipc::tokenless(&home, &other), vec!["auth", "status"]),
         (
-            Hipc::new(&home).env("HIPPIUS_API_URL", other.url()),
-            vec!["auth", "status"],
-        ),
-        (
-            Hipc::new(&home).env("HIPPIUS_API_URL", api.url()),
+            Hipc::tokenless(&home, &api),
             vec!["--api-url", other.url(), "auth", "status"],
         ),
         // Neither is set, so the run targets the default origin: the hint cannot be to
@@ -664,8 +651,7 @@ fn a_stored_token_is_sent_only_to_the_origin_it_was_stored_for() {
         "the token never reached the other origin"
     );
     // HIPPIUS_TOKEN goes to another origin only when HIPPIUS_TOKEN_ORIGIN names it.
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", other.url())
+    Hipc::tokenless(&home, &other)
         .with_env_token(other.url(), "tok_for_the_other_host_0123456789")
         .run(&["auth", "status"])
         .ok();
@@ -681,8 +667,7 @@ fn a_withheld_token_variable_refuses_every_command_before_sending() {
     let home = Home::new();
     let body = home.file("body.json", b"{}");
     let hipc = || {
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&home, &server)
             .env("HIPPIUS_TOKEN", TOKEN)
             .env_remove("HIPPIUS_TOKEN_ORIGIN")
     };
@@ -717,8 +702,7 @@ fn the_token_variable_is_sent_only_to_the_origin_it_is_bound_to() {
     let home = Home::new();
     let file = home.file("token", TOKEN.as_bytes());
     // A stored token for this origin, which a withheld variable must not fall back to.
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", other.url())
+    Hipc::tokenless(&home, &other)
         .run(&[
             "auth",
             "login",
@@ -769,8 +753,7 @@ fn the_token_variable_is_sent_only_to_the_origin_it_is_bound_to() {
     assert!(other.requests().is_empty(), "nothing was sent");
     assert!(elsewhere.requests().is_empty());
     // A value that is no origin is refused, naming the variable.
-    let error = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", other.url())
+    let error = Hipc::tokenless(&home, &other)
         .with_env_token(other.url(), variable)
         .env("HIPPIUS_TOKEN_ORIGIN", "127.0.0.1")
         .run(&["auth", "status"])
@@ -787,8 +770,7 @@ fn the_token_variable_is_sent_only_to_the_origin_it_is_bound_to() {
         other.url().replace("http://", "HTTP://"),
         format!("{}/", other.url()),
     ] {
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", other.url())
+        Hipc::tokenless(&home, &other)
             .with_env_token(&spelling, variable)
             .run(&["auth", "status"])
             .ok();
@@ -819,8 +801,7 @@ fn a_profile_stored_before_token_origins_holds_a_token_for_the_default_api() {
     )
     .unwrap();
     std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let error = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    let error = Hipc::tokenless(&home, &server)
         .run(&["auth", "status"])
         .fails(1, "auth");
     assert!(
@@ -836,11 +817,7 @@ fn a_profile_stored_before_token_origins_holds_a_token_for_the_default_api() {
 #[test]
 fn the_token_is_checked_after_argv_reveal_and_dry_run_and_before_the_question() {
     let server = Server::start(vec![]);
-    let no_token = |args: &[&str]| {
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
-            .run(args)
-    };
+    let no_token = |args: &[&str]| Hipc::tokenless(&Home::new(), &server).run(args);
     // A dry run needs no token: the document has no header values.
     let doc = no_token(&["s3", "tokens", "create", "--kind", "master", "--dry-run"]).ok();
     assert_eq!(draft(&doc)["method"], "POST");
@@ -872,8 +849,7 @@ fn the_token_is_checked_after_argv_reveal_and_dry_run_and_before_the_question() 
         &["drive", "subscription", "cancel"],
         &["drive", "subscription", "cancel", "--dry-run"],
     ] {
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&Home::new(), &server)
             .env("HIPPIUS_ACCOUNT", MEMBER)
             .run(args)
             .fails(2, "account_scope_unsupported");
@@ -895,7 +871,7 @@ fn a_token_stored_for_another_origin_still_allows_a_dry_run() {
             "--yes",
         ])
         .ok();
-    let hipc = || Hipc::new(&home).env("HIPPIUS_API_URL", server.url());
+    let hipc = || Hipc::tokenless(&home, &server);
     hipc()
         .run(&["compute", "vms", "delete", "vm-1", "--dry-run"])
         .ok();
@@ -969,8 +945,7 @@ fn public_routes_and_hipc_api_go_to_another_origin_without_the_stored_token() {
     ]);
     let home = Home::new();
     let file = home.file("token", TOKEN.as_bytes());
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", home_api.url())
+    Hipc::tokenless(&home, &home_api)
         .run(&[
             "auth",
             "login",
@@ -997,8 +972,7 @@ fn login_for_an_origin_other_than_the_default_needs_yes_and_names_its_source() {
     let server = Server::start(vec![]);
     let home = Home::new();
     let file = home.file("token", TOKEN.as_bytes());
-    let error = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    let error = Hipc::tokenless(&home, &server)
         .run(&["auth", "login", "--token-file", file.to_str().unwrap()])
         .fails(2, "confirmation_required");
     assert!(

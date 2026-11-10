@@ -1,12 +1,8 @@
 //! `hipc compute`: the catalog, VMs, the launch wait, and SSH keys.
 
-use std::io::{BufRead as _, Read as _, Write as _};
-
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, draft, route};
-
-const VM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, VM, draft, route, route_each};
 
 /// A positive attestation, as swagger documents the fields.
 const ATTESTED: &str = concat!(
@@ -42,12 +38,10 @@ fn create(server: &Server, extra: &[&str]) -> Run {
 
 /// The tenet 4 failure with the documented stdout exception: stdout is the last VM.
 fn fails_with_vm(run: &Run, code: &str) -> Value {
-    assert_eq!(run.code(), Some(1), "{}", run.stderr());
-    let error: Value = serde_json::from_str(run.stderr()).expect("stderr is one JSON object");
-    assert_eq!(error["error"]["code"], code, "{}", run.stderr());
-    assert_eq!(error["error"]["side_effects"], "partial");
+    let error = run.fails_keeping_stdout(1, code);
+    assert_eq!(error["side_effects"], "partial");
     assert!(
-        error["error"]["hint"]
+        error["hint"]
             .as_str()
             .expect("the failure has a hint")
             .contains(&format!("hipc compute vms get {VM}")),
@@ -1027,7 +1021,7 @@ fn a_backtick_in_the_launched_vm_id_cannot_end_the_quote() {
         serde_json::from_str::<Value>(run.stdout()).unwrap()["vm_id"],
         "v`x"
     );
-    let error = serde_json::from_str::<Value>(run.stderr()).unwrap()["error"].clone();
+    let error = run.error();
     assert_eq!(error["code"], "partial_failure");
     assert_eq!(
         error["message"],
@@ -1068,7 +1062,7 @@ fn a_launched_vm_id_that_is_not_an_id_never_reaches_a_hint() {
             "--yes",
         ]);
         assert_eq!(run.code(), Some(1), "{id}");
-        let error = serde_json::from_str::<Value>(run.stderr()).unwrap()["error"].clone();
+        let error = run.error();
         assert_eq!(
             error["hint"], "run `hipc compute vms list` to find the new VM",
             "{id}"
@@ -1091,7 +1085,7 @@ fn a_launched_vm_id_that_is_not_an_id_never_reaches_a_hint() {
         "7",
         "--yes",
     ]);
-    let error = serde_json::from_str::<Value>(run.stderr()).unwrap()["error"].clone();
+    let error = run.error();
     assert_eq!(
         error["hint"],
         "run `hipc compute vms get vm-1_a` to see where the launch stands"
@@ -1902,8 +1896,7 @@ fn these_compute_commands_dry_run_without_a_request() {
 #[test]
 fn compute_needs_a_token() {
     let server = Server::start(vec![]);
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&["compute", "prices"])
         .fails(1, "auth");
     assert!(server.requests().is_empty());
@@ -2128,125 +2121,60 @@ fn a_page_token_with_a_leading_zero_asks_for_that_page() {
     );
 }
 
-/// A server that answers each connection with the next of `replies` (status, body), in
-/// order, and returns the request lines it saw.
-fn in_sequence(replies: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
-    let replies = replies
-        .into_iter()
-        .map(|(status, body)| (status, String::new(), body))
-        .collect();
-    let (url, handle) = in_sequence_timed(replies);
-    let lines = std::thread::spawn(move || {
-        let seen = handle.join().expect("the server thread");
-        seen.into_iter().map(|(line, _)| line).collect()
-    });
-    (url, lines)
+/// A server whose launch answers with the first of `replies`, and whose VM answers each
+/// poll with the next of the rest, then every later poll with the last.
+fn in_sequence(replies: Vec<Reply>) -> Server {
+    let mut replies = replies.into_iter();
+    let launch = replies.next().expect("a launch answer");
+    Server::start(vec![
+        route("POST", "/api/compute/vms/", launch),
+        route_each("GET", &format!("/api/compute/vms/{VM}/"), replies.collect()),
+    ])
 }
 
-/// [`in_sequence`] with each reply's extra header lines (each ending in `\r\n`), and the time
-/// each request arrived beside its request line.
-fn in_sequence_timed(
-    replies: Vec<(u16, String, String)>,
-) -> (
-    String,
-    std::thread::JoinHandle<Vec<(String, std::time::Instant)>>,
-) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-    let url = format!("http://{}", listener.local_addr().expect("a bound address"));
-    let handle = std::thread::spawn(move || {
-        let mut seen = Vec::new();
-        for (status, headers, body) in replies {
-            let Ok((mut stream, _)) = listener.accept() else {
-                break;
-            };
-            // The whole request, headers and body, before the answer.
-            let mut reader = std::io::BufReader::new(&stream);
-            let mut line = String::new();
-            drop(reader.read_line(&mut line));
-            seen.push((line.trim_end().to_owned(), std::time::Instant::now()));
-            let mut length = 0;
-            loop {
-                let mut header = String::new();
-                if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
-                    break;
-                }
-                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap_or(0);
-                }
-            }
-            let mut request_body = vec![0_u8; length];
-            drop(reader.read_exact(&mut request_body));
-            drop(reader);
-            let head = format!(
-                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                 {headers}Connection: close\r\n\r\n",
-                body.len()
-            );
-            drop(stream.write_all(format!("{head}{body}").as_bytes()));
-        }
-        seen
-    });
-    (url, handle)
-}
+/// `vms create --flavor small --ssh-key-id 7 --wait --yes`.
+const WAITED_LAUNCH: [&str; 9] = [
+    "compute",
+    "vms",
+    "create",
+    "--wait",
+    "--flavor",
+    "small",
+    "--ssh-key-id",
+    "7",
+    "--yes",
+];
 
 #[test]
 fn a_passing_poll_failure_is_tolerated_and_the_wait_goes_on() {
-    let (url, server) = in_sequence(vec![
-        (202, vm("pending")),
-        (502, r#"{"detail":"bad gateway"}"#.to_owned()),
-        (200, vm("running")),
+    let server = in_sequence(vec![
+        Reply::json(202, &vm("pending")),
+        Reply::json(502, r#"{"detail":"bad gateway"}"#),
+        Reply::json(200, &vm("running")),
     ]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, crate::common::TOKEN)
-        .run(&[
-            "compute",
-            "vms",
-            "create",
-            "--wait",
-            "--flavor",
-            "small",
-            "--ssh-key-id",
-            "7",
-            "--yes",
-        ])
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&WAITED_LAUNCH)
         .ok();
     assert_eq!(doc["status"], "running");
-    assert_eq!(server.join().unwrap().len(), 3);
+    assert_eq!(server.requests().len(), 3);
 }
 
 /// A retryable poll failure with a `Retry-After` longer than the poll interval (2 seconds)
 /// waits that long before the next poll.
 #[test]
 fn a_poll_failure_waits_for_its_retry_after() {
-    let (url, server) = in_sequence_timed(vec![
-        (202, String::new(), vm("pending")),
-        (
-            503,
-            "Retry-After: 4\r\n".to_owned(),
-            r#"{"detail":"busy"}"#.to_owned(),
-        ),
-        (200, String::new(), vm("running")),
+    let server = in_sequence(vec![
+        Reply::json(202, &vm("pending")),
+        Reply::json(503, r#"{"detail":"busy"}"#).header("Retry-After", "4"),
+        Reply::json(200, &vm("running")),
     ]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, crate::common::TOKEN)
-        .run(&[
-            "compute",
-            "vms",
-            "create",
-            "--wait",
-            "--flavor",
-            "small",
-            "--ssh-key-id",
-            "7",
-            "--yes",
-        ])
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&WAITED_LAUNCH)
         .ok();
     assert_eq!(doc["status"], "running");
-    let seen = server.join().unwrap();
+    let seen = server.requests();
     assert_eq!(seen.len(), 3);
-    let gap = seen[2].1.duration_since(seen[1].1);
+    let gap = seen[2].received.duration_since(seen[1].received);
     assert!(gap >= std::time::Duration::from_millis(3_900), "{gap:?}");
 }
 
@@ -2254,99 +2182,45 @@ fn a_poll_failure_waits_for_its_retry_after() {
 /// with the VM on stdout, and sends no poll the server asked not to get.
 #[test]
 fn a_retry_after_past_the_deadline_ends_the_wait_without_another_poll() {
-    let (url, server) = in_sequence_timed(vec![
-        (202, String::new(), vm("pending")),
-        (
-            503,
-            "Retry-After: 60\r\n".to_owned(),
-            r#"{"detail":"busy"}"#.to_owned(),
-        ),
-        (200, String::new(), vm("running")),
+    let server = in_sequence(vec![
+        Reply::json(202, &vm("pending")),
+        Reply::json(503, r#"{"detail":"busy"}"#).header("Retry-After", "60"),
+        Reply::json(200, &vm("running")),
     ]);
     let started = std::time::Instant::now();
-    let run = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, crate::common::TOKEN)
-        .run(&[
-            "compute",
-            "vms",
-            "create",
-            "--wait",
-            "--wait-timeout",
-            "4",
-            "--flavor",
-            "small",
-            "--ssh-key-id",
-            "7",
-            "--yes",
-        ]);
+    let run = Hipc::against(&Home::new(), &server)
+        .run(&[&WAITED_LAUNCH[..], &["--wait-timeout", "4"]].concat());
     let took = started.elapsed();
     assert_eq!(fails_with_vm(&run, "timeout")["status"], "pending");
     assert!(took < std::time::Duration::from_secs(30), "{took:?}");
-    // The third reply is never asked for: a connection now ends the server thread.
-    drop(std::net::TcpStream::connect(
-        url.trim_start_matches("http://"),
-    ));
-    assert_eq!(
-        server.join().unwrap().len(),
-        3,
-        "the create, one poll, this probe"
-    );
+    assert_eq!(server.requests().len(), 2, "the create and one poll");
 }
 
 #[test]
 fn a_non_retryable_poll_failure_ends_the_wait_at_once() {
-    let (url, server) = in_sequence(vec![
-        (202, vm("pending")),
-        (404, r#"{"detail":"Not found."}"#.to_owned()),
-    ]);
-    let run = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, crate::common::TOKEN)
-        .run(&[
-            "compute",
-            "vms",
-            "create",
-            "--wait",
-            "--flavor",
-            "small",
-            "--ssh-key-id",
-            "7",
-            "--yes",
-        ]);
+    let server = in_sequence(vec![Reply::json(202, &vm("pending")), Reply::not_found()]);
+    let run = Hipc::against(&Home::new(), &server).run(&WAITED_LAUNCH);
     assert_eq!(fails_with_vm(&run, "not_found")["status"], "pending");
-    assert_eq!(server.join().unwrap().len(), 2, "no poll after a 404");
+    assert_eq!(server.requests().len(), 2, "no poll after a 404");
 }
 
 #[test]
 fn a_success_resets_the_count_of_failed_polls() {
-    let bad = || (502, r#"{"detail":"bad gateway"}"#.to_owned());
-    let (url, server) = in_sequence(vec![
-        (202, vm("pending")),
+    let bad = || Reply::json(502, r#"{"detail":"bad gateway"}"#);
+    let server = in_sequence(vec![
+        Reply::json(202, &vm("pending")),
         bad(),
-        (200, vm("provisioning")),
+        Reply::json(200, &vm("provisioning")),
         bad(),
         bad(),
         bad(),
-        (200, vm("running")),
+        Reply::json(200, &vm("running")),
     ]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, crate::common::TOKEN)
-        .run(&[
-            "compute",
-            "vms",
-            "create",
-            "--wait",
-            "--flavor",
-            "small",
-            "--ssh-key-id",
-            "7",
-            "--yes",
-        ])
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&WAITED_LAUNCH)
         .ok();
     assert_eq!(doc["status"], "running");
-    assert_eq!(server.join().unwrap().len(), 7);
+    assert_eq!(server.requests().len(), 7);
 }
 
 fn resize(status: &str) -> String {
@@ -2593,40 +2467,17 @@ fn vm_with(status: &str, fields: Value) -> String {
     doc.to_string()
 }
 
-/// `vms create --flavor small --ssh-key-id 7 --wait --yes <extra>` against a server that
-/// answers each request with the next of `replies`, and the request lines it saw.
-///
-/// When hipc stops before every reply was taken, empty connections take the rest, so the
-/// server thread ends and the test fails on its assertions instead of hanging; they are
-/// left out of the lines returned.
+/// `vms create --flavor small --ssh-key-id 7 --wait --yes <extra>` against
+/// [`in_sequence`] `replies` (status, body), and the requests it sent, as `METHOD path`.
 fn launch_in_sequence(replies: Vec<(u16, String)>, extra: &[&str]) -> (Run, Vec<String>) {
-    let (url, server) = in_sequence(replies);
-    let address = url.trim_start_matches("http://").to_owned();
-    let mut args = vec![
-        "compute",
-        "vms",
-        "create",
-        "--flavor",
-        "small",
-        "--ssh-key-id",
-        "7",
-        "--wait",
-        "--yes",
-    ];
-    args.extend(extra);
-    let run = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, crate::common::TOKEN)
-        .run(&args);
-    while !server.is_finished() {
-        drop(std::net::TcpStream::connect(&address));
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    let seen = server.join().expect("the server thread ends");
-    (
-        run,
-        seen.into_iter().filter(|line| !line.is_empty()).collect(),
-    )
+    let server = in_sequence(
+        replies
+            .into_iter()
+            .map(|(status, body)| Reply::json(status, &body))
+            .collect(),
+    );
+    let run = Hipc::against(&Home::new(), &server).run(&[&WAITED_LAUNCH[..], extra].concat());
+    (run, server.calls())
 }
 
 /// With `--public-ip` the wait goes on past `running` until `network_ready` is true, which
@@ -2649,7 +2500,7 @@ fn a_public_ip_launch_waits_for_network_ready_that_arrives_late() {
     assert!(
         seen[1..]
             .iter()
-            .all(|line| line.starts_with(&format!("GET /api/compute/vms/{VM}/ "))),
+            .all(|call| *call == format!("GET /api/compute/vms/{VM}/")),
         "{seen:?}"
     );
 }

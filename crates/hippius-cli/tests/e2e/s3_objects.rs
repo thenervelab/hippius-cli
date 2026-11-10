@@ -3,10 +3,9 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Route, Run, Server, TOKEN, draft, route};
-
-const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
-const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
+use crate::common::{
+    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Route, Run, Server, draft, route,
+};
 
 const PATH: &str = "/api/objectstore/buckets/photos/objects/";
 
@@ -207,7 +206,7 @@ fn all_stops_on_a_token_that_leads_back() {
 
 #[test]
 fn all_stops_after_a_thousand_pages() {
-    let (url, server) = crate::common::endless_pages(|_, served| {
+    let server = crate::common::endless_pages(PATH, |served| {
         format!(
             r#"{{"Contents":[],"IsTruncated":true,"NextContinuationToken":"t{}"}}"#,
             served + 1
@@ -215,16 +214,14 @@ fn all_stops_after_a_thousand_pages() {
     });
     let argv = objects(&["photos", "--all"]);
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let error = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, TOKEN)
+    let error = Hipc::against(&Home::new(), &server)
         .run(&argv)
         .fails(1, "internal");
     assert!(
         error["message"].as_str().unwrap().contains("1000 pages"),
         "{error}"
     );
-    assert_eq!(server.join().unwrap(), 1000);
+    assert_eq!(server.requests().len(), 1000);
 }
 
 #[test]
@@ -396,8 +393,7 @@ fn bad_flags_are_usage_before_any_request_or_token() {
     ] {
         let argv = objects(args);
         let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&Home::new(), &server)
             .run(&argv)
             .fails(2, "usage");
     }
@@ -415,8 +411,7 @@ fn bad_flags_are_usage_before_any_request_or_token() {
     assert!(server.requests().is_empty());
     let argv = objects(&["photos"]);
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&argv)
         .fails(1, "auth");
     assert!(server.requests().is_empty());
@@ -507,8 +502,7 @@ fn a_dry_run_names_the_first_request_without_a_token() {
         let mut argv = objects(args);
         argv.push("--dry-run".to_owned());
         let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-        let doc = Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        let doc = Hipc::tokenless(&Home::new(), &server)
             .env("HIPPIUS_ACCOUNT", MEMBER)
             .run(&argv)
             .ok();

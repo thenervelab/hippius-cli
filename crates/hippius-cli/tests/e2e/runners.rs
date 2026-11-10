@@ -3,7 +3,9 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Route, Run, Server, TOKEN, draft, route};
+use crate::common::{
+    Hipc, Home, MEMBER, PROJECT, Reply, Route, Run, Server, api, draft, parsed, route,
+};
 
 /// The settings, shaped as the live answer was on 2026-10-27 (values made up).
 const SETTINGS: &str = concat!(
@@ -49,10 +51,6 @@ fn runners<'a>(args: &[&'a str]) -> Vec<&'a str> {
     let mut argv = vec!["compute", "runners"];
     argv.extend(args);
     argv
-}
-
-fn parsed(text: &str) -> Value {
-    serde_json::from_str(text).expect("the fixture is JSON")
 }
 
 /// A jobs route. One without a query answers every query, so the test server, which takes
@@ -291,8 +289,7 @@ fn settings_update_sends_a_cut_unasked() {
 #[test]
 fn settings_update_refuses_bad_flags_before_any_request_or_token() {
     let server = Server::start(vec![]);
-    let error = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let error = Hipc::tokenless(&Home::new(), &server)
         .run(&runners(&["settings", "update", "--yes"]))
         .fails(2, "usage");
     assert_eq!(
@@ -505,19 +502,17 @@ fn jobs_all_stops_on_a_repeated_cursor() {
 
 #[test]
 fn jobs_all_stops_after_a_thousand_pages() {
-    let (url, server) = crate::common::endless_pages(|_, served| {
+    let server = crate::common::endless_pages(&api("/runners/jobs/"), |served| {
         format!(r#"{{"results":[],"next_before":{}}}"#, served + 1)
     });
-    let error = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, TOKEN)
+    let error = Hipc::against(&Home::new(), &server)
         .run(&runners(&["jobs", "--all"]))
         .fails(1, "internal");
     assert!(
         error["message"].as_str().unwrap().contains("1000 pages"),
         "{error}"
     );
-    assert_eq!(server.join().unwrap(), 1000);
+    assert_eq!(server.requests().len(), 1000);
 }
 
 #[test]
@@ -533,8 +528,7 @@ fn jobs_refuses_a_limit_a_bad_token_and_a_page_that_is_not_a_cursor_page() {
     ] {
         hipc(&server, args).fails(2, "usage");
     }
-    let error = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let error = Hipc::tokenless(&Home::new(), &server)
         .run(&runners(&["jobs", "--page-token", "x"]))
         .fails(2, "usage");
     assert!(
@@ -670,8 +664,7 @@ fn these_runners_commands_dry_run_without_a_token_or_a_request() {
     ] {
         let mut argv = runners(args);
         argv.push("--dry-run");
-        let doc = Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        let doc = Hipc::tokenless(&Home::new(), &server)
             .env("HIPPIUS_ACCOUNT", MEMBER)
             .run(&argv)
             .ok();
@@ -1138,8 +1131,7 @@ fn limit_update_refuses_a_bad_cap_before_any_request_or_token() {
     ] {
         // `=` keeps a value that starts with `-` from reading as a flag.
         let flag = format!("--monthly-cap={cap}");
-        let error = Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        let error = Hipc::tokenless(&Home::new(), &server)
             .run(&runners(&["limit", "update", &flag, "--yes"]))
             .fails(2, "usage");
         assert!(
@@ -1200,7 +1192,6 @@ fn limit_update_errors_map_to_their_codes() {
 /// question names the membership.
 #[test]
 fn the_limit_and_usage_routes_take_a_membership_and_a_project() {
-    const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
     let server = Server::start(vec![
         route("GET", "/api/runners/usage/", Reply::json(200, USAGE)),
         route(
@@ -1259,8 +1250,7 @@ fn the_limit_and_usage_commands_dry_run_without_a_token_or_a_request() {
     let dry = |args: &[&str]| {
         let mut argv = runners(args);
         argv.push("--dry-run");
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&Home::new(), &server)
             .env("HIPPIUS_ACCOUNT", MEMBER)
             .run(&argv)
             .ok()
