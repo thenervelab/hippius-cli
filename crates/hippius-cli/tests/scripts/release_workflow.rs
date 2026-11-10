@@ -557,3 +557,51 @@ fn the_release_packs_with_the_package_script() {
         "{package}"
     );
 }
+
+/// The action fails a release binary that holds `HIPC_TEST_POLL_INTERVAL_MS`, the test suite's
+/// poll interval, which only a build with debug assertions compiles in. The debug `hipc` this
+/// suite runs holds it, so the check is shown to find the name in a real build; a binary
+/// without it passes, and a missing binary fails. The release profile leaves debug assertions
+/// off, so the build the action makes does not hold it.
+#[test]
+fn the_action_refuses_a_release_binary_that_reads_the_test_poll_interval() {
+    let action = workflow::release_build_action();
+    let check = workflow::run(workflow::named(
+        workflow::steps(&action["runs"]),
+        "No test seam",
+    ));
+    for (binary, code) in [
+        (Some(env!("CARGO_BIN_EXE_hipc")), 1),
+        (Some("/bin/sh"), 0),
+        (None, 1),
+    ] {
+        let dir = TempDir::new();
+        let release = dir.path().join("target/x86_64-unknown-linux-musl/release");
+        std::fs::create_dir_all(&release).expect("create the release directory");
+        if let Some(binary) = binary {
+            std::os::unix::fs::symlink(binary, release.join("hipc")).expect("link the binary");
+        }
+
+        let out = Command::new("/bin/bash")
+            .args(["-e", "-c", check])
+            .current_dir(dir.path())
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("TARGET", "x86_64-unknown-linux-musl")
+            .output()
+            .expect("run the step");
+
+        assert_eq!(out.status.code(), Some(code), "{binary:?}");
+    }
+
+    let manifest: toml::Table = include_str!("../../../../Cargo.toml")
+        .parse()
+        .expect("Cargo.toml is TOML");
+    let release = &manifest["profile"]["release"];
+    assert!(
+        release
+            .get("debug-assertions")
+            .is_none_or(|on| on.as_bool() == Some(false)),
+        "the release profile turns debug assertions on: {release}"
+    );
+}
