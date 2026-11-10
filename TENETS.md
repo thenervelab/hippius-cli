@@ -134,7 +134,7 @@ There is no `--force`. `--yes` is the one word for every confirmation.
 
 ## 6. One page, unless asked
 
-A list returns one page, 100 items by default. `--limit` sets the page size, `--page-token` asks for a later page, and `--all` follows to the end (tenet 3). `--all` means nothing else anywhere: a purge of a whole CDN zone is `--everything`. Only a list the server pages takes these flags, and a list paged by a server cursor at a fixed page size (`hipc compute runners jobs`) has no `--limit`. `pagination` and `flags` in `hipc schema` say which lists take which.
+A list returns one page, 100 items by default. `--limit` sets the page size, `--page-token` asks for a later page, and `--all` follows to the end (tenet 3). `--all` means nothing else anywhere: a purge of a whole CDN zone is `--everything`. Only a list the server pages takes these flags, and a list paged by a server cursor at a fixed page size (`hipc compute runners jobs`) has no `--limit`. One list is read whole on purpose: `hipc s3 tokens list` prints the master and the sub tokens, two routes, as one list, so it takes none of these flags, follows every `next` page of each route within the caps `--all` has (tenet 3), and prints `next_page_token` null. `pagination` and `flags` in `hipc schema` say which lists take which.
 
 `next_page_token` is the next page number as a decimal string, or the server's cursor where a route pages by cursor, and null on the last page. A page is never printed as the whole list without saying more exist.
 

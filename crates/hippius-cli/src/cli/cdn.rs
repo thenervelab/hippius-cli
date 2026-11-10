@@ -531,7 +531,9 @@ pub(crate) enum CdnRules {
     /// move a rule
     ///
     /// A rule the zone has now that the file leaves out or moves is refused unless
-    /// --remove-others is passed.
+    /// --remove-others is passed. The route takes no version or If-Match, so the rules are
+    /// written whole, after a read unless --remove-others is passed: a change someone else
+    /// makes before the write is lost.
     #[command(after_help = examples(&[
         "hipc cdn rules update zab12cd34ef56 --rules-file cdn-rules.json --yes",
         "hipc cdn rules update zab12cd34ef56 --rules-file cdn-rules.json --remove-others --yes",

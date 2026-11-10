@@ -654,6 +654,10 @@ fn update_member(ctx: &Context<'_>, args: &MemberUpdate) -> Result<Printed> {
         // There is no read of one member: the list holds every member's grants.
         read: members_list(),
         draft_body: None,
+        // A member has no version and the PATCH takes no `If-Match`, so a change another
+        // admin makes between the read and the PATCH is written over unseen: a grant revoked
+        // in that window comes back when `--grant` names it. The help says so; send
+        // `If-Match` here once the route takes one.
         draft_if_match: None,
         noun: "grant",
         owner: format!("the member `{id}`"),

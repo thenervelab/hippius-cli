@@ -3768,6 +3768,61 @@ fn a_launch_whose_ports_cannot_be_opened_is_a_partial_failure() {
     assert_eq!(server.requests().len(), 1);
 }
 
+/// The launch answer's id goes into the firewall `PUT` when it keeps to the `vm_id` rule,
+/// a leading `-` included, and the hint of a failed `PUT` then puts it after `--`, so the
+/// command runs as written. An id that could change the route sends no `PUT`.
+#[test]
+fn a_launched_id_with_a_leading_dash_still_gets_its_rules() {
+    let launched = r#"{"vm_id":"-vm1","status":"pending"}"#;
+    let server = Server::start(vec![
+        route("POST", "/api/compute/vms/", Reply::json(202, launched)),
+        route(
+            "PUT",
+            "/api/compute/vms/-vm1/firewall/",
+            Reply::json(422, r#"{"detail":"bad rule"}"#),
+        ),
+    ]);
+    let run = create(&server, &["--open-ssh", "--no-wait", "--yes"]);
+    assert_eq!(run.code(), Some(1), "{}", run.stderr());
+    let error: Value = serde_json::from_str(run.stderr()).unwrap();
+    assert_eq!(error["error"]["code"], "partial_failure");
+    let hint = error["error"]["hint"].as_str().unwrap();
+    assert!(
+        hint.starts_with("run `hipc compute firewall update --rules-file - --yes -- -vm1` with "),
+        "{hint}"
+    );
+    let sent: Vec<String> = server.requests().iter().map(|r| r.target.clone()).collect();
+    assert_eq!(
+        sent,
+        ["/api/compute/vms/", "/api/compute/vms/-vm1/firewall/"]
+    );
+    // The hint's command parses: its id is not read as a flag.
+    let mut argv = vec![
+        "--dry-run",
+        "compute",
+        "firewall",
+        "update",
+        "--rules-file",
+        "-",
+    ];
+    argv.extend(["--yes", "--", "-vm1"]);
+    let rules = r#"{"rules":[{"protocol":"tcp","ports":["22"]}]}"#;
+    Hipc::new(&Home::new())
+        .stdin(rules.as_bytes())
+        .run(&argv)
+        .dry_ok();
+    let server = Server::start(vec![route(
+        "POST",
+        "/api/compute/vms/",
+        Reply::json(202, r#"{"vm_id":"a/b","status":"pending"}"#),
+    )]);
+    let run = create(&server, &["--open-ssh", "--no-wait", "--yes"]);
+    assert_eq!(run.code(), Some(1), "{}", run.stderr());
+    let error: Value = serde_json::from_str(run.stderr()).unwrap();
+    assert_eq!(error["error"]["code"], "internal");
+    assert_eq!(server.requests().len(), 1);
+}
+
 /// In text mode a launch that opened ports says so, and with `--public-ip` it does not warn
 /// that every port is closed.
 #[test]

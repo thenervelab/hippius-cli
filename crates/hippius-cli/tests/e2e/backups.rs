@@ -200,7 +200,8 @@ fn policy_update_needs_yes_and_says_stored_backups_are_billed() {
     assert!(
         message.contains(
             "every 3600 seconds, with failover `auto`, which restarts it on another server \
-             from its latest backup if its server dies, and"
+             from its latest backup if its server dies, losing what was written after that \
+             backup, and"
         ),
         "{message}"
     );

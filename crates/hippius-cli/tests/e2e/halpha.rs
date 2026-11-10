@@ -18,6 +18,10 @@ const CREDITS: &str = "6185185183518518517";
 /// floor(CREDITS * 9900 / 10000).
 const MIN_CREDITS: &str = "6123333331683333331";
 const KEY: &str = "3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0c";
+/// The hint of an account that signs its own buys: a card top-up, which works for it today,
+/// and no `hipc` version that does not exist.
+const SELF_SIGN_HINT: &str = "run `hipc billing top-up --amount <USD> --method card --yes` \
+     and pay at its `checkout_url`";
 const ADDRESS: &str = "5DfhGyQdFobKM8NsWvEeAKk5EQQgYe9AydgJ7rMB6E1EqRzV";
 /// The note of a purchase row in text mode, which has no `credit_amount` until it completes.
 /// The note a text-mode run prints once the buy is accepted, up to its random key.
@@ -675,9 +679,9 @@ fn the_quote_rules_out_a_buy_before_anything_is_bought() {
         ),
         (
             json!({"custodial": false}),
-            "the account signs its own hAlpha buys (`self_sign`), and this version of `hipc` \
-             cannot sign one yet",
-            "update `hipc` to a version that signs `Marketplace.buy_credits` itself",
+            "the account signs its own hAlpha buys (`self_sign`), which `hipc` cannot sign yet; a \
+             card or Bitcoin top-up, or one in the console, works",
+            SELF_SIGN_HINT,
         ),
         (
             json!({"min_alpha": "2000000000000000000"}),
@@ -749,13 +753,10 @@ fn a_409_self_sign_from_the_buy_is_refused_with_the_signer_hint() {
     let error = top_up(&server, &["--yes"]).fails(1, "conflict");
     assert_eq!(
         error["message"],
-        "the account signs its own hAlpha buys (`self_sign`), and this version of `hipc` cannot \
-         sign one yet"
+        "the account signs its own hAlpha buys (`self_sign`), which `hipc` cannot sign yet; a card \
+         or Bitcoin top-up, or one in the console, works"
     );
-    assert_eq!(
-        error["hint"],
-        "update `hipc` to a version that signs `Marketplace.buy_credits` itself"
-    );
+    assert_eq!(error["hint"], SELF_SIGN_HINT);
     assert_eq!(error["http_status"], 409);
     assert_eq!(error["details"]["code"], "self_sign");
     // Another 409 keeps the API's own words.

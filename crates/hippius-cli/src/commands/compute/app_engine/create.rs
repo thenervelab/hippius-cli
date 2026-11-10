@@ -27,7 +27,7 @@ use super::{APPS, Compose, Hashed, app_path, check_hash, path, read_compose, una
 use crate::cli::{AppCreate, DiskTier, FailoverMode, GuestPoweroff};
 use crate::commands::Printed;
 use crate::commands::compute::{
-    POLL_INTERVAL, STAYS_STOPPED, balance_hint, failover_clause, launch_wait,
+    POLL_INTERVAL, STAYS_STOPPED, backups_clause, balance_hint, launch_wait,
 };
 use crate::commands::poll::{Next, Schedule, Wait, poll_until};
 use crate::context::{Context, Write};
@@ -139,15 +139,12 @@ fn launch_action(args: &AppCreate) -> String {
     if let Some(tier) = args.os_disk_tier {
         let tier = tier.code();
         more.push(format!(
-            "an OS disk on tier `{tier}` or faster, billed at the `{tier}` price"
+            "an OS disk on tier `{tier}` or faster, billed at the `{tier}` price that `hipc \
+             compute prices` shows (`vm_by_os_disk_tier`)"
         ));
     }
     if let Some(interval) = args.backup_interval {
-        let failover = failover_clause(args.failover);
-        more.push(format!(
-            "backups every {}{failover}",
-            phrase::count(u64::from(interval.seconds()), "second")
-        ));
+        more.push(backups_clause(interval, args.failover));
     }
     if args.on_guest_poweroff == Some(GuestPoweroff::Stop) {
         more.push(STAYS_STOPPED.to_owned());
@@ -447,7 +444,7 @@ fn sanitized(error: Error, action: &str, redactions: &[String]) -> Error {
 }
 
 /// The message of a failure from what [`kept_fields`] kept: a redirect says so without its
-/// target; a refusal gives the server's kebab `error`, else its redacted `detail`, else only
+/// target; a refusal gives the server's kebab `error` or `code`, else its redacted `detail`, else only
 /// the status.
 fn refusal_message(action: &str, status: u16, kept: &Value) -> String {
     if (300..400).contains(&status) {
@@ -457,7 +454,7 @@ fn refusal_message(action: &str, status: u16, kept: &Value) -> String {
         );
     }
     let says = |key| kept.get(key).and_then(Value::as_str);
-    match (says("error"), says("detail")) {
+    match (says("error").or_else(|| says("code")), says("detail")) {
         (Some(code), _) => format!("cannot {action}: the API says {}", phrase::quote(code)),
         (None, Some(detail)) => format!("cannot {action}: the API says {}", phrase::quote(detail)),
         (None, None) => format!(
@@ -475,7 +472,7 @@ fn is_request_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// The fields of an error body kept when the request carried secrets: `error` when it is a
+/// The fields of an error body kept when the request carried secrets: `error` or `code` when it is a
 /// kebab code ([`checked_text`]), `detail` and `source` as redacted text, `line` as a number,
 /// and in `issues`, each one's `rule` (a kebab code), `line` and `column`, and its redacted
 /// `message` and `hint`. A number is redacted as [`printed_number`] does. A body that is not an
@@ -487,7 +484,10 @@ fn kept_fields(details: Value, redactions: &[String]) -> Option<Value> {
     let mut kept = Map::new();
     for (key, value) in fields {
         let value = match (key.as_str(), value) {
-            ("error", Value::String(code)) if is_kebab(&code) => checked_text(code, redactions),
+            // Compute error bodies carry their slug in `error` or `code` (`refused_as`).
+            ("error" | "code", Value::String(code)) if is_kebab(&code) => {
+                checked_text(code, redactions)
+            }
             ("detail" | "source", Value::String(text)) => {
                 Value::String(redact_text(&text, redactions))
             }

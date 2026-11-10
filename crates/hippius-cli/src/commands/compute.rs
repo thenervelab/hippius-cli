@@ -32,9 +32,9 @@ use hippius::{Client, Code, Error, Method, Request, Response, Result, phrase};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
-    BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, Compute, DedicatedDisk, ExposeMode,
-    ExposeProtocol, ExposureCreate, Exposures, FailoverMode, Firewall, FirewallUpdate,
-    GuestPoweroff, PowerPolicy, PublicIp, SshKeys, VmCreate, Vms,
+    BackupInterval, BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, Compute,
+    DedicatedDisk, ExposeMode, ExposeProtocol, ExposureCreate, Exposures, FailoverMode, Firewall,
+    FirewallUpdate, GuestPoweroff, PowerPolicy, PublicIp, SshKeys, VmCreate, Vms,
 };
 use crate::commands::poll::{Next, Schedule, Wait, poll_until};
 use crate::commands::replace::{self, Entry, Found, Replace, replace_list};
@@ -48,20 +48,6 @@ use crate::output::Mode;
 /// How often a launch is polled, 2 seconds: a launch takes on the order of a
 /// minute, so a shorter interval only adds requests.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(2);
-
-/// What the question of a launch with backups says of its failover, after the backups:
-/// `auto` restarts the VM on another server from its latest backup, losing what was written
-/// since. Shared by `hipc compute vms create` and `hipc compute app-engine apps create`.
-pub(crate) fn failover_clause(failover: Option<FailoverMode>) -> &'static str {
-    match failover {
-        Some(FailoverMode::Auto) => {
-            " and failover `auto`, which restarts it on another server from its latest backup \
-             if its server dies, losing what was written after that backup"
-        }
-        Some(FailoverMode::Manual) => " and failover `manual`",
-        None => "",
-    }
-}
 
 pub(crate) fn run(ctx: &Context<'_>, command: &Compute) -> Result<Printed> {
     let get = |path: &str, action: &str| {
@@ -304,6 +290,31 @@ fn vm_delete(ctx: &Context<'_>, client: &Client, vm_id: &str) -> Result<Printed>
 /// is then billed while it sits stopped.
 pub(crate) const STAYS_STOPPED: &str = "a power-off from inside the VM leaving it stopped, and \
                                         billed as a stopped VM until it is started or deleted";
+
+/// The launch clause of `--backup-interval`, for the VM and the app questions: how often, the
+/// failover, and that stored backups are billed, so neither question can leave the bill out.
+pub(crate) fn backups_clause(interval: BackupInterval, failover: Option<FailoverMode>) -> String {
+    let failover = failover.map_or(String::new(), |mode| {
+        format!(" and {}", failover_clause(mode))
+    });
+    format!(
+        "backups every {}{failover}, stored backups billed per GB-hour at the price that `hipc \
+         compute backups options` shows",
+        phrase::count(u64::from(interval.seconds()), "second")
+    )
+}
+
+/// The words that name a backup failover, for the launch questions and the backup policy
+/// update: `auto` says what it loses.
+const fn failover_clause(mode: FailoverMode) -> &'static str {
+    match mode {
+        FailoverMode::Auto => {
+            "failover `auto`, which restarts it on another server from its latest backup if its \
+             server dies, losing what was written after that backup"
+        }
+        FailoverMode::Manual => "failover `manual`",
+    }
+}
 
 /// What a VM delete leaves billed (swagger, `DELETE /api/compute/vms/{vm_id}/`), for its
 /// question: the VM's time stops; an attached address goes with the VM (a deleted VM's
@@ -724,10 +735,12 @@ fn open_launched_ports(
     ports: &[u16],
     public_ip: bool,
 ) -> Result<()> {
+    // The id goes into the PUT's path, so it is held to the rule of the `vm_id` argument; a
+    // leading `-` is fine there, and only matters to a printed command (the hint below).
     let vm_id = launched
         .get("vm_id")
         .and_then(Value::as_str)
-        .and_then(|id| crate::cli::as_argument(id, crate::cli::vm_id));
+        .filter(|id| crate::cli::vm_id(id).is_ok());
     let Some(vm_id) = vm_id else {
         return Err(Error::internal(
             "the launch answer has no usable `vm_id`, so the firewall rule was not set",
@@ -769,8 +782,8 @@ fn open_launched_ports(
                 hippius::SideEffects::Partial,
             )
             .with_hint(format!(
-                "run `hipc compute firewall update {vm_id} --rules-file - --yes` with `{}` on \
-                 stdin",
+                "run `{}` with `{}` on stdin",
+                crate::cli::with_id("compute firewall update", vm_id, "--rules-file - --yes"),
                 open_ports_rules(ports)
             )))
         }
@@ -782,7 +795,8 @@ fn open_launched_ports(
 fn inbound_blocked(vm_id: &str) -> String {
     format!(
         "all inbound traffic to the address is blocked until a firewall rule accepts it, which \
-         `hipc compute firewall update {vm_id} --rules-file <path>` adds"
+         `{}` adds",
+        crate::cli::with_id("compute firewall update", vm_id, "--rules-file <path>")
     )
 }
 
@@ -891,12 +905,7 @@ fn launch_action(args: &VmCreate, dedicated: Option<Dedicated>) -> String {
         ));
     }
     if let Some(interval) = args.backup_interval {
-        let failover = failover_clause(args.failover);
-        clauses.push(format!(
-            "backups every {}{failover}, stored backups billed per GB-hour at the price that \
-             `hipc compute backups options` shows",
-            phrase::count(u64::from(interval.seconds()), "second")
-        ));
+        clauses.push(backups_clause(interval, args.failover));
     }
     if args.on_guest_poweroff == Some(GuestPoweroff::Stop) {
         clauses.push(STAYS_STOPPED.to_owned());
@@ -1340,8 +1349,9 @@ fn firewall_update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed> 
         let read_revision = args.base_revision.is_none() && !args.remove_others;
         match (error.http_status(), read_revision) {
             (Some(409), false) => error.with_hint(format!(
-                "run `hipc compute firewall get {vm_id}`, edit the rules it prints, and pass \
-                 its `revision` as `--base-revision`"
+                "run `{}`, edit the rules it prints, and pass its `revision` as \
+                 `--base-revision`",
+                crate::cli::with_id("compute firewall get", vm_id, "")
             )),
             (Some(409), true) => {
                 let again = phrase::command(ctx.args());
@@ -1707,7 +1717,7 @@ fn exposures(ctx: &Context<'_>, command: &Exposures) -> Result<Printed> {
                 Method::Delete,
                 format!("{}{exposure_id}/", expose_path(vm_id)),
             )
-            .listed_by(format!("hipc compute exposures list {vm_id}"))
+            .listed_by(crate::cli::with_id("compute exposures list", vm_id, ""))
             .about(format!(
                 "take down the exposure `{exposure_id}` of the VM `{vm_id}`"
             ));
@@ -1867,15 +1877,9 @@ fn policy_update(ctx: &Context<'_>, client: &Client, args: &BackupPolicyUpdate) 
     let failover = match args.failover {
         Some(mode) => {
             body.insert("failover_mode".to_owned(), mode.code().into());
-            match mode {
-                FailoverMode::Auto => {
-                    ", with failover `auto`, which restarts it on another server from its \
-                     latest backup if its server dies"
-                }
-                FailoverMode::Manual => ", with failover `manual`",
-            }
+            format!(", with {}", failover_clause(mode))
         }
-        None => "",
+        None => String::new(),
     };
     let request = Request::new(Method::Put, backup_path(vm_id))
         .json(&Value::Object(body))

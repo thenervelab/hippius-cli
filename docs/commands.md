@@ -930,6 +930,8 @@ Replace a member's whole grant list with the --grant flags given; needs --yes, a
 
 Nothing is merged with the current list: a grant the member has now that the --grant flags leave out is refused, unless --remove-others is passed to remove it. To add one grant, read the member's grants with hipc account members list, then pass all of them. Without --grant the grants are kept, and only --manage-team and --billing-permission change.
 
+The route takes no version or If-Match, so the grants are written whole, after a read unless --remove-others is passed: a change another admin makes before the write is lost, and a grant revoked meanwhile is restored if a --grant flag names it.
+
 Usage: hipc account members update [OPTIONS] <MEMBER_ID>
 
 Arguments:
@@ -2464,7 +2466,7 @@ Top up the balance by card, Bitcoin, or hAlpha; needs --yes
 
 A card or Bitcoin top-up takes --amount in US dollars and prints its checkout_url. Nothing is paid until a person pays there; then the balance grows by the amount. hipc does not wait for the payment: hipc billing balance shows it. A member tops up only a billing account, from --billing, HIPPIUS_BILLING, or hipc account billing-accounts use; without one a membership is refused with account_scope_unsupported.
 
-A hAlpha top-up takes --alpha, the hAlpha to spend, and converts it into credits on chain (1 credit = 1 USD). It reads GET /api/billing/native/quote/ and the purchases first, and refuses when the quote is stale or not enabled, when --alpha is below its min_alpha, when --alpha and the 0.01 hAlpha kept for the fee are more than its native_balance, when a purchase from the last 15 minutes is still in flight, or when the account signs its own buys (custodial false), which this version of hipc cannot do yet. The question names the address whose hAlpha is spent, the credits the quote gives, rounded down, and the minimum it accepts, 1 percent less; a price that falls further makes the chain refuse the buy. A person who was asked has the purchases read again before the buy. Then it sends POST /api/billing/native/buy/ with an Idempotency-Key, and follows GET /api/billing/native/purchases/ every 3 seconds until the purchase is completed or failed, for at most --wait-timeout. A run that stops first prints the purchase as it stands and exits 0; a purchase the chain refused is partial_failure, with the purchase on stdout. The key is printed as idempotency_key. A buy that may have reached the server is retried with the command its error names, which adds --min-credits and --idempotency-key: the retry sends the amounts unchanged, so the API answers it as the first buy, and reads only the quote first, refusing a --min-credits below 90 percent of what --alpha buys now, since under a key the API has not seen it is a new buy. The routes act on the signed-in user's own hAlpha, and the credits go to the user's own balance: a membership (from a flag, a variable, or the profile) is refused, and so is a project from anywhere or a billing account from a flag or a variable; a billing account stored in the profile is skipped. USDC and TAO top-ups stay in the console.
+A hAlpha top-up takes --alpha, the hAlpha to spend, and converts it into credits on chain (1 credit = 1 USD). It reads GET /api/billing/native/quote/ and the purchases first, and refuses when the quote is stale or not enabled, when --alpha is below its min_alpha, when --alpha and the 0.01 hAlpha kept for the fee are more than its native_balance, when a purchase from the last 15 minutes is still in flight, or when the account signs its own buys (custodial false), which hipc cannot sign yet. The question names the address whose hAlpha is spent, the credits the quote gives, rounded down, and the minimum it accepts, 1 percent less; a price that falls further makes the chain refuse the buy. A person who was asked has the purchases read again before the buy. Then it sends POST /api/billing/native/buy/ with an Idempotency-Key, and follows GET /api/billing/native/purchases/ every 3 seconds until the purchase is completed or failed, for at most --wait-timeout. A run that stops first prints the purchase as it stands and exits 0; a purchase the chain refused is partial_failure, with the purchase on stdout. The key is printed as idempotency_key. A buy that may have reached the server is retried with the command its error names, which adds --min-credits and --idempotency-key: the retry sends the amounts unchanged, so the API answers it as the first buy, and reads only the quote first, refusing a --min-credits below 90 percent of what --alpha buys now, since under a key the API has not seen it is a new buy. The routes act on the signed-in user's own hAlpha, and the credits go to the user's own balance: a membership (from a flag, a variable, or the profile) is refused, and so is a project from anywhere or a billing account from a flag or a variable; a billing account stored in the profile is skipped. USDC and TAO top-ups stay in the console.
 
 Usage: hipc billing top-up [OPTIONS] --method <METHOD>
 
@@ -3244,7 +3246,7 @@ Examples:
 ```text
 Every S3 token, master and sub
 
-Secrets are never shown again; secret_preview is the last four characters.
+The master and the sub tokens are two lists, read whole and printed as one: every page of each is followed, up to the caps --all has, so this list takes no page flags, and next_page_token is null. Secrets are never shown again; secret_preview is the last four characters.
 
 Usage: hipc s3 tokens list
 
@@ -7583,7 +7585,7 @@ Examples:
 ```text
 Replace the whole rule list with a file's; needs --yes, and --remove-others to drop or move a rule
 
-A rule the zone has now that the file leaves out or moves is refused unless --remove-others is passed.
+A rule the zone has now that the file leaves out or moves is refused unless --remove-others is passed. The route takes no version or If-Match, so the rules are written whole, after a read unless --remove-others is passed: a change someone else makes before the write is lost.
 
 Usage: hipc cdn rules update [OPTIONS] --rules-file <PATH> <ZONE_ID>
 
@@ -8311,7 +8313,7 @@ Examples:
 ```text
 Replace every item of the list with the file's; needs --yes, and --remove-others to drop an item
 
-An item the list has now that the file leaves out is refused unless --remove-others is passed.
+An item the list has now that the file leaves out is refused unless --remove-others is passed. The route takes no version or If-Match, so the items are written whole, after a read unless --remove-others is passed: an item someone else adds before the write is lost, and one removed meanwhile comes back if the file names it.
 
 Usage: hipc cdn lists items update [OPTIONS] --items-file <PATH> <LIST_NAME>
 

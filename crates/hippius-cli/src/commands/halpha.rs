@@ -279,11 +279,17 @@ pub(crate) fn min_credits(credits: u128) -> u128 {
 fn self_sign(error: Error) -> Error {
     error
         .with_message(
-            "the account signs its own hAlpha buys (`self_sign`), and this version of `hipc` \
-             cannot sign one yet",
+            "the account signs its own hAlpha buys (`self_sign`), which `hipc` cannot sign yet; a \
+             card or Bitcoin top-up, or one in the console, works",
         )
-        .with_hint("update `hipc` to a version that signs `Marketplace.buy_credits` itself")
+        .with_hint(SELF_SIGN_HINT)
 }
+
+/// [`self_sign`]'s hint: a top-up that works for such an account today, one action (tenet 15);
+/// the message names the others. No `hipc` release signs `Marketplace.buy_credits`, so
+/// neither names one.
+const SELF_SIGN_HINT: &str = "run `hipc billing top-up --amount <USD> --method card --yes` \
+     and pay at its `checkout_url`";
 
 /// The buy, with the `min_credits` it sends and its key.
 fn buy_request(alpha: Planck, min_credits: &str, key: &str) -> Request {

@@ -403,6 +403,9 @@ pub(crate) struct AclUpdate {
 pub(crate) enum Tokens {
     /// Every S3 token, master and sub
     ///
+    /// The master and the sub tokens are two lists, read whole and printed as one: every page
+    /// of each is followed, up to the caps --all has, so this list takes no page flags, and
+    /// next_page_token is null.
     /// Secrets are never shown again; secret_preview is the last four characters.
     #[command(after_help = examples(&[
         "hipc s3 tokens list",
