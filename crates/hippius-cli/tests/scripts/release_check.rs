@@ -1,7 +1,10 @@
-//! The live release check, `scripts/release-check.sh`. Only its refusals run here: every
-//! other check needs a real token and the live API.
+//! The live release check, `scripts/release-check.sh`. Its checks need a real token and the
+//! live API, so here it runs only to its refusals, or against a stand-in `hipc` that reaches
+//! no server.
 
 use std::process::Command;
+
+use crate::support::{TempDir, script};
 
 const CHECK: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -37,4 +40,53 @@ fn xtrace_is_refused_before_the_token_is_read() {
         );
         assert!(!stderr.contains(TOKEN), "{flag:?}: {stderr}");
     }
+}
+
+/// A run reports every group of checks, whatever fails: here a `hipc` that answers only
+/// `schema` and fails every other command, so the checks fail and files `hipc` should have
+/// written are missing. The run still reaches the last group and the summary, exits 1, and
+/// prints the token nowhere. The stand-in reaches no server: it never connects.
+#[test]
+fn a_run_where_everything_fails_still_reports_every_group() {
+    let dir = TempDir::new();
+    let hipc = dir.path().join("hipc");
+    script(
+        dir.path(),
+        "hipc",
+        r#"case "$*" in
+schema) echo '{"schema_version":3,"commands":[{"path":["version"],"effect":"read_only","args":[],"flags":[]}],"global_flags":[]}' ;;
+*) exit 1 ;;
+esac"#,
+    );
+    let tmp = dir.path().join("tmp");
+    std::fs::create_dir(&tmp).expect("create the temp directory");
+
+    let out = Command::new("/bin/bash")
+        .arg(CHECK)
+        .arg(&hipc)
+        .args(["0.0.0", "x86_64-unknown-linux-musl"])
+        .env("HIPPIUS_TOKEN", TOKEN)
+        .env("TMPDIR", &tmp)
+        .env_remove("RUNNER_TEMP")
+        .output()
+        .expect("run the release check");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("\n== every command, and the output ==\n"),
+        "the last group did not run:\n{stdout}"
+    );
+    let summary = stdout.lines().last().unwrap_or_default();
+    assert!(
+        summary.starts_with("== ") && summary.contains(" failed, "),
+        "{summary}"
+    );
+    assert!(!stdout.contains(TOKEN) && !stderr.contains(TOKEN));
+    // The temporary directory, which held the stored token, is gone.
+    let left: Vec<_> = std::fs::read_dir(&tmp)
+        .expect("read the temp directory")
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
 }

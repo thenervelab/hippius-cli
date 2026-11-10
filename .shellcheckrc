@@ -1,0 +1,4 @@
+# The scripts source scripts/lib.sh from their own directory; follow it, so a script is
+# checked with the helpers it uses whether or not lib.sh is named on the command line.
+source-path=SCRIPTDIR
+external-sources=true

@@ -74,13 +74,9 @@
 # arrays are expanded with ${a[@]+"${a[@]}"} under `set -u`.
 set -euo pipefail
 
-# Tracing would print the token the moment it is read, and every secret after it.
-case "$-" in
-*x*)
-  echo "manual_test: refusing to run with xtrace (bash -x or SHELLOPTS=xtrace): it prints the token" >&2
-  exit 2
-  ;;
-esac
+# shellcheck source=lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+refuse_xtrace manual_test
 
 # Byte semantics for sed and grep on hipc's raw output.
 export LC_ALL=C
@@ -2317,19 +2313,9 @@ cluster_dry_runs() {
     -- hipc --output text compute kubernetes clusters delete "$cluster" --yes --dry-run
 }
 
-# The console's public test vector for a cluster key file, as scripts/release-check.sh
-# uses it: the seeds 11..42 and 1..32, never a real key. Both seeds are in the mask, and
-# the teardown scans every step's raw output for them (see scan_key_outputs).
-TEST_KEY_SIGN_SEED="CwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJicoKSo="
-TEST_KEY_BOX_SEED="AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="
-write_test_cluster_key() {
-  # The first write creates the file under umask 077, so it is 0600 as hipc requires.
-  printf '{"version":1,"kind":"hippius-k8s-cluster-key",' >"$1"
-  printf '"sign_secret_key":"%s","sign_public_key":"%s",' \
-    "$TEST_KEY_SIGN_SEED" "VCgh6VKd0a0kO/3/XGQKZRlLSBaYemUN6GHXzp5BemM=" >>"$1"
-  printf '"box_secret_key":"%s","box_public_key":"%s"}\n' \
-    "$TEST_KEY_BOX_SEED" "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw=" >>"$1"
-}
+# The cluster key is the test vector from scripts/lib.sh, written under the script's umask
+# 077. Both seeds are in the mask, and the teardown scans every step's raw output for them
+# (see scan_key_outputs).
 # The key path is built after begin_scenario sets H; a path under an earlier home would
 # still pass the catalogue pin, where every home is `~`, so it is checked at run time.
 key_in_home() { [[ "$1" == "$H/"* && -f "$1" ]]; }

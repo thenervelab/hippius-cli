@@ -25,13 +25,9 @@
 #   prints SKIP when the account has none.
 set -euo pipefail
 
-# Tracing would print the token the moment it is read, and every command that holds it.
-case "$-" in
-*x*)
-  echo "release-check: refusing to run with xtrace (bash -x or SHELLOPTS=xtrace): it prints the token" >&2
-  exit 2
-  ;;
-esac
+# shellcheck source=lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+refuse_xtrace release-check
 
 # Byte semantics for the 300-byte cut and for grep on raw output.
 export LC_ALL=C
@@ -110,6 +106,10 @@ pass=0
 fail=0
 skip=0
 n=0
+# The accounts the caller owns and is a member of, which account_checks reads for the
+# groups after it.
+OWN=""
+MEMBER=""
 
 result() {
   local status="$1" name="$2" detail="$3"
@@ -987,11 +987,7 @@ kubernetes_key_checks() {
   local key="$WORK/hippius-cluster-check.key" open="$WORK/open.key"
   (
     umask 077
-    printf '%s\n' '{"version":1,"kind":"hippius-k8s-cluster-key",
-      "sign_secret_key":"CwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJicoKSo=",
-      "sign_public_key":"VCgh6VKd0a0kO/3/XGQKZRlLSBaYemUN6GHXzp5BemM=",
-      "box_secret_key":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
-      "box_public_key":"B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw="}' >"$key"
+    write_test_cluster_key "$key"
   )
   cp -- "$key" "$open" && chmod 644 "$open"
   offline "kubeconfig --dry-run" 0 --dry-run compute kubernetes clusters kubeconfig 7 \
@@ -2064,24 +2060,41 @@ final_checks() {
   check "no escape byte in any output" "$esc files" test "$esc" = 0
 }
 
-guard_checks
-baseline
-auth_checks
-account_checks
-storage_checks
-compute_catalog_checks
-vm_checks
-database_checks
-kubernetes_checks
-app_engine_checks
-cdn_checks
-support_checks
-network_checks
-membership_checks
-dry_run_checks
-refusal_checks
-s3_configure_checks
-final_checks
+# group <function>: runs one group of checks in a subshell. Inside it `set -e` still stops
+# the group at a command that fails outside a check, but not the run: that failure is one
+# FAIL line, and the next group runs, so every group reports and the final token scan always
+# comes. What the groups share in variables (the counters, the run number that names each
+# capture, and the two account ids) comes back through $WORK/tally, which the subshell
+# writes however it ends.
+group() {
+  local name="$1" status
+  set +e
+  (
+    set -e
+    trap 'printf "%s\n" "$pass" "$fail" "$skip" "$n" "$OWN" "$MEMBER" >"$WORK/tally"' EXIT
+    "$name"
+  )
+  status=$?
+  set -e
+  {
+    read -r pass
+    read -r fail
+    read -r skip
+    read -r n
+    read -r OWN
+    read -r MEMBER
+  } <"$WORK/tally"
+  if [[ "$status" != 0 ]]; then
+    result FAIL "$name" "stopped at a command that failed (exit $status); its later checks did not run"
+  fi
+}
+
+for name in guard_checks baseline auth_checks account_checks storage_checks \
+  compute_catalog_checks vm_checks database_checks kubernetes_checks app_engine_checks \
+  cdn_checks support_checks network_checks membership_checks dry_run_checks \
+  refusal_checks s3_configure_checks final_checks; do
+  group "$name"
+done
 
 echo "== $pass passed, $fail failed, $skip skipped =="
 [[ "$fail" == 0 ]]
