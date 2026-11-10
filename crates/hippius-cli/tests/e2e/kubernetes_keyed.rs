@@ -10,7 +10,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde_json::{Value, json};
 
 use crate::common::{
-    CLUSTER_KEY, CLUSTER_SECRETS, Hipc, Home, MEMBER, OTHER_KEY, Recorded, Reply, Route, Run,
+    self, CLUSTER_KEY, CLUSTER_SECRETS, Hipc, Home, MEMBER, OTHER_KEY, Recorded, Reply, Route, Run,
     Server, route, route_each,
 };
 
@@ -168,14 +168,6 @@ fn kubeconfig_args<'a>(key: &'a str, output: &'a str) -> Vec<&'a str> {
     ]
 }
 
-fn sent(server: &Server) -> Vec<String> {
-    server
-        .requests()
-        .iter()
-        .map(|r| format!("{} {}", r.method, r.path()))
-        .collect()
-}
-
 fn message(error: &Value) -> &str {
     error["message"].as_str().expect("the message is a string")
 }
@@ -228,7 +220,7 @@ fn kubeconfig_is_verified_opened_and_written_to_a_new_private_file() {
     let mode = std::fs::metadata(&output).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
     assert_eq!(
-        sent(&server),
+        server.calls(),
         [
             "GET /api/kubernetes/clusters/42/",
             "GET /api/kubernetes/clusters/42/secrets/"
@@ -436,7 +428,8 @@ fn another_clusters_key_file_is_usage_after_the_cluster_read() {
         );
     }
     assert!(
-        sent(&server)
+        server
+            .calls()
             .iter()
             .all(|r| r == "GET /api/kubernetes/clusters/42/")
     );
@@ -551,7 +544,7 @@ fn scale_args<'a>(count: &'a str, key: Option<&'a str>, extra: &[&'a str]) -> Ve
 fn scale_body(server: &Server) -> Value {
     let requests = server.requests();
     let post: Vec<&Recorded> = requests.iter().filter(|r| r.method == "POST").collect();
-    assert_eq!(post.len(), 1, "{:?}", sent(server));
+    assert_eq!(post.len(), 1, "{:?}", server.calls());
     assert_eq!(
         post[0].path(),
         "/api/kubernetes/clusters/42/node-pools/3/scale/"
@@ -569,7 +562,7 @@ fn a_scale_up_signs_one_add_node_per_node_added() {
     assert_eq!(run.ok(), json!({ "pool": { "id": 3 }, "operations": [] }));
     // The pools and the operations are read again after the question, then signed.
     assert_eq!(
-        sent(&server),
+        server.calls(),
         [
             "GET /api/kubernetes/clusters/42/",
             "GET /api/kubernetes/clusters/42/node-pools/",
@@ -607,7 +600,7 @@ fn a_scale_down_signs_nothing_and_needs_no_key_file() {
     let (home, server) = (home(), Server::start(routes(&json!([]))));
     hipc(&home, &server, &scale_args("1", None, &["--yes"])).ok();
     assert_eq!(
-        sent(&server),
+        server.calls(),
         [
             "GET /api/kubernetes/clusters/42/",
             "GET /api/kubernetes/clusters/42/node-pools/",
@@ -694,7 +687,7 @@ fn a_scale_or_replace_without_yes_sends_only_its_reads_and_names_the_cost() {
             "{args:?}"
         );
     }
-    assert!(sent(&server).iter().all(|r| r.starts_with("GET ")));
+    assert!(server.calls().iter().all(|r| r.starts_with("GET ")));
 }
 
 #[test]
@@ -740,7 +733,7 @@ fn a_scale_that_cannot_be_signed_or_changes_nothing_is_refused_after_the_reads()
         error["hint"],
         "run `hipc compute kubernetes node-pools list 42` to see what exists"
     );
-    assert!(sent(&server).iter().all(|r| r.starts_with("GET ")));
+    assert!(server.calls().iter().all(|r| r.starts_with("GET ")));
 }
 
 #[test]
@@ -765,7 +758,7 @@ fn a_replacement_signs_an_add_node_that_names_the_node_it_replaces() {
         json!({ "id": 20, "kind": "add_node", "state": "queued" })
     );
     assert_eq!(
-        sent(&server),
+        server.calls(),
         [
             "GET /api/kubernetes/clusters/42/",
             "GET /api/kubernetes/clusters/42/node-pools/",
@@ -951,6 +944,9 @@ fn a_bad_count_or_node_name_is_usage_with_zero_requests() {
 /// reads: it is still usage, since the caller must name another path, and no file is left.
 #[test]
 fn a_kubeconfig_directory_that_cannot_be_written_is_usage() {
+    if !common::permission_bits_apply() {
+        return;
+    }
     let (home, server) = (home(), Server::start(routes(&json!([]))));
     let locked = home.path().join("locked");
     std::fs::create_dir(&locked).expect("create the directory");
@@ -1089,8 +1085,8 @@ fn assert_changed(home: &Home, server: &Server, args: &[&str]) {
         "{error}"
     );
     assert_eq!(error["side_effects"], "none");
-    assert_eq!(server.requests().len(), 5, "{:?}", sent(server));
-    assert!(sent(server).iter().all(|r| r.starts_with("GET ")));
+    assert_eq!(server.requests().len(), 5, "{:?}", server.calls());
+    assert!(server.calls().iter().all(|r| r.starts_with("GET ")));
 }
 
 /// Another add queued between the read for the question and the read before signing changes
@@ -1388,7 +1384,7 @@ fn assert_refused_before_the_question(home: &Home, servers: &[(Server, String)])
             assert_eq!(error["side_effects"], "none");
         }
         assert_eq!(server.requests().len(), 6, "{says}");
-        assert!(sent(server).iter().all(|r| r.starts_with("GET ")));
+        assert!(server.calls().iter().all(|r| r.starts_with("GET ")));
     }
 }
 
@@ -1614,7 +1610,7 @@ fn a_signature_is_dated_by_the_server_clock_when_it_agrees_with_the_local_one() 
         );
         assert_eq!(error["side_effects"], "none");
         assert_eq!(server.requests().len(), 5);
-        assert!(sent(&server).iter().all(|r| r.starts_with("GET ")));
+        assert!(server.calls().iter().all(|r| r.starts_with("GET ")));
     }
 }
 
@@ -1715,7 +1711,8 @@ fn a_signed_post_answered_5xx_or_unreadable_is_partial_with_the_check_first_hint
                 error["hint"], "check whether the change was made before running the command again",
                 "{suffix}: {error}"
             );
-            let posts = sent(&server)
+            let posts = server
+                .calls()
                 .into_iter()
                 .filter(|r| r.starts_with("POST "))
                 .count();

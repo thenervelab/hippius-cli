@@ -8,10 +8,9 @@ use std::os::unix::fs::PermissionsExt as _;
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, draft, route, route_each};
-
-const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
-const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
+use crate::common::{
+    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Run, Server, draft, route, route_each,
+};
 
 const VALIDATE: &str = "/api/compute/app-engine/validate/";
 const APPS: &str = "/api/compute/app-engine/apps/";
@@ -366,7 +365,7 @@ fn the_compose_then_the_secrets_file_then_the_token_are_checked_in_order() {
     let latin1 = path_text(&files.home.file("latin1.yaml", b"name: caf\xe9\n"));
     let open = path_text(&files.home.file("open.json", secrets_json().as_bytes()));
     std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let no_token = || Hipc::new(&files.home).env("HIPPIUS_API_URL", server.url());
+    let no_token = || Hipc::tokenless(&files.home, &server);
     let error = no_token()
         .run(&create_args(&latin1, &["--secrets-file", &open, "--yes"]))
         .fails(2, "usage");

@@ -4,10 +4,9 @@
 use serde_json::{Value, json};
 
 use crate::common::{
-    Hipc, Home, MEMBER, Recorded, Reply, Route, Run, Server, draft, one_request_dry_run, route,
+    Hipc, Home, MEMBER, PROJECT, Recorded, Reply, Route, Run, Server, draft, one_request_dry_run,
+    parsed, route,
 };
-
-const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
 
 /// The signature of the presigned snapshot link in [`backups`].
 const SIGNATURE: &str = "X-Amz-Signature=5e3c0ffee";
@@ -285,20 +284,8 @@ fn hipc(server: &Server, args: &[&str]) -> Run {
     Hipc::against(&Home::new(), server).run(&argv(args))
 }
 
-fn parsed(text: &str) -> Value {
-    serde_json::from_str(text).expect("a JSON fixture")
-}
-
 fn message(error: &Value) -> &str {
     error["message"].as_str().expect("the message is a string")
-}
-
-fn sent(server: &Server) -> Vec<String> {
-    server
-        .requests()
-        .iter()
-        .map(|r| format!("{} {}", r.method, r.path()))
-        .collect()
 }
 
 #[test]
@@ -468,7 +455,7 @@ fn reads_map_their_errors_and_name_the_list() {
             "{args:?}"
         );
     }
-    assert!(sent(&server).iter().all(|r| r.starts_with("GET ")));
+    assert!(server.calls().iter().all(|r| r.starts_with("GET ")));
 }
 
 /// A 404 on a write names the list that holds what it named, and a 409 is `conflict`.
@@ -527,7 +514,7 @@ fn an_operation_the_list_does_not_hold_is_not_found() {
         );
     }
     assert_eq!(
-        sent(&server),
+        server.calls(),
         [
             "GET /api/kubernetes/clusters/7/operations/",
             "GET /api/kubernetes/clusters/7/operations/"
@@ -623,7 +610,7 @@ fn a_resume_of_a_local_data_block_is_refused_before_the_question() {
             );
             assert_eq!(error["side_effects"], "none");
         }
-        assert!(sent(&server).iter().all(|r| r.starts_with("GET ")));
+        assert!(server.calls().iter().all(|r| r.starts_with("GET ")));
         hipc(&server, &["operations", "cancel", "7", "12", "--yes"]).ok();
         assert_eq!(server.requests().len(), 4);
     }
@@ -656,7 +643,7 @@ fn a_queued_operation_is_not_blocked_on_data_loss() {
         );
         hipc(&server, &["operations", "resume", "7", "12", "--yes"]).ok();
         assert_eq!(
-            sent(&server),
+            server.calls(),
             [
                 "GET /api/kubernetes/clusters/7/operations/",
                 "GET /api/kubernetes/clusters/7/operations/",
@@ -702,7 +689,7 @@ fn the_question_names_the_state_of_the_operation() {
         );
         hipc(&server, &["operations", verb, "7", "12", "--yes"]).ok();
         assert_eq!(
-            sent(&server),
+            server.calls(),
             [
                 "GET /api/kubernetes/clusters/7/operations/".to_owned(),
                 "GET /api/kubernetes/clusters/7/operations/".to_owned(),
@@ -772,7 +759,7 @@ fn a_state_the_verb_cannot_act_on_is_a_conflict_before_the_question() {
             assert_eq!(error["side_effects"], "none", "{verb} {op}");
         }
         assert_eq!(
-            sent(&server),
+            server.calls(),
             [
                 "GET /api/kubernetes/clusters/7/operations/",
                 "GET /api/kubernetes/clusters/7/operations/",
@@ -795,7 +782,7 @@ fn a_state_the_verb_cannot_act_on_is_a_conflict_before_the_question() {
         ]);
         hipc(&server, &["operations", "cancel", "7", "12", "--yes"]).ok();
         assert_eq!(
-            sent(&server),
+            server.calls(),
             [
                 "GET /api/kubernetes/clusters/7/operations/",
                 "POST /api/kubernetes/clusters/7/operations/12/cancel/",
@@ -845,13 +832,12 @@ fn a_write_without_yes_writes_nothing_and_says_what_it_would_do() {
             "{args:?}"
         );
         // Without a token, the token is checked before the read and the question.
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&Home::new(), &server)
             .run(&argv(args))
             .fails(1, "auth");
     }
     assert_eq!(
-        sent(&server),
+        server.calls(),
         [
             "GET /api/kubernetes/clusters/7/",
             "GET /api/kubernetes/clusters/7/operations/",
@@ -1113,8 +1099,7 @@ fn backups_need_reveal_and_print_the_links_on_stdout_only() {
     )]);
     let error = hipc(&server, &["backups", "list", "7"]).fails(2, "reveal_required");
     assert!(error["hint"].as_str().expect("a hint").contains("--reveal"));
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&argv(&["backups", "list", "7"]))
         .fails(2, "reveal_required");
     let dry = hipc(&server, &["backups", "list", "7", "--dry-run"]).ok();

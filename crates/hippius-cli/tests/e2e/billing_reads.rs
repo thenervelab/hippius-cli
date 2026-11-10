@@ -4,10 +4,7 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, route};
-
-/// A billing account the auto-reload reads take beside a membership.
-const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
+use crate::common::{BILLING, Hipc, Home, MEMBER, Reply, Server, draft, route};
 
 /// The compute summary, in the shape the console reads, with a base unit amount past
 /// `u64` and `f64`.
@@ -671,10 +668,7 @@ fn the_reads_need_a_token_and_dry_run_sends_nothing() {
         &["drive", "subscription", "history"],
         &["s3", "subscription", "history"],
     ] {
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
-            .run(args)
-            .fails(1, "auth");
+        Hipc::tokenless(&home, &server).run(args).fails(1, "auth");
         let mut dry = vec!["--dry-run"];
         dry.extend_from_slice(args);
         let doc = Hipc::against(&home, &server).run(&dry).ok();

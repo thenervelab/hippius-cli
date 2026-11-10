@@ -39,9 +39,7 @@ fn prices_need_no_token_and_print_as_sent() {
         "/api/cdn/prices/",
         Reply::json(200, prices),
     )]);
-    let run = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
-        .run(&["cdn", "prices"]);
+    let run = Hipc::tokenless(&Home::new(), &server).run(&["cdn", "prices"]);
     assert_eq!(run.stdout().trim_end(), prices);
     assert_eq!(run.code(), Some(0));
     assert_eq!(server.only_request().header("authorization"), None);
@@ -1418,10 +1416,7 @@ fn these_cdn_commands_dry_run_without_a_request() {
         argv.extend(args);
         argv.push("--dry-run");
         // No token: a dry run needs none (tenet 5).
-        let doc = Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
-            .run(&argv)
-            .ok();
+        let doc = Hipc::tokenless(&home, &server).run(&argv).ok();
         assert_eq!(doc["dry_run"], true, "{args:?}");
     }
     assert!(server.requests().is_empty());
@@ -1430,11 +1425,7 @@ fn these_cdn_commands_dry_run_without_a_request() {
 #[test]
 fn cdn_needs_a_token_except_for_prices() {
     let server = Server::start(vec![]);
-    let no_token = |args: &[&str]| {
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
-            .run(args)
-    };
+    let no_token = |args: &[&str]| Hipc::tokenless(&Home::new(), &server).run(args);
     no_token(&["cdn", "zones", "list"]).fails(1, "auth");
     no_token(&["cdn", "zones", "delete", ZONE, "--yes"]).fails(1, "auth");
     assert!(server.requests().is_empty());
@@ -1460,15 +1451,6 @@ fn rules_routes(current: &str) -> Vec<Route> {
         zone_route("GET", "rules/", Reply::json(200, current)),
         zone_route("PUT", "rules/", Reply::json(200, current)),
     ]
-}
-
-/// The method and path of every request the server received.
-fn targets(server: &Server) -> Vec<String> {
-    server
-        .requests()
-        .iter()
-        .map(|r| format!("{} {}", r.method, r.target))
-        .collect()
 }
 
 /// The whole-list guard: a cache rule the zone has now that the file leaves out, or puts at
@@ -1502,7 +1484,7 @@ fn rules_update_that_drops_a_rule_is_refused_without_remove_others() {
             )
         );
         assert_eq!(
-            targets(&server),
+            server.targets(),
             [format!("GET /api/cdn/zones/{ZONE}/rules/")]
         );
         // Every rule gone names both, in the zone's order.
@@ -1517,7 +1499,7 @@ fn rules_update_that_drops_a_rule_is_refused_without_remove_others() {
         let server = Server::start(rules_routes(&current));
         rules_update(&server, one, &["--yes", "--remove-others"]).ok();
         assert_eq!(
-            targets(&server),
+            server.targets(),
             [format!("PUT /api/cdn/zones/{ZONE}/rules/")]
         );
     }
@@ -1563,7 +1545,7 @@ fn rules_update_that_keeps_every_rule_in_place_reads_then_puts() {
     );
     rules_update(&server, kept, &["--yes"]).ok();
     assert_eq!(
-        targets(&server),
+        server.targets(),
         [
             format!("GET /api/cdn/zones/{ZONE}/rules/"),
             format!("PUT /api/cdn/zones/{ZONE}/rules/"),
@@ -1597,7 +1579,7 @@ fn rules_update_that_appends_a_rule_with_the_same_match_is_accepted() {
     let server = Server::start(rules_routes(current));
     rules_update(&server, appended, &["--yes"]).ok();
     assert_eq!(
-        targets(&server),
+        server.targets(),
         [
             format!("GET /api/cdn/zones/{ZONE}/rules/"),
             format!("PUT /api/cdn/zones/{ZONE}/rules/"),
@@ -1669,7 +1651,7 @@ fn rules_update_whose_read_has_another_shape_is_internal_without_a_put() {
             )
         );
         assert_eq!(
-            targets(&server),
+            server.targets(),
             [format!("GET /api/cdn/zones/{ZONE}/rules/")]
         );
     }
@@ -1709,9 +1691,7 @@ fn a_zone_that_may_publish_a_bucket_needs_public() {
             )
         );
     }
-    let no_token = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
-        .run(&[&["cdn"][..], &create].concat());
+    let no_token = Hipc::tokenless(&Home::new(), &server).run(&[&["cdn"][..], &create].concat());
     no_token.fails(2, "public_required");
     assert!(server.requests().is_empty());
 
@@ -1728,7 +1708,7 @@ fn a_zone_that_may_publish_a_bucket_needs_public() {
     // A change that keeps the origin publishes nothing new.
     hipc(&server, &["zones", "update", ZONE, "--name", "n", "--yes"]).ok();
     assert_eq!(
-        targets(&server),
+        server.targets(),
         [
             "POST /api/cdn/zones/".to_owned(),
             format!("PATCH /api/cdn/zones/{ZONE}/"),

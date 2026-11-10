@@ -4,12 +4,11 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, draft, route};
+use crate::common::{BILLING, Hipc, Home, MEMBER, Reply, Run, Server, draft, parsed, route};
 
 const PROFILE: &str = "/api/billing/profile/";
 const AUTO_RELOAD: &str = "/api/billing/auto-reload/";
 const CARD_SETUP: &str = "/api/billing/auto-reload/card-setup/";
-const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
 
 /// A saved profile, in the shape the console types it.
 const SAVED_PROFILE: &str = concat!(
@@ -19,10 +18,6 @@ const SAVED_PROFILE: &str = concat!(
 );
 
 const CHECKOUT: &str = r#"{"checkout_url":"https://checkout.stripe.com/c/pay/cs_1?k=v"}"#;
-
-fn parsed(text: &str) -> Value {
-    serde_json::from_str(text).expect("the fixture is JSON")
-}
 
 fn hipc(server: &Server, args: &[&str]) -> Run {
     Hipc::against(&Home::new(), server).run(args)
@@ -225,8 +220,7 @@ fn a_billing_email_change_needs_yes() {
     assert_eq!(methods(&server), ["GET"]);
     // The dry run lists the read, then the PUT, and sends nothing.
     let server = Server::start(vec![]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .run(&[&["--dry-run"][..], &update("b@example.com")].concat())
         .ok();
     let shown: Vec<&str> = doc["requests"]
@@ -244,8 +238,7 @@ fn a_billing_email_change_needs_yes() {
 #[test]
 fn profile_update_dry_run_is_one_put() {
     let server = Server::start(vec![]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .run(&[
             "--dry-run",
             "billing",
@@ -720,10 +713,7 @@ fn auto_reload_update_dry_run_lists_the_read_then_the_write() {
     let update = reload(&["--enabled", "true", "--monthly-cap", "none"]);
     let mut argv = vec!["--dry-run"];
     argv.extend(words(&update));
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
-        .run(&argv)
-        .ok();
+    let doc = Hipc::tokenless(&Home::new(), &server).run(&argv).ok();
     let expected = json!({
         "enabled": true,
         "threshold": "<the setting's threshold>",

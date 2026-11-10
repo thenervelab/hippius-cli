@@ -5,10 +5,9 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Route, Server, TOKEN, draft, route};
-
-const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
-const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
+use crate::common::{
+    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Route, Server, TOKEN, draft, route,
+};
 
 /// One ticket, in the shape of swagger's `TicketDetail`.
 const TICKET: &str = concat!(
@@ -286,10 +285,7 @@ fn create_without_yes_is_refused_and_sends_nothing() {
             .contains("open the support ticket `Refund`"),
         "{error}"
     );
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
-        .run(&args)
-        .fails(1, "auth");
+    Hipc::tokenless(&home, &server).run(&args).fails(1, "auth");
     assert!(server.requests().is_empty());
 }
 
@@ -299,7 +295,7 @@ fn create_and_reply_dry_runs_show_the_body_and_send_nothing() {
     let server = Server::start(vec![]);
     let home = Home::new();
     let file = body_file(&home, TEXT);
-    let hipc = || Hipc::new(&home).env("HIPPIUS_API_URL", server.url());
+    let hipc = || Hipc::tokenless(&home, &server);
     let doc = hipc()
         .run(&[
             "--dry-run",
@@ -567,10 +563,7 @@ fn a_blank_message_is_usage_and_sends_nothing() {
             vec!["support", "tickets", "reply", "7"],
         ] {
             let args = [command, vec!["--body-file", &file, "--yes"]].concat();
-            let error = Hipc::new(&home)
-                .env("HIPPIUS_API_URL", server.url())
-                .run(&args)
-                .fails(2, "usage");
+            let error = Hipc::tokenless(&home, &server).run(&args).fails(2, "usage");
             assert_eq!(
                 error["message"],
                 format!("the message from `{file}` is blank")
@@ -1056,8 +1049,7 @@ fn update_without_yes_names_the_subject_and_a_dry_run_lists_the_read_then_the_pa
     );
     assert_eq!(sent(&server), read_then_patch()[..1]);
     let dry = Server::start(vec![]);
-    let doc = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", dry.url())
+    let doc = Hipc::tokenless(&home, &dry)
         .run(&[&["--dry-run"], &args[..]].concat())
         .ok();
     assert_eq!(draft(&doc)["method"], "PATCH");

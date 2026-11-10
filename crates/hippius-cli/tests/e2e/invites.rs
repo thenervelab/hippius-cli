@@ -78,8 +78,7 @@ fn preview_posts_the_token_in_the_body_and_prints_the_offer() {
 fn preview_needs_no_token_and_never_sends_the_account_header() {
     let server = Server::start(vec![preview_route(Reply::json(201, PREVIEW))]);
     let home = Home::new();
-    let doc = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&home, &server)
         .stdin(format!("  {INVITE}\n").as_bytes())
         .run(&[
             "account",
@@ -134,15 +133,11 @@ fn preview_at_another_origin_needs_yes_and_names_its_source() {
         assert_eq!(error["hint"], "pass `--yes` to confirm");
     };
     refusal(
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
-            .run(&preview),
+        Hipc::tokenless(&home, &server).run(&preview),
         "`HIPPIUS_API_URL`",
     );
     let text = [&["--output", "text"][..], &preview].concat();
-    let run = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
-        .run(&text);
+    let run = Hipc::tokenless(&home, &server).run(&text);
     assert_eq!(run.code(), Some(2), "{}", run.stderr());
     assert!(
         run.stderr().contains("send the invite token to"),
@@ -432,7 +427,7 @@ fn accept_needs_a_token_before_anything_is_sent() {
     let server = Server::start(vec![]);
     let home = Home::new();
     let path = token_file(&home);
-    let run = Hipc::new(&home).env("HIPPIUS_API_URL", server.url()).run(&[
+    let run = Hipc::tokenless(&home, &server).run(&[
         "account",
         "invites",
         "accept",
@@ -455,7 +450,7 @@ fn accept_with_a_withheld_token_sends_nothing() {
          token_origin = \"https://api.hippius.com\"\n"
     ));
     let path = token_file(&home);
-    let run = Hipc::new(&home).env("HIPPIUS_API_URL", server.url()).run(&[
+    let run = Hipc::tokenless(&home, &server).run(&[
         "account",
         "invites",
         "accept",

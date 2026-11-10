@@ -2,7 +2,9 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Route, Run, Server, draft, route};
+use crate::common::{
+    BILLING, Hipc, Home, MEMBER, PROJECT, Recorded, Reply, Route, Run, Server, draft, route,
+};
 
 const MEMBERS: &str = concat!(
     r#"{"owner":{"id":"u1","email":"owner@example.com","username":"owner"},"#,
@@ -660,10 +662,7 @@ fn these_team_commands_dry_run_without_a_token_or_a_request() {
         let mut argv = vec!["account"];
         argv.extend(args);
         argv.push("--dry-run");
-        let doc = Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
-            .run(&argv)
-            .ok();
+        let doc = Hipc::tokenless(&Home::new(), &server).run(&argv).ok();
         assert_eq!(doc["dry_run"], true, "{args:?}");
     }
     assert!(server.requests().is_empty());
@@ -836,22 +835,12 @@ fn team_commands_need_a_token() {
         let mut argv = vec!["account"];
         argv.extend(args);
         argv.push("--yes");
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&Home::new(), &server)
             .run(&argv)
             .fails(1, "auth");
     }
     assert!(server.requests().is_empty());
 }
-/// The method and path of every request the server received.
-fn targets(server: &Server) -> Vec<String> {
-    server
-        .requests()
-        .iter()
-        .map(|r| format!("{} {}", r.method, r.target))
-        .collect()
-}
-
 /// The whole-list guard: the member has `vms=viewer`, so `--grant`s that leave it out, or give
 /// `vms` another level, are refused without `--remove-others` after the read, and the
 /// PATCH is never sent.
@@ -879,7 +868,7 @@ fn update_that_drops_a_grant_is_refused_without_remove_others() {
                 argv.join(" ")
             )
         );
-        assert_eq!(targets(&server), ["GET /api/accounts/members/"]);
+        assert_eq!(server.targets(), ["GET /api/accounts/members/"]);
         argv.push("--remove-others");
         hipc(&server, &argv).ok();
         assert_eq!(server.requests().len(), 2, "{grants:?}");
@@ -908,7 +897,7 @@ fn update_that_keeps_every_grant_reads_then_patches() {
         .run(&argv)
         .ok();
     assert_eq!(
-        targets(&server),
+        server.targets(),
         [
             "GET /api/accounts/members/",
             "PATCH /api/accounts/members/7/"
@@ -940,7 +929,7 @@ fn update_of_a_member_not_in_the_list_is_not_found_without_a_patch() {
         error["hint"],
         "run `hipc account members list` to see what exists"
     );
-    assert_eq!(targets(&server), ["GET /api/accounts/members/"]);
+    assert_eq!(server.targets(), ["GET /api/accounts/members/"]);
 }
 
 /// A members answer without the shape the guard reads ends the update before the PATCH.
@@ -980,7 +969,7 @@ fn update_whose_read_has_another_shape_is_internal_without_a_patch() {
             "cannot list the team members: the API answered with a shape `hipc` does not read",
             "{answer}"
         );
-        assert_eq!(targets(&server), ["GET /api/accounts/members/"], "{answer}");
+        assert_eq!(server.targets(), ["GET /api/accounts/members/"], "{answer}");
     }
 }
 
@@ -1034,8 +1023,6 @@ fn remove_others_needs_a_grant_and_its_dry_run_reads_nothing() {
     assert_eq!(doc["requests"].as_array().map(Vec::len), Some(1), "{doc}");
     assert!(server.requests().is_empty());
 }
-const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
-const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
 
 /// A grant names one project or billing account with `@ID`, and goes out with the key the
 /// console sends; one scope may be given once per project.
@@ -1113,7 +1100,7 @@ fn the_guard_tells_a_grant_on_a_project_from_one_on_the_account() {
             .ends_with(&format!("to remove `vms=operator@{PROJECT}`")),
         "{error}"
     );
-    assert_eq!(targets(&server), ["GET /api/accounts/members/"]);
+    assert_eq!(server.targets(), ["GET /api/accounts/members/"]);
     let kept = format!("vms=operator@{PROJECT}");
     let doc = hipc(
         &server,

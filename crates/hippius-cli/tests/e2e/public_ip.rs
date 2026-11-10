@@ -3,9 +3,7 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Run, Server, draft, route};
-
-const VM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Run, Server, VM, draft, parsed, route};
 
 /// The attach answer, shaped as swagger documents it.
 const ATTACHED: &str = concat!(
@@ -50,19 +48,6 @@ fn update(server: &Server, contents: &str, extra: &[&str]) -> Run {
     Hipc::against(&home, server).run(&argv)
 }
 
-/// The method and the path with its query of every request the server received.
-fn targets(server: &Server) -> Vec<String> {
-    server
-        .requests()
-        .iter()
-        .map(|r| format!("{} {}", r.method, r.target))
-        .collect()
-}
-
-fn parsed(text: &str) -> Value {
-    serde_json::from_str(text).expect("the fixture is JSON")
-}
-
 #[test]
 fn availability_sends_the_region_only_when_given() {
     let body = r#"{"total_free":3,"regions":[],"price_hourly":"0.5","currency":"USD"}"#;
@@ -77,7 +62,7 @@ fn availability_sends_the_region_only_when_given() {
     );
     hipc(&server, &["public-ip", "availability", "--region", "fr"]).ok();
     assert_eq!(
-        targets(&server),
+        server.targets(),
         [
             "GET /api/compute/public-ip/availability/",
             "GET /api/compute/public-ip/availability/?region=FR"
@@ -271,7 +256,7 @@ fn usage_sends_the_range_only_when_given_and_refuses_an_unknown_one() {
     }
     let path = format!("/api/compute/vms/{VM}/public-ip/usage/");
     assert_eq!(
-        targets(&server),
+        server.targets(),
         [
             format!("GET {path}"),
             format!("GET {path}?range=1h"),
@@ -902,7 +887,7 @@ fn firewall_update_that_drops_a_rule_is_refused_without_remove_others() {
         );
         assert_eq!(error["side_effects"], "none");
         assert_eq!(
-            targets(&server),
+            server.targets(),
             [format!("GET /api/compute/vms/{VM}/firewall/")]
         );
         // Without `--yes` the guard still comes first: the read decides before the question.
@@ -930,7 +915,7 @@ fn firewall_update_that_keeps_every_rule_needs_no_remove_others() {
         let rules = format!(r#"{{"rules":[{{"protocol":"udp","ports":["53"]}},{kept}]}}"#);
         update_stdin(&server, &rules, &["--yes"]).ok();
         assert_eq!(
-            targets(&server),
+            server.targets(),
             [
                 format!("GET /api/compute/vms/{VM}/firewall/"),
                 format!("PUT /api/compute/vms/{VM}/firewall/"),

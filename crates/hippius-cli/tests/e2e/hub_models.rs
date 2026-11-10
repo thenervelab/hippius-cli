@@ -387,10 +387,7 @@ fn models_need_no_token_and_send_one_when_configured() {
     ];
     for args in commands {
         let server = Server::start(routes());
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
-            .run(args)
-            .ok();
+        Hipc::tokenless(&Home::new(), &server).run(args).ok();
         assert_eq!(
             server.only_request().header("authorization"),
             None,

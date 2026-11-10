@@ -94,8 +94,7 @@ fn update_public_without_public_is_refused_and_sends_nothing() {
         );
         assert_eq!(error["side_effects"], "none");
         // Before the token check too.
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&home, &server)
             .run(args)
             .fails(2, "public_required");
     }
@@ -132,10 +131,7 @@ fn update_without_yes_is_refused_and_names_the_change() {
             error["message"].as_str().unwrap().contains(action),
             "{error}"
         );
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
-            .run(args)
-            .fails(1, "auth");
+        Hipc::tokenless(&home, &server).run(args).fails(1, "auth");
     }
     assert!(server.requests().is_empty());
 }
@@ -503,8 +499,7 @@ fn rotate_without_reveal_is_refused_and_sends_nothing() {
             error["hint"].as_str().unwrap().contains("--reveal"),
             "{error}"
         );
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&home, &server)
             .run(args)
             .fails(2, "reveal_required");
     }
@@ -526,10 +521,7 @@ fn rotate_without_yes_is_refused_and_names_the_rotate() {
             .contains("rotate the Hub robot secret"),
         "{error}"
     );
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
-        .run(&args)
-        .fails(1, "auth");
+    Hipc::tokenless(&home, &server).run(&args).fails(1, "auth");
     assert!(server.requests().is_empty());
 }
 

@@ -2,7 +2,9 @@
 
 use serde_json::json;
 
-use crate::common::{ACCOUNTS, Hipc, Home, MEMBER, Reply, Server, draft, route};
+use crate::common::{
+    ACCOUNTS, Hipc, Home, MEMBER, OWN_ACCOUNT, PROJECT, Reply, Server, draft, route,
+};
 
 fn accounts_server() -> Server {
     Server::start(vec![route(
@@ -62,7 +64,7 @@ fn get_picks_the_own_account_for_self_and_the_membership_by_id() {
     let server = accounts_server();
     let home = Home::new();
     let own = Hipc::against(&home, &server).run(&["account", "get"]).ok();
-    assert_eq!(own["id"], "acct_ffffffffffffffffffff");
+    assert_eq!(own["id"], OWN_ACCOUNT);
     let member = Hipc::against(&home, &server)
         .env("HIPPIUS_ACCOUNT", MEMBER)
         .run(&["account", "get"])
@@ -70,7 +72,6 @@ fn get_picks_the_own_account_for_self_and_the_membership_by_id() {
     assert_eq!(member["id"], MEMBER);
 }
 
-const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
 const OTHER_PROJECT: &str = "proj_99999999999999999999";
 const BILLING: &str = "bill_0a1b2c3d4e5f60718293";
 
@@ -218,7 +219,7 @@ fn get_of_self_is_the_account_marked_is_owner() {
     let own = Hipc::against(&Home::new(), &member_first)
         .run(&["account", "get"])
         .ok();
-    assert_eq!(own["id"], "acct_ffffffffffffffffffff");
+    assert_eq!(own["id"], OWN_ACCOUNT);
     for body in [
         r#"{"accounts":[]}"#,
         r#"{"accounts":[{"id":"acct_ffffffffffffffffffff"}]}"#,
@@ -312,7 +313,7 @@ fn the_flag_beats_the_environment() {
         .env("HIPPIUS_ACCOUNT", MEMBER)
         .run(&["account", "get", "--account", "self"])
         .ok();
-    assert_eq!(doc["id"], "acct_ffffffffffffffffffff");
+    assert_eq!(doc["id"], OWN_ACCOUNT);
 }
 
 /// `hipc account notifications get` prints the signed-in user's `NotificationPreferences` as
@@ -369,8 +370,7 @@ fn notifications_fails_like_any_read() {
         "cannot read the notification settings: the API says `Invalid token.`"
     );
     let empty = Server::start(vec![]);
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", empty.url())
+    Hipc::tokenless(&Home::new(), &empty)
         .run(&["account", "notifications", "get"])
         .fails(1, "auth");
     assert!(empty.requests().is_empty());

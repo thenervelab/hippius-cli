@@ -5,9 +5,8 @@
 //! the `--profile`, `--api-url`, and `--account` of the run, so the tests here, which point
 //! `hipc` at a server with `HIPPIUS_API_URL`, see `--api-url` in every one.
 
-use crate::common::{Hipc, Home, Reply, Run, Server, TOKEN, no_server, route};
+use crate::common::{Hipc, Home, Reply, Run, Server, TOKEN, VM, no_server, route};
 
-const VM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 const ZONE: &str = "zab12cd34ef56";
 const ACCOUNT: &str = "acct_0123456789abcdef0123";
 const OLD: &str = "acct_ffffffffffffffffffff";

@@ -6,11 +6,10 @@
 use serde_json::{Value, json};
 
 use crate::common::{
-    ACCOUNTS, Hipc, Home, MEMBER, Reply, Run, Server, draft, no_server, one_request_dry_run, route,
+    self, ACCOUNTS, BILLING, Hipc, Home, MEMBER, OWN_ACCOUNT, PROJECT, Reply, Run, Server, draft,
+    no_server, one_request_dry_run, parsed, route,
 };
 
-const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
-const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
 const OTHER: &str = "acct_ffffffffffffffffffff";
 /// A second project, beside `PROJECT`.
 const SECOND: &str = "proj_ffffffffffffffffffff";
@@ -51,10 +50,6 @@ const TRANSFER: &str = concat!(
     r#""created_at":"2026-11-01T10:00:00Z","expires_at":"2026-11-08T10:00:00Z","#,
     r#""decided_at":null}"#
 );
-
-fn parsed(text: &str) -> Value {
-    serde_json::from_str(text).expect("the fixture is JSON")
-}
 
 fn hipc(server: &Server, args: &[&str]) -> Run {
     Hipc::against(&Home::new(), server).run(args)
@@ -653,7 +648,7 @@ fn projects_transfer_refuses_the_same_account_and_an_unknown_project() {
         ("usage", &same(MEMBER)),
         false,
     );
-    let own = "acct_ffffffffffffffffffff";
+    let own = OWN_ACCOUNT;
     for accounts in [ACCOUNTS, MEMBER_FIRST] {
         offered(
             &projects(&["transfer", PROJECT, "--to-account", own]),
@@ -1557,7 +1552,11 @@ fn a_stored_selection_is_left_off_a_read_and_a_create() {
             "--dry-run",
         ])
         .ok();
-    assert_eq!(doc["billing_header"], serde_json::Value::Null, "{doc}");
+    assert_eq!(
+        draft(&doc).get("billing_header"),
+        Some(&serde_json::Value::Null),
+        "{doc}"
+    );
     assert!(server.requests().is_empty());
     // The create goes out, and no billing header is on the wire.
     let creates = Server::start(vec![route(
@@ -1792,6 +1791,9 @@ fn archiving_the_stored_project_clears_the_selection() {
 #[test]
 fn a_selection_that_cannot_be_cleared_is_a_warning() {
     use std::os::unix::fs::PermissionsExt as _;
+    if !common::permission_bits_apply() {
+        return;
+    }
     let path = format!("/api/accounts/projects/{PROJECT}/");
     let server = Server::start(vec![route("DELETE", &path, Reply::json(204, ""))]);
     let home = Home::new();

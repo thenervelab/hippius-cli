@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, TOKEN, draft, no_server, route};
+use crate::common::{
+    Hipc, Home, MEMBER, PROJECT, Reply, Run, Server, TOKEN, draft, no_server, route,
+};
 
 const ZONE: &str = "zab12cd34ef56";
 const HOST: &str = "cdn.example.com";
@@ -254,8 +256,7 @@ fn it_needs_yes_and_a_dry_run_shows_a_placeholder() {
     assert_run_clean(&run);
     assert!(error["hint"].as_str().unwrap().contains("--yes"));
 
-    let run = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    let run = Hipc::tokenless(&home, &server)
         .run(&[&["--dry-run"][..], &setup_args("cloudflare", &file, &[])].concat());
     let doc = run.ok();
     assert_run_clean(&run);
@@ -451,7 +452,7 @@ fn the_file_is_checked_before_the_token() {
     let open = home.file("open.json", cloudflare().as_bytes());
     std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o644)).unwrap();
     let good = path_text(&home.file("cf.json", cloudflare().as_bytes()));
-    let hipc = || Hipc::new(&home).env("HIPPIUS_API_URL", server.url());
+    let hipc = || Hipc::tokenless(&home, &server);
     hipc()
         .run(&setup_args("cloudflare", &path_text(&open), &["--yes"]))
         .fails(2, "usage");
@@ -498,7 +499,6 @@ fn domain_connect_prints_the_link_and_the_next_step() {
 /// this one did; when one of them is not a plain word, both leave the command out.
 #[test]
 fn domain_connect_next_step_carries_the_selectors_of_the_run() {
-    const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
     let path = "/api/cdn/zones/zab12cd34ef56/hostnames/cdn.example.com/domain-connect/";
     let server = Server::start(vec![route("GET", path, Reply::json(200, LINK))]);
     let home = Home::new();

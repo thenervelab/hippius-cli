@@ -3,7 +3,7 @@
 use serde_json::{Value, json};
 
 use crate::common::{
-    Hipc, Home, MEMBER, Reply, Route, Run, Server, draft, hub_provision_hint, route,
+    self, Hipc, Home, MEMBER, Reply, Route, Run, Server, draft, hub_provision_hint, route,
 };
 
 const PLANS: &str = concat!(
@@ -26,14 +26,6 @@ fn subscriptions(body: &str) -> Route {
     )
 }
 
-fn methods(server: &Server) -> Vec<String> {
-    server
-        .requests()
-        .iter()
-        .map(|r| format!("{} {}", r.method, r.path()))
-        .collect()
-}
-
 fn subscribe(server: &Server, extra: &[&str]) -> Run {
     let mut args = vec!["hub", "subscription", "subscribe"];
     args.extend(extra);
@@ -43,8 +35,7 @@ fn subscribe(server: &Server, extra: &[&str]) -> Run {
 #[test]
 fn plans_need_no_token_and_are_an_envelope() {
     let server = Server::start(vec![plans()]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .run(&["hub", "plans"])
         .ok();
     assert_eq!(doc["items"][1]["name"], "Builder");
@@ -168,7 +159,7 @@ fn subscribe_by_name_in_any_case_posts_the_plan_id() {
     let doc = subscribe(&server, &["--plan", "bUiLdEr", "--yes"]).ok();
     assert_eq!(doc, serde_json::from_str::<Value>(SUBMITTED).unwrap());
     assert_eq!(
-        methods(&server),
+        server.calls(),
         [
             "GET /api/registry/plans/",
             "GET /api/registry/subscriptions/",
@@ -229,7 +220,7 @@ fn an_active_free_or_inactive_plan_does_not_block_a_subscribe() {
         ),
     ]);
     subscribe(&server, &["--plan", "pro", "--yes"]).ok();
-    assert!(!methods(&server).iter().any(|m| m.starts_with("DELETE")));
+    assert!(!server.calls().iter().any(|m| m.starts_with("DELETE")));
 }
 
 #[test]
@@ -243,7 +234,7 @@ fn an_active_paid_plan_without_replace_is_refused_before_any_write() {
         assert!(error["message"].as_str().unwrap().contains('8'));
         assert!(error["hint"].as_str().unwrap().contains("--replace"));
         assert_eq!(
-            methods(&server),
+            server.calls(),
             [
                 "GET /api/registry/plans/",
                 "GET /api/registry/subscriptions/"
@@ -280,7 +271,7 @@ fn replace_cancels_every_active_paid_plan_then_subscribes() {
     ]);
     subscribe(&server, &["--plan", "builder", "--replace", "--yes"]).ok();
     assert_eq!(
-        methods(&server),
+        server.calls(),
         [
             "GET /api/registry/plans/",
             "GET /api/registry/subscriptions/",
@@ -405,7 +396,7 @@ fn a_second_cancel_failing_is_a_partial_failure_and_nothing_is_bought() {
     assert_eq!(error["error"]["code"], "partial_failure");
     assert_eq!(error["error"]["details"][0]["step"], "cancel");
     assert_eq!(error["error"]["details"][0]["code"], "conflict");
-    assert!(!methods(&server).iter().any(|m| m.starts_with("POST")));
+    assert!(!server.calls().iter().any(|m| m.starts_with("POST")));
 }
 
 #[test]
@@ -422,7 +413,7 @@ fn the_first_cancel_failing_is_that_error_with_no_side_effects() {
     let error =
         subscribe(&server, &["--plan", "builder", "--replace", "--yes"]).fails(1, "conflict");
     assert_eq!(error["side_effects"], "none");
-    assert!(!methods(&server).iter().any(|m| m.starts_with("POST")));
+    assert!(!server.calls().iter().any(|m| m.starts_with("POST")));
 }
 
 #[test]
@@ -451,7 +442,7 @@ fn an_unknown_plan_is_usage_and_lists_the_names() {
                 .contains("`Free`, `Builder`, and `Pro`"),
             "{error}"
         );
-        assert_eq!(methods(&server), ["GET /api/registry/plans/"]);
+        assert_eq!(server.calls(), ["GET /api/registry/plans/"]);
     }
 }
 
@@ -1026,8 +1017,7 @@ fn registry_calls_need_a_token() {
         &["hub", "usage"],
         &["hub", "usage", "--repositories"],
     ] {
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&Home::new(), &server)
             .run(args)
             .fails(1, "auth");
     }
@@ -1165,7 +1155,7 @@ fn a_second_subscribe_inside_the_sync_window_is_refused_even_with_replace() {
         .fails(2, "replace_required");
     assert_eq!(replace, error);
     assert_eq!(posts(&server), 1);
-    assert!(!methods(&server).iter().any(|m| m.starts_with("DELETE")));
+    assert!(!server.calls().iter().any(|m| m.starts_with("DELETE")));
     assert_eq!(home.config_text(), marker);
     // Past the window, `--replace` with nothing listed is a plain subscribe again. The
     // profile holds one marker here, so `move_marker` moves this one.
@@ -1264,7 +1254,7 @@ fn replace_inside_the_sync_window_cancels_a_listed_paid_plan() {
     );
     subscribe_in(&home, &listed, &["--plan", "builder", "--replace", "--yes"]).ok();
     assert_eq!(
-        methods(&listed),
+        listed.calls(),
         [
             "GET /api/registry/plans/",
             "GET /api/registry/subscriptions/",
@@ -1300,7 +1290,7 @@ fn replace_inside_the_sync_window_is_refused_when_it_sees_only_what_it_cancelled
         "wait a few minutes, then run `hipc hub subscription get`"
     );
     assert_eq!(
-        methods(&stale),
+        stale.calls(),
         [
             "GET /api/registry/plans/",
             "GET /api/registry/subscriptions/"
@@ -1311,7 +1301,7 @@ fn replace_inside_the_sync_window_is_refused_when_it_sees_only_what_it_cancelled
     rekey_marker(&home, &stale, &synced);
     subscribe_in(&home, &synced, &["--plan", "builder", "--replace", "--yes"]).ok();
     assert_eq!(
-        methods(&synced)[2..],
+        synced.calls()[2..],
         [
             "DELETE /api/registry/subscriptions/8/",
             "DELETE /api/registry/subscriptions/9/",
@@ -1347,7 +1337,7 @@ fn a_marker_set_inside_a_window_keeps_that_windows_cancels() {
     subscribe_in(&home, &older, &["--plan", "builder", "--replace", "--yes"])
         .fails(2, "replace_required");
     assert_eq!(
-        methods(&older),
+        older.calls(),
         [
             "GET /api/registry/plans/",
             "GET /api/registry/subscriptions/"
@@ -1388,7 +1378,7 @@ fn a_replace_that_changed_nothing_puts_back_the_marker_it_replaced() {
     );
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
     assert_eq!(
-        methods(&refusing)[2..],
+        refusing.calls()[2..],
         ["DELETE /api/registry/subscriptions/8/"]
     );
     assert_eq!(home.config_text(), before);
@@ -1440,11 +1430,11 @@ fn a_replace_that_may_have_cancelled_keeps_its_marker() {
             "{case}: {}",
             home.config_text()
         );
-        let requests = methods(&server).len();
+        let requests = server.calls().len();
         subscribe_in(&home, &server, &["--plan", "builder", "--replace", "--yes"])
             .fails(2, "replace_required");
         assert_eq!(
-            methods(&server)[requests..],
+            server.calls()[requests..],
             [
                 "GET /api/registry/plans/",
                 "GET /api/registry/subscriptions/"
@@ -1592,6 +1582,9 @@ fn another_token_on_the_same_profile_is_not_blocked() {
 
 #[test]
 fn a_marker_that_cannot_be_written_sends_no_subscribe() {
+    if !common::permission_bits_apply() {
+        return;
+    }
     let server = Server::start(vec![plans(), subscriptions("[]")]);
     let home = Home::new();
     let dir = home.config().parent().unwrap().to_owned();

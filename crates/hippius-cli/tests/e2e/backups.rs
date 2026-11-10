@@ -3,9 +3,9 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Route, Run, Server, draft, route};
-
-const VM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+use crate::common::{
+    Hipc, Home, MEMBER, Recorded, Reply, Route, Run, Server, VM, draft, parsed, route,
+};
 
 const POINT: &str = "run_7c1d";
 
@@ -56,19 +56,6 @@ fn text(server: &Server, args: &[&str]) -> Run {
     let mut argv = vec!["--output", "text", "compute", "backups"];
     argv.extend(args);
     Hipc::against(&Home::new(), server).run(&argv)
-}
-
-fn parsed(text: &str) -> Value {
-    serde_json::from_str(text).expect("the fixture is JSON")
-}
-
-/// The method and path of every request the server received.
-fn targets(server: &Server) -> Vec<String> {
-    server
-        .requests()
-        .iter()
-        .map(|r| format!("{} {}", r.method, r.target))
-        .collect()
 }
 
 /// Exit 0 with a key-value block, not a JSON document, on stdout.
@@ -125,7 +112,7 @@ fn the_reads_print_the_object_as_sent_in_json_and_text() {
         format!("GET {}", path("backups/restore/")),
     ];
     let expected: Vec<String> = once.iter().flat_map(|t| [t.clone(), t.clone()]).collect();
-    assert_eq!(targets(&server), expected);
+    assert_eq!(server.targets(), expected);
 }
 
 /// Swagger requires no field of the list answer: one without `restore_points`, or with
@@ -405,7 +392,7 @@ fn restore_reads_the_vm_name_then_posts_it_as_confirm() {
     let server = restore_server(202, RESTORE);
     assert_eq!(restore(&server).ok(), parsed(RESTORE));
     assert_eq!(
-        targets(&server),
+        server.targets(),
         [
             format!("GET /api/compute/vms/{VM}/"),
             format!("POST /api/compute/vms/{VM}/backups/restore/"),
@@ -448,7 +435,7 @@ fn restore_sends_no_post_when_the_vm_read_fails() {
     let error = restore(&missing).fails(1, "not_found");
     assert_eq!(error["http_status"], 404);
     assert_eq!(error["side_effects"], "none");
-    assert_eq!(targets(&missing), [format!("GET /api/compute/vms/{VM}/")]);
+    assert_eq!(missing.targets(), [format!("GET /api/compute/vms/{VM}/")]);
     let down = Server::start(vec![vm_route(
         "GET",
         "",
@@ -659,8 +646,7 @@ fn a_membership_sends_the_header_on_every_route() {
 #[test]
 fn restore_checks_the_token_before_the_question() {
     let server = restore_server(202, RESTORE);
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&["compute", "backups", "restore", VM, "--run-id", POINT])
         .fails(1, "auth");
     // The token is checked before the read that names the VM, so nothing goes out.

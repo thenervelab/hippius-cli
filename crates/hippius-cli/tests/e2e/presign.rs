@@ -123,8 +123,7 @@ fn without_reveal_nothing_is_sent() {
 #[test]
 fn a_dry_run_needs_no_reveal_and_sends_nothing() {
     let server = server();
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .run(&[
             "--dry-run",
             "s3",

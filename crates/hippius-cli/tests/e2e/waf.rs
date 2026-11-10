@@ -34,15 +34,6 @@ fn piped(server: &Server, input: &str, args: &[&str]) -> Run {
         .run(&argv)
 }
 
-/// The method and path of every request the server received.
-fn targets(server: &Server) -> Vec<String> {
-    server
-        .requests()
-        .iter()
-        .map(|r| format!("{} {}", r.method, r.target))
-        .collect()
-}
-
 #[test]
 fn waf_reads_print_as_the_server_sent_them() {
     let settings = r#"{"mode":"on","tier":"standard","active_version":{"number":3}}"#;
@@ -157,7 +148,7 @@ fn analytics_and_events_send_only_the_query_parameters_given() {
     .ok();
     let waf = format!("/api/cdn/zones/{ZONE}/waf");
     assert_eq!(
-        targets(&server),
+        server.targets(),
         [
             format!("GET {waf}/analytics/"),
             format!("GET {waf}/analytics/?from=2026-10-01&to=2026-10-02&step=1h&group_by=country"),
@@ -483,7 +474,7 @@ fn update_check_sends_the_list_with_dry_run_and_publishes_nothing() {
             "{kind}"
         );
         assert_eq!(
-            targets(&server),
+            server.targets(),
             [
                 format!("GET /api/cdn/zones/{ZONE}/waf/{kind}/"),
                 format!("PUT /api/cdn/zones/{ZONE}/waf/{kind}/?dry_run=1"),
@@ -552,14 +543,14 @@ fn update_check_keeps_the_whole_list_guard() {
     ];
     piped(&server, file, &args).fails(2, "remove_others_required");
     assert_eq!(
-        targets(&server),
+        server.targets(),
         [format!("GET /api/cdn/zones/{ZONE}/waf/rules/")]
     );
     let mut both = args.to_vec();
     both.push("--remove-others");
     piped(&server, file, &both).ok();
     assert_eq!(
-        targets(&server).last().map(String::as_str),
+        server.targets().last().map(String::as_str),
         Some(format!("PUT /api/cdn/zones/{ZONE}/waf/rules/?dry_run=1").as_str())
     );
 }
@@ -702,7 +693,7 @@ fn rules_update_that_drops_moves_or_changes_a_rule_is_refused() {
     )
     .ok();
     assert_eq!(
-        targets(&server),
+        server.targets(),
         [
             format!("GET /api/cdn/zones/{ZONE}/waf/rules/"),
             format!("PUT /api/cdn/zones/{ZONE}/waf/rules/"),
@@ -748,7 +739,7 @@ fn rules_update_that_keeps_every_rule_in_place_reads_then_puts() {
     .ok();
     assert_eq!(doc["version"], 7);
     assert_eq!(
-        targets(&server),
+        server.targets(),
         [
             format!("GET /api/cdn/zones/{ZONE}/waf/rules/"),
             format!("PUT /api/cdn/zones/{ZONE}/waf/rules/"),
@@ -1009,7 +1000,7 @@ fn rules_update_dry_run_names_the_read_and_an_unreadable_answer_is_internal() {
             )
         );
         assert_eq!(
-            targets(&server),
+            server.targets(),
             [format!("GET /api/cdn/zones/{ZONE}/waf/rate-limits/")]
         );
     }
@@ -1580,18 +1571,13 @@ fn every_command_dry_runs_without_a_request_or_a_token() {
         let mut argv = vec!["cdn"];
         argv.extend(args);
         argv.push("--dry-run");
-        let doc = Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        let doc = Hipc::tokenless(&home, &server)
             .stdin(input.as_bytes())
             .run(&argv)
             .ok();
         assert_eq!(doc["dry_run"], true, "{args:?}");
     }
-    let no_token = |args: &[&str]| {
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
-            .run(args)
-    };
+    let no_token = |args: &[&str]| Hipc::tokenless(&Home::new(), &server).run(args);
     no_token(&["cdn", "lists", "list"]).fails(1, "auth");
     no_token(&["cdn", "waf", "versions", "rollback", ZONE, "1", "--yes"]).fails(1, "auth");
     assert!(server.requests().is_empty());

@@ -4,9 +4,7 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, draft, route};
-
-const VM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, VM, draft, route};
 
 /// A VM in the shape of swagger `GET /api/compute/vms/{vm_id}/`, with the policy fields; a
 /// pending policy awaits the acknowledgement of the VM's server.
@@ -310,8 +308,7 @@ fn get_notes_a_pending_policy_by_its_reason() {
 #[test]
 fn update_dry_run_is_the_put() {
     let server = Server::start(vec![]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .run(&[
             "--dry-run",
             "compute",

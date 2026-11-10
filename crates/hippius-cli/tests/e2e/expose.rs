@@ -1,10 +1,8 @@
 //! `hipc compute exposures`: a VM's ports published on the public edge.
 
-use serde_json::{Value, json};
+use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, draft, route};
-
-const VM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, VM, draft, parsed, route};
 
 /// An `http` exposure, shaped as swagger documents it: the edge can read it.
 const HTTP: &str = concat!(
@@ -40,10 +38,6 @@ fn create_text(server: &Server, extra: &[&str]) -> Run {
     let mut argv = vec!["--output", "text", "compute", "exposures", "create", VM];
     argv.extend(extra);
     Hipc::against(&Home::new(), server).run(&argv)
-}
-
-fn parsed(text: &str) -> Value {
-    serde_json::from_str(text).expect("the fixture is JSON")
 }
 
 #[test]

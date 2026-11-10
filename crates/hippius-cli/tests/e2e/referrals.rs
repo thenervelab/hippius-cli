@@ -4,10 +4,7 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, route};
-
-const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
-const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
+use crate::common::{BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Server, draft, route};
 
 /// One link, in the shape swagger gives an entry of `GET /api/referral-codes/`.
 const LINK: &str = concat!(
@@ -232,7 +229,7 @@ fn update_of_a_missing_link_names_the_list_and_a_bad_id_is_usage() {
 fn create_and_update_dry_runs_show_the_body_and_send_nothing() {
     let server = Server::start(vec![]);
     let home = Home::new();
-    let hipc = || Hipc::new(&home).env("HIPPIUS_API_URL", server.url());
+    let hipc = || Hipc::tokenless(&home, &server);
     let doc = hipc()
         .run(&["--dry-run", "account", "referrals", "create", "--name", "x"])
         .ok();

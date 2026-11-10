@@ -3,9 +3,7 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, draft, route};
-
-const VM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, VM, draft, parsed, route};
 
 /// Swagger's `{failovers}`: one done by itself, newest first.
 const FAILOVERS: &str = concat!(
@@ -44,10 +42,6 @@ fn hipc(server: &Server, args: &[&str]) -> Run {
     Hipc::against(&Home::new(), server).run(&argv)
 }
 
-fn parsed(text: &str) -> Value {
-    serde_json::from_str(text).expect("a JSON fixture")
-}
-
 fn failovers_path() -> String {
     format!("/api/compute/vms/{VM}/failovers/")
 }
@@ -72,15 +66,12 @@ fn public_prices_need_no_token() {
         Reply::json(200, PUBLIC_PRICES),
     )]);
     let home = Home::new();
-    let run = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
-        .run(&["compute", "public-prices"]);
+    let run = Hipc::tokenless(&home, &server).run(&["compute", "public-prices"]);
     assert_eq!(run.ok(), parsed(PUBLIC_PRICES));
     let request = server.only_request();
     assert_eq!(request.target, "/api/compute/public-prices/");
     assert_eq!(request.header("authorization"), None);
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&home, &server)
         .run(&["compute", "prices"])
         .fails(1, "auth");
     assert_eq!(server.requests().len(), 1);

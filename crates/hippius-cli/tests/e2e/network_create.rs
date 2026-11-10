@@ -3,8 +3,11 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, one_request_dry_run, route, route_each};
-use crate::network::{BILLING, COMMANDS, PROJECT, SUMMARY};
+use crate::common::{
+    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Server, draft, one_request_dry_run, route,
+    route_each,
+};
+use crate::network::{COMMANDS, SUMMARY};
 
 const PROVISION: &str = "/api/network/provision/";
 
@@ -120,8 +123,7 @@ fn a_dry_run_needs_no_token_and_sends_nothing() {
             args.extend(["--account", account]);
         }
         args.extend(["network", "create"]);
-        let doc = Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        let doc = Hipc::tokenless(&home, &server)
             .env_remove("HIPPIUS_TOKEN")
             .run(&args)
             .dry_ok();
@@ -508,6 +510,11 @@ fn hipc_api_confirms_the_provision_post_and_refuses_a_stored_project() {
     let doc = Hipc::against(&home, &server)
         .run(&["api", "POST", "/network/provision/", "--dry-run"])
         .ok();
-    assert_eq!(doc["billing_header"], serde_json::Value::Null);
+    // The dry run names the header the write would carry, `null` for none.
+    assert_eq!(
+        draft(&doc).get("billing_header"),
+        Some(&serde_json::Value::Null),
+        "{doc}"
+    );
     assert_eq!(server.requests().len(), 1);
 }

@@ -3,7 +3,9 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Route, Server, route, route_each};
+use crate::common::{
+    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Route, Server, route, route_each,
+};
 
 const QUOTE: &str = "/api/billing/native/quote/";
 const BUY: &str = "/api/billing/native/buy/";
@@ -119,14 +121,6 @@ fn top_up(server: &Server, extra: &[&str]) -> crate::common::Run {
     Hipc::against(&Home::new(), server).run(&args)
 }
 
-fn sent(server: &Server) -> Vec<String> {
-    server
-        .requests()
-        .iter()
-        .map(|r| format!("{} {}", r.method, r.path()))
-        .collect()
-}
-
 #[test]
 fn the_quote_is_printed_as_sent() {
     let server = Server::start(vec![quote(&json!({}))]);
@@ -159,8 +153,6 @@ fn the_quote_shows_decimals_in_text_mode() {
 /// skipped on the quote, a read, and refused on the buy, a write.
 #[test]
 fn the_halpha_routes_refuse_another_account_project_or_billing_account() {
-    const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
-    const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
     let server = Server::start(vec![]);
     let quote_args = ["billing", "native-quote"];
     let buy_args = [
@@ -233,7 +225,7 @@ fn the_balance_must_cover_the_amount_and_the_fee() {
                     .starts_with("`--alpha 1.5` and the `0.01` hAlpha kept for the fee are more"),
                 "{error}"
             );
-            assert_eq!(sent(&server), [format!("GET {QUOTE}")]);
+            assert_eq!(server.calls(), [format!("GET {QUOTE}")]);
         } else {
             assert_eq!(run.code(), Some(0), "{}", run.stderr());
         }
@@ -263,7 +255,7 @@ fn a_purchase_in_flight_blocks_a_second_buy() {
          then top up again"
     );
     assert_eq!(
-        sent(&server),
+        server.calls(),
         [format!("GET {QUOTE}"), format!("GET {PURCHASES}")]
     );
     // A purchase with no status yet is in flight too.
@@ -354,7 +346,7 @@ fn a_retry_resends_the_exact_buy_reading_only_the_quote() {
              `--yes` was not passed"
         )
     );
-    assert_eq!(sent(&server), [format!("GET {QUOTE}")]);
+    assert_eq!(server.calls(), [format!("GET {QUOTE}")]);
     let server = Server::start(vec![]);
     for (flags, message) in [
         (
@@ -414,7 +406,7 @@ fn a_custodial_buy_sends_the_exact_amounts_and_follows_the_purchase() {
     assert_eq!(doc["id"], "p_1");
     assert_eq!(doc["credit_amount"], CREDITS);
     assert_eq!(
-        sent(&server),
+        server.calls(),
         [
             format!("GET {QUOTE}"),
             format!("GET {PURCHASES}"),
@@ -486,7 +478,7 @@ fn the_follow_reads_again_until_the_purchase_is_final() {
         "{}",
         run.stderr()
     );
-    assert_eq!(sent(&server).len(), 5);
+    assert_eq!(server.calls().len(), 5);
 }
 
 #[test]
@@ -508,7 +500,7 @@ fn the_follow_stops_at_the_wait_timeout_with_the_row_it_has() {
     assert_eq!(doc["status"], "submitted");
     assert!(doc["idempotency_key"].is_string());
     assert_eq!(
-        sent(&server).len(),
+        server.calls().len(),
         5,
         "the quote, the list, the buy, a read now, and one after the wait"
     );
@@ -531,7 +523,7 @@ fn a_buy_answered_as_final_is_not_read_again() {
     let server = Server::start(vec![quote(&json!({})), purchases(&[]), buy("completed")]);
     let doc = top_up(&server, &["--yes"]).ok();
     assert_eq!(doc["status"], "completed");
-    assert_eq!(sent(&server).len(), 3);
+    assert_eq!(server.calls().len(), 3);
 }
 
 #[test]
@@ -586,7 +578,7 @@ fn an_unknown_status_is_a_partial_failure_and_a_missing_id_a_warning() {
         run.stderr(),
         "warning: the buy answer names no purchase, so it was not followed\n"
     );
-    assert_eq!(sent(&server).len(), 3);
+    assert_eq!(server.calls().len(), 3);
 }
 
 #[test]
@@ -706,7 +698,7 @@ fn the_quote_rules_out_a_buy_before_anything_is_bought() {
         assert_eq!(error["hint"], hint, "{changes}");
         assert_eq!(error["http_status"], Value::Null);
         assert_eq!(error["side_effects"], "none");
-        assert_eq!(sent(&server), [format!("GET {QUOTE}")], "{changes}");
+        assert_eq!(server.calls(), [format!("GET {QUOTE}")], "{changes}");
     }
 }
 
@@ -870,7 +862,7 @@ fn a_retry_below_the_floor_or_for_a_self_signing_account_is_refused() {
                      has not seen the retry would be a new buy at that price"
                 )
             );
-            assert_eq!(sent(&server), [format!("GET {QUOTE}")]);
+            assert_eq!(server.calls(), [format!("GET {QUOTE}")]);
         } else {
             assert_eq!(run.code(), Some(0), "{}", run.stderr());
         }
@@ -885,7 +877,7 @@ fn a_retry_below_the_floor_or_for_a_self_signing_account_is_refused() {
         error["message"].as_str().unwrap().contains("(`self_sign`)"),
         "{error}"
     );
-    assert_eq!(sent(&server), [format!("GET {QUOTE}")]);
+    assert_eq!(server.calls(), [format!("GET {QUOTE}")]);
 }
 
 #[test]
@@ -902,7 +894,7 @@ fn without_yes_the_question_names_the_credits_after_the_quote() {
         )
     );
     assert_eq!(
-        sent(&server),
+        server.calls(),
         [format!("GET {QUOTE}"), format!("GET {PURCHASES}")]
     );
 }
@@ -910,8 +902,7 @@ fn without_yes_the_question_names_the_credits_after_the_quote() {
 #[test]
 fn a_dry_run_lists_the_three_requests_and_sends_nothing() {
     let server = Server::start(vec![]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .run(&[
             "--dry-run",
             "billing",

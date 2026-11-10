@@ -5,7 +5,9 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, one_request_dry_run, route};
+use crate::common::{
+    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Server, one_request_dry_run, route,
+};
 
 /// A peer; swagger documents no answer body, and types the peer id as a string.
 const PEER: &str = r#"{"id":"12","name":"laptop","ip":"100.64.0.12","connected":true}"#;
@@ -19,9 +21,6 @@ pub(crate) const SUMMARY: &str = concat!(
     r#"{"status":"active","group_id":"d1a2b3","groups":3,"networks":1,"peers":2,"#,
     r#""policies":1,"created_at":"2026-10-29T10:00:00Z"}"#
 );
-
-pub(crate) const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
-pub(crate) const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
 
 /// Every command, with `--yes` on those that are confirmed, so each one reaches the server
 /// or a local refusal rather than the question.
@@ -100,11 +99,10 @@ fn a_failed_get_says_it_may_have_created_the_network() {
 /// run included, and nothing is sent; a stored billing account is left off it too.
 #[test]
 fn a_stored_selection_is_skipped_on_reads_and_a_stored_project_refused_on_get() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/network/peers/",
-        Reply::json(200, "[]"),
-    )]);
+    let server = Server::start(vec![
+        route("GET", "/api/network/peers/", Reply::json(200, "[]")),
+        route("GET", "/api/network/me/", Reply::json(200, SUMMARY)),
+    ]);
     for (group, id) in [("projects", PROJECT), ("billing-accounts", BILLING)] {
         let home = Home::new();
         Hipc::new(&home).run(&["account", group, "use", id]).ok();
@@ -112,22 +110,25 @@ fn a_stored_selection_is_skipped_on_reads_and_a_stored_project_refused_on_get() 
             .run(&["network", "peers", "list"])
             .ok();
         for extra in ["--yes", "--dry-run"] {
+            let run = Hipc::against(&home, &server).run(&["network", "get", extra]);
             if group == "projects" {
-                Hipc::against(&home, &server)
-                    .run(&["network", "get", extra])
-                    .fails(2, "project_scope_unsupported");
-            } else if extra == "--dry-run" {
-                let doc = Hipc::against(&home, &server)
-                    .run(&["network", "get", extra])
-                    .ok();
+                run.fails(2, "project_scope_unsupported");
+            } else {
+                let doc = run.ok();
                 assert!(!doc.to_string().contains(BILLING), "{doc}");
             }
         }
     }
-    let requests = server.requests();
-    assert_eq!(requests.len(), 2);
-    for request in requests {
-        assert_eq!(request.path(), "/api/network/peers/");
+    let calls = server.calls();
+    assert_eq!(
+        calls,
+        [
+            "GET /api/network/peers/",
+            "GET /api/network/peers/",
+            "GET /api/network/me/"
+        ]
+    );
+    for request in server.requests() {
         assert_eq!(request.header("x-hippius-project"), None);
         assert_eq!(request.header("x-hippius-billing"), None);
     }
@@ -573,8 +574,7 @@ fn dry_runs_list_the_exact_request_and_send_nothing() {
         ),
     ];
     for (args, request) in cases {
-        let doc = Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        let doc = Hipc::tokenless(&home, &server)
             .env_remove("HIPPIUS_TOKEN")
             .run(&[&["--dry-run"], args].concat())
             .dry_ok();

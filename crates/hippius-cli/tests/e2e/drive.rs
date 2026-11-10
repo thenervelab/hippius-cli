@@ -16,8 +16,7 @@ fn plans_need_no_token_and_are_an_envelope() {
         "/api/drive/plans/",
         Reply::json(200, PLANS),
     )]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .run(&["drive", "plans"])
         .ok();
     assert_eq!(doc["items"][1]["code"], "solo");

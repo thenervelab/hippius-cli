@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, draft, route};
+use crate::common::{self, Hipc, Home, MEMBER, Reply, Run, Server, draft, route};
 
 const PASSWORD: &str = "pw-0n3-t1me-9f2c";
 const CLIENT_KEY: &str = "MIIclientkey0f3a";
@@ -317,11 +317,7 @@ fn create_checks_usage_then_reveal_then_the_token_then_confirmation_with_zero_re
     );
     assert!(server.requests().is_empty());
     // With no token, `--reveal` is still checked first, and the token before the question.
-    let no_token = |extra: &[&str]| {
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
-            .run(&create_args(extra))
-    };
+    let no_token = |extra: &[&str]| Hipc::tokenless(&Home::new(), &server).run(&create_args(extra));
     no_token(&[]).fails(2, "reveal_required");
     no_token(&["--reveal"]).fails(1, "auth");
     assert!(server.requests().is_empty());
@@ -1308,6 +1304,9 @@ fn a_bad_credentials_dir_is_usage_with_zero_requests() {
 /// database.
 #[test]
 fn a_write_failure_after_the_create_keeps_the_answer_on_stdout() {
+    if !common::permission_bits_apply() {
+        return;
+    }
     let server = Server::start(vec![route(
         "POST",
         "/api/databases/",
@@ -1417,6 +1416,9 @@ fn a_file_made_during_the_create_is_kept_and_the_answer_stays_on_stdout() {
 /// opened (mode 0300) fails before any file is written, with the whole answer on stdout.
 #[test]
 fn a_directory_that_cannot_be_opened_keeps_the_answer_on_stdout() {
+    if !common::permission_bits_apply() {
+        return;
+    }
     let server = Server::start(vec![route(
         "POST",
         "/api/databases/",
@@ -1492,6 +1494,9 @@ fn a_credentials_dir_others_can_write_is_usage_with_zero_requests() {
 /// A directory whose parent cannot be searched cannot be checked, so it is usage too.
 #[test]
 fn a_credentials_dir_that_cannot_be_read_is_usage() {
+    if !common::permission_bits_apply() {
+        return;
+    }
     let server = Server::start(vec![]);
     let home = Home::new();
     let parent = empty_dir(&home, "closed");

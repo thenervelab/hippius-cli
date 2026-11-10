@@ -296,10 +296,7 @@ fn bad_flags_are_usage_and_send_nothing() {
         (&["--name=-push", "--role", "read"], "a key name is"),
     ] {
         let args = [&create[..], extra].concat();
-        let error = Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
-            .run(&args)
-            .fails(2, "usage");
+        let error = Hipc::tokenless(&home, &server).run(&args).fails(2, "usage");
         assert!(
             error["message"].as_str().unwrap().contains(words),
             "{args:?}: {error}"
@@ -309,10 +306,7 @@ fn bad_flags_are_usage_and_send_nothing() {
         &["hub", "keys", "rotate", "x", "--reveal", "--yes"][..],
         &["hub", "keys", "delete", "../7", "--yes"],
     ] {
-        let error = Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
-            .run(args)
-            .fails(2, "usage");
+        let error = Hipc::tokenless(&home, &server).run(args).fails(2, "usage");
         assert!(
             error["message"]
                 .as_str()
@@ -345,8 +339,7 @@ fn create_and_rotate_without_reveal_are_refused_and_send_nothing() {
             "{error}"
         );
         // Before the token check too.
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&home, &server)
             .run(args)
             .fails(2, "reveal_required");
     }
@@ -380,10 +373,7 @@ fn writes_without_yes_are_refused_and_name_the_key() {
             error["message"].as_str().unwrap().contains(action),
             "{error}"
         );
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
-            .run(args)
-            .fails(1, "auth");
+        Hipc::tokenless(&home, &server).run(args).fails(1, "auth");
     }
     assert!(server.requests().is_empty());
 }

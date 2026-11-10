@@ -4,10 +4,7 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, route};
-
-const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
-const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
+use crate::common::{BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Server, draft, route};
 
 const PROJECTS: &str = concat!(
     r#"{"projects":[{"id":null,"name":"Default","is_default":true,"#,

@@ -7,7 +7,7 @@ use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, route};
 const DRIVE: &str = r#"{"active":true,"plan":"solo","plan_name":"Starter"}"#;
 const S3: &str = r#"{"active":false,"mode":"pay_as_you_go","used_bytes":0}"#;
 const HUB: &str =
-    r#"[{"subscription_id":7,"plan_id":2,"active":true,"paid_per_month":5000000000000000000}]"#;
+    r#"[{"subscription_id":7,"plan_id":2,"active":true,"paid_per_month":50000000000000000000}]"#;
 const STRIPE: &str = r#"{"subscription":null,"has_subscription":false}"#;
 
 fn all_legs() -> Vec<crate::common::Route> {
@@ -65,9 +65,9 @@ fn subscriptions_lists_every_plan_source_in_order() {
     assert_eq!(services, ["drive", "s3", "hub", "stripe"]);
     assert_eq!(doc["items"][1]["subscription"]["mode"], "pay_as_you_go");
     assert_eq!(doc["next_page_token"], serde_json::Value::Null);
-    // The raw chain number keeps every digit.
+    // The raw chain number keeps every digit, though it is above `u64::MAX`.
     let raw = Hipc::against(&Home::new(), &server).run(&["billing", "subscriptions"]);
-    assert!(raw.stdout().contains("5000000000000000000"));
+    assert!(raw.stdout().contains("50000000000000000000"));
 }
 
 #[test]
@@ -343,8 +343,7 @@ fn all_refuses_a_page_loop_and_a_next_link_without_a_page_number() {
 #[test]
 fn a_bad_page_token_is_usage_even_without_a_token() {
     let server = Server::start(vec![]);
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&["billing", "transactions", "--page-token", "abc"])
         .fails(2, "usage");
 }
@@ -413,8 +412,7 @@ fn stripe_is_the_server_body() {
 #[test]
 fn billing_needs_a_token() {
     let server = Server::start(vec![]);
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&["billing", "balance"])
         .fails(1, "auth");
     assert!(server.requests().is_empty());

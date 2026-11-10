@@ -2,7 +2,7 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 
-use crate::common::{Hipc, Home, Reply, Server, TOKEN, no_server, route, status_routes};
+use crate::common::{self, Hipc, Home, Reply, Server, TOKEN, no_server, route, status_routes};
 
 fn chmod(path: &std::path::Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
@@ -27,8 +27,7 @@ fn a_config_others_can_read_is_refused_with_the_chmod_that_fixes_it() {
     let home = Home::new();
     login(&home);
     chmod(&home.config(), 0o644);
-    let error = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    let error = Hipc::tokenless(&home, &server)
         .run(&["auth", "status"])
         .fails(2, "usage");
     assert_eq!(
@@ -56,6 +55,9 @@ fn a_config_directory_others_can_write_is_refused() {
 /// `usage` with a hint, not `internal` with a report-a-bug hint.
 #[test]
 fn a_config_directory_the_user_cannot_open_is_usage() {
+    if !common::permission_bits_apply() {
+        return;
+    }
     let home = Home::new();
     login(&home);
     let dir = home.config().parent().unwrap().to_owned();
@@ -226,28 +228,20 @@ fn a_stored_profile_with_an_old_style_name_can_still_be_selected() {
     }
     home.write_config(&format!("default_profile = \"new one\"\n{config}"));
     for name in names {
-        let by_variable = Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        let by_variable = Hipc::tokenless(&home, &server)
             .env("HIPPIUS_PROFILE", name)
             .run(&["auth", "status"])
             .ok();
         assert_eq!(by_variable["profile"], name);
-        let by_flag = Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        let by_flag = Hipc::tokenless(&home, &server)
             .run(&["--profile", name, "auth", "status"])
             .ok();
         assert_eq!(by_flag["profile"], name);
     }
     // `default_profile` names a profile not written yet; it is the file's own choice.
-    let doc = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
-        .with_env_token(server.url(), TOKEN)
-        .run(&["auth", "status"])
-        .ok();
+    let doc = Hipc::against(&home, &server).run(&["auth", "status"]).ok();
     assert_eq!(doc["profile"], "new one");
-    let doc = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
-        .with_env_token(server.url(), TOKEN)
+    let doc = Hipc::against(&home, &server)
         .run(&["--profile", "new one", "auth", "status"])
         .ok();
     assert_eq!(doc["profile"], "new one");
@@ -451,8 +445,7 @@ fn concurrent_logins_to_different_profiles_keep_both_tokens() {
 #[test]
 fn a_whitespace_hippius_token_is_usage() {
     let server = Server::start(vec![]);
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .with_env_token(server.url(), "   ")
         .run(&["auth", "status"])
         .fails(2, "usage");
