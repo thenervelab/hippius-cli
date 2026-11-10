@@ -19,6 +19,7 @@ use hippius::{
     Result, Selection, Settings, Source, phrase, redact_value,
 };
 use serde_json::{Map, Value, json};
+use zeroize::Zeroizing;
 
 use crate::cli::{
     Access, Grant, GrantArg, InviteCreate, Invites, MarketingConsent, MemberUpdate, Members,
@@ -49,7 +50,7 @@ fn accounts(ctx: &Context<'_>, client: &Client) -> Result<Fetched> {
         Step::DryRun(doc) => return Ok(Fetched::DryRun(doc)),
     };
     match response.json()? {
-        Value::Object(mut body) => match body.remove("accounts") {
+        Value::Object(mut body) => match body.shift_remove("accounts") {
             Some(Value::Array(accounts)) => {
                 Ok(Fetched::Accounts(hippius::page_beside(accounts, body)?))
             }
@@ -370,8 +371,9 @@ const ACCEPT: &str = "/accounts/invites/accept/";
 /// What a dry run's body shows in place of the invite token.
 const TOKEN_PLACEHOLDER: &str = "<the invite token from --token-file>";
 
-/// An invite token, read from `--token-file`. `Debug` says one is present, never what it is.
-struct InviteToken(String);
+/// An invite token, read from `--token-file`, cleared when dropped. `Debug` says one is
+/// present, never what it is.
+struct InviteToken(Zeroizing<String>);
 
 impl InviteToken {
     /// Reads the token: surrounding whitespace is trimmed, and what is left must be one word
@@ -396,7 +398,7 @@ impl InviteToken {
         } else if !token.bytes().all(|b| b.is_ascii_graphic()) {
             "holds a space, a line break, or a character outside visible ASCII"
         } else {
-            return Ok(Self(token.to_owned()));
+            return Ok(Self(Zeroizing::new(token.to_owned())));
         };
         let hint = if path == Path::new("-") {
             "pipe only the invite token, the last part of the invite link, to `--token-file -`"
@@ -652,6 +654,10 @@ fn update_member(ctx: &Context<'_>, args: &MemberUpdate) -> Result<Printed> {
         // There is no read of one member: the list holds every member's grants.
         read: members_list(),
         draft_body: None,
+        // A member has no version and the PATCH takes no `If-Match`, so a change another
+        // admin makes between the read and the PATCH is written over unseen: a grant revoked
+        // in that window comes back when `--grant` names it. The help says so; send
+        // `If-Match` here once the route takes one.
         draft_if_match: None,
         noun: "grant",
         owner: format!("the member `{id}`"),
@@ -846,7 +852,7 @@ mod tests {
 
     #[test]
     fn an_invite_token_debugs_as_present_without_its_text() {
-        let token = InviteToken("inv_secret".to_owned());
+        let token = InviteToken(Zeroizing::new("inv_secret".to_owned()));
         assert_eq!(format!("{token:?}"), "InviteToken(redacted)");
     }
 }

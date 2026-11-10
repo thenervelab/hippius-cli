@@ -259,6 +259,10 @@ fn rules(ctx: &Context<'_>, command: &CdnRules) -> Result<Printed> {
                 remove_others: *remove_others,
                 read,
                 draft_body: None,
+                // The rules route has no version: swagger gives `If-Match` only for a zone's
+                // WAF version, so this PUT cannot be made conditional, and a rule another
+                // client saves between the read and the PUT is written over unseen. The help
+                // says so; send `If-Match` here once the route takes one.
                 draft_if_match: None,
                 noun: "cache rule",
                 owner: format!("the CDN zone `{zone_id}`"),

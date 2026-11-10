@@ -47,7 +47,7 @@ pub fn page(answer: Value) -> Result<Page> {
             next: None,
             fields: Map::new(),
         }),
-        Value::Object(mut map) => match map.remove("results") {
+        Value::Object(mut map) => match map.shift_remove("results") {
             Some(Value::Array(items)) => page_beside(items, map),
             _ => Err(not_a_list()),
         },
@@ -64,14 +64,14 @@ pub fn page(answer: Value) -> Result<Page> {
 ///
 /// `internal` when `next` is neither a string nor null.
 pub fn page_beside(items: Vec<Value>, mut fields: Map<String, Value>) -> Result<Page> {
-    let next = match fields.remove("next") {
+    let next = match fields.shift_remove("next") {
         None | Some(Value::Null) => None,
         Some(Value::String(next)) => Some(next),
         // Treating a malformed link as the last page would print a short list as if it
         // were complete.
         Some(_) => return Err(not_a_list()),
     };
-    fields.remove("previous");
+    fields.shift_remove("previous");
     Ok(Page {
         items,
         next,
@@ -176,10 +176,10 @@ pub fn cursor_page(answer: Value) -> Result<CursorPage> {
     let Value::Object(mut map) = answer else {
         return Err(not_a_list());
     };
-    let Some(Value::Array(items)) = map.remove("results") else {
+    let Some(Value::Array(items)) = map.shift_remove("results") else {
         return Err(not_a_list());
     };
-    let next_page_token = match map.remove("next_before") {
+    let next_page_token = match map.shift_remove("next_before") {
         Some(Value::Null) => None,
         // As a number, so the token is one spelling of the cursor whatever the server
         // wrote (`812`, not `812.0` or `8.12e2`, which `as_u64` refuses).
@@ -267,18 +267,25 @@ fn not_a_list() -> Error {
 /// (`Client::send`). Removed at every level, not only the top, so a response that nests
 /// the object, or lists several, cannot print it if its shape changes.
 pub fn without_field(value: Value, name: &str) -> Value {
+    without_fields(value, &|key| key == name)
+}
+
+/// `value` with every field whose name `withheld` picks removed, at any depth of objects and
+/// arrays, as [`without_field`] removes one name: for a secret that more than one spelling
+/// may name.
+pub fn without_fields(value: Value, withheld: &dyn Fn(&str) -> bool) -> Value {
     match value {
         Value::Object(fields) => Value::Object(
             fields
                 .into_iter()
-                .filter(|(key, _)| key != name)
-                .map(|(key, value)| (key, without_field(value, name)))
+                .filter(|(key, _)| !withheld(key))
+                .map(|(key, value)| (key, without_fields(value, withheld)))
                 .collect(),
         ),
         Value::Array(items) => Value::Array(
             items
                 .into_iter()
-                .map(|item| without_field(item, name))
+                .map(|item| without_fields(item, withheld))
                 .collect(),
         ),
         other => other,
@@ -296,7 +303,10 @@ const REDACTED: &str = "<redacted>";
 pub(crate) fn redact(text: String, secret: &str) -> String {
     assert!(!secret.is_empty(), "an empty secret cannot be redacted");
     if text.contains(secret) {
-        text.replace(secret, REDACTED)
+        let redacted = text.replace(secret, REDACTED);
+        // The text that held the secret is cleared, not left in freed memory.
+        drop(zeroize::Zeroizing::new(text));
+        redacted
     } else {
         text
     }
@@ -441,6 +451,22 @@ mod tests {
         assert_eq!(
             error.hint(),
             Some("run `hipc api GET /x/` to see the answer and its `next` link")
+        );
+    }
+
+    /// `preserve_order` makes `Map::remove` a `swap_remove`, which moves the last field into
+    /// the gap; the server's other fields keep their order.
+    #[test]
+    fn the_fields_beside_the_items_keep_the_servers_order() {
+        let names = |fields: &Map<String, Value>| fields.keys().cloned().collect::<Vec<_>>();
+        let answer = json!({
+            "a": 1, "results": [], "b": 2, "next": null, "c": 3, "previous": null, "d": 4
+        });
+        assert_eq!(names(&page(answer).unwrap().fields), ["a", "b", "c", "d"]);
+        let answer = json!({"a": 1, "results": [], "b": 2, "next_before": null, "c": 3, "d": 4});
+        assert_eq!(
+            names(&cursor_page(answer).unwrap().fields),
+            ["a", "b", "c", "d"]
         );
     }
 

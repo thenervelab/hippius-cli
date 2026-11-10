@@ -167,13 +167,7 @@ fn send(
 /// `error` with the hint to read `GET info/` when the server refused it because the account
 /// may not use App Engine; any other error unchanged.
 fn unavailable_hint(error: Error) -> Error {
-    let unavailable = error.http_status() == Some(403)
-        && error
-            .details()
-            .and_then(|details| details.get("error"))
-            .and_then(Value::as_str)
-            == Some("app-engine-unavailable");
-    if unavailable {
+    if super::refused_as(&error, 403, "app-engine-unavailable") {
         error.with_hint("run `hipc compute app-engine get` to see whether the account may use it")
     } else {
         error

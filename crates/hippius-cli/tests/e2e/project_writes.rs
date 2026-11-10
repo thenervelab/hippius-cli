@@ -1822,6 +1822,35 @@ fn a_selection_that_cannot_be_cleared_is_a_warning() {
     assert!(home.config_text().contains(PROJECT));
 }
 
+/// A `projects use` stored while the archive was in flight is kept: the selection is compared
+/// again under the file's lock, and only the archived project is cleared.
+#[test]
+fn archiving_keeps_a_selection_stored_meanwhile() {
+    let path = format!("/api/accounts/projects/{PROJECT}/");
+    let home = Home::new();
+    Hipc::new(&home)
+        .run(&["account", "projects", "use", PROJECT])
+        .ok();
+    let config = home.config();
+    // Another run selects the second project after the first read the config.
+    let reselect = move || {
+        let text = std::fs::read_to_string(&config).expect("read the config");
+        std::fs::write(&config, text.replace(PROJECT, SECOND)).expect("write the config");
+    };
+    let server = Server::start(vec![route(
+        "DELETE",
+        &path,
+        Reply::json(204, "").before(reselect),
+    )]);
+    let run = Hipc::against(&home, &server).run(&[
+        "--output", "text", "account", "projects", "delete", PROJECT, "--yes",
+    ]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(run.stderr(), "");
+    let text = home.config_text();
+    assert!(text.contains(SECOND) && !text.contains(PROJECT), "{text}");
+}
+
 /// Each write's dry run lists its requests, the reads that name its target first, needs no
 /// token, and sends nothing; a membership shows on the scoped routes and never on the
 /// personal ones.

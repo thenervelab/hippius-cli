@@ -1329,7 +1329,7 @@ fn a_server_refuses_an_unscripted_request_when_it_drops() {
 /// `requests` listing it alone. A `dry_run` in `request` is dropped, as no entry has one.
 pub(crate) fn one_request_dry_run(mut request: Value) -> Value {
     if let Value::Object(fields) = &mut request {
-        fields.remove("dry_run");
+        fields.shift_remove("dry_run");
     }
     serde_json::json!({ "dry_run": true, "requests": [request] })
 }
@@ -1339,8 +1339,8 @@ pub(crate) fn one_request_dry_run(mut request: Value) -> Value {
 /// against `hipc schema`.
 pub(crate) fn requests_part(mut doc: Value) -> Value {
     if let Value::Object(fields) = &mut doc {
-        fields.remove("confirmation");
-        fields.remove("confirmation_when");
+        fields.shift_remove("confirmation");
+        fields.shift_remove("confirmation_when");
     }
     doc
 }

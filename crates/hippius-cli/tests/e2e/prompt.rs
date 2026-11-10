@@ -6,8 +6,9 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;
 use std::process::{Output, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
@@ -38,6 +39,10 @@ fn logout_at_a_terminal(typed: &[u8], stderr_on_terminal: bool) -> (Output, Stri
 /// Runs `hipc <args>` with `env` set, stdin and stdout on a terminal, and stderr on it
 /// too, or on a pipe when `stderr_on_terminal` is false; types `typed`, and returns the
 /// exit status, what the terminal showed (line breaks as `\n`), and the piped stderr.
+///
+/// `typed` is typed a line at a time, each line once one more question shows than lines were
+/// typed, as a person answers: `hipc` discards what was typed before a question appeared.
+/// Once `hipc` has exited, the lines left are not typed.
 fn at_a_terminal(
     args: &[&str],
     env: &[(&str, &str)],
@@ -58,7 +63,7 @@ fn at_a_terminal(
         } else {
             Stdio::piped()
         });
-    let child = command.spawn().expect("spawn hipc");
+    let mut child = command.spawn().expect("spawn hipc");
     // `command` holds the copies of the terminal side it was given until dropped.
     drop(command);
     let mut keyboard = File::from(master);
@@ -68,11 +73,12 @@ fn at_a_terminal(
     // handle open, a read never ends on its own, so the reader polls with a timeout and
     // stops once `hipc` has exited and nothing more arrives.
     let exited = Arc::new(AtomicBool::new(false));
-    let mut screen = keyboard.try_clone().expect("clone the keyboard side");
+    let shown = Arc::new(Mutex::new(Vec::new()));
+    let screen = keyboard.try_clone().expect("clone the keyboard side");
     let reader = {
-        let exited = Arc::clone(&exited);
+        let (exited, shown) = (Arc::clone(&exited), Arc::clone(&shown));
         std::thread::spawn(move || {
-            let mut shown = Vec::new();
+            let mut screen = screen;
             let mut buffer = [0_u8; 4096];
             // 50 ms: arbitrary. It only adds latency after the exit; correctness does
             // not depend on it.
@@ -97,20 +103,44 @@ fn at_a_terminal(
                     Err(error) => {
                         panic!("read the terminal while its terminal side is open: {error}")
                     }
-                    Ok(n) => shown.extend_from_slice(&buffer[..n]),
+                    Ok(n) => shown
+                        .lock()
+                        .expect("the screen lock")
+                        .extend_from_slice(&buffer[..n]),
                 }
             }
-            shown
         })
     };
-    keyboard.write_all(typed).expect("type into the terminal");
+    let questions = || {
+        String::from_utf8_lossy(&shown.lock().expect("the screen lock"))
+            .matches("[y/N] ")
+            .count()
+    };
+    // 30 s: arbitrary, far beyond a debug build's start on a loaded host.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    for (answered, line) in typed.split_inclusive(|&b| b == b'\n').enumerate() {
+        while questions() <= answered {
+            if child.try_wait().expect("poll hipc").is_some() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "question {answered} never appeared"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if child.try_wait().expect("poll hipc").is_some() {
+            break;
+        }
+        keyboard.write_all(line).expect("type into the terminal");
+    }
     let output = child.wait_with_output().expect("wait for hipc");
     // Release pairs with the reader's Acquire, so a reader that sees `true` polls after
     // `hipc`'s exit was reaped.
     exited.store(true, Ordering::Release);
-    let shown = reader.join().expect("the screen reader does not panic");
+    reader.join().expect("the screen reader does not panic");
     drop(terminal);
-    let shown = String::from_utf8_lossy(&shown).replace('\r', "");
+    let shown = String::from_utf8_lossy(&shown.lock().expect("the screen lock")).replace('\r', "");
     (output, shown)
 }
 

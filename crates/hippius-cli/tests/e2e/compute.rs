@@ -307,6 +307,32 @@ fn a_membership_sends_the_header_on_compute_but_never_on_ssh_keys() {
     assert_eq!(requests[3].header("x-hippius-account"), None);
 }
 
+/// A server answer that happens to hold `dry_run: true` and `requests` is printed as it
+/// came: only a run given `--dry-run` gets the `confirmation` fields and the dry-run layout.
+#[test]
+fn an_answer_shaped_like_a_dry_run_is_printed_as_it_came() {
+    let answer = r#"{"dry_run":true,"requests":[{"method":"GET"}],"status":"running"}"#;
+    let server = Server::start(vec![vm_route("GET", "", Reply::json(200, answer))]);
+    let doc = hipc(&server, &["vms", "get", VM]).ok();
+    assert_eq!(doc, serde_json::from_str::<Value>(answer).unwrap());
+    let mut argv = vec!["--output", "text", "compute", "vms", "get", VM];
+    let text = Hipc::against(&Home::new(), &server).run(&argv);
+    assert_eq!(text.code(), Some(0), "{}", text.stderr());
+    assert!(
+        text.stdout().starts_with("dry_run   true\nrequests  "),
+        "{}",
+        text.stdout()
+    );
+    // The same command given `--dry-run` is a dry run.
+    argv.insert(0, "--dry-run");
+    let text = Hipc::against(&Home::new(), &server).run(&argv);
+    assert!(
+        text.stdout().contains("confirmation       false\n"),
+        "{}",
+        text.stdout()
+    );
+}
+
 #[test]
 fn get_is_the_vm_and_a_missing_one_is_not_found() {
     let server = Server::start(vec![vm_route("GET", "", Reply::json(200, &vm("running")))]);
@@ -2102,11 +2128,31 @@ fn a_page_token_with_a_leading_zero_asks_for_that_page() {
 /// A server that answers each connection with the next of `replies` (status, body), in
 /// order, and returns the request lines it saw.
 fn in_sequence(replies: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    let replies = replies
+        .into_iter()
+        .map(|(status, body)| (status, String::new(), body))
+        .collect();
+    let (url, handle) = in_sequence_timed(replies);
+    let lines = std::thread::spawn(move || {
+        let seen = handle.join().expect("the server thread");
+        seen.into_iter().map(|(line, _)| line).collect()
+    });
+    (url, lines)
+}
+
+/// [`in_sequence`] with each reply's extra header lines (each ending in `\r\n`), and the time
+/// each request arrived beside its request line.
+fn in_sequence_timed(
+    replies: Vec<(u16, String, String)>,
+) -> (
+    String,
+    std::thread::JoinHandle<Vec<(String, std::time::Instant)>>,
+) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a local port");
     let url = format!("http://{}", listener.local_addr().expect("a bound address"));
     let handle = std::thread::spawn(move || {
         let mut seen = Vec::new();
-        for (status, body) in replies {
+        for (status, headers, body) in replies {
             let Ok((mut stream, _)) = listener.accept() else {
                 break;
             };
@@ -2114,7 +2160,7 @@ fn in_sequence(replies: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<
             let mut reader = std::io::BufReader::new(&stream);
             let mut line = String::new();
             drop(reader.read_line(&mut line));
-            seen.push(line.trim_end().to_owned());
+            seen.push((line.trim_end().to_owned(), std::time::Instant::now()));
             let mut length = 0;
             loop {
                 let mut header = String::new();
@@ -2130,7 +2176,7 @@ fn in_sequence(replies: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<
             drop(reader);
             let head = format!(
                 "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                 Connection: close\r\n\r\n",
+                 {headers}Connection: close\r\n\r\n",
                 body.len()
             );
             drop(stream.write_all(format!("{head}{body}").as_bytes()));
@@ -2164,6 +2210,85 @@ fn a_passing_poll_failure_is_tolerated_and_the_wait_goes_on() {
         .ok();
     assert_eq!(doc["status"], "running");
     assert_eq!(server.join().unwrap().len(), 3);
+}
+
+/// A retryable poll failure with a `Retry-After` longer than the poll interval (2 seconds)
+/// waits that long before the next poll.
+#[test]
+fn a_poll_failure_waits_for_its_retry_after() {
+    let (url, server) = in_sequence_timed(vec![
+        (202, String::new(), vm("pending")),
+        (
+            503,
+            "Retry-After: 4\r\n".to_owned(),
+            r#"{"detail":"busy"}"#.to_owned(),
+        ),
+        (200, String::new(), vm("running")),
+    ]);
+    let doc = Hipc::new(&Home::new())
+        .env("HIPPIUS_API_URL", &url)
+        .with_env_token(&url, crate::common::TOKEN)
+        .run(&[
+            "compute",
+            "vms",
+            "create",
+            "--wait",
+            "--flavor",
+            "small",
+            "--ssh-key-id",
+            "7",
+            "--yes",
+        ])
+        .ok();
+    assert_eq!(doc["status"], "running");
+    let seen = server.join().unwrap();
+    assert_eq!(seen.len(), 3);
+    let gap = seen[2].1.duration_since(seen[1].1);
+    assert!(gap >= std::time::Duration::from_millis(3_900), "{gap:?}");
+}
+
+/// A `Retry-After` that runs past the deadline ends the wait at the deadline, as a timeout
+/// with the VM on stdout, and sends no poll the server asked not to get.
+#[test]
+fn a_retry_after_past_the_deadline_ends_the_wait_without_another_poll() {
+    let (url, server) = in_sequence_timed(vec![
+        (202, String::new(), vm("pending")),
+        (
+            503,
+            "Retry-After: 60\r\n".to_owned(),
+            r#"{"detail":"busy"}"#.to_owned(),
+        ),
+        (200, String::new(), vm("running")),
+    ]);
+    let started = std::time::Instant::now();
+    let run = Hipc::new(&Home::new())
+        .env("HIPPIUS_API_URL", &url)
+        .with_env_token(&url, crate::common::TOKEN)
+        .run(&[
+            "compute",
+            "vms",
+            "create",
+            "--wait",
+            "--wait-timeout",
+            "4",
+            "--flavor",
+            "small",
+            "--ssh-key-id",
+            "7",
+            "--yes",
+        ]);
+    let took = started.elapsed();
+    assert_eq!(fails_with_vm(&run, "timeout")["status"], "pending");
+    assert!(took < std::time::Duration::from_secs(30), "{took:?}");
+    // The third reply is never asked for: a connection now ends the server thread.
+    drop(std::net::TcpStream::connect(
+        url.trim_start_matches("http://"),
+    ));
+    assert_eq!(
+        server.join().unwrap().len(),
+        3,
+        "the create, one poll, this probe"
+    );
 }
 
 #[test]
@@ -3640,6 +3765,61 @@ fn a_launch_whose_ports_cannot_be_opened_is_a_partial_failure() {
     let error: Value = serde_json::from_str(run.stderr()).unwrap();
     assert_eq!(error["error"]["code"], "internal");
     assert_eq!(error["error"]["side_effects"], "partial");
+    assert_eq!(server.requests().len(), 1);
+}
+
+/// The launch answer's id goes into the firewall `PUT` when it keeps to the `vm_id` rule,
+/// a leading `-` included, and the hint of a failed `PUT` then puts it after `--`, so the
+/// command runs as written. An id that could change the route sends no `PUT`.
+#[test]
+fn a_launched_id_with_a_leading_dash_still_gets_its_rules() {
+    let launched = r#"{"vm_id":"-vm1","status":"pending"}"#;
+    let server = Server::start(vec![
+        route("POST", "/api/compute/vms/", Reply::json(202, launched)),
+        route(
+            "PUT",
+            "/api/compute/vms/-vm1/firewall/",
+            Reply::json(422, r#"{"detail":"bad rule"}"#),
+        ),
+    ]);
+    let run = create(&server, &["--open-ssh", "--no-wait", "--yes"]);
+    assert_eq!(run.code(), Some(1), "{}", run.stderr());
+    let error: Value = serde_json::from_str(run.stderr()).unwrap();
+    assert_eq!(error["error"]["code"], "partial_failure");
+    let hint = error["error"]["hint"].as_str().unwrap();
+    assert!(
+        hint.starts_with("run `hipc compute firewall update --rules-file - --yes -- -vm1` with "),
+        "{hint}"
+    );
+    let sent: Vec<String> = server.requests().iter().map(|r| r.target.clone()).collect();
+    assert_eq!(
+        sent,
+        ["/api/compute/vms/", "/api/compute/vms/-vm1/firewall/"]
+    );
+    // The hint's command parses: its id is not read as a flag.
+    let mut argv = vec![
+        "--dry-run",
+        "compute",
+        "firewall",
+        "update",
+        "--rules-file",
+        "-",
+    ];
+    argv.extend(["--yes", "--", "-vm1"]);
+    let rules = r#"{"rules":[{"protocol":"tcp","ports":["22"]}]}"#;
+    Hipc::new(&Home::new())
+        .stdin(rules.as_bytes())
+        .run(&argv)
+        .dry_ok();
+    let server = Server::start(vec![route(
+        "POST",
+        "/api/compute/vms/",
+        Reply::json(202, r#"{"vm_id":"a/b","status":"pending"}"#),
+    )]);
+    let run = create(&server, &["--open-ssh", "--no-wait", "--yes"]);
+    assert_eq!(run.code(), Some(1), "{}", run.stderr());
+    let error: Value = serde_json::from_str(run.stderr()).unwrap();
+    assert_eq!(error["error"]["code"], "internal");
     assert_eq!(server.requests().len(), 1);
 }
 

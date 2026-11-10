@@ -643,8 +643,9 @@ fn without_yes_the_launch_is_refused_after_validate() {
         error["message"],
         format!(
             "this would launch an app VM of flavor `small` with a public IPv4 in `FR`, with \
-             backups every 900 seconds, billed per hour from the balance in the account \
-             `{MEMBER}`, and `--yes` was not passed"
+             backups every 900 seconds, stored backups billed per GB-hour at the price that \
+             `hipc compute backups options` shows, billed per hour from the balance in the \
+             account `{MEMBER}`, and `--yes` was not passed"
         )
     );
     assert_eq!(server.only_request().path(), VALIDATE);
@@ -655,9 +656,13 @@ fn without_yes_the_launch_is_refused_after_validate() {
         (
             "auto",
             " and failover `auto`, which restarts it on another server from its latest backup \
-             if its server dies, losing what was written after that backup,",
+             if its server dies, losing what was written after that backup, stored backups \
+             billed per GB-hour",
         ),
-        ("manual", " and failover `manual`,"),
+        (
+            "manual",
+            " and failover `manual`, stored backups billed per GB-hour",
+        ),
     ] {
         let error = Hipc::against(&files.home, &launching_server())
             .run(&with_secrets(
@@ -872,6 +877,33 @@ fn a_refused_launch_keeps_what_to_fix_with_every_value_redacted() {
     assert!(
         error["hint"].as_str().unwrap().contains("app-engine get"),
         "{error}"
+    );
+    // The slug in `code`, as compute bodies may carry it, is kept with secrets sent too, so
+    // the message names what the hint is about.
+    let server = Server::start(vec![
+        route(
+            "POST",
+            VALIDATE,
+            Reply::json(200, &validated(&["DB_PASSWORD", "API_KEY"])),
+        ),
+        route(
+            "POST",
+            APPS,
+            Reply::json(403, r#"{"code":"app-engine-unavailable"}"#),
+        ),
+    ]);
+    let error = Hipc::against(&files.home, &server)
+        .run(&with_secrets(&files, &["--yes"]))
+        .fails(1, "permission");
+    assert!(
+        error["hint"].as_str().unwrap().contains("app-engine get"),
+        "{error}"
+    );
+    assert_eq!(error["details"]["code"], "app-engine-unavailable");
+    assert_eq!(
+        error["message"],
+        "cannot launch an app VM of flavor `small` with a public IPv4: the API says \
+         `app-engine-unavailable`"
     );
 }
 
@@ -1433,8 +1465,8 @@ fn the_question_names_the_os_disk_tier() {
     assert_eq!(
         error["message"],
         "this would launch an app VM of flavor `small` with a public IPv4, with an OS disk on \
-         tier `hdd` or faster, billed at the `hdd` price, billed per hour from the balance, and \
-         `--yes` was not passed"
+         tier `hdd` or faster, billed at the `hdd` price that `hipc compute prices` shows \
+         (`vm_by_os_disk_tier`), billed per hour from the balance, and `--yes` was not passed"
     );
 }
 

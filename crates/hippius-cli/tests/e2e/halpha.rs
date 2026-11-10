@@ -18,6 +18,10 @@ const CREDITS: &str = "6185185183518518517";
 /// floor(CREDITS * 9900 / 10000).
 const MIN_CREDITS: &str = "6123333331683333331";
 const KEY: &str = "3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0c";
+/// The hint of an account that signs its own buys: a card top-up, which works for it today,
+/// and no `hipc` version that does not exist.
+const SELF_SIGN_HINT: &str = "run `hipc billing top-up --amount <USD> --method card --yes` \
+     and pay at its `checkout_url`";
 const ADDRESS: &str = "5DfhGyQdFobKM8NsWvEeAKk5EQQgYe9AydgJ7rMB6E1EqRzV";
 /// The note of a purchase row in text mode, which has no `credit_amount` until it completes.
 /// The note a text-mode run prints once the buy is accepted, up to its random key.
@@ -273,6 +277,40 @@ fn a_purchase_in_flight_blocks_a_second_buy() {
         error["message"],
         "the purchase `p_8` is still without a status, and a second buy now could spend twice"
     );
+}
+
+/// The in-flight window is measured by the API's clock, the purchases read's `Date`: a
+/// purchase created a minute before that `Date` blocks a second buy, though by the local
+/// clock, which the server's `Date` here makes days fast, it is long out of the window.
+#[test]
+fn the_in_flight_window_is_measured_by_the_apis_clock() {
+    let list = json!({"count": 1, "results": [
+        {"id": "p_7", "status": "submitted", "created_at": "2026-11-03T10:00:00Z"}
+    ]});
+    let server = Server::start(vec![
+        quote(&json!({})),
+        route(
+            "GET",
+            PURCHASES,
+            Reply::json(200, &list.to_string()).header("Date", "Tue, 03 Nov 2026 10:01:00 GMT"),
+        ),
+    ]);
+    let error = top_up(&server, &["--yes"]).fails(1, "conflict");
+    assert_eq!(
+        error["message"],
+        "the purchase `p_7` is still `submitted`, and a second buy now could spend twice"
+    );
+    // Sixteen minutes before the `Date` is out of the window by either clock.
+    let server = Server::start(vec![
+        quote(&json!({})),
+        route(
+            "GET",
+            PURCHASES,
+            Reply::json(200, &list.to_string()).header("Date", "Tue, 03 Nov 2026 10:16:00 GMT"),
+        ),
+        buy("completed"),
+    ]);
+    top_up(&server, &["--yes"]).ok();
 }
 
 /// A retry resends the first run's exact amounts under its key: it reads the quote but not
@@ -641,9 +679,9 @@ fn the_quote_rules_out_a_buy_before_anything_is_bought() {
         ),
         (
             json!({"custodial": false}),
-            "the account signs its own hAlpha buys (`self_sign`), and this version of `hipc` \
-             cannot sign one yet",
-            "update `hipc` to a version that signs `Marketplace.buy_credits` itself",
+            "the account signs its own hAlpha buys (`self_sign`), which `hipc` cannot sign yet; a \
+             card or Bitcoin top-up, or one in the console, works",
+            SELF_SIGN_HINT,
         ),
         (
             json!({"min_alpha": "2000000000000000000"}),
@@ -715,13 +753,10 @@ fn a_409_self_sign_from_the_buy_is_refused_with_the_signer_hint() {
     let error = top_up(&server, &["--yes"]).fails(1, "conflict");
     assert_eq!(
         error["message"],
-        "the account signs its own hAlpha buys (`self_sign`), and this version of `hipc` cannot \
-         sign one yet"
+        "the account signs its own hAlpha buys (`self_sign`), which `hipc` cannot sign yet; a card \
+         or Bitcoin top-up, or one in the console, works"
     );
-    assert_eq!(
-        error["hint"],
-        "update `hipc` to a version that signs `Marketplace.buy_credits` itself"
-    );
+    assert_eq!(error["hint"], SELF_SIGN_HINT);
     assert_eq!(error["http_status"], 409);
     assert_eq!(error["details"]["code"], "self_sign");
     // Another 409 keeps the API's own words.

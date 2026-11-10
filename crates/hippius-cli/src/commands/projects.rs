@@ -119,13 +119,16 @@ pub(crate) fn projects(ctx: &Context<'_>, command: &Projects) -> Result<Printed>
 /// projects use default` would: every later command would otherwise act in a project that is
 /// gone. The archive is done whatever happens here, so a failure is a warning, not an error.
 /// Only `hipc account projects delete` clears it: a `hipc api DELETE` of the project does not.
+///
+/// `config` was read before the archive, so the stored project is compared again under the
+/// file's lock: a `hipc account projects use` that another run stored meanwhile is kept.
 fn forget_archived(ctx: &Context<'_>, config: &ConfigFile, profile: &str, project_id: &str) {
     let cleared = ConfigFile::edit(config.path().to_path_buf(), |config| {
-        config.set_project(profile, None);
-        Ok(())
+        Ok(config.clear_project_if(profile, project_id))
     });
     match cleared {
-        Ok(()) => ctx.note(&format!(
+        Ok(false) => {}
+        Ok(true) => ctx.note(&format!(
             "the archived project `{project_id}` was the stored selection, so it is cleared: \
              commands now act in the Default project"
         )),
@@ -807,7 +810,7 @@ fn transfer_lists(answer: Value) -> Result<Transfers> {
     let Value::Object(mut body) = answer else {
         return Err(unexpected_transfers());
     };
-    match (body.remove("incoming"), body.remove("outgoing")) {
+    match (body.shift_remove("incoming"), body.shift_remove("outgoing")) {
         (Some(Value::Array(incoming)), Some(Value::Array(outgoing))) => Ok(Transfers {
             incoming,
             outgoing,

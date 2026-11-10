@@ -758,6 +758,22 @@ pub(crate) fn as_argument(value: &str, parse: fn(&str) -> Result<String, String>
     (parse(value).is_ok() && !value.starts_with('-')).then_some(value)
 }
 
+/// The printed command `hipc <words> <id> <flags>` for an `id` its argument rule accepts: an
+/// id clap would read as a flag, such as one with a leading `-`, goes last, after `--`, so
+/// the command still runs as written (tenet 15).
+pub(crate) fn with_id(words: &str, id: &str, flags: &str) -> String {
+    let flags = if flags.is_empty() {
+        String::new()
+    } else {
+        format!(" {flags}")
+    };
+    if id.starts_with('-') {
+        format!("hipc {words}{flags} -- {id}")
+    } else {
+        format!("hipc {words} {id}{flags}")
+    }
+}
+
 /// A checkout `intent_id`: it goes into the URL path, so only the characters an id has are
 /// accepted. The swagger types it as a string, not a UUID, and card checkouts are Stripe
 /// payment intents (`pi_...`); 1 to 128 letters, digits, `-`, and `_` fits those and keeps
@@ -984,6 +1000,31 @@ mod tests {
     use clap::CommandFactory;
 
     use super::*;
+
+    /// An id that reads as a flag goes last, after `--`, and the printed command parses with
+    /// the id as the positional; any other id stays in place.
+    #[test]
+    fn a_printed_command_puts_a_dash_id_after_the_separator() {
+        assert_eq!(
+            with_id("compute firewall get", "vm-1", ""),
+            "hipc compute firewall get vm-1"
+        );
+        assert_eq!(
+            with_id("compute firewall update", "-vm1", "--rules-file <path>"),
+            "hipc compute firewall update --rules-file <path> -- -vm1"
+        );
+        for command in [
+            with_id("compute firewall get", "-vm1", ""),
+            with_id("compute exposures list", "--help", ""),
+        ] {
+            let words: Vec<&str> = command.split(' ').collect();
+            let parsed = Cli::try_parse_from(&words).expect("the command parses");
+            assert!(
+                format!("{parsed:?}").contains(words[words.len() - 1]),
+                "{command}"
+            );
+        }
+    }
 
     /// What is wrong with one help text, if anything: help is plain text (no Markdown
     /// backticks, no `<https://...>` link syntax), and a short help line is one sentence in

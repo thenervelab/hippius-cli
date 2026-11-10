@@ -14,8 +14,10 @@
 //! The phrase is never kept: [`AccessKey::from_phrase`] reads it into the two keys, and
 //! clears every buffer of its own that held the phrase, its entropy, its seed, a BIP-32
 //! parent key, or a tweak. What it cannot clear: bip39 computes the seed with its own
-//! PBKDF2, whose HMAC pads stay on the stack frames it returns from, and a secp256k1 key or
-//! scalar passed by value leaves the copy the call made. No message quotes the phrase, and no
+//! PBKDF2, whose HMAC pads stay on the stack frames it returns from; a secp256k1 key or
+//! scalar passed by value leaves the copy the call made; and secp256k1 0.33 copies the
+//! secret key into the seed it re-randomizes its context with, in `PublicKey::from_secret_key`
+//! (each BIP-32 step) and in `sign_ecdsa_recoverable` (each signature), and does not clear it. No message quotes the phrase, and no
 //! error of a library it passes through is passed on.
 //!
 //! A login signs a message the server chose, with the same sr25519 context a chain
@@ -28,9 +30,11 @@ use std::path::Path;
 
 use bip39::{Language, Mnemonic};
 use blake2::{Blake2b512, Digest as _};
-use hmac::{Hmac, Mac as _};
+use hmac::digest::FixedOutput as _;
+use hmac::{Hmac, KeyInit as _, Mac as _};
 use schnorrkel::{ExpansionMode, Keypair, MiniSecretKey};
-use secp256k1::{Message, PublicKey, Scalar, Secp256k1, SecretKey};
+use secp256k1::ecdsa::RecoverableSignature;
+use secp256k1::{Message, PublicKey, Scalar, SecretKey};
 use sha2::Sha512;
 use sha3::Keccak256;
 use unicode_normalization::UnicodeNormalization as _;
@@ -212,11 +216,11 @@ impl AccessKey {
     /// [`personal_message_hash`], as `0x` and `r || s || v` in hex with `v` 27 or 28.
     fn personal_sign(&self, message: &[u8]) -> String {
         let digest = Message::from_digest(personal_message_hash(message));
-        let signed = Secp256k1::signing_only().sign_ecdsa_recoverable(digest, &self.ethereum.0);
+        let signed = RecoverableSignature::sign_ecdsa_recoverable(digest, &self.ethereum.0);
         let (recovery, compact) = signed.serialize_compact();
         let mut bytes = [0_u8; 65];
         bytes[..64].copy_from_slice(&compact);
-        bytes[64] = legacy_v(i32::from(recovery));
+        bytes[64] = legacy_v(u8::from(recovery));
         format!("0x{}", hex(&bytes))
     }
 }
@@ -224,8 +228,8 @@ impl AccessKey {
 /// Ethereum's legacy `v`, 27 or 28, for a recovery id: its low bit is the parity of `y`. Ids
 /// 2 and 3, which say `x` overflowed the curve order (a chance near 2^-127), cannot be
 /// written in a legacy `v`, so their parity is kept, as Ethereum libraries do.
-fn legacy_v(recovery: i32) -> u8 {
-    if recovery % 2 == 0 { 27 } else { 28 }
+fn legacy_v(recovery: u8) -> u8 {
+    27 + (recovery & 1)
 }
 
 /// Why `message` is not a login challenge whose nonce is `challenge`, or `Ok`.
@@ -233,9 +237,9 @@ fn legacy_v(recovery: i32) -> u8 {
 /// The template of the server's message is not documented (swagger types it as a string), so
 /// the rules hold what any challenge holds and a document to sign does not: the nonce the
 /// answer names, inside the message; text of at most [`MAX_CHALLENGE_BYTES`] with no control
-/// character, so no line break, which a Sign-In with Ethereum message needs, and no raw
-/// bytes, which an extrinsic payload is; and more than 32 bytes, since Substrate signs the
-/// 32-byte hash of a long payload, not the payload.
+/// character or Unicode line or paragraph separator, so no line break, which a Sign-In with
+/// Ethereum message needs, and no raw bytes, which an extrinsic payload is; and more than 32
+/// bytes, since Substrate signs the 32-byte hash of a long payload, not the payload.
 pub(crate) fn check_challenge(
     message: &str,
     challenge: &str,
@@ -251,6 +255,11 @@ pub(crate) fn check_challenge(
     }
     if message.chars().any(char::is_control) {
         return Err("message holds a control character");
+    }
+    // U+2028 and U+2029 are not control characters, but a verifier that splits on Unicode
+    // line breaks reads them as one, as it would a line feed.
+    if message.contains(['\u{2028}', '\u{2029}']) {
+        return Err("message holds a line or paragraph separator");
     }
     if !message.contains(challenge) {
         return Err("message does not hold its `challenge`");
@@ -341,7 +350,14 @@ fn read_words_file(
         if path.to_str().is_some_and(holds_phrase) {
             return Err(phrase_in_argv());
         }
-        return Err(refuse("does not exist"));
+        // Nor is a path that names no file, which may be a secret passed in its place.
+        return Err(Error::usage(
+            format!(
+                "{what} `{flag}` names does not exist; the path is not repeated here, in case \
+                 it is the {owner} itself"
+            ),
+            format!("pass `{flag}` a file that holds only the {owner}'s words"),
+        ));
     };
     let mut bytes = Zeroizing::new(bytes);
     if std::str::from_utf8(&bytes).is_err() {
@@ -370,6 +386,57 @@ pub fn holds_phrase(text: &str) -> bool {
         if run >= PHRASE_WORDS {
             return true;
         }
+    }
+    false
+}
+
+/// The characters that join the parts of a word without a visible mark: the soft hyphen, the
+/// zero-width space, joiners, the word joiner, and the byte order mark. Dropped rather than
+/// read as a space, so they cannot split a word of an access key.
+pub const INVISIBLE_JOINS: [char; 6] = [
+    '\u{ad}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{2060}', '\u{feff}',
+];
+
+/// The lengths of a BIP-39 phrase, in words.
+const PHRASE_LENGTHS: [usize; 5] = [12, 15, 18, 21, 24];
+
+/// Whether `text` holds an access key a person must not read, such as in a support ticket:
+/// 12, 15, 18, 21, or 24 words in a row on the English BIP-39 list whose checksum holds, after
+/// NFKD normalization, in any letter case, with anything that is not a letter read as a space,
+/// so a numbered or comma-separated list of the words is found.
+///
+/// The checksum tells a key from prose: everyday words (`please`, `help`, `account`, `error`)
+/// are on the list, and twelve of them in a row are common in a message, but only one such
+/// run in 16 has a valid checksum. A key with a mistyped word fails it too, so this guards
+/// against a pasted key, not a damaged one. Every copy of the text is cleared when dropped.
+pub fn holds_checked_phrase(text: &str) -> bool {
+    let mut words = Zeroizing::new(String::with_capacity(text.nfkd().map(char::len_utf8).sum()));
+    words.extend(
+        text.nfkd()
+            .filter(|c| !INVISIBLE_JOINS.contains(c))
+            .map(|c| {
+                if c.is_alphabetic() {
+                    c.to_ascii_lowercase()
+                } else {
+                    ' '
+                }
+            }),
+    );
+    let words: Vec<&str> = words.split_whitespace().collect();
+    let listed = |word: &&&str| Language::English.find_word(word).is_some();
+    let mut at = 0;
+    while at < words.len() {
+        let run = words[at..].iter().take_while(listed).count();
+        let checked = PHRASE_LENGTHS.iter().any(|&length| {
+            words[at..at + run].windows(length).any(|window| {
+                let candidate = Zeroizing::new(window.join(" "));
+                Mnemonic::parse_in_normalized(Language::English, &candidate).is_ok()
+            })
+        });
+        if checked {
+            return true;
+        }
+        at += run.max(1);
     }
     false
 }
@@ -439,15 +506,14 @@ fn parse(text: &str, source: &Source, owner: &str) -> Result<Mnemonic> {
 /// BIP-32 says, but refused: the chance is below 2^-127, and a skip would derive a key no
 /// wallet expects.
 fn derive(seed: &[u8], path: &[u32]) -> EthereumKey {
-    let secp = Secp256k1::signing_only();
     let (key, mut chain) = split(&hmac_sha512(b"Bitcoin seed", &[seed]));
     let mut secret =
-        EthereumKey(SecretKey::from_byte_array(*key).expect("BIP-32: the master key is valid"));
+        EthereumKey(SecretKey::from_secret_bytes(*key).expect("BIP-32: the master key is valid"));
     drop(key);
     for &index in path {
         let index_bytes = index.to_be_bytes();
-        let public = PublicKey::from_secret_key(&secp, &secret.0).serialize();
-        let parent = Zeroizing::new(secret.0.secret_bytes());
+        let public = PublicKey::from_secret_key(&secret.0).serialize();
+        let parent = Zeroizing::new(secret.0.to_secret_bytes());
         // A hardened child hashes the parent's private key, a normal one its public key.
         let data: [&[u8]; 3] = if index >= HARDENED {
             [&[0], &parent[..], &index_bytes]
@@ -476,7 +542,9 @@ fn hmac_sha512(key: &[u8], data: &[&[u8]]) -> Zeroizing<[u8; 64]> {
         mac.update(part);
     }
     let mut out = Zeroizing::new([0_u8; 64]);
-    let mut tag = mac.finalize().into_bytes();
+    // `finalize().into_bytes()` would clone the tag out of a `CtOutput`, leaving the
+    // original behind; `finalize_fixed` moves the one copy out, which is cleared below.
+    let mut tag = mac.finalize_fixed();
     out.copy_from_slice(&tag);
     tag.zeroize();
     out
@@ -505,7 +573,7 @@ pub(crate) fn personal_message_hash(message: &[u8]) -> [u8; 32] {
 /// public key without the `04` tag, each hex letter in upper case where the same nibble of
 /// the Keccak-256 of the lowercase hex is 8 or more.
 fn ethereum_address(key: &EthereumKey) -> String {
-    let public = PublicKey::from_secret_key(&Secp256k1::signing_only(), &key.0);
+    let public = PublicKey::from_secret_key(&key.0);
     ethereum_address_of(&public)
 }
 
@@ -591,7 +659,7 @@ fn no_random_bytes(error: getrandom::Error) -> Error {
 mod tests {
     use std::path::PathBuf;
 
-    use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+    use secp256k1::ecdsa::RecoveryId;
 
     use super::*;
 
@@ -660,7 +728,7 @@ mod tests {
     fn the_substrate_dev_phrase_derives_alith_on_ethereum() {
         let key = key(DEV_PHRASE);
         assert_eq!(
-            hex(&key.ethereum.0.secret_bytes()),
+            hex(&key.ethereum.0.to_secret_bytes()),
             "5fb92d6e98884f76de468fa3f6278f8807c48bebc13595d45af5bdc4da702133"
         );
         assert_eq!(key.address(), "0xf24FF3a9CF04c71Dbc94D0b566f7A27B94566cac");
@@ -698,7 +766,7 @@ mod tests {
         ];
         for (path, secret) in expected {
             assert_eq!(
-                hex(&derive(&seed, path).0.secret_bytes()),
+                hex(&derive(&seed, path).0.to_secret_bytes()),
                 secret,
                 "{path:?}"
             );
@@ -711,11 +779,8 @@ mod tests {
         assert_eq!(bytes.len(), 65);
         let recovery = RecoveryId::try_from(i32::from(bytes[64]) - 27).unwrap();
         let signature = RecoverableSignature::from_compact(&bytes[..64], recovery).unwrap();
-        let public = Secp256k1::verification_only()
-            .recover_ecdsa(
-                Message::from_digest(personal_message_hash(message)),
-                &signature,
-            )
+        let public = signature
+            .recover_ecdsa(Message::from_digest(personal_message_hash(message)))
             .unwrap();
         ethereum_address_of(&public)
     }
@@ -952,6 +1017,155 @@ mod tests {
         assert!(format!("{signatures:?}").contains(&signatures.signature));
     }
 
+    /// A key is found by its checksum, in any case, NFKD form, and separator, inside prose;
+    /// twelve listed words whose checksum fails are not a key.
+    #[test]
+    fn a_checked_phrase_is_found_and_prose_is_not() {
+        let phrase = TEST_PHRASE;
+        let fullwidth: String = phrase
+            .chars()
+            // Fullwidth Latin letters, which NFKD folds back to ASCII.
+            .map(|c| match c {
+                'a'..='z' => char::from_u32(u32::from(c) - u32::from('a') + 0xff41).unwrap(),
+                other => other,
+            })
+            .collect();
+        for text in [
+            phrase.to_owned(),
+            format!("my key: {}. thanks", phrase.to_uppercase()),
+            phrase.replace(' ', ", "),
+            fullwidth,
+        ] {
+            assert!(holds_checked_phrase(&text), "{text}");
+        }
+        for text in [
+            "please help can you check this token error when you have that file",
+            "",
+            "abandon",
+        ] {
+            assert!(!holds_checked_phrase(text), "{text}");
+        }
+    }
+
+    /// More EIP-191 signatures, pinned so a change of the secp256k1 or Keccak crate cannot
+    /// change a signature unnoticed: two keys, a non-ASCII message, and both values of `v`.
+    /// Each was computed by an independent RFC 6979 and Keccak-256 implementation, which also
+    /// gives [`PINNED_SIGNATURE`].
+    #[test]
+    fn the_ethereum_signatures_match_pinned_vectors() {
+        let ascii = "Sign in to Hippius with challenge 1f2e3d4c5b6a";
+        let unicode = "ünïcode ✓ challenge 1f2e3d4c5b6a, signed in to Hippius";
+        for (phrase, message, expected) in [
+            (
+                DEV_PHRASE,
+                ascii,
+                concat!(
+                    "0x0010e773f1873f7b24a3e88cbb42a5e4c3bc400fce444b89e1f7f8e085c9eb59",
+                    "44765228e94b5aa12c935395713a217fc2693cf836ce9fe281ef1424b9cdbde31b",
+                ),
+            ),
+            (
+                DEV_PHRASE,
+                unicode,
+                concat!(
+                    "0x96b151c82b95bfbd521d871b28c764f35ff893bc380939be5ae000b2a48f8568",
+                    "58dba9add4d1b2715d632730f7e4e679c26204489b12050288bd8c571ab160b71c",
+                ),
+            ),
+            (
+                TEST_PHRASE,
+                ascii,
+                concat!(
+                    "0x2dc2829372e08fee2ef2ef026591ad11459afea4f6ceb787d11f7dff409084c5",
+                    "1ba14d5835756b3d4f33fbdd886fb2be90ef5f1ad14ea8acf49d8e38a0b853171b",
+                ),
+            ),
+            (
+                TEST_PHRASE,
+                unicode,
+                concat!(
+                    "0x859ed3927ff2d4920f6bd4a3d9010de61c3afe776009f9d49b38cca3ee70fbc9",
+                    "622505ef0716b4d391f02c594347ede8910fb6d2e69a642165d35d5ab415c2cd1c",
+                ),
+            ),
+        ] {
+            let signed = key(phrase).sign_login(message, "1f2e3d4c5b6a").unwrap();
+            assert_eq!(signed.signature, expected, "{message}");
+        }
+    }
+
+    /// Keccak-256, not the standardized SHA3-256, of the empty input.
+    #[test]
+    fn keccak256_matches_the_published_vector() {
+        assert_eq!(
+            hex(&Keccak256::digest(b"")),
+            "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+        );
+    }
+
+    /// RFC 4231 test cases 1, 2, and 6 for HMAC-SHA-512; case 6's key is longer than the
+    /// block, so it is hashed first. Data split across parts must give the same tag.
+    #[test]
+    fn hmac_sha512_matches_rfc_4231() {
+        assert_eq!(
+            hex(&hmac_sha512(&[0x0b; 20], &[b"Hi ", b"There"])[..]),
+            concat!(
+                "87aa7cdea5ef619d4ff0b4241a1d6cb02379f4e2ce4ec2787ad0b30545e17cde",
+                "daa833b7d6b8a702038b274eaea3f4e4be9d914eeb61f1702e696c203a126854",
+            )
+        );
+        assert_eq!(
+            hex(&hmac_sha512(b"Jefe", &[b"what do ya want for nothing?"])[..]),
+            concat!(
+                "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea250554",
+                "9758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737",
+            )
+        );
+        assert_eq!(
+            hex(&hmac_sha512(
+                &[0xaa; 131],
+                &[b"Test Using Larger Than Block-Size Key - Hash Key First"]
+            )[..]),
+            concat!(
+                "80b24263c7c1a3ebb71493c1dd7be8b49b46d1f41b4aeec1121b013783f8f352",
+                "6b56d037e05f2598bd0fd2215d6a1e5295e64f73f63f0aec8b915a985d786598",
+            )
+        );
+    }
+
+    /// PBKDF2-HMAC-SHA-512 of "password" and "salt", one iteration, 64 bytes, as published
+    /// for RFC 6070's inputs with SHA-512.
+    #[test]
+    fn pbkdf2_hmac_sha512_matches_the_published_vector() {
+        let mut out = [0_u8; 64];
+        pbkdf2::pbkdf2_hmac::<Sha512>(b"password", b"salt", 1, &mut out);
+        assert_eq!(
+            hex(&out),
+            concat!(
+                "867f70cf1ade02cff3752599a3a53dc4af34c7a669815ae5d513554e1c8cf252",
+                "c02d470a285a0501bad999bfe943c08f050235d7d68b1da55e63f73b60a57fce",
+            )
+        );
+    }
+
+    /// RFC 7693 Appendix A, BLAKE2b-512 of "abc", and an SS58 address whose checksum was
+    /// computed independently: prefix 42 and the key bytes 0 to 31.
+    #[test]
+    fn blake2b512_and_the_ss58_checksum_match_known_vectors() {
+        assert_eq!(
+            hex(&Blake2b512::digest(b"abc")),
+            concat!(
+                "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d1",
+                "7d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923",
+            )
+        );
+        let public: [u8; 32] = std::array::from_fn(|i| u8::try_from(i).unwrap());
+        assert_eq!(
+            ss58(&public),
+            "5C4iA2und8WV6mbvTBYupm2eZwtxk3wCYUM2SFHXSyQuapGp"
+        );
+    }
+
     #[test]
     fn legacy_v_keeps_the_parity_of_every_recovery_id() {
         assert_eq!([0, 1, 2, 3].map(legacy_v), [27, 28, 27, 28]);
@@ -963,6 +1177,9 @@ mod tests {
         let nonce = "8f2c41d09a7b";
         let ok = format!("Sign in to Hippius with challenge {nonce}");
         assert!(key.sign_login(&ok, nonce).is_ok());
+        // The form the public wallet login guide shows.
+        let documented = format!("Please sign this message to verify your ownership: {nonce}");
+        assert!(key.sign_login(&documented, nonce).is_ok());
         let long = format!("{nonce} {}", "a".repeat(1024));
         let siwe = format!(
             "example.com wants you to sign in with your Ethereum account:\n{}\n\nNonce: {nonce}",
@@ -987,6 +1204,16 @@ mod tests {
                 "Sign in to Hippius 8f2c41d09a7b\u{1b}[2J",
                 nonce,
                 "message holds a control character",
+            ),
+            (
+                "example.com wants you to sign in\u{2028}Nonce: 8f2c41d09a7b",
+                nonce,
+                "message holds a line or paragraph separator",
+            ),
+            (
+                "example.com wants you to sign in\u{2029}Nonce: 8f2c41d09a7b",
+                nonce,
+                "message holds a line or paragraph separator",
             ),
         ];
         for (message, challenge, why) in cases {

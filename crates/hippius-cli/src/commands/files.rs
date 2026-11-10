@@ -22,6 +22,9 @@ use std::path::Path;
 use hippius::{Error, phrase};
 use rustix::fs::{AtFlags, Mode, OFlags};
 use serde_json::Value;
+use zeroize::Zeroizing;
+
+use crate::commands::Cleared;
 
 /// [`write_new`] for the file `--output-file` names, after reads that changed nothing on the
 /// server: a file that cannot be created is `usage`, since the caller names another path, and
@@ -220,21 +223,23 @@ pub(crate) fn save_secret(
             .with_hint("save the secret from stdout now, since no command shows it again")
             .after_write(answer)
     };
-    let mut rest = answer.clone();
+    // Each copy of the secret is cleared when dropped: the copy of the answer, the secrets
+    // taken out of it, and, once the file holds the secret, the answer itself.
+    let mut rest = Cleared(answer.clone());
     let mut found = Vec::new();
-    if let Value::Object(fields) = &mut rest {
+    if let Value::Object(fields) = &mut rest.0 {
         let keys: Vec<String> = fields
             .iter()
             .filter(|(key, value)| is_secret(key) && value.is_string())
             .map(|(key, _)| key.clone())
             .collect();
         for key in keys {
-            if let Some(Value::String(secret)) = fields.remove(&key) {
-                found.push((key, secret));
+            if let Some(Value::String(secret)) = fields.shift_remove(&key) {
+                found.push((key, Zeroizing::new(secret)));
             }
         }
     }
-    if holds_secret(&rest, is_secret) {
+    if holds_secret(&rest.0, is_secret) {
         return Err(refused(
             format!(
                 "the answer holds a secret `hipc` cannot move to {name}, so no file was written"
@@ -256,13 +261,15 @@ pub(crate) fn save_secret(
     {
         return Err(refused(failed, answer));
     }
+    drop(Cleared(answer));
     let fields = rest
+        .0
         .as_object_mut()
         .expect("a secret was found, so the answer is an object");
     for (key, _) in found {
         fields.insert(format!("{key}_file"), path.to_string_lossy().into());
     }
-    Ok((rest, true))
+    Ok((std::mem::take(&mut rest.0), true))
 }
 
 /// Where the one-time secret `what` goes, for the question of a command that issues one.

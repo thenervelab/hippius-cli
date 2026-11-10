@@ -154,6 +154,31 @@ fn create_says_inbound_is_blocked_only_in_text_mode() {
         run.stdout()
     );
     assert_eq!(text(&["--yes", "--quiet"]).stderr(), "");
+    // An id that reads as a flag, given after `--`, goes after `--` in the warning too, so
+    // the command it names runs as written.
+    let dashed = Server::start(vec![route(
+        "POST",
+        "/api/compute/vms/-vm1/public-ip/",
+        Reply::json(201, ATTACHED),
+    )]);
+    let argv = [
+        "--output",
+        "text",
+        "compute",
+        "public-ip",
+        "create",
+        "--yes",
+        "--",
+        "-vm1",
+    ];
+    let run = Hipc::against(&Home::new(), &dashed).run(&argv);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert!(
+        run.stderr()
+            .ends_with("`hipc compute firewall update --rules-file <path> -- -vm1` adds\n"),
+        "{}",
+        run.stderr()
+    );
     let dry = text(&["--dry-run"]);
     assert_eq!(dry.code(), Some(0));
     assert_eq!(dry.stderr(), "", "a dry run attaches nothing");

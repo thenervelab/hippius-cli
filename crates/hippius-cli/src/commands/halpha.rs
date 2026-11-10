@@ -10,7 +10,7 @@
 //! API does not hold signs its own buys (`custodial` false in the quote, or a 409
 //! `self_sign`), which this version refuses.
 
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 
 use hippius::{Client, Code, Error, Method, Request, Result, SideEffects, phrase};
 use serde_json::{Value, json};
@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use crate::cli::{CHAIN_MINIMUM, ONE, Planck};
 use crate::commands::Printed;
 use crate::commands::credits::to_credits;
+use crate::commands::poll::{Next, Schedule, Wait, poll_until};
 use crate::commands::print_with;
 use crate::context::{Context, Gate, Write};
 use crate::output::Mode;
@@ -32,10 +33,6 @@ const POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// How long a purchase is followed without `--wait-timeout`: 15 minutes, the time the console
 /// treats a purchase as in flight.
 const WAIT_TIMEOUT: Duration = Duration::from_mins(15);
-
-/// How many reads in a row may fail with a retryable error before the follow gives up, as
-/// for a VM launch: a read cannot buy twice, so a passing outage is waited out.
-const MAX_POLL_FAILURES: u32 = 3;
 
 /// The share of the quoted credits a buy accepts at least, in basis points: 1 percent
 /// slippage, the console's default. A price that falls further between the quote and the
@@ -282,11 +279,17 @@ pub(crate) fn min_credits(credits: u128) -> u128 {
 fn self_sign(error: Error) -> Error {
     error
         .with_message(
-            "the account signs its own hAlpha buys (`self_sign`), and this version of `hipc` \
-             cannot sign one yet",
+            "the account signs its own hAlpha buys (`self_sign`), which `hipc` cannot sign yet; a \
+             card or Bitcoin top-up, or one in the console, works",
         )
-        .with_hint("update `hipc` to a version that signs `Marketplace.buy_credits` itself")
+        .with_hint(SELF_SIGN_HINT)
 }
+
+/// [`self_sign`]'s hint: a top-up that works for such an account today, one action (tenet 15);
+/// the message names the others. No `hipc` release signs `Marketplace.buy_credits`, so
+/// neither names one.
+const SELF_SIGN_HINT: &str = "run `hipc billing top-up --amount <USD> --method card --yes` \
+     and pay at its `checkout_url`";
 
 /// The buy, with the `min_credits` it sends and its key.
 fn buy_request(alpha: Planck, min_credits: &str, key: &str) -> Request {
@@ -344,11 +347,16 @@ fn refuse_in_flight(page: &Value, now: u64) -> Result<()> {
     Ok(())
 }
 
-/// The seconds since 1970 now.
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
+/// Reads the purchases list with `recent` and refuses a new buy while one is in flight
+/// ([`refuse_in_flight`]), measured by the earlier of the answer's `Date` and the local clock
+/// (`hippius::Now`): the API dated the purchases by its own clock, so a local clock that runs
+/// fast cannot age a purchase in flight out of the window, and a `Date` ahead of time cannot
+/// either.
+fn check_in_flight(ctx: &Context<'_>, client: &Client, recent: &Request) -> Result<()> {
+    let answer = ctx.send(client, recent)?;
+    let action = "check the hAlpha purchases in flight";
+    let now = hippius::Now::of(answer.date(), SystemTime::now(), action)?;
+    refuse_in_flight(&answer.document()?, now.earliest)
 }
 
 /// `hipc billing top-up --method halpha --alpha <HALPHA>`: reads the quote and the purchases,
@@ -408,7 +416,7 @@ pub(crate) fn top_up(
         )
     } else {
         let (credits, least) = quote.order(alpha)?;
-        refuse_in_flight(&ctx.send(&client, &recent)?.document()?, now())?;
+        check_in_flight(ctx, &client, &recent)?;
         let action = format!(
             "buy credits with `{alpha}` hAlpha{from}: about `{credits}` credits at the quoted \
              price, and at least `{least}`, for the signed-in user's own balance"
@@ -425,7 +433,7 @@ pub(crate) fn top_up(
     // A buy another `hipc` or the console started while the question waited was not seen
     // when it was asked, so the list is read again.
     if asked && retry.is_none() {
-        refuse_in_flight(&ctx.send(&client, &recent)?.document()?, now())?;
+        check_in_flight(ctx, &client, &recent)?;
     }
     let started = ctx
         .send(&client, &buy)
@@ -487,6 +495,78 @@ fn in_flight(row: &Value) -> bool {
     }
 }
 
+/// How a follow ended: with the purchase out of flight, or at the deadline with it printed.
+enum Followed {
+    Final(Value),
+    Stopped(Printed),
+}
+
+/// The follow of a purchase: the last row seen, and whether the list has shown it yet.
+struct Purchase<'a> {
+    ctx: &'a Context<'a>,
+    key: &'a str,
+    id: &'a str,
+    quoted: &'a str,
+    follow_hint: &'a str,
+    wait: Duration,
+    row: Value,
+    found: bool,
+}
+
+impl Purchase<'_> {
+    fn print(&self) -> Value {
+        print_purchase(self.ctx, &self.row, self.key)
+    }
+}
+
+impl Wait for Purchase<'_> {
+    type Output = Followed;
+
+    fn next(&mut self) -> Next<Followed> {
+        if in_flight(&self.row) {
+            Next::Poll
+        } else {
+            Next::Stop(Ok(Followed::Final(std::mem::take(&mut self.row))))
+        }
+    }
+
+    fn take(&mut self, page: Value) -> Result<()> {
+        if let Some(listed) = find(&page, self.id) {
+            self.row = listed;
+            self.found = true;
+        }
+        Ok(())
+    }
+
+    fn timed_out(self) -> Result<Followed> {
+        let unseen = if self.found {
+            ""
+        } else {
+            ", and the purchases list never showed it"
+        };
+        self.ctx.warning(&format!(
+            "the purchase {} was still {} after {}{unseen}; `hipc billing balance` shows the \
+             credits once it completes",
+            self.quoted,
+            status_of(&self.row),
+            phrase::count(self.wait.as_secs(), "second")
+        ));
+        Ok(Followed::Stopped(Printed::Document(self.print())))
+    }
+
+    fn failed(self, error: Error) -> Error {
+        error.with_hint(self.follow_hint).after_write(self.print())
+    }
+}
+
+/// `row`, a purchase, as a follow prints it: with the run's idempotency key, and its amounts
+/// as decimals in text mode.
+fn print_purchase(ctx: &Context<'_>, row: &Value, key: &str) -> Value {
+    let mut doc = row.clone();
+    doc["idempotency_key"] = key.into();
+    shown_as_decimals(ctx, doc, PURCHASE_AMOUNTS)
+}
+
 /// Follows the purchase `started` names until it leaves [`IN_FLIGHT`] or `wait` has passed,
 /// and prints the last row with the key. A stop at the deadline is not an error: the buy was
 /// accepted, and the row says where it stands.
@@ -497,11 +577,7 @@ fn follow(
     key: &str,
     wait: Duration,
 ) -> Result<Printed> {
-    let print = |row: &Value| {
-        let mut doc = row.clone();
-        doc["idempotency_key"] = key.into();
-        shown_as_decimals(ctx, doc, PURCHASE_AMOUNTS)
-    };
+    let print = |row: &Value| print_purchase(ctx, row, key);
     if !started.is_object() {
         return Err(
             Error::internal("the buy answer is not a purchase, so it cannot be followed")
@@ -520,47 +596,26 @@ fn follow(
     ));
     let follow_hint =
         format!("run `hipc api GET {PURCHASES}` to see where the purchase {quoted} stands");
-    let deadline = Instant::now() + wait;
-    let request = purchases_request();
-    let mut row = started;
-    let mut found = false;
-    let mut failures = 0;
-    let mut first = true;
-    while in_flight(&row) {
-        if !first {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                let unseen = if found {
-                    ""
-                } else {
-                    ", and the purchases list never showed it"
-                };
-                ctx.warning(&format!(
-                    "the purchase {quoted} was still {} after {}{unseen}; `hipc billing balance` \
-                     shows the credits once it completes",
-                    status_of(&row),
-                    phrase::count(wait.as_secs(), "second")
-                ));
-                return Ok(Printed::Document(print(&row)));
-            }
-            std::thread::sleep(POLL_INTERVAL.min(left));
-        }
-        first = false;
-        match ctx
-            .send(client, &request)
-            .and_then(|response| response.document())
-        {
-            Ok(page) => {
-                failures = 0;
-                if let Some(listed) = find(&page, &id) {
-                    row = listed;
-                    found = true;
-                }
-            }
-            Err(error) if error.is_retryable() && failures < MAX_POLL_FAILURES => failures += 1,
-            Err(error) => return Err(error.with_hint(follow_hint).after_write(print(&row))),
-        }
-    }
+    let schedule = Schedule {
+        // The first read goes out at once, whatever the deadline.
+        first: Duration::ZERO,
+        interval: POLL_INTERVAL,
+        deadline: Instant::now() + wait,
+    };
+    let purchase = Purchase {
+        ctx,
+        key,
+        id: &id,
+        quoted: &quoted,
+        follow_hint: &follow_hint,
+        wait,
+        row: started,
+        found: false,
+    };
+    let row = match poll_until(ctx, client, &purchases_request(), schedule, purchase)? {
+        Followed::Final(row) => row,
+        Followed::Stopped(printed) => return Ok(printed),
+    };
     match row.get("status").and_then(Value::as_str) {
         Some("completed") => {
             ctx.note(&format!(
@@ -775,7 +830,6 @@ mod tests {
         let unnamed = json!([{"status": "queued"}]);
         let error = refuse_in_flight(&page(unnamed), clock).unwrap_err();
         assert!(error.message().contains("without an id"));
-        assert!(now() > clock);
     }
 
     #[test]

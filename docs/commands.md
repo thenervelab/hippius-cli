@@ -596,7 +596,7 @@ An account that signs in with a 12-word access key has no token in the settings:
 
 A phrase the API has not seen opens a new, empty account, so one mistyped word opens an account that is not the one meant. When the verify answers is_new, the login is refused with usage and stores no token unless --new-account is passed. By then the server has already opened the empty account, so side_effects is partial; nothing is stored locally, and a later login with the same words logs in to that account without --new-account and answers is_new false, so the refusal guards one run only. A new account has no email and no free Drive plan, and S3 needs no subscription.
 
-An agent asks its user to run hipc auth login in their own terminal rather than handle the token or the 12 words itself. For CI, log in once on a machine you trust and keep only the token on the runner, as HIPPIUS_TOKEN, never the 12 words. Neither the token nor the 12 words are ever read from argv, because argv is visible to other users through ps, and the token is never read from HIPPIUS_TOKEN, which is already in use for the invocation that sets it. Needs --yes when the API origin is not https://api.hippius.com, and when the profile stores a different token, since every later command then acts as the new token's owner; the dry run says which in replaces_token (for an access key, whether any token is stored).
+An agent asks its user to run hipc auth login in their own terminal rather than handle the token or the 12 words itself. For CI, log in once on a machine you trust and keep only the token on the runner, as HIPPIUS_TOKEN, never the 12 words. Neither the token nor the 12 words are ever read from argv, because argv is visible to other users through ps, and the token is never read from HIPPIUS_TOKEN, which is already in use for the invocation that sets it. Needs --yes when the API origin is not https://api.hippius.com, and when the profile stores a different token, since every later command then acts as the new token's owner; the dry run says which in replaces_token (for an access key, or without --token-file, whether any token is stored). A dry run asks for no token. At a terminal, the question about another origin comes before the prompt for the token.
 
 Usage: hipc auth login [OPTIONS]
 
@@ -929,6 +929,8 @@ Examples:
 Replace a member's whole grant list with the --grant flags given; needs --yes, and --remove-others to drop a grant
 
 Nothing is merged with the current list: a grant the member has now that the --grant flags leave out is refused, unless --remove-others is passed to remove it. To add one grant, read the member's grants with hipc account members list, then pass all of them. Without --grant the grants are kept, and only --manage-team and --billing-permission change.
+
+The route takes no version or If-Match, so the grants are written whole, after a read unless --remove-others is passed: a change another admin makes before the write is lost, and a grant revoked meanwhile is restored if a --grant flag names it.
 
 Usage: hipc account members update [OPTIONS] <MEMBER_ID>
 
@@ -2464,7 +2466,7 @@ Top up the balance by card, Bitcoin, or hAlpha; needs --yes
 
 A card or Bitcoin top-up takes --amount in US dollars and prints its checkout_url. Nothing is paid until a person pays there; then the balance grows by the amount. hipc does not wait for the payment: hipc billing balance shows it. A member tops up only a billing account, from --billing, HIPPIUS_BILLING, or hipc account billing-accounts use; without one a membership is refused with account_scope_unsupported.
 
-A hAlpha top-up takes --alpha, the hAlpha to spend, and converts it into credits on chain (1 credit = 1 USD). It reads GET /api/billing/native/quote/ and the purchases first, and refuses when the quote is stale or not enabled, when --alpha is below its min_alpha, when --alpha and the 0.01 hAlpha kept for the fee are more than its native_balance, when a purchase from the last 15 minutes is still in flight, or when the account signs its own buys (custodial false), which this version of hipc cannot do yet. The question names the address whose hAlpha is spent, the credits the quote gives, rounded down, and the minimum it accepts, 1 percent less; a price that falls further makes the chain refuse the buy. A person who was asked has the purchases read again before the buy. Then it sends POST /api/billing/native/buy/ with an Idempotency-Key, and follows GET /api/billing/native/purchases/ every 3 seconds until the purchase is completed or failed, for at most --wait-timeout. A run that stops first prints the purchase as it stands and exits 0; a purchase the chain refused is partial_failure, with the purchase on stdout. The key is printed as idempotency_key. A buy that may have reached the server is retried with the command its error names, which adds --min-credits and --idempotency-key: the retry sends the amounts unchanged, so the API answers it as the first buy, and reads only the quote first, refusing a --min-credits below 90 percent of what --alpha buys now, since under a key the API has not seen it is a new buy. The routes act on the signed-in user's own hAlpha, and the credits go to the user's own balance: a membership (from a flag, a variable, or the profile) is refused, and so is a project from anywhere or a billing account from a flag or a variable; a billing account stored in the profile is skipped. USDC and TAO top-ups stay in the console.
+A hAlpha top-up takes --alpha, the hAlpha to spend, and converts it into credits on chain (1 credit = 1 USD). It reads GET /api/billing/native/quote/ and the purchases first, and refuses when the quote is stale or not enabled, when --alpha is below its min_alpha, when --alpha and the 0.01 hAlpha kept for the fee are more than its native_balance, when a purchase from the last 15 minutes is still in flight, or when the account signs its own buys (custodial false), which hipc cannot sign yet. The question names the address whose hAlpha is spent, the credits the quote gives, rounded down, and the minimum it accepts, 1 percent less; a price that falls further makes the chain refuse the buy. A person who was asked has the purchases read again before the buy. Then it sends POST /api/billing/native/buy/ with an Idempotency-Key, and follows GET /api/billing/native/purchases/ every 3 seconds until the purchase is completed or failed, for at most --wait-timeout. A run that stops first prints the purchase as it stands and exits 0; a purchase the chain refused is partial_failure, with the purchase on stdout. The key is printed as idempotency_key. A buy that may have reached the server is retried with the command its error names, which adds --min-credits and --idempotency-key: the retry sends the amounts unchanged, so the API answers it as the first buy, and reads only the quote first, refusing a --min-credits below 90 percent of what --alpha buys now, since under a key the API has not seen it is a new buy. The routes act on the signed-in user's own hAlpha, and the credits go to the user's own balance: a membership (from a flag, a variable, or the profile) is refused, and so is a project from anywhere or a billing account from a flag or a variable; a billing account stored in the profile is skipped. USDC and TAO top-ups stay in the console.
 
 Usage: hipc billing top-up [OPTIONS] --method <METHOD>
 
@@ -3244,7 +3246,7 @@ Examples:
 ```text
 Every S3 token, master and sub
 
-Secrets are never shown again; secret_preview is the last four characters.
+The master and the sub tokens are two lists, read whole and printed as one: every page of each is followed, up to the caps --all has, so this list takes no page flags, and next_page_token is null. Secrets are never shown again; secret_preview is the last four characters.
 
 Usage: hipc s3 tokens list
 
@@ -7583,7 +7585,7 @@ Examples:
 ```text
 Replace the whole rule list with a file's; needs --yes, and --remove-others to drop or move a rule
 
-A rule the zone has now that the file leaves out or moves is refused unless --remove-others is passed.
+A rule the zone has now that the file leaves out or moves is refused unless --remove-others is passed. The route takes no version or If-Match, so the rules are written whole, after a read unless --remove-others is passed: a change someone else makes before the write is lost.
 
 Usage: hipc cdn rules update [OPTIONS] --rules-file <PATH> <ZONE_ID>
 
@@ -8311,7 +8313,7 @@ Examples:
 ```text
 Replace every item of the list with the file's; needs --yes, and --remove-others to drop an item
 
-An item the list has now that the file leaves out is refused unless --remove-others is passed.
+An item the list has now that the file leaves out is refused unless --remove-others is passed. The route takes no version or If-Match, so the items are written whole, after a read unless --remove-others is passed: an item someone else adds before the write is lost, and one removed meanwhile comes back if the file names it.
 
 Usage: hipc cdn lists items update [OPTIONS] --items-file <PATH> <LIST_NAME>
 
@@ -8474,7 +8476,7 @@ Examples:
 ```text
 Open a ticket that a person on the support team reads; needs --yes
 
-The message is read from a file, or from stdin with --body-file -, never from argv. A subject or message that holds an API token, HIPPIUS_TOKEN or one the config file stores, as it is, quoted, or percent-encoded, is refused before anything is sent.
+The message is read from a file, or from stdin with --body-file -, never from argv. A subject or message that holds an API token, HIPPIUS_TOKEN or one the config file stores, as it is, quoted, percent-encoded, or split by whitespace, or an access key whose checksum holds, is refused before anything is sent. The check catches an accident, such as a pasted config file, not a secret encoded on purpose.
 
 Usage: hipc support tickets create [OPTIONS] --subject <SUBJECT> --body-file <PATH>
 
@@ -8506,7 +8508,7 @@ Examples:
 ```text
 Add a message to a ticket
 
-The message is read as for create. A reply is not confirmed: the ticket already exists, and a person reads the reply there. A message that holds an API token, HIPPIUS_TOKEN or one the config file stores, is refused, as it is for create.
+The message is read as for create. A reply is not confirmed: the ticket already exists, and a person reads the reply there. A message that holds an API token, HIPPIUS_TOKEN or one the config file stores, or an access key, is refused, as it is for create.
 
 Usage: hipc support tickets reply --body-file <PATH> <TICKET_ID>
 
@@ -9006,17 +9008,17 @@ Options:
       --change-isolation
           Change which peers of the network can reach each other; required for POST /network/isolation/
           
-          The deny_intra mode deletes the catch-all policy, so --yes alone sends nothing.
+          The deny_intra mode deletes the catch-all policy, so --yes alone sends nothing. Any other write method to the route needs it too.
 
       --public
           Let a write publish a bucket that may be private, or open the Hub namespace; required for POST /cdn/zones/, PUT /objectstore/buckets/<name>/acl/set/, a PATCH of /cdn/zones/<zone_id>/ whose body sets origin, and a PATCH of /registry/me/publicity/ unless its body sets public to false
           
-          A zone makes a private bucket readable by anyone, which is known only from the answer, and a bucket policy can name any principal, so --yes alone sends nothing, as with hipc cdn zones create. A public namespace lets anyone pull its images and models without logging in, as with hipc hub namespace update --visibility public.
+          A zone makes a private bucket readable by anyone, which is known only from the answer, and a bucket policy can name any principal, so --yes alone sends nothing, as with hipc cdn zones create. A public namespace lets anyone pull its images and models without logging in, as with hipc hub namespace update --visibility public. Each route named needs it for any write method, not only the one named.
 
       --remove-others
           Let a write that replaces a whole list or document remove the entries it leaves out; required for a PUT of /compute/vms/<vm_id>/firewall/, /cdn/zones/<zone_id>/rules/, /cdn/zones/<zone_id>/waf/rules/, /cdn/zones/<zone_id>/waf/rate-limits/, /cdn/lists/<name>/items/, or /objectstore/buckets/<name>/acl/set/, for a PATCH of /accounts/members/<id>/ whose body sets grants or of /cdn/lists/<name>/ whose body sets items, and for any other write hipc guards that replaces a whole list or document
           
-          hipc api does not read the list first, so without the flag it sends nothing. hipc compute firewall update, hipc cdn rules update, and hipc account members update read the list, and refuse only a write that removes an entry.
+          hipc api does not read the list first, so without the flag it sends nothing. hipc compute firewall update, hipc cdn rules update, and hipc account members update read the list, and refuse only a write that removes an entry. Each route named needs it for any write method, not only the one named; a POST or DELETE of /cdn/lists/<name>/items/, which adds or removes the items it names, needs no flag.
 
   -h, --help
           Print help (see a summary with '-h')
