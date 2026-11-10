@@ -6,7 +6,7 @@ This page is written to be pasted into an agent's context. It says how to learn 
 
 ## Setup, once, by a person
 
-An agent does not sign in: the person it works for does, once, on the machine the agent runs on, and gives `hipc` an API token, created at https://console.hippius.com/dashboard/settings. A token is the only way `hipc` signs in: it never takes an account's 12-word access key, which stays in the console and never goes into the chat or a CI secret.
+An agent does not sign in: the person it works for does, once, on the machine the agent runs on, and gives `hipc` an API token: created at https://console.hippius.com/dashboard/settings after a Google, GitHub, or Apple sign-in, or, for an account that signs in with a 12-word access key, from the access-key sign-in described at https://docs.hippius.com/use/wallet-login. A token is the only way `hipc` signs in: it never takes an account's 12-word access key, which stays in the console and never goes into the chat or a CI secret.
 
 ```sh
 brew install thenervelab/tap/hipc

@@ -301,15 +301,17 @@ pub fn holds_checked_phrase(text: &str) -> bool {
 }
 
 /// The refusal of a command line that holds a seed phrase ([`holds_phrase`]): `usage`, with
-/// nothing of the command line in it. The only `hipc` input that takes such words is the
-/// hotkey file of `hipc billing gamma hotkeys create`.
+/// nothing of the command line in it. `hipc` takes no account access key, and the only input
+/// that takes such words is the hotkey file of `hipc billing gamma hotkeys create`, so the
+/// hint keeps the two apart: an access key put in the hotkey file would link the account's
+/// own key as a hotkey.
 pub fn phrase_in_argv() -> Error {
     Error::usage(
         "the command line holds what looks like a seed phrase, so it is not repeated here; \
          treat the words as exposed to anyone who can read this machine's process list or shell \
          history",
-        "pass a hotkey's words in the file `--hotkey-file <path>` names, never on the command \
-         line",
+        "keep seed phrases off the command line: sign in with a console token at `hipc auth \
+         login`, and pass a Bittensor hotkey's words only in the file `--hotkey-file` names",
     )
 }
 
@@ -675,8 +677,9 @@ mod tests {
         assert_eq!(
             error.hint(),
             Some(
-                "pass a hotkey's words in the file `--hotkey-file <path>` names, never on the \
-                  command line"
+                "keep seed phrases off the command line: sign in with a console token at `hipc \
+                 auth login`, and pass a Bittensor hotkey's words only in the file \
+                 `--hotkey-file` names"
             )
         );
     }

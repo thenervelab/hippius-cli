@@ -186,6 +186,78 @@ fn a_dry_run_link_shows_both_requests_and_sends_none() {
     assert!(server.requests().is_empty());
 }
 
+/// The hotkey file is held to the config file's checks: a symlink is never followed, and a
+/// path that names no file is not repeated, since it may be the words themselves. Nothing is
+/// sent.
+#[test]
+fn a_symlinked_or_missing_hotkey_file_is_refused_and_nothing_is_sent() {
+    let home = Home::new();
+    let server = Server::start(vec![]);
+    let file = hotkey_file(&home);
+    let link = home.path().join("link.txt");
+    std::os::unix::fs::symlink(&file, &link).unwrap();
+    let link = link.to_str().unwrap();
+    let create = |path: &str| {
+        Hipc::against(&home, &server)
+            .run(&[
+                "billing",
+                "gamma",
+                "hotkeys",
+                "create",
+                "--hotkey-file",
+                path,
+            ])
+            .fails(2, "usage")
+    };
+    assert_eq!(
+        create(link)["message"],
+        format!("the hotkey file `{link}` is a symlink, and a symlink is never followed")
+    );
+    let missing = home.path().join("missing.txt");
+    let error = create(missing.to_str().unwrap());
+    assert_eq!(
+        error["message"],
+        "the hotkey file `--hotkey-file` names does not exist; the path is not repeated here, in \
+         case it is the hotkey itself"
+    );
+    assert_eq!(
+        error["hint"],
+        "pass `--hotkey-file` a file that holds only the hotkey's words"
+    );
+    assert!(server.requests().is_empty());
+}
+
+/// Words on stdin are held to the size and text rules a file is, and nothing is sent.
+#[test]
+fn a_hotkey_on_stdin_is_held_to_the_size_and_text_rules() {
+    let home = Home::new();
+    let server = Server::start(vec![]);
+    for (stdin, message) in [
+        (
+            vec![b'a'; 64 * 1024 + 1],
+            "stdin is larger than 65536 bytes, the most hipc reads for the hotkey phrase",
+        ),
+        (
+            vec![0xff, 0xfe],
+            "the hotkey phrase from stdin is not UTF-8 text",
+        ),
+    ] {
+        let error = Hipc::against(&home, &server)
+            .stdin(&stdin)
+            .run(&[
+                "billing",
+                "gamma",
+                "hotkeys",
+                "create",
+                "--hotkey-file",
+                "-",
+            ])
+            .fails(2, "usage");
+        assert_eq!(error["message"], message);
+    }
+    assert!(server.requests().is_empty());
+}
+
 #[test]
 fn a_missing_or_unprivate_hotkey_file_is_refused_without_its_words() {
     let home = Home::new();

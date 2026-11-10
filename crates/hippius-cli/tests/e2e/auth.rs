@@ -173,6 +173,11 @@ fn a_login_under_hippius_token_warns_that_the_variable_still_wins() {
     ]);
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert!(!run.stderr().contains("HIPPIUS_TOKEN"), "{}", run.stderr());
+    assert!(
+        run.stderr().contains("run `hipc auth status` to check it"),
+        "{}",
+        run.stderr()
+    );
 }
 
 /// The access-key login is gone: each of its flags is a plain usage error from the argument
