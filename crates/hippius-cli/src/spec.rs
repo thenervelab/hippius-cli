@@ -4,6 +4,8 @@
 //! parser and fails when a command has no row here, so a new command cannot ship without
 //! an effect.
 
+mod routes;
+
 use clap::CommandFactory as _;
 use hippius::Code;
 use serde_json::{Value, json};
@@ -63,7 +65,8 @@ const VERBS: [&str; 40] = [
 /// VM and Kubernetes backups lists and the database events and refusals print the list
 /// envelope, more commands are confirmed, and a database create or restore with
 /// `--credentials-dir` prints the paths of its credential files in place of every secret.
-const SCHEMA_VERSION: u32 = 3;
+/// 4: each command lists the `routes` it sends to.
+const SCHEMA_VERSION: u32 = 4;
 
 /// What a repeat of the command does to the server (tenet 7).
 #[derive(Debug, Clone, Copy)]
@@ -1130,6 +1133,10 @@ pub(crate) fn schema(prefix: &[String]) -> hippius::Result<Value> {
                 "args": arg_entries(command, clap::Arg::is_positional),
                 "flags": arg_entries(command, |arg| !arg.is_positional()),
                 "required_groups": required_groups(command),
+                "routes": routes::routes(&parts).iter().map(|endpoint| json!({
+                    "method": endpoint.method().as_str(),
+                    "path": endpoint.template(),
+                })).collect::<Vec<Value>>(),
             })
         })
         .collect();
@@ -2561,10 +2568,39 @@ mod tests {
         assert_eq!(own["commands"][0]["args"][0]["repeats"], true);
     }
 
+    /// Every route a command lists is a row of `hippius::routes`, and a command takes the page
+    /// flags exactly when one of its routes is a list the server pages. `hipc api` lists no
+    /// route, and pages whatever route it is given.
+    #[test]
+    fn every_listed_route_is_a_row_that_pages_as_its_command_does() {
+        let root = Cli::command();
+        let rows: Vec<(hippius::Method, &str)> = hippius::routes::all()
+            .map(|row| (row.method(), row.template()))
+            .collect();
+        for path in command_paths(&root) {
+            let parts: Vec<&str> = path.iter().map(String::as_str).collect();
+            let listed = routes::routes(&parts);
+            for endpoint in &listed {
+                assert!(
+                    rows.contains(&(endpoint.method(), endpoint.template())),
+                    "{path:?}: {} {} is not a row",
+                    endpoint.method(),
+                    endpoint.template()
+                );
+            }
+            if parts == ["api"] {
+                assert!(listed.is_empty());
+                continue;
+            }
+            let pages = listed.iter().any(|endpoint| endpoint.paged());
+            assert_eq!(row(&path).pagination, pages, "{path:?}");
+        }
+    }
+
     #[test]
     fn schema_document_shape() {
         let doc = schema(&[]).unwrap();
-        assert_eq!(doc["schema_version"], 3);
+        assert_eq!(doc["schema_version"], 4);
         assert_eq!(
             doc["commands"][0],
             json!({
@@ -2580,7 +2616,13 @@ mod tests {
                 "args": [],
                 "flags": [],
                 "required_groups": [],
+                "routes": [],
             })
+        );
+        let delete = schema(&words(&["account", "members", "delete"])).unwrap();
+        assert_eq!(
+            delete["commands"][0]["routes"],
+            json!([{"method": "DELETE", "path": "/api/accounts/members/{member_id}/"}])
         );
         let keys: Vec<&String> = doc.as_object().unwrap().keys().collect();
         assert_eq!(

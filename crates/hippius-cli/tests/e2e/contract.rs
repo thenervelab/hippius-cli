@@ -104,7 +104,7 @@ fn schema_lists_every_command_with_its_bits() {
     let out = hipc(&["schema"]);
     assert_eq!(out.status.code(), Some(0));
     let doc = json(&out.stdout);
-    assert_eq!(doc["schema_version"], 3);
+    assert_eq!(doc["schema_version"], 4);
     let commands = doc["commands"].as_array().unwrap();
     let paths: Vec<String> = commands
         .iter()
@@ -152,7 +152,8 @@ fn schema_lists_every_command_with_its_bits() {
                 "guards",
                 "args",
                 "flags",
-                "required_groups"
+                "required_groups",
+                "routes"
             ]
         );
         assert!(command["guards"].is_array(), "{command}");
