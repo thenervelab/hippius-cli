@@ -271,14 +271,47 @@ local_write() {
   shift 2
   path="$(command_path "$@")"
   case "$path" in
-  "auth logout" | "s3 configure" | "billing invoices get") ;;
+  "auth logout" | "s3 configure") ;;
+  "billing invoices get")
+    # It runs with the real token on the real origin, so it is held to the read-only guard
+    # by what it sends, not by its name: its dry run, writing to a path that does not exist,
+    # must list GETs alone.
+    local methods
+    methods="$(dry_run_methods "$@")"
+    if [[ "$methods" != GET ]]; then
+      n=$((n + 1))
+      : >"$OUT/$n.out" && : >"$OUT/$n.err"
+      result FAIL "$name" "not run: its dry run lists ${methods:-no request}, not only GET"
+      return
+    fi
+    ;;
   *)
+    n=$((n + 1))
+    : >"$OUT/$n.out" && : >"$OUT/$n.err"
     result FAIL "$name" "not run: \`$path\` is not a local write"
     return
     ;;
   esac
   covered "$@"
   capture "$name" "$want" "$HIPC" "$@"
+}
+
+# dry_run_methods <hipc args...>: the methods the argv's dry run lists, each once, joined by
+# commas, with any --output-file pointed at a path that does not exist; nothing when the dry
+# run fails or prints no request.
+dry_run_methods() {
+  local arg next=0 dry=()
+  for arg in "$@"; do
+    if [[ "$next" == 1 ]]; then
+      next=0
+      dry+=("$WORK/dry-run-never-written")
+      continue
+    fi
+    [[ "$arg" == --output-file ]] && next=1
+    dry+=("$arg")
+  done
+  "$HIPC" --output json --dry-run "${dry[@]}" 2>/dev/null |
+    jq -r '[.requests[]?.method] | unique | join(",")' 2>/dev/null || true
 }
 
 skip_check() {
@@ -335,7 +368,9 @@ check() {
   if "$@"; then result PASS "$name" "$detail"; else result FAIL "$name" "$detail"; fi
 }
 
-mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
+# The mode of a file, or `missing`: a bare assignment of a failed substitution would end the
+# run under `set -e`, before the summary and the token scan.
+mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || echo missing; }
 
 last_out() { cat -- "$OUT/$n.out"; }
 

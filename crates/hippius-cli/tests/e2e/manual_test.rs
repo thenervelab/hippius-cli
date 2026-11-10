@@ -261,6 +261,11 @@ const FREE_DRIVE: (&str, &str) = (
 /// attached.
 const EXPOSURE_REMOVED: (&str, &str) = ("*\" exposures delete \"*", "exit 0");
 const FIREWALL_CLOSED: (&str, &str) = ("*\" compute firewall update \"*", "exit 0");
+/// The read-back of the closed firewall: no rule.
+const FIREWALL_EMPTY: (&str, &str) = (
+    "*\" compute firewall get \"*",
+    "printf '%s\\n' '{\"rules\":[]}'; exit 0",
+);
 
 /// The scenario names `--list` prints, in order, setup and teardown included.
 fn listed_scenarios(listing: &str) -> Vec<String> {
@@ -447,7 +452,7 @@ fn the_ledger_holds_a_resource_before_its_create_runs() {
     let home = Home::new();
     let seen = home.path().join("ledger-at-create");
     // A free Drive plan to buy, and an exposure that is removed and a firewall that is
-    // closed, so the subscribe and the public IP are sent too.
+    // closed and read back empty, so the subscribe and the public IP are sent too.
     let (wrapper, _) = scripted_hipc(
         &home,
         &format!(
@@ -458,7 +463,12 @@ fn the_ledger_holds_a_resource_before_its_create_runs() {
             ),
             seen.display(),
         ),
-        &[FREE_DRIVE, EXPOSURE_REMOVED, FIREWALL_CLOSED],
+        &[
+            FREE_DRIVE,
+            EXPOSURE_REMOVED,
+            FIREWALL_CLOSED,
+            FIREWALL_EMPTY,
+        ],
     );
     let (output, log) = offline(
         &home,
@@ -482,6 +492,7 @@ fn the_ledger_holds_a_resource_before_its_create_runs() {
             title.starts_with("Read the Drive subscription")
                 || title == "Remove the exposure"
                 || title == "Close every inbound port"
+                || title == "Read the firewall"
         }),
         "{log}"
     );
@@ -1025,7 +1036,11 @@ fn the_public_ip_waits_for_the_exposure_to_be_removed() {
         .expect("the firewall is closed");
     assert!(removed < closed && closed < attached, "{listing}");
     let home = Home::new();
-    let (wrapper, calls) = scripted_hipc(&home, "", &[EXPOSURE_REMOVED, FIREWALL_CLOSED]);
+    let (wrapper, calls) = scripted_hipc(
+        &home,
+        "",
+        &[EXPOSURE_REMOVED, FIREWALL_CLOSED, FIREWALL_EMPTY],
+    );
     let (_, log) = offline(
         &home,
         wrapper.to_str().expect("UTF-8"),
@@ -1033,7 +1048,13 @@ fn the_public_ip_waits_for_the_exposure_to_be_removed() {
     );
     assert_eq!(
         failed_titles(&log),
-        ["Remove the exposure", "Close every inbound port"],
+        // The scenario reads the firewall before it closes it, and again after.
+        [
+            "Read the firewall",
+            "Remove the exposure",
+            "Close every inbound port",
+            "Read the firewall"
+        ],
         "{log}"
     );
     let sent = real_calls(&calls);
@@ -1042,6 +1063,39 @@ fn the_public_ip_waits_for_the_exposure_to_be_removed() {
             .any(|call| call.contains("compute public-ip create")),
         "{sent:?}"
     );
+    // An update that exited 0 while the read-back still shows a rule, or the rules under
+    // another key, attaches no IP: the read-back gates it.
+    for answer in [
+        r#"{"rules":[{"protocol":"tcp","ports":["22"]}]}"#,
+        r#"{"inbound":[]}"#,
+    ] {
+        let home = Home::new();
+        let read_back = format!("printf '%s\\n' '{answer}'; exit 0");
+        let (wrapper, calls) = scripted_hipc(
+            &home,
+            "",
+            &[
+                EXPOSURE_REMOVED,
+                FIREWALL_CLOSED,
+                ("*\" compute firewall get \"*", read_back.as_str()),
+            ],
+        );
+        let (_, log) = offline(
+            &home,
+            wrapper.to_str().expect("UTF-8"),
+            &["--tier", "spend", "--yes-spend", "compute"],
+        );
+        assert!(
+            log.contains("SKIP: the firewall was not closed, so no public IP is attached"),
+            "{answer}: {log}"
+        );
+        assert!(
+            !real_calls(&calls)
+                .iter()
+                .any(|call| call.contains("compute public-ip create")),
+            "{answer}: {log}"
+        );
+    }
     // With the exposure removed but the firewall change failed, no IP is attached.
     let home = Home::new();
     let (wrapper, calls) = scripted_hipc(&home, "", &[EXPOSURE_REMOVED]);

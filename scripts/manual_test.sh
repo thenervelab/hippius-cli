@@ -1686,7 +1686,10 @@ vm_spend() {
   [[ "$LAST_EXIT" != 0 ]] || walled=0
   step read net "Read the firewall" "confirm it has no rule" \
     -- hipc --json compute firewall get "$vm"
-  check online "the firewall has no rule" -- last_is '(.rules // []) | length == 0'
+  check online "the firewall has no rule" -- last_is '.rules | type == "array" and length == 0'
+  # The read-back gates the attach too: an update the server accepted but did not apply, or
+  # rules under another key, must not leave a public IP on a VM with an open port.
+  last_is '.rules | type == "array" and length == 0' || walled=1
   # The IP steps need the exposure gone and the firewall closed, offline too.
   outer="$BLOCK_SKIP"
   if [[ $LIST == 0 && $closed != 0 && -z "$BLOCK_SKIP" ]]; then
@@ -2948,6 +2951,10 @@ cleanup_list() {
   vm) args=(compute vms list) ;;
   database) args=(compute databases list) ;;
   cdn-zone) args=(cdn zones list) ;;
+  *)
+    record FAIL "cleanup: no list for the ledger kind $1"
+    return 1
+    ;;
   esac
   "$HIPC" --json "${args[@]}" >"$WORK/clean.out" 2>"$WORK/clean.err" </dev/null
 }
@@ -3164,6 +3171,11 @@ cleanup_one() {
   vm) delete_args=(compute vms delete "$id") ;;
   database) delete_args=(compute databases delete "$id") ;;
   cdn-zone) delete_args=(cdn zones delete "$id") ;;
+  *)
+    say "cleanup: $kind $name: FAIL, no delete for this ledger kind; delete it by hand"
+    record FAIL "cleanup: no delete for the ledger kind $kind"
+    return 0
+    ;;
   esac
   say "cleanup: \$ hipc --json $(show_argv "${delete_args[@]}") --yes"
   if ! "$HIPC" --json "${delete_args[@]}" --yes >"$WORK/clean.out" 2>"$WORK/clean.err" \
@@ -3517,7 +3529,9 @@ keep_ledger() {
 
 finish() {
   local status=$?
-  set +e
+  # `set -u` off too: an unbound expansion in a trap ends the trap at once, which would skip
+  # the cleanup, the scan, and the removal of $WORK below, and leave the scenarios' status.
+  set +eu
   trap '' INT TERM
   if [[ -n "$WORK" && -d "$WORK" ]]; then
     if [[ $status == 130 || $status == 143 ]]; then
