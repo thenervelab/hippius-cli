@@ -235,14 +235,28 @@ const RELOAD_CHARGES_MORE: &str = "the update leaves auto-reload on, and the set
      `threshold`, `target`, or `monthly_cap` (`null` is no cap, the highest), or holds one of \
      those in a shape hipc cannot compare";
 
-/// When a command that sends a secret to the API origin asks first (tenet 8).
+/// What a support text must not hold, as `hipc schema` says it for `support tickets create`
+/// and `reply` and for `hipc api` under `/api/support/`: what `commands::support::secret_in`
+/// finds. A macro, so both rows are one literal each.
+macro_rules! support_secret {
+    () => {
+        "`HIPPIUS_TOKEN` or a token a profile of the config file stores, as it is, quoted, \
+         percent-encoded, or behind a JSON escape, also when whitespace or an invisible joining \
+         character splits it, or an access key: 12 to 24 words of the BIP-39 list in a row whose \
+         checksum holds, with anything that is not a letter read as a space"
+    };
+}
+
 /// When a support ticket or reply refuses with `usage`: a person reads it (tenet 5).
-const TICKET_HOLDS_A_TOKEN: &str = "the subject or the message holds `HIPPIUS_TOKEN` or a \
-     token a profile of the config file stores, as it is, quoted, or percent-encoded";
+const TICKET_HOLDS_A_TOKEN: &str = concat!(
+    "the subject or the message, alone or the two together, holds ",
+    support_secret!()
+);
 
 const NO_SECRET_FILE: &str = "`--secret-file` is not given, so the secret would go to stdout";
 const NO_CREDENTIALS_DIR: &str =
     "`--credentials-dir` is not given, so the credentials would go to stdout";
+/// When a command that sends a secret to the API origin asks first (tenet 8).
 const NOT_DEFAULT_ORIGIN: &str = "the API origin is not `https://api.hippius.com`";
 
 /// When `account notifications update` is confirmed: it turns off an email that warns of a
@@ -714,34 +728,25 @@ fn spec(path: &[&str]) -> Option<Spec> {
     }
 }
 
-/// When `hipc api` refuses whatever the flags, a dry run included: the console is the one
-/// path to an account deletion, `hipc compute kubernetes clusters kubeconfig` the one
-/// path to a cluster's sealed kubeconfig, and `hipc cdn hostnames dns-setup` the one path to a
-/// DNS setup, whose body and answer hold a provider credential, and `hipc hub subscription
-/// subscribe` the one path to a Hub subscribe, since it reads the current plans first. The
-/// three App Engine routes
-/// that take `secrets` are refused when the body sets it: `hipc compute app-engine apps
-/// create` is the path for those values. A support write whose body holds an API token or an
-/// access key is refused as `hipc support tickets create` and `reply` refuse one. It lists refused requests
-/// only; what `hipc api` sends that a curated command refuses or never sends, the data-loss
-/// resume and a ticket `PATCH` with any body, is in its help.
-const API_REFUSED_WHEN: &str = "the target is a full URL off the configured API origin, or \
-                                the request is `POST /api/account/deletion/`, any method of \
-                                `/api/auth/token/`, `GET` or `HEAD` \
-                                of `/api/kubernetes/clusters/<cluster_id>/secrets/`, a `POST`, \
-                                `PUT`, or `PATCH` of \
-                                `/api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`, \
-                                `POST /api/registry/subscribe/`, or a `POST \
-                                /api/compute/app-engine/apps/`, a write of \
-                                `/api/compute/app-engine/apps/<vm_id>/compose/`, or a `POST \
-                                /api/compute/app-engine/validate/` whose body sets `secrets` \
-                                (a body that is not a JSON object counts as setting it), or a \
-                                `POST`, `PUT`, `PATCH`, or `DELETE` under `/api/support/` \
-                                whose body holds `HIPPIUS_TOKEN` or a token a profile of the \
-                                config file stores, as it is, quoted, percent-encoded, behind \
-                                a JSON escape, or split by whitespace, or an access key \
-                                whose checksum holds, with or without the trailing slash or a \
-                                format suffix";
+/// When `hipc api` refuses whatever the flags, a dry run included, as the rows of
+/// `hippius::account::ROUTE_RULES` and the support check decide it: a refusal listed for one
+/// write method holds for every write method the table lists no row for. A curated command is
+/// the one path to each refused effect. It lists refused requests only; what `hipc api` sends
+/// that a curated command refuses or never sends, the data-loss resume and a ticket `PATCH`
+/// with any body, is in its help.
+const API_REFUSED_WHEN: &str = concat!(
+    "the target is a full URL off the configured API origin, or the request is any method of \
+     `/api/auth/token/`, a write other than `DELETE` of `/api/account/deletion/`, `GET` or \
+     `HEAD` of `/api/kubernetes/clusters/<cluster_id>/secrets/`, a write of \
+     `/api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/` or of \
+     `/api/registry/subscribe/`, a write of `/api/compute/app-engine/apps/`, of \
+     `/api/compute/app-engine/apps/<vm_id>/compose/`, or of \
+     `/api/compute/app-engine/validate/` whose body sets `secrets` (a body that is not a JSON \
+     object counts as setting it), or a write under `/api/support/` whose body holds ",
+    support_secret!(),
+    "; a write is `POST`, `PUT`, `PATCH`, or `DELETE`, and each path counts in any letter \
+     case, with or without the trailing slash or a format suffix"
+);
 
 /// When `hipc api` asks: the one route it confirms on a read is the one the rows of
 /// `hippius::PROVISIONING_ROUTES` name, written here so the text says which, in every form
@@ -2032,21 +2037,7 @@ mod tests {
             api["guards"][0]["when"],
             "the request writes to `/api/network/isolation/` (any method but `GET` and `HEAD`)"
         );
-        assert_eq!(
-            api["refused_when"],
-            "the target is a full URL off the configured API origin, or the request is `POST \
-             /api/account/deletion/`, any method of `/api/auth/token/`, `GET` or `HEAD` of \
-             `/api/kubernetes/clusters/<cluster_id>/secrets/`, a `POST`, `PUT`, or `PATCH` of \
-             `/api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`, `POST \
-             /api/registry/subscribe/`, or a `POST /api/compute/app-engine/apps/`, a write of \
-             `/api/compute/app-engine/apps/<vm_id>/compose/`, or a `POST \
-             /api/compute/app-engine/validate/` whose body sets `secrets` (a body that is not a \
-             JSON object counts as setting it), or a `POST`, `PUT`, `PATCH`, or `DELETE` under \
-             `/api/support/` whose body holds `HIPPIUS_TOKEN` or a token a profile of the config \
-             file stores, as it is, quoted, percent-encoded, behind a JSON escape, or split by \
-             whitespace, or an access key whose checksum holds, with or without the trailing slash \
-             or a format suffix"
-        );
+        assert_eq!(api["refused_when"], API_REFUSED_WHEN);
         for noun in ["repositories", "artifacts"] {
             let delete = commands
                 .iter()

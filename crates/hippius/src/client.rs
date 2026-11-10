@@ -2211,7 +2211,7 @@ fn strings(value: &Value) -> Option<String> {
 }
 
 /// `Retry-After` in delay-seconds form. The HTTP-date form is ignored: no Hippius route
-/// sends it, and parsing dates would need a date crate. A delay over [`MAX_RETRY_AFTER_SECS`]
+/// sends it, and its delay would depend on the local clock. A delay over [`MAX_RETRY_AFTER_SECS`]
 /// is ignored too: no outage is planned that far ahead, and an agent that waits as told would
 /// wait for ever, or read a `retry_after_ms` past what a JSON number holds exactly.
 fn retry_after_ms(value: &str) -> Option<u64> {

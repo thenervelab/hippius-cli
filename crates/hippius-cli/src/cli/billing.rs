@@ -351,12 +351,14 @@ fn country(value: &str) -> Result<String, String> {
 pub(crate) struct TopUp {
     /// The amount of a card or Bitcoin top-up in US dollars, to the cent, such as 50 or 12.50
     ///
-    /// A card top-up takes 10 to 10000, and a Bitcoin top-up 20 to 100000.
+    /// Required with --method card or bitcoin, and refused with halpha. A card top-up takes 10
+    /// to 10000, and a Bitcoin top-up 20 to 100000.
     #[arg(long, value_name = "USD", value_parser = usd)]
     pub(crate) amount: Option<Usd>,
     /// The hAlpha a hAlpha top-up spends, a decimal such as 1.5 or 0.01
     ///
-    /// At least 0.01, the chain's minimum, with at most 18 digits after the point.
+    /// Required with --method halpha, and refused with card or bitcoin. At least 0.01, the
+    /// chain's minimum, with at most 18 digits after the point.
     #[arg(long, value_name = "HALPHA", value_parser = alpha)]
     pub(crate) alpha: Option<Planck>,
     /// How the top-up is paid: a Stripe card checkout, a BTCPay Bitcoin invoice (on-chain or
@@ -366,19 +368,21 @@ pub(crate) struct TopUp {
     /// The Idempotency-Key of a hAlpha buy to retry, a UUID: the one a run that failed
     /// printed, so the retry is not a second buy
     ///
-    /// Without it each run sends a new one. With it, the run resends that buy as it was: it
-    /// needs --min-credits from the same hint and the same --alpha, reads the quote but not the
+    /// Only with --method halpha. Without it each run sends a new one. With it, the run resends
+    /// that buy as it was: it needs --min-credits from the same hint and the same --alpha, reads the quote but not the
     /// purchases first, and refuses a --min-credits below 90 percent of what --alpha buys now.
     #[arg(long, value_name = "UUID", value_parser = idempotency_key)]
     pub(crate) idempotency_key: Option<String>,
     /// The min_credits of the hAlpha buy to retry, in credits, as the failed run printed it
     ///
-    /// Only with --idempotency-key: a retry sends the first run's amounts unchanged.
+    /// Only with --method halpha and --idempotency-key: a retry sends the first run's amounts
+    /// unchanged.
     #[arg(long, value_name = "CREDITS", value_parser = min_credits)]
     pub(crate) min_credits: Option<Planck>,
     /// How long a hAlpha top-up follows the purchase, in seconds, 1 to 900, default 900
     ///
-    /// A poll still in flight at the deadline can add up to --request-timeout.
+    /// Only with --method halpha. A poll still in flight at the deadline can add up to
+    /// --request-timeout.
     #[arg(
         long,
         value_name = "SECONDS",
@@ -730,6 +734,43 @@ pub(crate) fn conversion_id(text: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each top-up flag that only one kind of top-up takes says which, in its help, since the
+    /// run refuses it with the other kinds and `hipc schema` lists no rule for it.
+    #[test]
+    fn each_top_up_flag_names_the_methods_that_take_it() {
+        let root = <crate::cli::Cli as clap::CommandFactory>::command();
+        let top_up = root
+            .find_subcommand("billing")
+            .and_then(|billing| billing.find_subcommand("top-up"))
+            .expect("hipc billing top-up is a command");
+        let help = |id: &str| {
+            top_up
+                .get_arguments()
+                .find(|arg| arg.get_id() == id)
+                .and_then(clap::Arg::get_long_help)
+                .map(ToString::to_string)
+                .unwrap_or_default()
+        };
+        for (id, says) in [
+            (
+                "amount",
+                "Required with --method card or bitcoin, and refused with halpha",
+            ),
+            (
+                "alpha",
+                "Required with --method halpha, and refused with card or bitcoin",
+            ),
+            ("idempotency_key", "Only with --method halpha"),
+            (
+                "min_credits",
+                "Only with --method halpha and --idempotency-key",
+            ),
+            ("wait_timeout", "Only with --method halpha"),
+        ] {
+            assert!(help(id).contains(says), "{id}: {}", help(id));
+        }
+    }
 
     /// Every amount up to the largest top-up, and a stride past it, reads back as written in
     /// each spelling `--amount` takes: `d.cc`, `d.c` for whole tenths, and `d` for whole

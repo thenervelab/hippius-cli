@@ -2454,12 +2454,12 @@ Options:
       --amount <USD>
           The amount of a card or Bitcoin top-up in US dollars, to the cent, such as 50 or 12.50
           
-          A card top-up takes 10 to 10000, and a Bitcoin top-up 20 to 100000.
+          Required with --method card or bitcoin, and refused with halpha. A card top-up takes 10 to 10000, and a Bitcoin top-up 20 to 100000.
 
       --alpha <HALPHA>
           The hAlpha a hAlpha top-up spends, a decimal such as 1.5 or 0.01
           
-          At least 0.01, the chain's minimum, with at most 18 digits after the point.
+          Required with --method halpha, and refused with card or bitcoin. At least 0.01, the chain's minimum, with at most 18 digits after the point.
 
       --method <METHOD>
           How the top-up is paid: a Stripe card checkout, a BTCPay Bitcoin invoice (on-chain or Lightning), or the account's hAlpha
@@ -2472,17 +2472,17 @@ Options:
       --idempotency-key <UUID>
           The Idempotency-Key of a hAlpha buy to retry, a UUID: the one a run that failed printed, so the retry is not a second buy
           
-          Without it each run sends a new one. With it, the run resends that buy as it was: it needs --min-credits from the same hint and the same --alpha, reads the quote but not the purchases first, and refuses a --min-credits below 90 percent of what --alpha buys now.
+          Only with --method halpha. Without it each run sends a new one. With it, the run resends that buy as it was: it needs --min-credits from the same hint and the same --alpha, reads the quote but not the purchases first, and refuses a --min-credits below 90 percent of what --alpha buys now.
 
       --min-credits <CREDITS>
           The min_credits of the hAlpha buy to retry, in credits, as the failed run printed it
           
-          Only with --idempotency-key: a retry sends the first run's amounts unchanged.
+          Only with --method halpha and --idempotency-key: a retry sends the first run's amounts unchanged.
 
       --wait-timeout <SECONDS>
           How long a hAlpha top-up follows the purchase, in seconds, 1 to 900, default 900
           
-          A poll still in flight at the deadline can add up to --request-timeout.
+          Only with --method halpha. A poll still in flight at the deadline can add up to --request-timeout.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -3582,7 +3582,7 @@ Create the registry namespace; needs --yes, and --reveal or --secret-file
 
 The docker robot secret is shown once, so --reveal, which prints it on stdout, or --secret-file, which writes it only to a new private file, is required before anything is sent.
 
-The Free plan needs a balance of at least $10 to create a namespace, a spam check the server enforces with 402.
+Creating a namespace needs a balance even on the Free plan, a spam check the server enforces with 402; the server sets the minimum.
 
 A new namespace is public: anyone can pull from it. To keep it private, run hipc hub namespace update --visibility private --yes before the first push.
 
@@ -5391,7 +5391,7 @@ Options:
       --remove-others
           Remove the VM's rules the file leaves out
           
-          Without it the current rules are read first, and the update is refused when the file leaves out a rule the VM has now, or changes its protocol, ports, sources, or enabled flag in either direction (a missing enabled counts as true); its description may change. Without --base-revision the update carries the revision that read returned, so a change made since is refused with conflict.
+          Without it the current rules are read first, and the update is refused when the file leaves out a rule the VM has now, or changes its protocol, ports, sources, or enabled flag in either direction (a missing enabled counts as true); its description may change. Without --base-revision the update carries the revision that read returned, so a change made since is refused with conflict. With --remove-others and no --base-revision, the rules are still read, after the question, for that revision.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -5772,9 +5772,9 @@ Examples:
 ```text
 Change the settings given; the others are kept; jobs spend money while runners are enabled: needs --yes when the change may spend more
 
-While runners are enabled, every job a linked repository starts runs on a VM billed to the balance. It reads the settings first: turning runners on, a higher --max-concurrent, an --allowed-size the list lacks, and opening public repositories may spend more, so they are confirmed, and so is a setting it cannot compare. A pure cut, such as --enabled false, a lower --max-concurrent, or fewer sizes, needs no --yes, and neither does --max-concurrent 0 or --default-region, which moves where jobs run, not how many.
+While runners are enabled, every job a linked repository starts runs on a VM billed to the balance. It reads the settings first: turning runners on, a higher --max-concurrent, --max-concurrent 0, an --allowed-size the list lacks, and opening public repositories may spend more, so they are confirmed, and so is a setting it cannot compare. A pure cut, such as --enabled false, a lower --max-concurrent, or fewer sizes, needs no --yes, and neither does --default-region, which moves where jobs run, not how many. The read and the write are separate requests, since the route takes no version, so a change someone else makes between them is not seen.
 
-Usage: hipc compute runners settings update [OPTIONS]
+Usage: hipc compute runners settings update <--enabled <BOOL>|--max-concurrent <N>|--allowed-size <SIZE>|--default-region <CC>|--allow-public-repos <BOOL>>
 
 Options:
       --enabled <BOOL>
@@ -5785,7 +5785,7 @@ Options:
       --max-concurrent <N>
           The most runners at once
           
-          The server caps it at the account's runner quota. What 0 means is not documented by the server; it is sent without --yes, as a cut is.
+          The server caps it at the account's runner quota. What 0 means is not documented by the server, and it may mean no cap, so 0 needs --yes, as a raise does, unless the setting is already 0.
 
       --allowed-size <SIZE>
           A size jobs may use: small, medium, or large; repeat it for several; the list given replaces the current one
@@ -7051,7 +7051,7 @@ Usage: hipc cdn zones create [OPTIONS] --name <NAME> --bucket <BUCKET>
 
 Options:
       --name <NAME>
-          A label for the zone, at most 64 characters
+          A label for the zone: one line of 1 to 64 characters
 
       --bucket <BUCKET>
           The account's S3 bucket the zone serves
@@ -7115,7 +7115,7 @@ Arguments:
 
 Options:
       --name <NAME>
-          A new label, at most 64 characters
+          A new label: one line of 1 to 64 characters
 
       --bucket <BUCKET>
           Move the zone to another of the account's buckets
@@ -8933,7 +8933,7 @@ Examples:
 ```text
 Call any console API endpoint; a method other than GET or HEAD needs --yes, as does GET or HEAD /network/me/, which may create the network
 
-The request carries the same auth, account, project, and billing rules as every command. It goes only to the configured API origin: a full URL on any other origin, plain http to a loopback port included, exits 2 usage; use curl for another host. An account deletion request is never sent: request it in the console. No request to the account token route (/auth/token/, any method) is sent: create a token in the console settings. A read of a Kubernetes cluster's secrets (GET or HEAD /kubernetes/clusters/<cluster_id>/secrets/) is never sent either: hipc compute kubernetes clusters kubeconfig opens the kubeconfig. A CDN hostname's DNS setup (POST /cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/) is never sent: hipc cdn hostnames dns-setup reads the provider credential from a private file. A Hub subscribe (POST /registry/subscribe/) is never sent: hipc hub subscription subscribe reads the current plans first and refuses a second paid one. An App Engine launch, compose update, or compose check whose body sets secrets (POST /compute/app-engine/apps/, any write of /compute/app-engine/apps/<vm_id>/compose/, POST /compute/app-engine/validate/) is never sent: hipc compute app-engine apps create launches an app with secrets read from a private file, and a compose update with secrets is not in this version; without secrets they are sent as usual. A POST, PUT, PATCH, or DELETE under /support/, such as a new ticket, a reply, or a chat handoff, whose body holds HIPPIUS_TOKEN or a token a profile of the config file stores, as it is, quoted, percent-encoded, or behind a JSON escape, is never sent: a person on the support team may read it. Without a token, a PATCH of one support ticket (PATCH /support/tickets/<ticket_id>/) is sent with the body given: the server decides which fields a customer may change, and hipc support tickets update sends only the close. A resume of a Kubernetes operation blocked on data loss is sent: the server is the guard, and the refusal of hipc compute kubernetes operations resume is a courtesy. hipc api sends no If-Match, so a PUT of a zone's WAF rules or rate limits (/cdn/zones/<zone_id>/waf/rules/, /cdn/zones/<zone_id>/waf/rate-limits/) is not conditional and writes over a version another client published since it was read; hipc cdn waf rules update and hipc cdn waf rate-limits update send the version they read and stop on a conflict. A 2xx answer larger than 32 MiB is not printed: it exits 1 internal. On an error status a body that large is dropped, and the status decides the error.
+The request carries the same auth, account, project, and billing rules as every command. It goes only to the configured API origin: a full URL on any other origin, plain http to a loopback port included, exits 2 usage; use curl for another host. A refusal listed for one write method (POST, PUT, PATCH, or DELETE) holds for every write method of the route, and every path counts in any letter case, with or without the trailing slash or a format suffix. An account deletion request (any write of /account/deletion/ but DELETE, which withdraws a pending one) is never sent: request it in the console. No request to the account token route (/auth/token/, any method) is sent: create a token in the console settings. A read of a Kubernetes cluster's secrets (GET or HEAD /kubernetes/clusters/<cluster_id>/secrets/) is never sent either: hipc compute kubernetes clusters kubeconfig opens the kubeconfig. A CDN hostname's DNS setup (any write of /cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/) is never sent: hipc cdn hostnames dns-setup reads the provider credential from a private file. A Hub subscribe (any write of /registry/subscribe/) is never sent: hipc hub subscription subscribe reads the current plans first and refuses a second paid one. An App Engine launch, compose update, or compose check whose body sets secrets (any write of /compute/app-engine/apps/, of /compute/app-engine/apps/<vm_id>/compose/, or of /compute/app-engine/validate/) is never sent: hipc compute app-engine apps create launches an app with secrets read from a private file, and a compose update with secrets is not in this version; without secrets they are sent as usual. A write under /support/, such as a new ticket, a reply, or a chat handoff, whose body holds HIPPIUS_TOKEN or a token a profile of the config file stores, as it is, quoted, percent-encoded, or behind a JSON escape, also when whitespace or an invisible joining character splits it, or an access key (12 to 24 BIP-39 words in a row whose checksum holds), is never sent: a person on the support team may read it. Without a token, a PATCH of one support ticket (PATCH /support/tickets/<ticket_id>/) is sent with the body given: the server decides which fields a customer may change, and hipc support tickets update sends only the close. A resume of a Kubernetes operation blocked on data loss is sent: the server is the guard, and the refusal of hipc compute kubernetes operations resume is a courtesy. hipc api sends no If-Match, so a PUT of a zone's WAF rules or rate limits (/cdn/zones/<zone_id>/waf/rules/, /cdn/zones/<zone_id>/waf/rate-limits/) is not conditional and writes over a version another client published since it was read; hipc cdn waf rules update and hipc cdn waf rate-limits update send the version they read and stop on a conflict. A 2xx answer larger than 32 MiB is not printed: it exits 1 internal. On an error status a body that large is dropped, and the status decides the error.
 
 Usage: hipc api [OPTIONS] <METHOD> <PATH>
 

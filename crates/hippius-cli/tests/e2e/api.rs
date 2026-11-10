@@ -2275,3 +2275,105 @@ fn a_support_ticket_write_that_holds_a_token_is_refused() {
         .ok();
     assert_eq!(server.requests().len(), 2);
 }
+
+/// Each route `hipc api` refuses is refused on every method `hipc schema` says, a dry run
+/// included, and the schema's `refused_when` and the long help name it, with the methods it
+/// holds for: a refusal listed for one write method holds for every write method.
+#[test]
+fn every_refusal_is_named_in_the_schema_and_the_help_with_its_methods() {
+    const WRITES: [&str; 4] = ["POST", "PUT", "PATCH", "DELETE"];
+    const EVERY: [&str; 6] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
+    let server = Server::start(vec![]);
+    let home = Home::new();
+    let secrets = home.file("secrets.json", br#"{"secrets":{"A":"x"}}"#);
+    let secrets = secrets.to_str().expect("the test home path is UTF-8");
+    // (methods refused, typed path, body, what the schema says, what the help says)
+    let cases: [(&[&str], &str, bool, &str, &str); 8] = [
+        (
+            &EVERY,
+            "/auth/token/",
+            false,
+            "any method of `/api/auth/token/`",
+            "(/auth/token/, any method)",
+        ),
+        (
+            &["POST", "PUT", "PATCH"],
+            "/account/deletion/",
+            false,
+            "a write other than `DELETE` of `/api/account/deletion/`",
+            "any write of /account/deletion/ but DELETE",
+        ),
+        (
+            &["GET", "HEAD"],
+            "/kubernetes/clusters/7/secrets/",
+            false,
+            "`GET` or `HEAD` of `/api/kubernetes/clusters/<cluster_id>/secrets/`",
+            "GET or HEAD /kubernetes/clusters/<cluster_id>/secrets/",
+        ),
+        (
+            &WRITES,
+            "/cdn/zones/zab12cd34ef56/hostnames/a.example.com/dns-setup/",
+            false,
+            "a write of `/api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`",
+            "any write of /cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/",
+        ),
+        (
+            &WRITES,
+            "/registry/subscribe/",
+            false,
+            "or of `/api/registry/subscribe/`",
+            "any write of /registry/subscribe/",
+        ),
+        (
+            &WRITES,
+            "/compute/app-engine/apps/",
+            true,
+            "a write of `/api/compute/app-engine/apps/`",
+            "any write of /compute/app-engine/apps/,",
+        ),
+        (
+            &WRITES,
+            "/compute/app-engine/apps/vm-1/compose/",
+            true,
+            "of `/api/compute/app-engine/apps/<vm_id>/compose/`",
+            "of /compute/app-engine/apps/<vm_id>/compose/",
+        ),
+        (
+            &WRITES,
+            "/compute/app-engine/validate/",
+            true,
+            "of `/api/compute/app-engine/validate/` whose body sets `secrets`",
+            "or of /compute/app-engine/validate/)",
+        ),
+    ];
+    let schema = Hipc::new(&home).run(&["schema", "api"]).ok();
+    let refused_when = schema["commands"][0]["refused_when"]
+        .as_str()
+        .expect("`hipc api` has a refused_when")
+        .to_owned();
+    let help = Hipc::new(&home).run(&["api", "--help"]);
+    let help = help
+        .stdout()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for (methods, path, with_secrets, says, helps) in cases {
+        assert!(
+            refused_when.contains(says),
+            "{says:?} not in {refused_when}"
+        );
+        assert!(help.contains(helps), "{helps:?} not in {help}");
+        for method in methods {
+            let mut args = vec!["api", method, path, "--dry-run", "--yes"];
+            if with_secrets {
+                args.extend(["--body-file", secrets]);
+            }
+            Hipc::against(&home, &server).run(&args).fails(2, "usage");
+            // In another letter case too.
+            let upper = path.to_ascii_uppercase();
+            args[2] = &upper;
+            Hipc::against(&home, &server).run(&args).fails(2, "usage");
+        }
+    }
+    assert!(server.requests().is_empty());
+}

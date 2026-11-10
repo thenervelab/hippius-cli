@@ -412,7 +412,7 @@ fn assert_one_dry_run_shape(doc: &Value, example: &str, path: &str, confirmation
     }
     for request in requests {
         let url = request["url"].as_str().expect("a request has a URL");
-        // The Hub cancel keeps the `{...}` it shipped with (tenet 7).
+        // The Hub cancel keeps the `{...}` it shipped with (tenet 15).
         let url = url.replace("/registry/subscriptions/{subscription_id}/", "");
         assert!(
             !url.contains(['{', '}']),

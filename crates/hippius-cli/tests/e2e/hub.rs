@@ -495,7 +495,7 @@ fn subscribe_dry_run_lists_every_request_and_shows_the_post() {
     };
     let plans = request("GET", "plans/", Value::Null);
     let subscriptions = request("GET", "subscriptions/", Value::Null);
-    // The one placeholder not written `<...>`, kept as it shipped (tenet 7).
+    // The one placeholder not written `<...>`, kept as it shipped (tenet 15).
     let cancel = request("DELETE", "subscriptions/{subscription_id}/", Value::Null);
     let post = |plan_id: &Value| request("POST", "subscribe/", json!({ "plan_id": plan_id }));
     let expected = |plan_id: Value, replace: bool| {

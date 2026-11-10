@@ -217,7 +217,7 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
             // active paid subscription, with the id left as a placeholder, and lists it in
             // `requests` between the reads and the POST.
             // `{subscription_id}` is the one placeholder not written `<...>`: it shipped
-            // before the style was set, and changing a field's value is a break (tenet 7).
+            // before the style was set, and changing a field's value is a break (tenet 15).
             let cancel = Request::new(Method::Delete, "/registry/subscriptions/{subscription_id}/");
             let mut requests = vec![&plans, &subscriptions];
             if args.replace {
