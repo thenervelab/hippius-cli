@@ -44,36 +44,26 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install
-      - run: cargo clippy --all-targets --locked -- -D warnings
+      # The compiled dependencies, per job, keyed on the toolchain and Cargo.lock; the
+      # workspace's own crates are always rebuilt. Only a push to main saves it. A pull
+      # request, a by-hand run and a release's run (through workflow_call) restore main's
+      # and write none, so no branch can plant a build output that main or a release reuses.
+      # release.yml's builds use no cache at all.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # Neither clippy nor the tests read a rustdoc link, so a broken one only fails here.
       - run: cargo doc --workspace --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
 
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - run: rustup toolchain install
-      # No test calls the live API. The live check is scripts/release-check.sh, which a
-      # maintainer runs by hand with their own token.
-      - run: cargo test --locked
-      # The runner's umask is 0022. Ubuntu's default for a user is 0002, under which a
-      # directory a test creates without an explicit mode is writable by the group, and hipc
-      # refuses it (a file open to the group is refused under either umask). The second run
-      # reuses the build and catches a test that relies on the umask. It runs only the tests
-      # whose files hipc reads or writes: the unit tests and the e2e suite, without the
-      # walkthrough runs of scripts/manual_test.sh, which sets its own umask 077. The script
-      # tests make their directories 0700 and their files with explicit modes.
-      - run: umask 0002 && cargo test --locked --lib --bins --test e2e -- --skip 'manual_test::'
-
   coverage:
-    # Every line under src/ and build.rs must run under the test suite: unit tests and the
-    # binary that the integration tests spawn both count. Linux, because the /dev/full test
-    # is the only way to reach the failed-write path. On macOS the gate misses that path.
+    # The Linux test run: every test of the workspace, once, instrumented. Every line under
+    # src/ and build.rs must run under it: unit tests and the binary that the integration
+    # tests spawn both count. Linux, because the /dev/full test is the only way to reach the
+    # failed-write path. On macOS the gate misses that path. Linux has no second,
+    # uninstrumented run: the code under test is the same.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -81,6 +71,9 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037  # v2.87.32
         with:
           tool: cargo-llvm-cov@0.9.1
@@ -89,20 +82,32 @@ jobs:
       # percentage summary is not used: on Linux it also counts a closure or function
       # that one binary never calls as missed, even when another binary runs that line.
       # The uncovered functions are a ratchet: the count on main, which only goes down,
-      # so a new closure that never runs fails even when its line is covered.
+      # so a new closure that never runs fails even when its line is covered. To find them,
+      # `cargo llvm-cov report --json` lists every function with its execution count.
+      #
+      # Under umask 0002, Ubuntu's default for a user, not the runner's 0022: a directory a
+      # test creates without an explicit mode is then writable by the group, and hipc
+      # refuses it (a file open to the group is refused under either umask), so a test that
+      # relies on the runner's umask fails here. macOS runs the suite under 0022.
       - run: >-
-          cargo llvm-cov --locked --include-build-script --fail-uncovered-lines 0
-          --fail-uncovered-functions 20 --show-missing-lines
+          umask 0002 && cargo llvm-cov --workspace --locked --include-build-script
+          --fail-uncovered-lines 0 --fail-uncovered-functions 20 --show-missing-lines
 
   test-macos:
-    runs-on: macos-latest
+    # The image release.yml builds on, so the suite and the release see the same macOS.
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - run: rustup toolchain install
-      - run: cargo test --locked
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      # No test calls the live API. The live check is scripts/release-check.sh, which a
+      # maintainer runs by hand with their own token.
+      - run: cargo test --workspace --locked
 
   deny:
     # The only job that queries a service besides the toolchain and crate downloads: the
@@ -174,4 +179,4 @@ jobs:
       # --offline, at the default persona: the online audits need a token, this job holds
       # none, and the flag keeps the audit set the same whether or not one is present, in
       # CI and in a maintainer's shell alike. CONTRIBUTING.md gives the same command.
-      - run: zizmor --offline .github/workflows
+      - run: zizmor --offline .github
