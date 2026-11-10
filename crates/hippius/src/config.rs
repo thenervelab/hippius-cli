@@ -286,8 +286,13 @@ impl Document {
 struct Profile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     api_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    token: Option<String>,
+    /// Cleared when the profile is dropped or the token replaced, as [`Token`] is.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "stored_token"
+    )]
+    token: Option<Zeroizing<String>>,
     /// The origin `token` was stored for. A hand-written profile without it holds a token
     /// for its own `api_url`, else the default origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -323,21 +328,28 @@ impl fmt::Debug for Profile {
     }
 }
 
-impl Profile {
-    /// Clears the stored token's memory and removes it, so a token replaced or removed is not
-    /// left behind in freed memory.
-    fn clear_token(&mut self) {
-        if let Some(token) = &mut self.token {
-            zeroize::Zeroize::zeroize(token);
-        }
-        self.token = None;
-    }
-}
+/// The serde form of [`Profile`]'s token: a plain TOML string, held in memory as
+/// `Zeroizing<String>`. The text the TOML parser and writer hold on the way are theirs and are
+/// not cleared here; the config text read and written is (`ConfigFile::parse`).
+mod stored_token {
+    use serde::{Deserialize as _, Deserializer, Serialize as _, Serializer};
+    use zeroize::Zeroizing;
 
-/// The stored token is cleared when the profile is dropped, as [`Token`] is.
-impl Drop for Profile {
-    fn drop(&mut self) {
-        self.clear_token();
+    #[expect(
+        clippy::ref_option,
+        reason = "serde's `with` hands a field over by reference"
+    )]
+    pub(super) fn serialize<S: Serializer>(
+        token: &Option<Zeroizing<String>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        token.as_deref().serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Zeroizing<String>>, D::Error> {
+        Ok(Option::<String>::deserialize(deserializer)?.map(Zeroizing::new))
     }
 }
 
@@ -813,8 +825,7 @@ impl ConfigFile {
     pub fn set_token(&mut self, profile: &str, token: &Token, api_url: &str) -> Result<String> {
         let origin = Origin::parse(api_url)?.as_str().to_owned();
         let stored = self.profile_mut(profile);
-        stored.clear_token();
-        stored.token = Some(token.expose().to_owned());
+        stored.token = Some(Zeroizing::new(token.expose().to_owned()));
         stored.token_origin = Some(origin.clone());
         Ok(origin)
     }
@@ -851,13 +862,13 @@ impl ConfigFile {
         self.document
             .profiles
             .get(profile)
-            .and_then(|p| p.token.as_deref())
+            .and_then(|p| p.token.as_deref().map(String::as_str))
     }
 
     /// Removes the token from `profile`. Other fields stay.
     pub fn clear_token(&mut self, profile: &str) {
         if let Some(stored) = self.document.profiles.get_mut(profile) {
-            stored.clear_token();
+            stored.token = None;
             stored.token_origin = None;
         }
     }
