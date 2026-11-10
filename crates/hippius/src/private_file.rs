@@ -45,7 +45,7 @@ fn create_private_dirs(dir: &Path) -> std::io::Result<()> {
     if dir.as_os_str().is_empty() || fs::symlink_metadata(dir).is_ok() {
         return Ok(());
     }
-    create_private_dirs(dir.parent().unwrap_or(Path::new("")))?;
+    dir.parent().map_or(Ok(()), create_private_dirs)?;
     match fs::DirBuilder::new().mode(0o700).create(dir) {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
         created => created?,
@@ -58,7 +58,7 @@ fn create_private_dirs(dir: &Path) -> std::io::Result<()> {
 pub(crate) fn directory(path: &Path) -> &Path {
     path.parent()
         .filter(|d| !d.as_os_str().is_empty())
-        .unwrap_or(Path::new("."))
+        .unwrap_or_else(|| Path::new("."))
 }
 
 /// A private file `hipc` reads and writes, as its messages name it: what it is, what it

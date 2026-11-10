@@ -578,7 +578,7 @@ fn auto_reload_update_needs_no_yes_when_it_cannot_charge_more() {
             "--monthly-cap",
             "200",
         ],
-        &body(true, "9.99", "50.00", cap.clone()),
+        &body(true, "9.99", "50.00", cap),
     );
     // A cap where there was none limits the charges.
     sends(

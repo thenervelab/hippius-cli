@@ -4,7 +4,7 @@
 //! parser and fails when a command has no row here, so a new command cannot ship without
 //! an effect.
 
-use clap::CommandFactory;
+use clap::CommandFactory as _;
 use hippius::Code;
 use serde_json::{Value, json};
 

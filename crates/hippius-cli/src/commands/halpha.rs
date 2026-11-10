@@ -530,8 +530,8 @@ impl Wait for Purchase<'_> {
         }
     }
 
-    fn take(&mut self, page: Value) -> Result<()> {
-        if let Some(listed) = find(&page, self.id) {
+    fn take(&mut self, answer: Value) -> Result<()> {
+        if let Some(listed) = find(&answer, self.id) {
             self.row = listed;
             self.found = true;
         }

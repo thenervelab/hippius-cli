@@ -152,7 +152,7 @@ pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), NewFileError> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
+        .unwrap_or_else(|| Path::new("."));
     let (dir, metadata) = rustix::fs::open(
         parent,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,

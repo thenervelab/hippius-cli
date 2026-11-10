@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use clap::{CommandFactory, FromArgMatches as _};
+use clap::{CommandFactory as _, FromArgMatches as _};
 use hippius::Result;
 use serde_json::{Value, json};
 

@@ -3169,7 +3169,7 @@ mod tests {
         let c = selecting(member());
         let summary = Request::get("/network/me/");
         assert!(c.provisions(&summary).unwrap());
-        let marked = summary.clone().provisions();
+        let marked = summary.provisions();
         assert_eq!(
             c.url(&marked).unwrap_err().code(),
             Code::BillingScopeUnsupported

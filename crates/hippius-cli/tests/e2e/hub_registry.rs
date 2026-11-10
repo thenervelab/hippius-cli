@@ -32,11 +32,11 @@ fn repositories_list_is_an_envelope_of_either_shape() {
     for (body, envelope) in [
         (
             format!("[{REPOSITORY}]"),
-            json!({"items": [row.clone()], "next_page_token": null}),
+            json!({"items": [row], "next_page_token": null}),
         ),
         (
             format!(r#"{{"count":1,"next":null,"previous":null,"results":[{REPOSITORY}]}}"#),
-            json!({"count": 1, "items": [row.clone()], "next_page_token": null}),
+            json!({"count": 1, "items": [row], "next_page_token": null}),
         ),
     ] {
         let server = repositories(&body);

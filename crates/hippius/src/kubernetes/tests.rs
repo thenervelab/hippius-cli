@@ -317,7 +317,7 @@ fn the_newest_launch_drop_is_found_by_its_time_among_those_that_can_be_opened() 
     let opened = open(&key, &secrets(GUEST, &json!([older, east]))).unwrap();
     assert_eq!(opened.as_str(), KUBECONFIG);
     // A time that is not one is older than any that is.
-    let mut garbled = newer.clone();
+    let mut garbled = newer;
     garbled["created_at"] = json!("2026-10-99T00:00:00Z");
     let opened = open(&key, &secrets(GUEST, &json!([garbled, older]))).unwrap();
     assert_eq!(opened.as_str(), KUBECONFIG);
@@ -543,19 +543,21 @@ fn a_key_file_is_matched_to_its_cluster_by_both_public_keys() {
     );
 }
 
+/// The map of a `json!` object literal.
+fn object(literal: Value) -> Map<String, Value> {
+    serde_json::from_value(literal).expect("the literal is a JSON object")
+}
+
 /// The `add_node` of the console's vector, its params out of order at both depths.
 fn add_node_params() -> Map<String, Value> {
-    let Value::Object(params) = json!({
+    object(json!({
         "pool": "gpu",
         "flavor": "large",
         "k8s_version": "v1.34.3+rke2r1",
         "image": "ubuntu",
         "labels": { "zone": "b", "app": "web", "team.example.com/owner": "ops" },
         "taints": ["gpu=true:NoSchedule", "dedicated:PreferNoSchedule"],
-    }) else {
-        unreachable!("the literal is an object")
-    };
-    params
+    }))
 }
 
 /// The canonical bytes of the `add_node` envelope of `params`, as a test builds them.
@@ -612,16 +614,14 @@ fn an_add_node_is_signed_exactly_as_pynacl_signs_it() {
 #[test]
 fn a_replacement_signs_the_pool_params_with_replaces_added() {
     let uuid = "a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d";
-    let Value::Object(mut params) = json!({
+    let mut params = object(json!({
         "pool": "workers",
         "flavor": "medium",
         "k8s_version": "v1.34.3+rke2r1",
         "image": "ubuntu",
         "labels": {},
         "taints": [],
-    }) else {
-        unreachable!("the literal is an object")
-    };
+    }));
     params.insert("replaces".to_owned(), json!("workers-1a2b3c4d"));
     assert_eq!(
         b64(envelope_bytes(7, uuid, &params, 1_790_000_100).as_bytes()),
@@ -643,7 +643,7 @@ fn a_replacement_signs_the_pool_params_with_replaces_added() {
 #[test]
 fn non_ascii_nesting_and_escapes_sign_exactly_as_pynacl_signs_them() {
     let uuid = "00000000-0000-4000-8000-000000000001";
-    let Value::Object(params) = json!({
+    let params = object(json!({
         "pool": "p",
         "labels": {
             "\u{ff5e}": "fullwidth",
@@ -653,9 +653,7 @@ fn non_ascii_nesting_and_escapes_sign_exactly_as_pynacl_signs_them() {
             "esc": "q\"b\\n\n\t\u{1}\u{7f}\u{2028}/",
         },
         "taints": [],
-    }) else {
-        unreachable!("the literal is an object")
-    };
+    }));
     assert_eq!(
         b64(envelope_bytes(1_234_567, uuid, &params, 1_790_000_200).as_bytes()),
         "eyJjbHVzdGVyIjoiMTIzNDU2NyIsImRvbSI6ImhpcHBpdXMtazhzLW9wIiwiZXhwIjoxNzkwMDAzMjAwLCJpYX\
@@ -929,9 +927,7 @@ fn canonical_json_refuses_what_python_prints_differently() {
     );
     let key = vector_key();
     let matched = key.matched(42, &cluster(Some(GUEST))).unwrap();
-    let Value::Object(params) = json!({ "count": 1.5 }) else {
-        unreachable!("the literal is an object")
-    };
+    let params = object(json!({ "count": 1.5 }));
     let error = matched
         .sign_add_node(&params, &Response::dated(None))
         .unwrap_err();

@@ -171,6 +171,32 @@ large_futures = "deny"
 # A forgotten value skips its `Drop`, which is where secrets are cleared.
 mem_forget = "deny"
 
+# Restriction and nursery lints, chosen one by one; neither group is ever on as a whole.
+# Each is enabled once the code has no hit left, so it holds the line from then on.
+# Exit codes come only from `main` (tenet 4).
+exit = "warn"
+# Output order never depends on a hash (tenet 15).
+iter_over_hash_type = "warn"
+# `expect("<invariant>")` or a `let ... else` that returns, as for `unwrap`.
+unreachable = "warn"
+get_unwrap = "warn"
+# Idiom: one spelling for each.
+empty_structs_with_brackets = "warn"
+if_then_some_else_none = "warn"
+needless_raw_strings = "warn"
+or_fun_call = "warn"
+redundant_clone = "warn"
+redundant_type_annotations = "warn"
+ref_patterns = "warn"
+renamed_function_params = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+str_to_string = "warn"
+try_err = "warn"
+unnecessary_self_imports = "warn"
+# A trait imported only for its methods is `use Trait as _`.
+unused_trait_names = "warn"
+large_stack_frames = "warn"
+
 # Pedantic relaxations: noisy without catching bugs. The house template also allows
 # `module_name_repetitions`; it is a restriction lint now, off unless named, so it is not
 # listed.

@@ -1697,7 +1697,7 @@ fn takes_twice(path: &[&str], flag: &Value) -> bool {
         None => vec![""],
         Some(_) => flag["possible_values"][0]
             .as_str()
-            .or(flag["default"].as_str())
+            .or_else(|| flag["default"].as_str())
             .into_iter()
             .chain(VALUE_CANDIDATES)
             .chain([dir_text])

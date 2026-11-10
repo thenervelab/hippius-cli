@@ -422,7 +422,8 @@ fn redacted(value: Value, secrets: &[String]) -> Value {
 fn env_file(dir: &Path, created: &Value) -> std::result::Result<String, String> {
     // `absolute` fails only when the current directory cannot be read, which the parse-time
     // check of a relative `dir` already needed: the path as given is then the best there is.
-    let dir = std::path::absolute(dir).unwrap_or(dir.to_path_buf());
+    let absolute = std::path::absolute(dir).ok();
+    let dir = absolute.as_deref().unwrap_or(dir);
     let text = |pointer: &str| created.pointer(pointer).and_then(Value::as_str);
     let port = created
         .pointer("/connection/port")

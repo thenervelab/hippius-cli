@@ -1606,7 +1606,7 @@ fn configure_dry_run_writes_nothing() {
 /// writes or asks anything (tenet 5).
 #[test]
 fn configure_dry_run_refuses_what_the_real_run_refuses() {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::PermissionsExt as _;
 
     type Setup = fn(&Home, &std::path::Path) -> Vec<(&'static str, String)>;
 

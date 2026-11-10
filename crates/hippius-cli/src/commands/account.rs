@@ -160,13 +160,11 @@ pub(crate) fn selected_scope(overrides: &Overrides, settings: &Settings) -> Map<
     ];
     for (name, given, id) in scopes {
         // An override comes from a flag or a variable ([`Context::overrides`]).
-        let source = given.map_or(id.map(|_| "profile"), |given| {
-            Some(if matches!(given.source, Source::Variable(_)) {
-                "environment"
-            } else {
-                "flag"
-            })
-        });
+        let source = match given {
+            Some(given) if matches!(given.source, Source::Variable(_)) => Some("environment"),
+            Some(_) => Some("flag"),
+            None => id.map(|_| "profile"),
+        };
         fields.insert(format!("selected_{name}"), json!(id));
         fields.insert(format!("selected_{name}_source"), json!(source));
     }

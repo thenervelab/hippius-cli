@@ -643,11 +643,11 @@ impl Wait for AppLaunch<'_> {
         }
     }
 
-    fn take(&mut self, polled: Value) -> Result<()> {
+    fn take(&mut self, answer: Value) -> Result<()> {
         // A document for another app, or for none, is not this launch.
-        match polled.get("vm_id").and_then(Value::as_str) {
+        match answer.get("vm_id").and_then(Value::as_str) {
             Some(id) if id == self.vm_id => {
-                self.app = polled;
+                self.app = answer;
                 Ok(())
             }
             other => {

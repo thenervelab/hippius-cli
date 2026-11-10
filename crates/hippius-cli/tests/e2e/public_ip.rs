@@ -1086,7 +1086,7 @@ fn firewall_update_dry_run_names_the_read_that_finds_what_it_removes() {
         &["--dry-run", "--base-revision", "r1"],
     )
     .dry_ok();
-    let mut given = put.clone();
+    let mut given = put;
     given["body"]["base_revision"] = json!("r1");
     assert_eq!(doc, expected(&given));
     // `--remove-others` reads nothing, so it sends one request with no revision.

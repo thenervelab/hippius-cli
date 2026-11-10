@@ -978,8 +978,8 @@ mod tests {
             "the stored token must not go elsewhere"
         );
         assert!(matches!(
-            settings.credential,
-            Credential::Withheld { ref stored_for } if stored_for == DEFAULT_API_URL
+            &settings.credential,
+            Credential::Withheld { stored_for } if stored_for == DEFAULT_API_URL
         ));
     }
 
@@ -1042,8 +1042,8 @@ mod tests {
         let settings = file.settings(&overrides).unwrap();
         assert!(settings.token().is_none());
         assert!(matches!(
-            settings.credential,
-            Credential::VariableWithheld { ref bound_to } if bound_to == DEFAULT_API_URL
+            &settings.credential,
+            Credential::VariableWithheld { bound_to } if bound_to == DEFAULT_API_URL
         ));
         assert_eq!(settings.api_url, "http://127.0.0.1:9");
         // `HIPPIUS_TOKEN_ORIGIN` names the target, in any spelling of it.
@@ -1428,7 +1428,7 @@ mod tests {
         }
         // Readable by others is not a reason to refuse the directory, only writable.
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
-        ConfigFile::load(path.clone()).unwrap();
+        ConfigFile::load(path).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1443,7 +1443,7 @@ mod tests {
             assert!(ConfigFile::load(path.clone()).is_err(), "{:o}", 0o600 | bit);
         }
         fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
-        ConfigFile::load(path.clone()).unwrap();
+        ConfigFile::load(path).unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
 

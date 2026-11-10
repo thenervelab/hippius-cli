@@ -209,8 +209,8 @@ fn credentials_dir(text: &str) -> Result<PathBuf, String> {
     crate::commands::files::private_dir_refusal(&dir, &metadata)?;
     // `.env` names the TLS files by this directory's absolute path, single-quoted: a path it
     // cannot hold so would be found only after the create, which then writes nothing.
-    let absolute = std::path::absolute(&dir).unwrap_or(dir.clone());
-    match absolute.to_str() {
+    let absolute = std::path::absolute(&dir).ok();
+    match absolute.as_deref().unwrap_or(&dir).to_str() {
         Some(path) if !path.contains(['\'', '\\']) && !path.chars().any(char::is_control) => {}
         _ => {
             return Err(

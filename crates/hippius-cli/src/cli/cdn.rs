@@ -750,7 +750,7 @@ fn cdn_cap(value: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::Parser as _;
 
     use crate::cli::Cli;
 

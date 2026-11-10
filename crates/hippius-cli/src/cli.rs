@@ -830,7 +830,7 @@ fn new_file(text: &str, what: &str) -> Result<PathBuf, String> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
+        .unwrap_or_else(|| Path::new("."));
     match std::fs::metadata(parent) {
         Ok(metadata) if metadata.is_dir() => {
             crate::commands::files::private_dir_refusal(parent, &metadata)?;
@@ -983,7 +983,7 @@ fn typed_route(route: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
+    use clap::CommandFactory as _;
 
     use super::*;
 

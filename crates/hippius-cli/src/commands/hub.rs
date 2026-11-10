@@ -966,7 +966,7 @@ fn robot_login(ctx: &Context<'_>, body: Value) -> Result<Value> {
 /// them (`docker -D login`) or a substitution (`$(printf docker) login`) would not hide.
 /// This fails closed: a sentence that names both words is refused as well.
 fn holds_docker_login(text: &str) -> bool {
-    let spaced: String = text
+    let spaced = text
         .chars()
         .filter(|c| !matches!(c, '"' | '\'' | '`' | '\\'))
         .map(|c| match c {

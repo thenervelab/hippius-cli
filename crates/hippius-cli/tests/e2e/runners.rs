@@ -1074,7 +1074,7 @@ fn limit_update_refuses_an_answer_that_does_not_show_the_cap_sent() {
         ),
         // `null` credits beside a cap in base units is not a removal, and neither is an
         // answer that leaves either field out.
-        ("none", base_and_null.clone(), removed, without),
+        ("none", base_and_null, removed, without),
         (
             "none",
             r#"{"monthly_cap":null}"#.to_owned(),

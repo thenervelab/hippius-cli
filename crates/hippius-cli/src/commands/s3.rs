@@ -649,9 +649,10 @@ fn configure_note(ctx: &Context<'_>, token: &Value, secret_file: Option<&Path>) 
     let Some(id) = id.filter(|_| has_secret) else {
         return;
     };
-    let file = secret_file.map_or("<path>".to_owned(), |path| {
-        phrase::shell_word(&path.to_string_lossy())
-    });
+    let file = secret_file.map_or_else(
+        || "<path>".to_owned(),
+        |path| phrase::shell_word(&path.to_string_lossy()),
+    );
     let words = format!("s3 configure --access-key-id {id} --secret-key-file {file}");
     if let Some(command) = ctx.next_command(&words) {
         ctx.note(&match secret_file {

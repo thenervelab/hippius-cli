@@ -1145,12 +1145,12 @@ impl Wait for VmLaunch<'_> {
         }
     }
 
-    fn take(&mut self, polled: Value) -> Result<()> {
+    fn take(&mut self, answer: Value) -> Result<()> {
         // A document for another VM, or for none, is not this launch: printing it would
         // report another VM's status as this one's.
-        match polled.get("vm_id").and_then(Value::as_str) {
+        match answer.get("vm_id").and_then(Value::as_str) {
             Some(id) if id == self.vm_id => {
-                self.vm = polled;
+                self.vm = answer;
                 Ok(())
             }
             other => {

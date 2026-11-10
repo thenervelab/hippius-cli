@@ -400,19 +400,19 @@ impl<'de> Deserialize<'de> for UniqueObject {
         impl<'de> Visitor<'de> for Object {
             type Value = UniqueObject;
 
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a JSON object")
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON object")
             }
 
             fn visit_map<A: MapAccess<'de>>(
                 self,
-                mut access: A,
+                mut map: A,
             ) -> std::result::Result<UniqueObject, A::Error> {
                 // Cleared when dropped, so a syntax error later in the file, which returns
                 // here, leaves nothing read before it behind.
                 let mut fields = Fields(Map::new());
                 let mut repeated = false;
-                while let Some((name, value)) = access.next_entry::<String, Value>()? {
+                while let Some((name, value)) = map.next_entry::<String, Value>()? {
                     // The whole object is still read, so a syntax error later in the file
                     // is reported as one. A second copy is not kept: it is cleared now, and
                     // the first when `fields` is dropped.

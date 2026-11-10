@@ -1353,8 +1353,8 @@ fn a_dropped_field_never_reaches_the_message() {
     for body in [
         json!({"secrets": {"DB_PASSWORD": [format!("{upper} is too long")]}}),
         json!({"message": format!("{upper} is not allowed")}),
-        json!({"error": format!("{upper} bad"), "non_field_errors": [upper.clone()]}),
-        json!({"detail": 7, "error": "Not A Code", "title": upper.clone()}),
+        json!({"error": format!("{upper} bad"), "non_field_errors": [upper]}),
+        json!({"detail": 7, "error": "Not A Code", "title": upper}),
     ] {
         let server = Server::start(vec![
             route(
