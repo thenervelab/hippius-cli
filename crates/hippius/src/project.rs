@@ -26,33 +26,15 @@
 //! path too: `/api/compute/usage` is refused a project, as `/api/compute/usage/` is.
 
 use crate::account::{
-    BILLING_NAMED_ONLY_PATHS, RouteClass, classify, listed_class, matches_pattern,
-    with_trailing_slash,
+    BILLING_NAMED_ONLY_PATHS, classify, listed_class, matches_pattern, with_trailing_slash,
 };
 use crate::error::Result;
 use crate::method::{Access, Method};
 use crate::phrase::quote;
+use crate::routes::{RouteClass, Take};
 use crate::selector::{BillingId, ProjectId, Selected, Selector, is_id};
 use crate::source::Source;
 use crate::url::without_query_values;
-
-/// What a route does with a selector header.
-///
-/// The variants are declared from the least to the most strict, and [`classify`] keeps the
-/// greater of two, for the reason [`RouteClass`] gives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Take {
-    /// A personal route: it acts as the signed-in user, and the header is not sent.
-    Skip,
-    /// The route acts in the selected project or billing account.
-    Send,
-    /// The route refuses the header but names a project or a billing account in its path, so
-    /// a stored selection is left off it, writes included; one from a flag or a variable is
-    /// refused. Either selector: a route that names one of them takes the other neither.
-    Named,
-    /// The route refuses the header.
-    Refuse,
-}
 
 /// The prefixes of the routes that take a project: compute, managed databases, Kubernetes,
 /// runners, S3 buckets and keys, and the CDN. The S3 plan (`/api/s3/`) stays the account's,
@@ -124,7 +106,7 @@ const BILLING_PATHS: &[&str] = &[
 /// What `method` to `path` (a request path, its query ignored) does with a project. A path
 /// with a format suffix takes the stricter answer of its two forms ([`classify`]); a route
 /// the tables do not list refuses.
-fn project_take(method: Method, path: &str) -> Take {
+pub(crate) fn project_take(method: Method, path: &str) -> Take {
     classify(path, Take::Refuse, |form| {
         if listed_class(method, form) == Some(RouteClass::Personal) {
             return Some(Take::Skip);
@@ -156,7 +138,7 @@ fn names_in_path(selector: Selector, patterns: &[&str], form: &str) -> bool {
 
 /// What `method` to `path` (a request path, its query ignored) does with a billing account,
 /// by the same rules as [`project_take`].
-fn billing_take(method: Method, path: &str) -> Take {
+pub(crate) fn billing_take(method: Method, path: &str) -> Take {
     classify(path, Take::Refuse, |form| {
         if listed_class(method, form) == Some(RouteClass::Personal) {
             return Some(Take::Skip);

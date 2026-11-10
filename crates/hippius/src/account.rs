@@ -13,26 +13,12 @@
 use std::borrow::Cow;
 use std::cmp::Reverse;
 
-use crate::error::{Code, Result};
+use crate::error::Result;
 use crate::method::Method;
 use crate::phrase::quote;
+use crate::routes::{RouteClass, RouteFlag};
 use crate::selector::Selection;
 use crate::url::without_query_values;
-
-/// How a route treats `X-Hippius-Account`.
-///
-/// The variants are declared from the least to the most strict, and [`classify`] keeps the
-/// greater of two. Sending the header is stricter than leaving it off: a personal route
-/// ignores it, while a scoped route without it acts on the caller's own account.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum RouteClass {
-    /// Acts as the caller whatever the header says. The header is never sent.
-    Personal,
-    /// Acts in the account the header names.
-    Scoped,
-    /// Refuses the header with `account_scope_unsupported`.
-    Unsupported,
-}
 
 /// Prefixes of the routes that act in the selected account.
 ///
@@ -266,47 +252,6 @@ fn listed(table: &[(Method, &str)], method: Method, path: &str) -> bool {
     folded(path)
         .iter()
         .any(|path| classify(path, false, |form| matches(form).then_some(true)))
-}
-
-/// A flag `hipc api` needs beyond `--yes` to send a route whose effect reaches the whole
-/// account, or is one a curated command guards with its own flag, because an agent passes
-/// `--yes` by habit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RouteFlag {
-    /// Changes which peers of the account's network can reach each other.
-    ChangeIsolation,
-    /// Lets a CDN zone serve a bucket that may be private, as `hipc cdn zones create` does.
-    Public,
-    /// Lets a write that replaces a whole list remove the entries it leaves out, as `hipc
-    /// compute firewall update` does.
-    RemoveOthers,
-}
-
-impl RouteFlag {
-    /// Every flag, in the order `hipc schema` lists `hipc api`'s guards. A test matches each
-    /// variant to its place here with no catch-all arm, so a new variant does not compile
-    /// until it is listed.
-    pub const ALL: [Self; 3] = [Self::ChangeIsolation, Self::Public, Self::RemoveOthers];
-
-    /// The flag as the caller passes it, such as `--change-isolation`: the one place each is
-    /// spelled.
-    pub const fn flag(self) -> &'static str {
-        match self {
-            Self::ChangeIsolation => "--change-isolation",
-            Self::Public => "--public",
-            Self::RemoveOthers => "--remove-others",
-        }
-    }
-
-    /// The code `hipc api` refuses with when the flag is missing, the one whose flag this is
-    /// (tenet 4): the curated commands' code for a flag they share.
-    pub const fn code(self) -> Code {
-        match self {
-            Self::ChangeIsolation => Code::ChangeIsolationRequired,
-            Self::Public => Code::PublicRequired,
-            Self::RemoveOthers => Code::RemoveOthersRequired,
-        }
-    }
 }
 
 /// What `hipc api` needs to send a route in [`ROUTE_RULES`].
@@ -902,6 +847,7 @@ pub(crate) fn header<'a>(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::error::Code;
     use crate::source::Source;
 
     const ID: &str = "acct_0123456789abcdef0123";

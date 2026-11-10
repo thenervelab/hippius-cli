@@ -21,7 +21,7 @@ use ureq::unversioned::transport::{
     Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout,
 };
 
-use crate::account::{self, RouteFlag, RouteRule};
+use crate::account::{self, RouteRule};
 use crate::config::{Credential, Settings};
 use crate::encode::percent_encode;
 use crate::error::{Code, Error, Result, SideEffects};
@@ -29,6 +29,7 @@ use crate::method::{Access, Method};
 use crate::phrase::quote;
 use crate::project;
 use crate::redact::token_spellings;
+use crate::routes::{API_BASE, Route, RouteFlag};
 use crate::selector::{BillingId, ProjectId, Selection};
 use crate::source::{Given, Source};
 use crate::url::{Origin, without_query_values};
@@ -95,8 +96,9 @@ pub struct Request {
 }
 
 impl Request {
-    /// A request without a body. `target` is a swagger path such as `/accounts/` (sent to
-    /// `/api/accounts/`), a path that already starts with `/api/`, or a full URL.
+    /// A request without a body. `target` is a swagger path such as `/accounts/` (sent under
+    /// [`API_BASE`], to `/api/accounts/`), a path that already starts with `/api/`, or a full
+    /// URL. A command builds its request from a route instead ([`Request::to`]).
     pub fn new(method: Method, target: impl Into<String>) -> Self {
         Self {
             method,
@@ -119,6 +121,18 @@ impl Request {
     /// A GET.
     pub fn get(target: impl Into<String>) -> Self {
         Self::new(Method::Get, target)
+    }
+
+    /// A request without a body to `route`, with `values` in its placeholders
+    /// ([`Route::path`]). The target is kept as `hipc api` takes it, without [`API_BASE`], so
+    /// a hint that names the route reads as a caller would type it; the client adds the base
+    /// back when it sends.
+    pub fn to<const N: usize>(route: &Route<N>, values: [&dyn fmt::Display; N]) -> Self {
+        let path = route.path(values);
+        let target = path
+            .strip_prefix(API_BASE)
+            .expect("a route's template starts with the API base, which `Route::new` checks");
+        Self::new(route.method(), target)
     }
 
     /// Names what the request does: a verb phrase with its literals in backticks, such as
@@ -893,10 +907,10 @@ impl Client {
     fn target(&self, request: &Request) -> Result<Target> {
         // A path is checked first, so a `://` inside its query is not taken for a URL.
         let (base, path_and_query) = if request.target.starts_with('/') {
-            let path = if request.target.starts_with("/api/") {
+            let path = if under_api_base(&request.target) {
                 request.target.clone()
             } else {
-                format!("/api{}", request.target)
+                format!("{API_BASE}{}", request.target)
             };
             (self.origin.as_str().to_owned(), path)
         } else if request.target.contains("://") {
@@ -1278,6 +1292,12 @@ fn unbuildable(error: ureq::http::Error) -> Error {
         ),
         "write the path with only the characters a URL allows",
     )
+}
+
+/// Whether `path` is already under [`API_BASE`], so the client sends it as it is.
+fn under_api_base(path: &str) -> bool {
+    path.strip_prefix(API_BASE)
+        .is_some_and(|under| under.starts_with('/'))
 }
 
 /// Refuses an API path the server could read as a different route than `hipc` classified.
@@ -2522,6 +2542,21 @@ mod tests {
             .target,
             "https://api.hippius.com/api/k/?page=2"
         );
+    }
+
+    /// A request built from a route keeps its target as `hipc api` takes it, so a hint names
+    /// the route as a caller types it, and goes to the route's whole path.
+    #[test]
+    fn a_route_request_goes_to_its_path_and_names_it_without_the_base() {
+        let request = Request::to(&crate::routes::account::MEMBER_DELETE, [&7]);
+        assert_eq!(request.method(), Method::Delete);
+        assert_eq!(request.target(), "/accounts/members/7/");
+        assert_eq!(
+            client(Selection::Own).url(&request).unwrap(),
+            "https://api.hippius.com/api/accounts/members/7/"
+        );
+        assert!(under_api_base("/api/x/"));
+        assert!(!under_api_base("/apix/") && !under_api_base("/x/api/"));
     }
 
     #[test]

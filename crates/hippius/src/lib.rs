@@ -34,6 +34,7 @@ mod private_object;
 mod project;
 mod redact;
 mod regular;
+pub mod routes;
 mod secret;
 mod selector;
 mod source;
@@ -41,7 +42,7 @@ mod time;
 mod url;
 mod wallet;
 
-pub use crate::account::{PROVISIONING_ROUTES, RouteFlag, SECRET_ROUTES, same_route};
+pub use crate::account::{PROVISIONING_ROUTES, SECRET_ROUTES, same_route};
 pub use crate::app_secrets::{AppSecrets, is_secret_name};
 pub use crate::aws::{AccessKeyId, AwsFiles, AwsProfile, SecretKey, configure};
 pub use crate::client::{Client, Request, Response, follow, is_default_origin};
@@ -64,6 +65,7 @@ pub use crate::redact::{
     redactions, without_field, without_fields,
 };
 pub use crate::regular::{OpenRegularError, open_regular};
+pub use crate::routes::RouteFlag;
 pub use crate::secret::SecretValue;
 pub use crate::selector::{BillingId, DEFAULT, ProjectId, Selection};
 pub use crate::source::{Given, Source};
