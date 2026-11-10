@@ -288,8 +288,13 @@ fn a_login_points_at_auth_status_with_the_profile_and_origin_it_was_given() {
         login(&home, &[("HIPPIUS_BILLING", "nope")], &["--project", "x"]),
         note("hipc auth status")
     );
-    // With `HIPPIUS_TOKEN` set, `hipc auth status` checks that token, not the stored one.
-    assert_eq!(login(&home, &[("HIPPIUS_TOKEN", TOKEN)], &[]), "");
+    // With `HIPPIUS_TOKEN` set, `hipc auth status` checks that token, not the stored one, so
+    // no command is named, and the login warns that the variable still wins.
+    assert_eq!(
+        login(&home, &[("HIPPIUS_TOKEN", TOKEN)], &[]),
+        "warning: `HIPPIUS_TOKEN` is set, so later commands send it, not the token just stored; \
+         unset it to act as the stored token's owner\n"
+    );
     // An origin a shell would glob gets no command.
     assert_eq!(login(&home, &[], &["--api-url", "http://[::1]:9"]), "");
     // Nor does a profile the file names with a space.

@@ -354,7 +354,7 @@ impl Input<'_> {
     }
 
     /// [`Input::read_secret`] of stdin, for a secret that must not outlive its use, such as
-    /// an access key phrase piped in.
+    /// a hotkey phrase piped in.
     pub(crate) fn read_cleared_stdin(&self) -> Result<Zeroizing<String>> {
         debug_assert_eq!(self.path, Path::new("-"), "only stdin");
         self.read_secret()

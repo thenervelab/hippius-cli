@@ -14,7 +14,7 @@ curl -q --proto '=https' --tlsv1.2 -fsSL https://github.com/thenervelab/hippius-
 
 - The Homebrew formula replaces the old IPFS-era `hipc`, so `brew upgrade` moves a machine onto this one.
 - The script installs to `~/.local/bin` (or `$HIPC_INSTALL_DIR`) with no root, checks `SHA256SUMS`, and checks the signature when `cosign` is on `PATH` (`HIPC_INSTALL_REQUIRE_SIGNATURE=1` makes that required). End the pipe with `sh -s -- 0.15.0` to pin a version.
-- `hipc` is not on PyPI yet; once it is published there, `pip install hippius-cli` will install the same `hipc` binary. The `hippius` package on PyPI is the Python SDK, a different project, and the PyPI project `hipc` is unrelated to Hippius.
+- On PyPI the package is `hippius` and the command it installs is `hipc`, with wheels for macOS and Linux: `pip install hippius`, `uv tool install hippius`, or `pipx install hippius` installs the same `hipc` command. The PyPI project `hipc` is unrelated to Hippius.
 - From source: `cargo install --locked --git https://github.com/thenervelab/hippius-cli hippius-cli`.
 - To uninstall, remove the binary; remove `~/.hippius` too to forget the token.
 
@@ -41,7 +41,7 @@ Expect `Verified OK` and `: OK` (`sha256sum -c -` works on Linux too). Anything 
 
 ## Log in
 
-Sign in at https://console.hippius.com with Google, GitHub, or Apple and copy your API token from [Settings](https://console.hippius.com/dashboard/settings). If you sign in with a 12-word access key, Settings shows no token: run `hipc auth login --access-key` instead, and type the 12 words at its prompt, which does not show them; `hipc` stores only the token the sign-in answers. Then:
+Sign in at https://console.hippius.com with Google, GitHub, or Apple and create an API token in [Settings](https://console.hippius.com/dashboard/settings). If you sign in with a 12-word access key, get your token from the access-key sign-in described at https://docs.hippius.com/use/wallet-login. `hipc` signs in with that token only; it never asks for your 12 words. Then:
 
 ```sh
 hipc auth login                     # paste the token at the prompt; it is not shown
@@ -51,8 +51,7 @@ hipc auth status
 - The token comes from the prompt, stdin, or a file, never the command line. The prompt appears only at a terminal; a script or an agent passes `--token-file <path>`, or `--token-file -` for stdin. On macOS, `pbpaste | hipc auth login --token-file -` works too.
 - It is stored in `~/.hippius/config.toml` (mode `0600`) and sent only to the API it was stored for. `hipc auth status` shows its last four characters, never the token.
 - For one run or a pipeline, set `HIPPIUS_TOKEN` instead; it is stored nowhere, and it is sent only to `https://api.hippius.com` unless `HIPPIUS_TOKEN_ORIGIN` names another origin.
-- Words the API has not seen open a new, empty account, and so does one mistyped word. So when the sign-in says the account is new, `hipc auth login --access-key` stores nothing and exits 2: check the words and run it again. By then the server has already made the empty account, and a login with the same words now finds it and logs in. To make a new account on purpose, add `--new-account`.
-- For CI with an access-key account, sign in once on a machine you trust and store only the token as the runner's `HIPPIUS_TOKEN` secret. Never put the 12 words on a runner: they control the whole account.
+- For CI, store only the token, as the runner's `HIPPIUS_TOKEN` secret. Never put a 12-word access key on a runner: it controls the whole account.
 
 ## First commands
 

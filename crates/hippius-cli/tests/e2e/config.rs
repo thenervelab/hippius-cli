@@ -339,15 +339,13 @@ fn a_profile_the_file_does_not_have_is_named_when_no_token_is_found() {
             format!("no API token is configured for `{}`: {found}", no_server())
         );
         let hint = error["hint"].as_str().unwrap();
-        let asked = format!("ask the user to run {login} in their own terminal");
-        for part in [
-            asked.as_str(),
-            "https://console.hippius.com/dashboard/settings",
-            "access-key account",
-            "--access-key`",
-        ] {
-            assert!(hint.contains(part), "{part} missing from {hint}");
-        }
+        assert_eq!(
+            hint,
+            format!(
+                "ask the user to run {login} in their own terminal, with a token created at \
+                 `https://console.hippius.com/dashboard/settings`"
+            )
+        );
     }
 }
 

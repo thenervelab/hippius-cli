@@ -126,9 +126,8 @@ struct Spec {
     /// The command returns one page and accepts `--page-token` and `--all`, or, for
     /// `hipc api`, follows pages with `--all`.
     pagination: bool,
-    /// When the command refuses with `usage`, as the end of a sentence that starts "it
-    /// refuses when": whatever the flags, or, for `auth login`, unless the flag it names is
-    /// passed.
+    /// When the command refuses with `usage` whatever the flags, as the end of a sentence that
+    /// starts "it refuses when".
     refused_when: Option<&'static str>,
     /// The other exit-2 refusals the command makes unless a flag of its own is passed.
     guards: &'static [Guard],
@@ -366,10 +365,6 @@ fn spec(path: &[&str]) -> Option<Spec> {
             confirmation: Confirmation::When(
                 "the API origin is not `https://api.hippius.com`, or the profile stores a \
                  different token",
-            ),
-            refused_when: Some(
-                "an access-key login's verify answers `is_new`, a new, empty account the server \
-                 has already opened (`side_effects` `partial`), and `--new-account` was not passed",
             ),
             ..UNGATED_WRITE
         }),
@@ -1986,7 +1981,7 @@ mod tests {
     }
 
     /// Only `hipc api` and the two support writes, which refuse a text that holds a token, have
-    /// a refusal whatever the flags, and `auth login` one that `--new-account` lifts; `hipc api`'s guards are the flags of every
+    /// a refusal whatever the flags; `hipc api`'s guards are the flags of every
     /// `RouteFlag`, each with the code it refuses with, and the schema prints them as
     /// `guards`, with no separate `route_flags`.
     #[test]
@@ -1998,7 +1993,7 @@ mod tests {
                 && ["create", "reply"].contains(&path[2].as_str());
             assert_eq!(
                 row(&path).refused_when.is_some(),
-                path == ["api"] || path == ["auth", "login"] || support_write,
+                path == ["api"] || support_write,
                 "{path:?}"
             );
         }

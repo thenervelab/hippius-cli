@@ -24,23 +24,21 @@ pub(crate) use watchdog::{finish, finished};
 /// The token every test uses. Every run asserts it never appears in any output.
 pub(crate) const TOKEN: &str = "tok_secret_0123456789abcdefghijklmnopqrstuv";
 
-/// The access key phrases the tests log in with. No run prints one, or any run of four of its
-/// words in order, whatever the outcome.
-pub(crate) const PHRASES: [&str; 2] = [
+/// The seed phrases the tests use: a gamma hotkey's words, and the access key a support ticket
+/// or a command line must not carry. No run prints one, or sends one in a request, or any run
+/// of four of its words in order, whatever the outcome.
+pub(crate) const SEED_PHRASES: [&str; 2] = [
     "bottom drive obey lake curtain smoke basket hold race lonely fit walk",
     "test test test test test test test test test test test junk",
 ];
 
-/// Fails when `text`, what `place` holds, has four words of a [`PHRASES`] phrase in order.
+/// Fails when `text`, what `place` holds, has four words of a [`SEED_PHRASES`] phrase in order.
 fn assert_no_phrase(text: &str, place: &str) {
-    for phrase in PHRASES {
+    for phrase in SEED_PHRASES {
         let words: Vec<&str> = phrase.split(' ').collect();
         for run in words.windows(4) {
             let run = run.join(" ");
-            assert!(
-                !text.contains(&run),
-                "an access key phrase is in {place}: {text}"
-            );
+            assert!(!text.contains(&run), "a seed phrase is in {place}: {text}");
         }
     }
 }
@@ -923,10 +921,6 @@ fn flag_value(args: &[&str], flag: &str) -> Option<String> {
     value
 }
 
-/// The two requests of an access key login.
-const LOGIN_CHALLENGE: &str = "/api/auth/mnemonic/";
-const LOGIN_VERIFY: &str = "/api/auth/verify/";
-
 /// What each request of one run must carry: the run's settings and the client the library
 /// builds from them, or `None` when they do not resolve and `hipc` refuses before sending.
 struct Expected(Option<Resolved>);
@@ -946,19 +940,6 @@ impl Expected {
     fn check(&self, server_url: &str, request: &Recorded) {
         let what = format!("{} {}", request.method, request.target);
         request.assert_fixed_headers();
-        // An access key login starts a session, so whatever the run's settings, it goes out
-        // with no token and no selection header.
-        if [LOGIN_CHALLENGE, LOGIN_VERIFY].contains(&request.target.as_str()) {
-            for name in [
-                "authorization",
-                "x-hippius-account",
-                "x-hippius-project",
-                "x-hippius-billing",
-            ] {
-                assert_eq!(request.header(name), None, "{what} carries `{name}`");
-            }
-            return;
-        }
         let Some(resolved) = &self.0 else {
             panic!("{what} was sent, though the run's settings do not resolve");
         };

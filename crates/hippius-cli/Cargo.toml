@@ -20,7 +20,7 @@ hippius.workspace = true
 # with echo off (termios). rustix is already in the tree, through the library.
 rustix = { workspace = true, features = ["termios"] }
 serde_json.workspace = true
-# The token typed at that prompt, and an access key phrase, are cleared from memory. Already in
+# The token typed at that prompt, and a hotkey phrase, are cleared from memory. Already in
 # the tree, through the library.
 zeroize.workspace = true
 

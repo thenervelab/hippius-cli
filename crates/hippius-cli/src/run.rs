@@ -29,7 +29,7 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         Ok(parsed) => parsed,
         Err(error) => {
             let mode = terminal.resolve_from_args(args);
-            // An access key typed on the command line is refused without the words: clap's
+            // A seed phrase typed on the command line is refused without the words: clap's
             // message would quote them.
             let line = args
                 .iter()
@@ -122,7 +122,7 @@ fn holds_a_known_token(line: &str) -> bool {
 }
 
 /// The refusal of a command line that holds an API token ([`holds_a_known_token`]): `usage`,
-/// with nothing of the command line in it, as [`hippius::phrase_in_argv`] is for an access key.
+/// with nothing of the command line in it, as [`hippius::phrase_in_argv`] is for a seed phrase.
 fn token_in_argv() -> hippius::Error {
     hippius::Error::usage(
         "the command line holds an API token, so it is not repeated here; treat the token as \
@@ -225,18 +225,9 @@ fn execute(ctx: &Context<'_>, command: &Command) -> Result<Printed> {
             clap_complete::generate(*shell, &mut Cli::command(), "hipc", &mut script);
             Ok(Printed::Raw(script))
         }
-        Command::Auth(Auth::Login {
-            token_file,
-            access_key_file,
-            access_key,
-            new_account,
-        }) => commands::auth::login(
-            ctx,
-            token_file.as_deref(),
-            access_key_file.as_deref(),
-            *access_key,
-            *new_account,
-        ),
+        Command::Auth(Auth::Login { token_file }) => {
+            commands::auth::login(ctx, token_file.as_deref())
+        }
         Command::Auth(Auth::Status) => commands::auth::status(ctx),
         Command::Auth(Auth::Logout) => commands::auth::logout(ctx),
         Command::Account(Account::List) => commands::account::list(ctx),

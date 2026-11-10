@@ -8,7 +8,8 @@
 //! The custodial buy is `POST /api/billing/native/buy/`: the API signs
 //! `Marketplace.buy_credits` from the account's own Hippius address. An account whose key the
 //! API does not hold signs its own buys (`custodial` false in the quote, or a 409
-//! `self_sign`), which this version refuses.
+//! `self_sign`), which only the console makes: `hipc` never signs with an account's own key,
+//! so it refuses them and names the console.
 
 use std::time::{Duration, Instant, SystemTime};
 
@@ -279,17 +280,15 @@ pub(crate) fn min_credits(credits: u128) -> u128 {
 fn self_sign(error: Error) -> Error {
     error
         .with_message(
-            "the account signs its own hAlpha buys (`self_sign`), which `hipc` cannot sign yet; a \
-             card or Bitcoin top-up, or one in the console, works",
+            "the account signs its own hAlpha buys (`self_sign`), and those are made in the \
+             console; a card or Bitcoin top-up works with `hipc` too",
         )
         .with_hint(SELF_SIGN_HINT)
 }
 
-/// [`self_sign`]'s hint: a top-up that works for such an account today, one action (tenet 15);
-/// the message names the others. No `hipc` release signs `Marketplace.buy_credits`, so
-/// neither names one.
-const SELF_SIGN_HINT: &str = "run `hipc billing top-up --amount <USD> --method card --yes` \
-     and pay at its `checkout_url`";
+/// [`self_sign`]'s hint: the one place such a buy is made, one action (tenet 15); the message
+/// names the top-ups `hipc` makes for such an account.
+const SELF_SIGN_HINT: &str = "top up with hAlpha in the console at `https://console.hippius.com`";
 
 /// The buy, with the `min_credits` it sends and its key.
 fn buy_request(alpha: Planck, min_credits: &str, key: &str) -> Request {

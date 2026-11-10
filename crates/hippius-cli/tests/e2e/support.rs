@@ -476,13 +476,13 @@ fn a_ticket_text_with_a_split_token_or_an_access_key_is_refused() {
         );
         assert!(!error.to_string().contains("6789"), "{error}");
     }
-    let words: Vec<&str> = crate::common::PHRASES[0].split_whitespace().collect();
+    let words: Vec<&str> = crate::common::SEED_PHRASES[0].split_whitespace().collect();
     let mut numbered = String::new();
     for (i, word) in words.iter().enumerate() {
         numbered.push_str(&format!("{}. {word}\n", i + 1));
     }
     for text in [
-        format!("my key is {}", crate::common::PHRASES[0]),
+        format!("my key is {}", crate::common::SEED_PHRASES[0]),
         numbered,
         words.join(", "),
         words.join("\n").to_uppercase(),

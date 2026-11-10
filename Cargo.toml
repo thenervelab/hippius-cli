@@ -48,12 +48,12 @@ ed25519-dalek = { version = "2.2", default-features = false, features = ["zeroiz
 # does not clear its 32 bytes when dropped (only the scalar), so hipc keeps the bytes itself
 # (`box_key` in crates/hippius/src/kubernetes.rs).
 crypto_box = { version = "0.9.1", default-features = false, features = ["salsa20", "seal", "rand_core"] }
-# The drop message holds the hex SHA-256 of the sealed kubeconfig, and the SHA-512 of the
-# access key's HMAC and PBKDF2. 0.11, on digest 0.11 with sha3, hmac, blake2 and pbkdf2, which
-# move together. ed25519-dalek 2, crypto_box 0.9 and schnorrkel 0.11 still build sha2 0.10,
-# blake2 0.10, keccak 0.1 and digest 0.10, so the tree holds both digest families until they
-# move. zeroize: the hash state, which holds the access key's seed and chain codes mid-HMAC,
-# is cleared when dropped.
+# The drop message holds the hex SHA-256 of the sealed kubeconfig, and the SHA-512 of a
+# hotkey's PBKDF2. 0.11, on digest 0.11 with blake2 and pbkdf2, which move together.
+# ed25519-dalek 2, crypto_box 0.9 and schnorrkel 0.11 still build sha2 0.10, blake2 0.10 and
+# digest 0.10, so the tree holds both digest families until they move. zeroize: the hash
+# state, which holds a hotkey's entropy mid-HMAC, is cleared when dropped; it turns on
+# digest's zeroize, which clears the HMAC state pbkdf2 keeps too.
 sha2 = { version = "0.11.0", default-features = false, features = ["zeroize"] }
 # The request id of a signed node operation is a random v4 UUID. Already in the tree, under
 # rustls.
@@ -64,16 +64,17 @@ getrandom = { version = "0.2.17", default-features = false, features = ["std"] }
 base64ct = { version = "1.8", default-features = false, features = ["alloc"] }
 # Clears the key file's bytes and the decoded secret keys after use. Already in the tree.
 zeroize = { version = "1.9", default-features = false, features = ["std"] }
-# The access key (crates/hippius/src/wallet.rs): a BIP-39 phrase whose two keys log in to an
-# account that has no other credential. Each crate below was published more than two weeks
-# before it was taken, and the module's tests check each against published vectors.
+# The gamma hotkey (crates/hippius/src/wallet.rs): the BIP-39 phrase of a Bittensor hotkey,
+# whose sr25519 key signs the challenge that links it. Each crate below was published more
+# than two weeks before it was taken, and the module's tests check each against published
+# vectors.
 # std: the English word list and the NFKD check. zeroize: a parsed phrase clears its words
 # when dropped. Pinned exactly, as a new major whose phrases must keep deriving the same keys.
 bip39 = { version = "=3.0.0", default-features = false, features = ["std", "zeroize"] }
 # NFKD-normalizes a phrase that is not ASCII into a buffer hipc clears, before bip39 parses it.
 # Already in the tree, through bip39.
 unicode-normalization = { version = "0.1.24", default-features = false }
-# The sr25519 key of the Substrate address, the scheme Substrate signs with. It shares
+# The sr25519 key of the hotkey, the scheme Substrate and Bittensor sign with. It shares
 # curve25519-dalek 4 with ed25519-dalek, so the curve is built once. getrandom: a signature
 # takes fresh randomness from the system.
 schnorrkel = { version = "0.11.5", default-features = false, features = ["std", "getrandom"] }
@@ -81,17 +82,6 @@ schnorrkel = { version = "0.11.5", default-features = false, features = ["std", 
 # `from_phrase` makes it, into a buffer hipc clears (substrate-bip39 returns it in a plain
 # array). hmac: the HMAC form. 0.13 shares digest 0.11 with sha2.
 pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }
-# The secp256k1 key of the Ethereum address and its EIP-191 signature: Bitcoin Core's
-# libsecp256k1, constant-time and the most reviewed implementation of the curve. cc builds its
-# C, as it builds ring's. The pure-Rust k256 was not taken: every k256 release needs either a
-# crypto-bigint that RUSTSEC-2026-0387 covers or one published less than two weeks ago.
-# recovery: the signature carries the `v` from which Ethereum recovers the address.
-secp256k1 = { version = "0.33.1", default-features = false, features = ["std", "recovery"] }
-# Keccak-256, the hash of an Ethereum address and of an EIP-191 message.
-sha3 = { version = "0.12.0", default-features = false }
-# HMAC-SHA512, each BIP-32 step from the seed to the Ethereum key. zeroize: the keyed state
-# and the tag are cleared when dropped.
-hmac = { version = "0.13.0", default-features = false, features = ["zeroize"] }
 # BLAKE2b-512, the checksum of an SS58 address. crypto_box builds its own 0.10.
 blake2 = { version = "0.11.0", default-features = false }
 

@@ -9,11 +9,11 @@
 //!
 //! The hotkey's words are read from a file or stdin, never from argv, and only its sr25519
 //! key signs, and only a message that is a link challenge of that hotkey
-//! ([`hippius::AccessKey::sign_gamma_link`]).
+//! ([`hippius::Hotkey::sign_gamma_link`]).
 
 use std::path::Path;
 
-use hippius::{AccessKey, Error, Method, Request, Result, SideEffects, Source, phrase};
+use hippius::{Error, Hotkey, Method, Request, Result, SideEffects, Source, phrase};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
@@ -128,9 +128,9 @@ fn hotkey_words(path: &Path) -> Result<(Zeroizing<String>, Source)> {
 /// of the challenge's message, and the link. No error quotes the words.
 fn link(ctx: &Context<'_>, path: &Path) -> Result<Printed> {
     let (words, source) = hotkey_words(path)?;
-    let key = AccessKey::from_hotkey_phrase(&words, &source)?;
+    let key = Hotkey::from_phrase(&words, &source)?;
     drop(words);
-    let hotkey = key.substrate_address().to_owned();
+    let hotkey = key.ss58_address().to_owned();
     let hotkey = hotkey.as_str();
     let client = ctx.load_authed_client()?;
     let challenge = Request::new(Method::Post, format!("{GAMMA}hotkeys/challenge/"))

@@ -2152,7 +2152,7 @@ fn a_support_write_with_an_access_key_or_a_split_token_is_refused() {
     let wrapped = format!("{}\n{}", &stored[..8], &stored[8..]);
     for (body, what, it) in [
         (
-            json!({ "body": crate::common::PHRASES[0] }).to_string(),
+            json!({ "body": crate::common::SEED_PHRASES[0] }).to_string(),
             "what looks like an access key",
             "the 12 words",
         ),

@@ -21,7 +21,7 @@ use ureq::unversioned::transport::{
 };
 
 use crate::account::{self, RouteFlag, RouteRule, Selection};
-use crate::config::{Credential, Settings, Token};
+use crate::config::{Credential, Settings};
 use crate::error::{Code, Error, Result, SideEffects};
 use crate::phrase::quote;
 use crate::project::{self, BillingId, ProjectId};
@@ -48,9 +48,8 @@ const MAX_QUOTED_CHARS: usize = 512;
 
 /// The hint when no token is configured for `profile`: one imperative (tenet 15). An agent
 /// cannot sign in, so it names who can and how: the user, at their own terminal, where
-/// `hipc auth login` asks without echo, for the same profile, with a token for a Google,
-/// GitHub, or Apple account, since the console's settings page shows one only after such a
-/// sign-in, or with `--access-key` for an access-key account.
+/// `hipc auth login` asks without echo, for the same profile, with a token created in the
+/// console's settings.
 fn no_token_hint(profile: &str) -> String {
     let login = if profile == crate::config::DEFAULT_PROFILE {
         "hipc auth login".to_owned()
@@ -58,10 +57,9 @@ fn no_token_hint(profile: &str) -> String {
         format!("hipc auth login --profile {profile}")
     };
     format!(
-        "ask the user to run {} in their own terminal, with a token from \
-         `https://console.hippius.com/dashboard/settings`, or {} for an access-key account",
-        quote(&login),
-        quote(format!("{login} --access-key"))
+        "ask the user to run {} in their own terminal, with a token created at \
+         `https://console.hippius.com/dashboard/settings`",
+        quote(&login)
     )
 }
 
@@ -784,41 +782,6 @@ impl Client {
             project: settings.project.clone(),
             billing: settings.billing.clone(),
         })
-    }
-
-    /// A client for `target` that sends no token and no account, project, or billing header:
-    /// for the login routes, which start a session rather than act in one. A stored token or
-    /// selection is not read, so a broken one cannot stop the login that replaces it.
-    ///
-    /// # Errors
-    ///
-    /// `usage` when `target` is not a valid origin.
-    pub fn signed_out(target: &Given, timeout: Duration) -> Result<Self> {
-        let settings = Settings {
-            profile: String::new(),
-            api_url: target.value.clone(),
-            api_url_source: target.source.clone(),
-            credential: Credential::None {
-                profile: String::new(),
-                path: std::path::PathBuf::new(),
-            },
-            account: Selection::Own,
-            project: None,
-            billing: None,
-        };
-        Self::new(&settings, timeout)
-    }
-
-    /// [`Client::signed_out`] with `token`, for the read that checks a token a login was
-    /// answered with before it is stored. It sends no selection header either.
-    ///
-    /// # Errors
-    ///
-    /// `usage` when `target` is not a valid origin.
-    pub fn signed_in(target: &Given, token: &Token, timeout: Duration) -> Result<Self> {
-        let mut client = Self::signed_out(target, timeout)?;
-        client.credential = Credential::Stored(token.clone());
-        Ok(client.requiring_token())
     }
 
     /// This client for routes that need a token: [`Client::send`] refuses without one, so
@@ -2560,7 +2523,12 @@ mod tests {
         let hint = error.hint().unwrap();
         assert_eq!(hint, no_token_hint("default"));
         assert!(hint.starts_with("ask the user to run `hipc auth login` in their own terminal"));
-        assert!(hint.ends_with("or `hipc auth login --access-key` for an access-key account"));
+        assert!(
+            hint.ends_with(
+                "with a token created at `https://console.hippius.com/dashboard/settings`"
+            )
+        );
+        assert!(!hint.contains("access"), "{hint}");
         // Another profile is named, so the login stores the token where the run looks.
         assert!(
             no_token_hint("work")

@@ -47,7 +47,6 @@ skip = [
   { crate = "sha2@0.10", reason = "ed25519-dalek 2 and schnorrkel 0.11" },
   { crate = "blake2@0.10", reason = "crypto_box 0.9" },
   { crate = "cpufeatures@0.2", reason = "curve25519-dalek 4, sha2 0.10, poly1305 0.8 and keccak 0.1" },
-  { crate = "keccak@0.1", reason = "merlin 3, under schnorrkel 0.11; sha3 0.12 brings keccak 0.2" },
   # Proc-macro crates, built for the host only: clap, serde and thiserror derive with syn 3,
   # the dalek, zerocopy and zeroize derives with syn 2.
   { crate = "syn@2", reason = "curve25519-dalek-derive, zerocopy-derive and zeroize_derive" },
@@ -77,9 +76,8 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 crate = "webpki-roots"
 allow = ["CDLA-Permissive-2.0"]
 
-# CC0-1.0, a public-domain dedication, for the rust-bitcoin crates only: libsecp256k1's
-# binding, which signs the Ethereum half of an access-key login, the BIP-39 phrase parser, and
-# their helpers.
+# CC0-1.0, a public-domain dedication, for the rust-bitcoin crates only: the BIP-39 phrase
+# parser that reads a gamma hotkey, and its helpers.
 [[licenses.exceptions]]
 crate = "bip39"
 allow = ["CC0-1.0"]
@@ -90,12 +88,4 @@ allow = ["CC0-1.0"]
 
 [[licenses.exceptions]]
 crate = "hex-conservative"
-allow = ["CC0-1.0"]
-
-[[licenses.exceptions]]
-crate = "secp256k1"
-allow = ["CC0-1.0"]
-
-[[licenses.exceptions]]
-crate = "secp256k1-sys"
 allow = ["CC0-1.0"]

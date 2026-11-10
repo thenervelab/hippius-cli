@@ -265,20 +265,6 @@ impl<'a> Context<'a> {
         Ok((settings, client))
     }
 
-    /// A client for `target` that sends no token and no selection header, for a login.
-    pub(crate) fn signed_out_client(&self, target: &Given) -> Result<Client> {
-        Client::signed_out(target, Duration::from_secs(self.global.request_timeout))
-    }
-
-    /// [`Context::signed_out_client`] that sends `token`, to check a token a login answered.
-    pub(crate) fn signed_in_client(&self, target: &Given, token: &Token) -> Result<Client> {
-        Client::signed_in(
-            target,
-            token,
-            Duration::from_secs(self.global.request_timeout),
-        )
-    }
-
     /// A client for the settings the config file and the overrides give.
     pub(crate) fn client(&self, config: &ConfigFile) -> Result<Client> {
         self.settings_and_client(config).map(|(_, client)| client)

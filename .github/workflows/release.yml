@@ -372,9 +372,9 @@ jobs:
           git push --quiet origin HEAD
 
   pypi-version:
-    # The wheel is published as `hippius-cli` (the PyPI name `hippius` is the Python SDK, a
-    # separate project). Publishing starts when the variable PYPI_PUBLISH of the repository
-    # that runs the release is `true`, set once PyPI trusts this workflow for `hippius-cli`;
+    # The wheel is published as `hippius`, and installs the command `hipc`. Publishing starts
+    # when the variable PYPI_PUBLISH of the repository that runs the release is `true`, set
+    # once PyPI trusts this workflow for `hippius`;
     # unset or `false`, this job says so and passes, and the wheel and upload jobs are
     # skipped, so a release without the trusted publisher does not end in a failed upload.
     # Any other value fails the job, so a misspelt `True` is not a silent skip.
@@ -486,7 +486,7 @@ jobs:
 
   pypi-publish:
     # Trusted publishing: PyPI accepts this workflow's OIDC token in the `pypi` environment
-    # for the project `hippius-cli`, so no PyPI token is stored. A job of its own, so id-token
+    # for the project `hippius`, so no PyPI token is stored. A job of its own, so id-token
     # is granted only next to the upload, and only after the GitHub release exists. PyPI
     # trusts the repository, workflow file and environment, not the ref, so the environment's
     # deployment policy (`v*` tags only) is what stops a branch that edits this file from
@@ -496,7 +496,7 @@ jobs:
     timeout-minutes: 15
     environment:
       name: pypi
-      url: https://pypi.org/project/hippius-cli/
+      url: https://pypi.org/project/hippius/
     permissions:
       id-token: write  # the OIDC token PyPI trusts
     steps:
