@@ -44,7 +44,7 @@ pub use crate::config::{
     ConfigFile, HubMarker, Overrides, Settings, Token, config_path, take_split_link,
 };
 pub use crate::digest::sha256_hex;
-pub use crate::dns::{DnsCredentials, DnsProvider};
+pub use crate::dns::{DnsCredentials, DnsProvider, redactions};
 pub use crate::error::{CHECK_FIRST_HINT, Code, Error, ISSUES_URL, Result, SideEffects};
 pub use crate::json::{
     CursorPage, Page, cursor_page, envelope, envelope_beside, insert_unique, number_holds, page,

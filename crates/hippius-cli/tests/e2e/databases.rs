@@ -1734,6 +1734,41 @@ fn credentials_dir_redacts_a_secret_repeated_outside_credentials() {
     assert_eq!(doc["credentials"]["username"], "app");
 }
 
+/// A withheld value repeated in another spelling, percent-encoded in a URL or escaped in a
+/// JSON string, is redacted too; and a short withheld value does not rewrite the file paths
+/// `hipc` names, nor a marker.
+#[test]
+fn credentials_dir_redacts_every_spelling_and_keeps_its_own_paths() {
+    let mut answer = with_credentials(database("provisioning"));
+    answer["credentials"]["password"] = json!("p@ss/w\"rd-Q81");
+    answer["credentials"]["sslmode"] = json!("creds");
+    answer["connection"]["connection_string"] =
+        json!("postgresql://app:p%40ss%2Fw%22rd-Q81@db-7.example.net/app");
+    answer["note"] = json!(r#"quoted "p@ss/w\"rd-Q81" here"#);
+    let server = Server::start(vec![route(
+        "POST",
+        "/api/databases/",
+        Reply::json(202, &answer.to_string()),
+    )]);
+    let home = Home::new();
+    let dir = empty_dir(&home, "creds");
+    let run = create_into(&home, &server, &dir, &[]);
+    let doc = run.ok();
+    assert!(!run.stdout().contains("Q81"), "{}", run.stdout());
+    assert_eq!(
+        doc["connection"]["connection_string"],
+        "postgresql://app:<redacted>@db-7.example.net/app"
+    );
+    assert_eq!(doc["note"], "quoted \"<redacted>\" here");
+    let env_file = doc["credentials"]["env_file"].as_str().expect("a path");
+    assert_eq!(
+        std::path::Path::new(env_file).file_name(),
+        Some(".env".as_ref()),
+        "{env_file}"
+    );
+    assert!(!env_file.contains("<redacted>"), "{env_file}");
+}
+
 /// A directory whose path `.env` cannot hold single-quoted is usage before anything is sent.
 #[test]
 fn a_credentials_dir_path_env_cannot_quote_is_usage_with_zero_requests() {

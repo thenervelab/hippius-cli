@@ -168,14 +168,22 @@ impl DnsCredentials {
     /// otherwise mangle every answer that happens to contain its characters. They are cleared
     /// when dropped, as `hippius::AppSecrets::redactions` are.
     pub fn redactions(&self) -> Zeroizing<Vec<String>> {
-        Zeroizing::new(longest_first(
+        redactions(
             self.fields
                 .iter()
                 .filter(|(name, _)| SECRET_FIELDS.contains(name))
-                .flat_map(|(_, text)| secret_spellings(text))
-                .collect(),
-        ))
+                .map(|(_, text)| text.as_str()),
+        )
     }
+}
+
+/// The texts to redact for `secrets`, longest first, for [`crate::redact_all`]: each in every
+/// spelling an answer or an error may repeat it in, such as percent-encoded in a URL or
+/// escaped in a JSON string. An empty secret redacts nothing. They are cleared when dropped.
+pub fn redactions<'a>(secrets: impl IntoIterator<Item = &'a str>) -> Zeroizing<Vec<String>> {
+    Zeroizing::new(longest_first(
+        secrets.into_iter().flat_map(secret_spellings).collect(),
+    ))
 }
 
 /// Every spelling of `text` an answer or an error may repeat it in, for a redaction: the

@@ -729,6 +729,31 @@ fn namespace_get_strips_a_nested_robot_secret_too() {
     );
 }
 
+/// Both namespace reads drop every spelling of a robot secret, at any depth, as the robot read
+/// does, and print nothing of an answer that holds a `docker login` command.
+#[test]
+fn namespace_reads_strip_every_secret_spelling() {
+    let answer = concat!(
+        r#"{"namespace":"acme","Password":"s3cr3t-a","robot":{"secret":"s3cr3t-b","#,
+        r#""TOKEN":"s3cr3t-c","docker_password":"s3cr3t-d","docker_login_cmd":"x"}}"#
+    );
+    for (path, words) in [
+        ("/api/registry/me/", "get"),
+        ("/api/registry/provision/status/", "status"),
+    ] {
+        let server = Server::start(vec![route("GET", path, Reply::json(200, answer))]);
+        let run = Hipc::against(&Home::new(), &server).run(&["hub", "namespace", words]);
+        assert!(!run.stdout().contains("s3cr3t"), "{}", run.stdout());
+        assert_eq!(run.ok(), json!({"namespace": "acme", "robot": {}}));
+        let login = r#"{"namespace":"acme","note":"docker login -u robot -p s3cr3t-e"}"#;
+        let server = Server::start(vec![route("GET", path, Reply::json(200, login))]);
+        let run = Hipc::against(&Home::new(), &server).run(&["hub", "namespace", words]);
+        assert_eq!(run.stdout(), "");
+        assert!(!run.stderr().contains("s3cr3t"), "{}", run.stderr());
+        run.fails(1, "internal");
+    }
+}
+
 /// An account with no Hub namespace gets 403 `You must call /api/registry/provision/
 /// first.`, and the hint names the command that creates one. Another
 /// 403 keeps no hint.
@@ -918,6 +943,32 @@ fn namespace_create_refuses_an_answer_with_another_login_command() {
             .unwrap()
             .contains("hub namespace robot rotate --reveal --yes"),
         "{error}"
+    );
+}
+
+/// A secret issued under another of its names is not followed by a note that none was.
+#[test]
+fn namespace_create_with_a_secret_under_another_name_notes_no_missing_secret() {
+    let server = Server::start(vec![route(
+        "POST",
+        "/api/registry/provision/",
+        Reply::json(201, r#"{"status":"active","Password":"s3cr3t"}"#),
+    )]);
+    let run = Hipc::against(&Home::new(), &server).run(&[
+        "--output",
+        "text",
+        "hub",
+        "namespace",
+        "create",
+        "acme",
+        "--reveal",
+        "--yes",
+    ]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert!(
+        !run.stderr().contains("no `robot_secret` was issued"),
+        "{}",
+        run.stderr()
     );
 }
 

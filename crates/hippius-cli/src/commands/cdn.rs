@@ -876,9 +876,11 @@ fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
     let provider = provider.provider();
     let credentials = DnsCredentials::load(credentials_file, "--credentials-file", provider)?;
     let path = format!("{}hostnames/{hostname}/dns-setup/", zone_path(zone_id));
-    let request = |credentials: Value| {
+    let body =
+        |credentials: Value| json!({ "provider": provider.code(), "credentials": credentials });
+    let request = |body: &Value| {
         Request::new(Method::Post, path.as_str())
-            .json(&json!({ "provider": provider.code(), "credentials": credentials }))
+            .json(body)
             .listed_by(format!("hipc cdn hostnames list {zone_id}"))
             .about(format!(
                 "write the DNS records of the custom hostname `{hostname}` at `{}`",
@@ -886,7 +888,7 @@ fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
             ))
     };
     let client = ctx.load_authed_client()?;
-    let draft = request(credentials.placeholder_body());
+    let draft = request(&body(credentials.placeholder_body()));
     let checked = match ctx.check_write(&client, &draft)? {
         Write::DryRun(doc) => return Ok(Printed::Document(doc)),
         Write::Checked(checked) => checked,
@@ -894,7 +896,12 @@ fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
     let consequence = "it adds or changes records in the domain's DNS zone at the provider";
     ctx.confirm_write(checked, &draft.action(), Some(consequence))?;
     let action = draft.action();
-    ctx.send(&client, &request(credentials.body()))
+    let mut sent = body(credentials.body());
+    let request = request(&sent);
+    // The body's copies of the credential are cleared once it is serialized, as an App Engine
+    // launch clears its secrets; the serialized bytes the request holds are not (tenet 8).
+    hippius::clear_strings(&mut sent);
+    ctx.send(&client, &request)
         .and_then(|response| response.document())
         .map(|done| Printed::Document(dns_setup_answer(done, provider.code())))
         .map_err(|error| dns_setup_error(error, &credentials, &action))

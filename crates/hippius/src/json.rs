@@ -348,11 +348,12 @@ pub fn redact_all<S: AsRef<str>>(text: String, secrets: &[S]) -> String {
 /// `<redacted>`, at any depth: for a secret the caller sent, such as an invite token, which an
 /// answer has no reason to repeat but must never print if it does (tenet 9). A number that is
 /// the secret, as an all-digit secret echoed unquoted would be, becomes the string
-/// `<redacted>`. Both are compared as digit strings: the number without its sign, its point,
-/// its exponent, and its leading and trailing zeros (`-12345.0` and `12345e0` are `12345`),
-/// and the secret without its leading and trailing zeros. A number whose digits only hold the
-/// secret's is redacted once the secret has `LONG_DIGITS` digits or more; below that it is
-/// left alone, so a short secret does not turn counts and ids into markers.
+/// `<redacted>`. Both are compared as decimal values: the number without its sign, with its
+/// exponent applied, and without leading zeros before its point or trailing zeros after it
+/// (`-12345.0` and `1.2345e4` are `12345`, and `10` stays `10`), and the secret without its
+/// leading zeros. A number whose digits only hold the secret's is redacted once the secret has
+/// `LONG_DIGITS` digits or more; below that it is left alone, so a short secret does not turn
+/// counts and ids into markers.
 ///
 /// # Panics
 ///
@@ -428,11 +429,64 @@ pub fn number_holds(text: &str, secret: &str) -> bool {
     if secret.is_empty() || !secret.bytes().all(|b| b.is_ascii_digit()) {
         return false;
     }
+    let secret = canonical_digits(secret);
     let mantissa = text.split(['e', 'E']).next().unwrap_or(text);
     let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
-    let digits = digits.trim_matches('0');
-    let secret = secret.trim_matches('0');
-    digits == secret || (secret.len() >= LONG_DIGITS && digits.contains(secret))
+    decimal(text).as_deref() == Some(secret)
+        || (secret.len() >= LONG_DIGITS && digits.contains(secret))
+}
+
+/// `digits` without leading zeros, or `0` when nothing else is left.
+fn canonical_digits(digits: &str) -> &str {
+    match digits.trim_start_matches('0') {
+        "" => "0",
+        trimmed => trimmed,
+    }
+}
+
+/// The most zeros an exponent may add to a number [`decimal`] writes out: a secret is far
+/// shorter, so a longer number cannot be one. Arbitrary, and bounds the allocation.
+const MAX_EXPONENT_ZEROS: usize = 1024;
+
+/// The JSON number `text` as a plain decimal, without its sign, with its exponent applied, and
+/// without leading zeros before the point or trailing zeros after it: `-1.50e2` is `150`,
+/// `0.0120` is `0.012`, and `0` is `0`. `None` for text that is not a JSON number, or one whose
+/// exponent would add more than [`MAX_EXPONENT_ZEROS`] zeros.
+fn decimal(text: &str) -> Option<String> {
+    let text = text.strip_prefix('-').unwrap_or(text);
+    let (mantissa, exponent) = match text.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (mantissa, exponent.parse::<i64>().ok()?),
+        None => (text, 0),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits = format!("{whole}{fraction}");
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    // Where the point falls in `digits`, once the exponent moves it.
+    let point = i64::try_from(whole.len()).ok()?.checked_add(exponent)?;
+    let len = i64::try_from(digits.len()).ok()?;
+    let (whole, fraction) = if point <= 0 {
+        let zeros = usize::try_from(-point).ok()?;
+        if zeros > MAX_EXPONENT_ZEROS {
+            return None;
+        }
+        (String::new(), format!("{}{digits}", "0".repeat(zeros)))
+    } else if point >= len {
+        let zeros = usize::try_from(point - len).ok()?;
+        if zeros > MAX_EXPONENT_ZEROS {
+            return None;
+        }
+        (format!("{digits}{}", "0".repeat(zeros)), String::new())
+    } else {
+        let at = usize::try_from(point).ok()?;
+        (digits[..at].to_owned(), digits[at..].to_owned())
+    };
+    let whole = canonical_digits(&whole);
+    Some(match fraction.trim_end_matches('0') {
+        "" => whole.to_owned(),
+        fraction => format!("{whole}.{fraction}"),
+    })
 }
 
 #[cfg(test)]
@@ -529,11 +583,18 @@ mod tests {
             "a number that is the secret is redacted"
         );
         let spelled: Value =
-            serde_json::from_str("[-12345.0, 12345e0, 0.0012345, 123456]").unwrap();
+            serde_json::from_str("[-12345.0, 12345e0, 1.2345e4, 0.0012345, 123456]").unwrap();
         assert_eq!(
             redact_value(spelled, "12345"),
-            json!(["<redacted>", "<redacted>", "<redacted>", 123_456]),
-            "a sign and a zero tail do not hide the secret; a short one inside a number is kept"
+            json!([
+                "<redacted>",
+                "<redacted>",
+                "<redacted>",
+                0.001_234_5,
+                123_456
+            ]),
+            "a sign, a zero tail, or an exponent do not hide the secret; another value that \
+             holds a short one is kept"
         );
         let long: Value = serde_json::from_str("[9867530912345, 1.86753091]").unwrap();
         assert_eq!(
@@ -545,6 +606,42 @@ mod tests {
             redact_value(json!(12_345_678), "abcdefgh"),
             json!(12_345_678)
         );
+    }
+
+    /// A number is the secret only when their values are equal: zeros that change the value
+    /// are kept, so a secret `1000` is not the count `1` or `10`.
+    #[test]
+    fn a_number_is_compared_with_a_secret_by_its_value() {
+        for (number, secret) in [
+            ("1000", "1000"),
+            ("1000.0", "1000"),
+            ("1e3", "1000"),
+            ("1E+3", "01000"),
+            ("100000e-2", "1000"),
+            ("-1000", "1000"),
+            ("0", "0"),
+            ("0.0", "00"),
+            ("0e5", "0"),
+        ] {
+            assert!(number_holds(number, secret), "{number} {secret}");
+        }
+        for (number, secret) in [
+            ("1", "1000"),
+            ("10", "1000"),
+            ("0.01", "1000"),
+            ("10", "1"),
+            ("0", "1000"),
+            ("1.5", "15"),
+            ("1e-2000", "0"),
+            ("1e2000", "1"),
+        ] {
+            assert!(!number_holds(number, secret), "{number} {secret}");
+        }
+        assert_eq!(decimal("-1.50e2").as_deref(), Some("150"));
+        assert_eq!(decimal("0.0120").as_deref(), Some("0.012"));
+        assert_eq!(decimal("12.5e-3").as_deref(), Some("0.0125"));
+        assert_eq!(decimal("x"), None);
+        assert_eq!(decimal("1e"), None);
     }
 
     #[test]

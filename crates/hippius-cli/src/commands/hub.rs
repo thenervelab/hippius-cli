@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use hippius::{
     CHECK_FIRST_HINT, Client, Code, ConfigFile, Error, HubMarker, Method, Request, Result,
-    SideEffects, Source, phrase, without_field,
+    SideEffects, Source, phrase,
 };
 use serde_json::{Map, Value, json};
 
@@ -612,14 +612,14 @@ fn namespace(ctx: &Context<'_>, command: &HubNamespace) -> Result<Printed> {
             &ctx.load_authed_client()?,
             &Request::get("/registry/provision/status/").about("get the Hub namespace status"),
             Gate::Open,
-            |r| Ok(without_field(r.document()?, "robot_secret")),
+            |r| namespace_read(r.document()?, "the Hub namespace status"),
         ),
         HubNamespace::Get => print_with(
             ctx,
             &ctx.load_authed_client()?,
             &Request::get("/registry/me/").about("get the Hub namespace"),
             Gate::Open,
-            |r| Ok(without_field(r.document()?, "robot_secret")),
+            |r| namespace_read(r.document()?, "the Hub namespace"),
         )
         .map_err(|error| with_provision_hint(ctx, error)),
         // `hipc` prints a `docker login` command it builds and never runs it: logging in
@@ -785,9 +785,7 @@ fn issued_robot(ctx: &Context<'_>, body: Value, issued: Issued<'_>) -> Result<Va
         .as_object()
         .into_iter()
         .flatten()
-        .filter(|(key, value)| {
-            ROBOT_SECRET_KEYS.contains(&key.to_ascii_lowercase().as_str()) && value.is_string()
-        })
+        .filter(|(key, value)| is_issued_secret(key, value))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     // The secret goes to its file before any refusal below, which prints nothing: with
@@ -842,10 +840,6 @@ fn issued_robot(ctx: &Context<'_>, body: Value, issued: Issued<'_>) -> Result<Va
 
 /// The keys the console reads a robot secret from, because Harbor and the Hippius backend
 /// have named it differently over time.
-///
-/// `namespace get` and `status` remove only `robot_secret`, the one name the provision
-/// answer uses. Removing the other three there would drop fields those documents print
-/// today, which tenet 7 allows only in a new major version.
 const ROBOT_SECRET_KEYS: [&str; 4] = ["secret", "password", "robot_secret", "token"];
 
 /// The keys a server `docker login` command may sit under: the robot read's `docker_login`,
@@ -868,8 +862,45 @@ fn without_robot_secrets(value: Value) -> Option<Value> {
     (!holds_a_login_command(&value)).then_some(value)
 }
 
+/// A namespace read (`namespace get` or `status`), `what`, as the robot read prints it
+/// ([`without_robot_secrets`]): the provision answer issues the robot secret, and only that
+/// call prints it (tenet 9, which outranks keeping a field a document printed before).
+///
+/// # Errors
+///
+/// `internal`, with nothing printed, when the answer holds a `docker login` command outside
+/// the keys that are dropped.
+fn namespace_read(body: Value, what: &str) -> Result<Value> {
+    without_robot_secrets(body).ok_or_else(|| {
+        Error::internal(format!(
+            "{what} holds a `docker login` command, which may pass the robot secret, and `hipc` \
+             prints a robot secret only when it is issued"
+        ))
+        .with_hint(format!(
+            "run `hipc hub namespace robot get` for the robot's name, and report the answer at \
+             `{}`",
+            hippius::ISSUES_URL
+        ))
+    })
+}
+
 fn without_secret_keys(value: Value) -> Value {
     without_keys(value, &is_robot_secret)
+}
+
+/// Whether `key` and `value`, a field of an answer that issues a robot or key secret, are
+/// that secret: one of the [`ROBOT_SECRET_KEYS`] in any case, holding a string.
+fn is_issued_secret(key: &str, value: &Value) -> bool {
+    ROBOT_SECRET_KEYS.contains(&key.to_ascii_lowercase().as_str()) && value.is_string()
+}
+
+/// Whether `body`, an issuing answer as printed, holds the secret under any of its names.
+fn holds_a_robot_secret(body: &Value) -> bool {
+    body.as_object().is_some_and(|fields| {
+        fields
+            .iter()
+            .any(|(key, value)| is_issued_secret(key, value))
+    })
 }
 
 /// Whether `key` may hold a robot or key secret, or a `docker login` command: one of the
@@ -1064,7 +1095,7 @@ fn provision(
             .is_some()
         {
             // `issued_robot` named the file in its note.
-        } else if body.get("robot_secret").and_then(Value::as_str).is_none() {
+        } else if !holds_a_robot_secret(&body) {
             let why = "no `robot_secret` was issued, because the namespace already \
                        exists or is pending";
             match ctx.next_command(ROTATE_ROBOT) {

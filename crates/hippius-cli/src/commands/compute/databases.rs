@@ -357,14 +357,17 @@ fn save_credentials(dir: &Path, created: Value) -> Result<(Value, Vec<String>)> 
     shown.insert("tls".to_owned(), Value::Object(tls));
     shown.insert("json_file".to_owned(), named(&dir.join(CREDENTIALS_JSON)));
     shown.insert("env_file".to_owned(), named(&dir.join(ENV_FILE)));
-    let secrets = withheld(object);
-    let mut saved = created;
+    // Each value in every spelling a field may repeat it in, such as percent-encoded in a URL.
+    // Redacted before the fields `hipc` writes go in, so a short withheld value cannot rewrite
+    // the paths of the files.
+    let secrets = hippius::redactions(withheld(object).iter().map(String::as_str));
+    let mut saved = redacted(created, &secrets);
     saved[CREDENTIALS] = Value::Object(shown);
-    Ok((redacted(saved, &secrets), written))
+    Ok((saved, written))
 }
 
-/// Every text of `credentials` the document no longer shows, at any depth, longest first:
-/// the password, the backup passphrase, the TLS values, and any new field.
+/// Every text of `credentials` the document no longer shows, at any depth: the password, the
+/// backup passphrase, the TLS values, and any new field.
 fn withheld(object: &Value) -> Vec<String> {
     fn texts(value: &Value, into: &mut Vec<String>) {
         match value {
@@ -380,7 +383,6 @@ fn withheld(object: &Value) -> Vec<String> {
             texts(value, &mut secrets);
         }
     }
-    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
     secrets
 }
 

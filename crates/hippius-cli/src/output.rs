@@ -912,6 +912,11 @@ mod text {
     /// can reverse an id or URL a person copies, zero-width and tag characters), the
     /// Unicode line and paragraph separators, and the invisible fillers and variation
     /// selectors that make `prod` and `prod` plus a filler look the same.
+    ///
+    /// The Cf rows come from `DerivedGeneralCategory.txt` of Unicode 15; the rest are the
+    /// assigned `Default_Ignorable_Code_Point` characters of `DerivedCoreProperties.txt` that
+    /// are not Cf, and the Braille blank. A Unicode release that adds a Cf or default-ignorable
+    /// character needs a row here.
     pub(crate) fn changes_how_text_reads(c: char) -> bool {
         matches!(
             c,
@@ -942,11 +947,16 @@ mod text {
                 // Invisible fillers and the combining grapheme joiner.
                 | '\u{034F}'
                 | '\u{115F}'..='\u{1160}'
+                | '\u{17B4}'..='\u{17B5}'
                 | '\u{3164}'
                 | '\u{FFA0}'
-                // Variation selectors.
+                // Variation selectors, the Mongolian free ones included (Mn, Unicode 14).
+                | '\u{180B}'..='\u{180D}'
+                | '\u{180F}'
                 | '\u{FE00}'..='\u{FE0F}'
                 | '\u{E0100}'..='\u{E01EF}'
+                // The Braille blank (So), a common invisible filler.
+                | '\u{2800}'
         )
     }
 
@@ -1556,6 +1566,12 @@ mod tests {
         );
         for c in ['\u{3164}', '\u{E0041}', '\u{E0100}'] {
             assert!(!filler.contains(c), "{c:?} in {filler:?}");
+        }
+        // So do the Mongolian free variation selectors, the Khmer inherent vowels, and the
+        // Braille blank, which are not format characters.
+        for c in ['\u{180B}', '\u{180D}', '\u{180F}', '\u{17B4}', '\u{2800}'] {
+            let rendered = text::render(&json!({ "name": format!("prod{c}") }), Layout::Document);
+            assert!(!rendered.contains(c), "{c:?} in {rendered:?}");
         }
         // JSON mode writes the same characters, and DEL, as \u escapes: still the same value.
         let json = json_text(&json!({"name": "a\u{202E}b\u{7f}c"}));

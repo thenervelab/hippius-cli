@@ -26,7 +26,7 @@ use std::path::Path;
 use serde_json::{Map, Value};
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::dns::{ObjectFile, clear_owned, load_object, longest_first, secret_spellings};
+use crate::dns::{ObjectFile, clear_owned, load_object};
 use crate::error::{Error, Result};
 use crate::phrase::quote_path;
 use crate::private_file::{Guarded, NamedBy};
@@ -148,12 +148,7 @@ impl AppSecrets {
     /// (`hippius::DnsCredentials::redactions`). An empty value redacts nothing. They are
     /// cleared when dropped.
     pub fn redactions(&self) -> Zeroizing<Vec<String>> {
-        Zeroizing::new(longest_first(
-            self.secrets
-                .iter()
-                .flat_map(|(_, text)| secret_spellings(text))
-                .collect(),
-        ))
+        crate::dns::redactions(self.secrets.iter().map(|(_, text)| text.as_str()))
     }
 }
 
