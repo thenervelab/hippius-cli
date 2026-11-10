@@ -127,6 +127,44 @@ fn text_mode_notes_an_empty_list_or_object_on_stderr() {
     assert_eq!(json.stderr(), "");
 }
 
+/// Text mode picks the list layout from the command, not from the answer's shape: a `get`
+/// whose server object happens to hold `items` and `next_page_token` is one object, with no
+/// table, no `next page: --page-token` hint (a flag `get` does not take), and no `no items`
+/// note for an empty `items`.
+#[test]
+fn a_get_that_holds_items_and_a_page_token_is_not_a_list() {
+    let paged = r#"{"items":[{"id":"a"}],"next_page_token":"2"}"#;
+    let empty = r#"{"items":[],"next_page_token":null}"#;
+    let server = Server::start(vec![
+        route(
+            "GET",
+            &format!("/api/compute/vms/{VM}/"),
+            Reply::json(200, paged),
+        ),
+        route("GET", "/api/compute/vms/vm-2/", Reply::json(200, empty)),
+    ]);
+    let home = Home::new();
+    let text = |args: &[&str]| {
+        Hipc::against(&home, &server).run(&[&["--output", "text"][..], args].concat())
+    };
+    let get = text(&["compute", "vms", "get", VM]);
+    assert_eq!(get.code(), Some(0), "{}", get.stderr());
+    assert_eq!(
+        get.stdout(),
+        "items            [{\"id\":\"a\"}]\nnext_page_token  2\n"
+    );
+    assert!(!get.stdout().contains("--page-token"), "{}", get.stdout());
+    assert_eq!(get.stderr(), "");
+    let get = text(&["compute", "vms", "get", "vm-2"]);
+    assert_eq!(
+        (get.stdout(), get.stderr()),
+        ("items            []\nnext_page_token  -\n", "")
+    );
+    // JSON mode prints the answer as sent either way.
+    let json = Hipc::against(&home, &server).run(&["compute", "vms", "get", VM]);
+    assert_eq!(json.ok(), serde_json::from_str::<Value>(paged).unwrap());
+}
+
 #[test]
 fn objects_print_as_sent_and_lists_are_envelopes() {
     let server = Server::start(vec![

@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 use crate::cli::{Gamma, GammaConversions, GammaHotkeys};
-use crate::commands::{Input, Printed, list, print_body, print_body_or, print_with, replace};
+use crate::commands::{Input, Printed, list, print_body, print_body_or, print_with};
 use crate::context::{Context, Gate};
 
 const GAMMA: &str = "/billing/gamma/";
@@ -161,7 +161,9 @@ fn link(ctx: &Context<'_>, path: &Path) -> Result<Printed> {
         answer.get("message").and_then(Value::as_str),
         answer.get("nonce").and_then(Value::as_str),
     ) else {
-        return Err(replace::unreadable("ask for a gamma link challenge"));
+        return Err(crate::commands::unreadable(
+            "ask for a gamma link challenge",
+        ));
     };
     let signature = key.sign_gamma_link(message, nonce)?;
     // The keys are not needed for the link itself, so they are cleared before it is sent.

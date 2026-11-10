@@ -249,7 +249,7 @@ fn test(ctx: &Context<'_>, args: &WafTest) -> Result<Printed> {
                 "the test request from {} has the key `{key}`, which a test request does not \
                  have: it has only {}",
                 file.name(),
-                listed(&TEST_REQUEST_KEYS)
+                phrase::ticked(TEST_REQUEST_KEYS, "and")
             ),
             format!("remove `{key}` from the request"),
         ));
@@ -268,12 +268,6 @@ fn test(ctx: &Context<'_>, args: &WafTest) -> Result<Printed> {
         .listed_by(ZONES)
         .changes_nothing();
     print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
-}
-
-/// `keys` as a message lists them: each in backticks, joined with the serial comma.
-fn listed(keys: &[&str]) -> String {
-    let keys: Vec<String> = keys.iter().map(|key| format!("`{key}`")).collect();
-    phrase::join(&keys, "and")
 }
 
 /// The flags of a rule list update: the zone, the file, `--remove-others`, and `--check`.
@@ -381,7 +375,7 @@ fn update_rules(ctx: &Context<'_>, update: &ListUpdate<'_>, list: &RuleList) -> 
                  have {}",
                 list.what,
                 file.name(),
-                listed(list.required)
+                phrase::ticked(list.required, "and")
             ),
             format!(
                 "write the rules as `{{\"rules\": [...]}}`, the shape `{}` prints",
@@ -430,7 +424,7 @@ fn update_rules(ctx: &Context<'_>, update: &ListUpdate<'_>, list: &RuleList) -> 
                 body: None,
                 if_match: Some(version.to_string()),
             }),
-            _ => Err(replace::unreadable(&read_action)),
+            _ => Err(crate::commands::unreadable(&read_action)),
         }
     };
     let client = ctx.load_authed_client()?;
@@ -550,7 +544,7 @@ fn check_rule_keys(parsed: &Value, file: &str, list: &RuleList) -> Result<()> {
                     "`rules[{index}]` from {file} has the key `{key}`, which a {} does not \
                      have: a rule has only {}",
                     list.noun,
-                    listed(list.keys)
+                    phrase::ticked(list.keys, "and")
                 ),
                 format!("fix `rules[{index}]`; the zone keeps its rules until then"),
             ));
@@ -777,7 +771,7 @@ fn items(ctx: &Context<'_>, command: &ListItems) -> Result<Printed> {
             let current = |answer: Value| {
                 stored_items(&answer)
                     .map(Found::new)
-                    .ok_or_else(|| replace::unreadable(&read_action))
+                    .ok_or_else(|| crate::commands::unreadable(&read_action))
             };
             replace_list(ctx, &ctx.load_authed_client()?, &replace, current)
         }

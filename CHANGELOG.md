@@ -29,6 +29,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - `hipc s3 tokens list` is documented as a list read whole on purpose (tenet 6 and its help): it prints the master and the sub tokens of two routes as one list, follows every page of each within the caps `--all` has, and takes no page flags. Its behaviour is unchanged.
 - The help of `hipc cdn rules update`, `hipc account members update --grant`, and `hipc cdn lists items update` says that the route takes no version, so a change someone else makes between the read and the write is lost; for a member, a grant revoked in that window comes back if a `--grant` names it.
 - The `hipc compute app-engine apps create` question says that stored backups are billed per GB-hour at the price `hipc compute backups options` shows, and names where the OS disk tier's price is shown, as the `hipc compute vms create` question does. The `hipc compute backups policy update --failover auto` question says, as the launch questions do, that what was written after the latest backup is lost; one clause now serves all three. An App Engine launch that sent secrets keeps a kebab `code` in a refusal's `details` and message, as it keeps `error`.
+- A placement group (`--placement-group` of `hipc compute vms create` and `hipc compute app-engine apps create`) and a node pool name (`hipc compute kubernetes node-pools create --name`) that start with `-` are refused as `usage`, as a Hub namespace, a Hub key name, and a bucket name are: a name the caller picks is never one a command line reads as a flag. Ids the server issues, such as a VM id, are still taken with a leading `-`.
 
 ### Removed
 
@@ -36,6 +37,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 ### Fixed
 
+- Text mode prints a `get` whose answer holds `items` and `next_page_token` as the one object it is, with no table and no `next page: --page-token` hint, which the command does not take. Only a list command prints a list, and only its empty list gets the `no items` note.
+- A credential `--credentials-dir` moved out of a database answer, or a DNS credential `hipc cdn hostnames dns-setup` sent, is redacted in one pass that takes the longest value first, as App Engine secrets are, so a short value no longer cuts the `<redacted>` marker a longer one wrote, or a longer value that holds it.
 - A list's envelope, a dry run, and every document `hipc` takes a field out of keep the server's other fields in the order it sent them. With `serde_json`'s `preserve_order`, `Map::remove` moved the last field into the gap; a lint now refuses it.
 - `hipc s3 configure` locks the AWS config file as well as the credentials file, so two runs that share only the config file cannot lose each other's profile. When another run holds a lock, text mode prints a `note:` that names the file before it waits; JSON mode waits without a word. The same note covers the lock of the hipc config file.
 - `hipc s3 configure` reads section headers as botocore does: a line indented under an option continues that option's value and is not a header, and in the credentials file `[profile default]` is a profile of that name, not `default`. In the config file, `[profile <name>]` is split as botocore splits it, so `[profile "x"]` is `x`.

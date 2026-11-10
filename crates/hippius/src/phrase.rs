@@ -99,6 +99,14 @@ pub fn join(items: &[impl AsRef<str>], conjunction: &str) -> String {
     }
 }
 
+/// `items`, each in backticks as it is written, joined as [`join`] joins them: for words
+/// `hipc` holds itself, such as field names or ports, which need no escape. Server text goes
+/// through [`quote`] instead.
+pub fn ticked<T: Display>(items: impl IntoIterator<Item = T>, conjunction: &str) -> String {
+    let items: Vec<String> = items.into_iter().map(|item| format!("`{item}`")).collect();
+    join(&items, conjunction)
+}
+
 /// The command line `hipc` followed by `args` (the words after the program name), as
 /// [`command_line`] writes it, with no flag added: for a hint that runs the same command
 /// again.
@@ -169,6 +177,13 @@ mod tests {
             join(&["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"], "or"),
             "GET, HEAD, POST, PUT, PATCH, or DELETE"
         );
+    }
+
+    #[test]
+    fn ticked_items_are_each_in_backticks() {
+        assert_eq!(ticked([22, 443], "and"), "`22` and `443`");
+        assert_eq!(ticked(["a", "b", "c"], "or"), "`a`, `b`, or `c`");
+        assert_eq!(ticked(Vec::<&str>::new(), "or"), "");
     }
 
     #[test]

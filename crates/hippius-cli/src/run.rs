@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory, FromArgMatches as _};
 use hippius::Result;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::cli::{
     Account, Auth, AutoReload, Billing, Cdn, CdnHostnames, Cli, Command, Drive, DriveSubscription,
@@ -13,7 +13,7 @@ use crate::cli::{
 };
 use crate::commands::{self, Printed};
 use crate::context::Context;
-use crate::output::{self, Terminal};
+use crate::output::{self, Layout, Terminal};
 use crate::spec;
 
 /// Runs `hipc` with these arguments and returns the process exit code.
@@ -80,23 +80,27 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         ctx.warning(&warning);
         warnings.push(warning);
     }
-    match ran {
-        Ok(Printed::Document(mut document)) => {
-            if !sets_next_step(&cli.command) {
-                commands::drop_next_step(&mut document);
-            }
-            if let Some(note) = output::empty_note(&document) {
-                ctx.note(note);
-            }
-            // Only a run given `--dry-run` printed a dry run; a server's answer with the same
-            // fields is printed as it came.
-            let dry_run = cli.global.dry_run;
-            if dry_run {
-                spec::add_confirmation(&path, &mut document);
-            }
-            output::add_warnings(mode, &mut document, &warnings);
-            output::document(mode, &document, ctx.side_effects(), dry_run)
+    let print = |mut document: Value, layout: Layout| {
+        if !sets_next_step(&cli.command) {
+            commands::drop_next_step(&mut document);
         }
+        if let Some(note) = output::empty_note(&document, layout) {
+            ctx.note(note);
+        }
+        if layout == Layout::DryRun {
+            spec::add_confirmation(&path, &mut document);
+        }
+        output::add_warnings(mode, &mut document, &warnings);
+        output::document(mode, &document, ctx.side_effects(), layout)
+    };
+    match ran {
+        // Only a run given `--dry-run` printed a dry run; a server's answer with the same
+        // fields is printed as it came. A list command's dry run is a document too.
+        Ok(Printed::Document(document)) if cli.global.dry_run => print(document, Layout::DryRun),
+        Ok(Printed::Document(document)) => print(document, Layout::Document),
+        // Only a list command prints a list: a `get` whose answer holds `items` and
+        // `next_page_token` is one object, with no page hint.
+        Ok(Printed::List(document)) => print(document, Layout::List),
         Ok(Printed::Raw(bytes)) => output::raw(mode, &bytes, ctx.side_effects()),
         Ok(Printed::Body(bytes)) => output::body(&terminal, mode, &bytes, ctx.side_effects()),
         Err(error) => output::failure_warned(mode, &error, &warnings),

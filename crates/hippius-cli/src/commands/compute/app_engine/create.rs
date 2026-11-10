@@ -259,25 +259,10 @@ fn check_secret_names(
     Ok(())
 }
 
-/// `text` with every text of `redactions` replaced by `<redacted>`, one character included, in
-/// one pass from the left that takes the longest text matching at each place: `redactions` is
-/// longest first, so a short value never cuts a marker an earlier one wrote.
+/// `text` with every text of `redactions` replaced by `<redacted>`, in one longest-first
+/// pass, so a short value never cuts a marker an earlier one wrote ([`hippius::redact_all`]).
 fn redact_text(text: &str, redactions: &[String]) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(c) = rest.chars().next() {
-        if let Some(secret) = redactions
-            .iter()
-            .find(|secret| rest.starts_with(secret.as_str()))
-        {
-            out.push_str("<redacted>");
-            rest = &rest[secret.len()..];
-        } else {
-            out.push(c);
-            rest = &rest[c.len_utf8()..];
-        }
-    }
-    out
+    hippius::redact_all(text.to_owned(), redactions)
 }
 
 /// Whether `text`, which has a shape hipc checks, may still be printed as it came: it is no

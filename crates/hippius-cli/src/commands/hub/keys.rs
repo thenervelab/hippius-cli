@@ -15,7 +15,7 @@ use crate::commands::files::shown_once;
 use crate::commands::hub::{
     Issued, docker_login_command, issued_robot, with_provision_hint, without_robot_secrets,
 };
-use crate::commands::{Printed, print_with, require_reveal_or_file};
+use crate::commands::{Printed, print_list_with, print_with, require_reveal_or_file};
 use crate::context::{Context, Gate};
 
 const KEYS: &str = "/registry/keys/";
@@ -41,21 +41,15 @@ pub(crate) fn run(ctx: &Context<'_>, command: &HubKeys) -> Result<Printed> {
 /// page parameter, so a `next` link is `internal` rather than a list cut short.
 fn list(ctx: &Context<'_>) -> Result<Printed> {
     let request = Request::get(KEYS).about("list the Hub keys");
-    print_with(
-        ctx,
-        &ctx.load_authed_client()?,
-        &request,
-        Gate::Open,
-        |response| {
-            let mut page = hippius::page(response.json()?)?;
-            page.items = page
-                .items
-                .into_iter()
-                .map(|row| listed_key(row, "the Hub key list"))
-                .collect::<Result<_>>()?;
-            page.complete_envelope(request.target())
-        },
-    )
+    print_list_with(ctx, &ctx.load_authed_client()?, &request, |response| {
+        let mut page = hippius::page(response.json()?)?;
+        page.items = page
+            .items
+            .into_iter()
+            .map(|row| listed_key(row, "the Hub key list"))
+            .collect::<Result<_>>()?;
+        page.complete_envelope(request.target())
+    })
 }
 
 /// `GET /api/registry/keys/<id>/` (swagger `registry_keys_read`, "show metadata"), printed

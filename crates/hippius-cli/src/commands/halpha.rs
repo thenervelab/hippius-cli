@@ -115,7 +115,7 @@ impl Quote {
     /// The quote in `answer`, or `internal` when a field a buy depends on is missing or not
     /// its type.
     fn read(answer: &Value) -> Result<Self> {
-        let unreadable = || crate::commands::replace::unreadable("get the hAlpha quote");
+        let unreadable = || crate::commands::unreadable("get the hAlpha quote");
         let flag = |name: &str| {
             answer
                 .get(name)
@@ -324,7 +324,7 @@ fn refuse_in_flight(page: &Value, now: u64) -> Result<()> {
     let rows = page
         .get("results")
         .and_then(Value::as_array)
-        .ok_or_else(|| crate::commands::replace::unreadable("read the hAlpha purchases"))?;
+        .ok_or_else(|| crate::commands::unreadable("read the hAlpha purchases"))?;
     let recent = |row: &Value| {
         row.get("created_at")
             .and_then(Value::as_str)

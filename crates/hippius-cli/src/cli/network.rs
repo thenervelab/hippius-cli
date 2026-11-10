@@ -2,7 +2,8 @@
 
 use clap::Subcommand;
 
-use crate::cli::{examples, slug_id};
+use crate::cli::examples;
+use crate::cli::values::{Charset, Dash, word};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Network {
@@ -148,18 +149,22 @@ pub(crate) enum VpcRouters {
 /// A peer id. It goes into the URL path, and swagger types it as a string with no pattern,
 /// so it is held to the rule of a VM id: no `/`, `?`, or `.` can change the route.
 fn peer_id(value: &str) -> Result<String, String> {
-    slug_id(
+    word(
         value,
-        64,
+        1..=64,
+        Charset::Slug,
+        Dash::Taken,
         "a peer id is 1 to 64 letters, digits, `-`, and `_`, from `hipc network peers list`",
     )
 }
 
 /// A VPC network id (swagger's `nid`, a string), held to the same rule as [`peer_id`].
 fn vpc_id(value: &str) -> Result<String, String> {
-    slug_id(
+    word(
         value,
-        64,
+        1..=64,
+        Charset::Slug,
+        Dash::Taken,
         "a VPC network id is 1 to 64 letters, digits, `-`, and `_`, from \
          `hipc network vpcs list`",
     )

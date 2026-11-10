@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 
 use zeroize::Zeroizing;
 
-use crate::config::{Guarded, NamedBy, PrivateFile};
 use crate::error::{Error, Result};
 use crate::phrase::{quote, quote_path};
+use crate::private_file::{Guarded, NamedBy, PrivateFile};
 use crate::source::Source;
 
 /// The Hippius S3 endpoint.
@@ -181,12 +181,7 @@ impl AwsProfile {
     /// `usage` for an empty, too long, or otherwise unsafe name. A `]` or a newline would
     /// let the name end its section header and start another.
     pub fn new(name: &str) -> Result<Self> {
-        let valid = !name.is_empty()
-            && name.len() <= 64
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
-        if valid {
+        if crate::config::is_new_profile_name(name) {
             Ok(Self(name.to_owned()))
         } else {
             Err(Error::usage(
@@ -409,7 +404,7 @@ fn refuse_one_file(files: &AwsFiles) -> Result<()> {
 fn same_file(a: &Path, b: &Path) -> bool {
     // A bare name is in the working directory, as the real run's open finds it.
     let place = |path: &Path| {
-        let dir = crate::config::directory(path);
+        let dir = crate::private_file::directory(path);
         Some((fs::canonicalize(dir).ok()?, path.file_name()?.to_owned()))
     };
     if let (Some((dir_a, name_a)), Some((dir_b, name_b))) = (place(a), place(b))
@@ -881,7 +876,7 @@ mod tests {
                 credentials: files.credentials.clone(),
             };
             std::thread::spawn(move || {
-                crate::config::on_lock_wait(move |note| told.send(note.to_owned()).unwrap());
+                crate::private_file::on_lock_wait(move |note| told.send(note.to_owned()).unwrap());
                 let profile = AwsProfile::new("p").unwrap();
                 let key = AccessKeyId::new("hip_K").unwrap();
                 let secret = SecretKey::new("s", &Source::Argument).unwrap();
@@ -931,7 +926,7 @@ mod tests {
         let run = {
             let dir = dir.clone();
             std::thread::spawn(move || {
-                crate::config::on_lock_wait(move |note| told.send(note.to_owned()).unwrap());
+                crate::private_file::on_lock_wait(move |note| told.send(note.to_owned()).unwrap());
                 let a = PrivateFile::ensure(&dir.join("same"), AWS_CONFIG).unwrap();
                 let b = PrivateFile::ensure(&dir.join(".").join("same"), AWS_CREDENTIALS).unwrap();
                 let c = PrivateFile::ensure(&dir.join("other"), AWS_CREDENTIALS).unwrap();

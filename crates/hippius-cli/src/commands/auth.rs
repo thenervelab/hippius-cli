@@ -9,7 +9,7 @@ use hippius::{
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-use crate::commands::{Input, Printed, account, local_dry_run, replace};
+use crate::commands::{Input, Printed, account, local_dry_run};
 use crate::context::{self, Context, Gate, Question, Step};
 use crate::hidden::{self, Typed};
 use crate::output;
@@ -445,7 +445,7 @@ fn open_session(
         answer.get("message").and_then(Value::as_str),
         answer.get("challenge").and_then(Value::as_str),
     ) else {
-        return Err(replace::unreadable("ask for a login challenge"));
+        return Err(crate::commands::unreadable("ask for a login challenge"));
     };
     let signed = key.sign_login(message, nonce)?;
     let answer = ctx
@@ -524,18 +524,18 @@ impl Session {
             .get("token")
             .and_then(Value::as_str)
             .and_then(|token| Token::new(token, &Source::Default).ok())
-            .ok_or_else(|| replace::unreadable(action))?;
+            .ok_or_else(|| crate::commands::unreadable(action))?;
         let is_new = answer
             .get("is_new")
             .and_then(Value::as_bool)
-            .ok_or_else(|| replace::unreadable(action))?;
+            .ok_or_else(|| crate::commands::unreadable(action))?;
         // Swagger's answer names `substrate_address` and not `address`, so only the first is
         // required; an `address` that is sent must be the key's, in any case (EIP-55 is only
         // a checksum in the letter case).
         let substrate = answer
             .get("substrate_address")
             .and_then(Value::as_str)
-            .ok_or_else(|| replace::unreadable(action))?;
+            .ok_or_else(|| crate::commands::unreadable(action))?;
         let other = if substrate == key.substrate_address() {
             match answer.get("address") {
                 None | Some(Value::Null) => None,
@@ -639,7 +639,7 @@ fn user(answer: &Value) -> Result<Value> {
         .map(Vec::as_slice)
     {
         Some([only]) if is_user(only) => Ok(only.clone()),
-        _ => Err(replace::unreadable("read the signed-in user")),
+        _ => Err(crate::commands::unreadable("read the signed-in user")),
     }
 }
 

@@ -175,12 +175,30 @@ fn is_automation(ci: Option<&OsStr>, ai_agent: Option<&OsStr>) -> bool {
     ci.is_some() || ai_agent_set
 }
 
+/// How text mode lays a success document out. The command decides, never the document's
+/// shape: a server's answer to a `get` may hold `items` and `next_page_token`, or `dry_run`
+/// and `requests`, and is still printed as one object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Layout {
+    /// One object as a key-value block, a list of objects as a table.
+    Document,
+    /// The document of a run given `--dry-run`: one with `requests` is printed as a dry run.
+    DryRun,
+    /// A list command's list envelope: a table of `items`, the fields beside it, and the
+    /// `--page-token` hint for the next page ([`crate::commands::Printed::List`]).
+    List,
+}
+
 /// Prints a success document and returns exit 0. `done` is what the command did to the
-/// server, which a failure to write the document must still report. `dry_run` is whether the
-/// run was given `--dry-run`: only then is a document with `requests` rendered as a dry run,
-/// so a server's answer with those fields is printed as any other answer.
-pub(crate) fn document(mode: Mode, document: &Value, done: SideEffects, dry_run: bool) -> ExitCode {
-    stdout(mode, render(mode, document, dry_run).as_bytes(), done)
+/// server, which a failure to write the document must still report. `layout` is how text
+/// mode lays it out.
+pub(crate) fn document(
+    mode: Mode,
+    document: &Value,
+    done: SideEffects,
+    layout: Layout,
+) -> ExitCode {
+    stdout(mode, render(mode, document, layout).as_bytes(), done)
 }
 
 /// Prints bytes that are the output itself in every mode, such as a completion script, and
@@ -244,7 +262,12 @@ pub(crate) fn failure_warned(mode: Mode, error: &Error, warnings: &[String]) -> 
     // A partial failure still prints what succeeded, so no id or row is lost (tenet 3).
     // A failure to write it does not change the exit code, which already says failure.
     if let Some(done) = done_on_failure(error) {
-        drop(write_stdout(render(mode, &done, false).as_bytes()));
+        let layout = if error.stdout_is_list() {
+            Layout::List
+        } else {
+            Layout::Document
+        };
+        drop(write_stdout(render(mode, &done, layout).as_bytes()));
     }
     stderr(&render_failure(mode, error, warnings));
     ExitCode::from(error.code().exit_code())
@@ -659,10 +682,10 @@ fn escape_lines(text: &str) -> String {
         .join("\n")
 }
 
-fn render(mode: Mode, document: &Value, dry_run: bool) -> String {
+fn render(mode: Mode, document: &Value, layout: Layout) -> String {
     match mode {
         Mode::Json => format!("{}\n", json_text(document)),
-        Mode::Text => text::render(document, dry_run),
+        Mode::Text => text::render(document, layout),
     }
 }
 
@@ -711,15 +734,20 @@ fn stderr(text: &str) {
 /// so a person can tell an empty answer from a hang: `no items` for a list with no
 /// items and no later page, and `no fields` for an empty object. `None` for any other
 /// document. stdout is left as [`document`] writes it, so it stays empty, or holds only
-/// the fields beside the list.
-pub(crate) fn empty_note(document: &Value) -> Option<&'static str> {
+/// the fields beside the list. Only a list command's envelope ([`Layout::List`]) is a list
+/// with no items; another document with an empty `items` prints that field.
+pub(crate) fn empty_note(document: &Value, layout: Layout) -> Option<&'static str> {
     match document {
         Value::Array(items) if items.is_empty() => Some("no items"),
         Value::Object(map) if map.is_empty() => Some("no fields"),
-        Value::Object(map) => match (map.get("items"), map.get("next_page_token")) {
-            (Some(Value::Array(items)), Some(Value::Null)) if items.is_empty() => Some("no items"),
-            _ => None,
-        },
+        Value::Object(map) if layout == Layout::List => {
+            match (map.get("items"), map.get("next_page_token")) {
+                (Some(Value::Array(items)), Some(Value::Null)) if items.is_empty() => {
+                    Some("no items")
+                }
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -733,20 +761,25 @@ pub(crate) fn empty_note(document: &Value) -> Option<&'static str> {
 mod text {
     use serde_json::{Map, Value};
 
-    /// `document` as text; with `is_dry_run`, the run's `--dry-run`, a document that lists
-    /// `requests` is a dry run's ([`dry_run`]).
-    pub(super) fn render(document: &Value, is_dry_run: bool) -> String {
+    use super::Layout;
+
+    /// `document` as text, laid out as `layout` says: under [`Layout::DryRun`] a document
+    /// that lists `requests` is a dry run's ([`dry_run`]), and under [`Layout::List`] a
+    /// document with `items` and `next_page_token` is a list envelope.
+    pub(super) fn render(document: &Value, layout: Layout) -> String {
         match document {
             Value::Array(items) => list(items),
             Value::Object(map)
-                if is_dry_run
+                if layout == Layout::DryRun
                     && map.contains_key("dry_run")
                     && map.get("requests").is_some_and(Value::is_array) =>
             {
                 dry_run(map)
             }
             Value::Object(map) => match map.get("items") {
-                Some(Value::Array(items)) if map.contains_key("next_page_token") => {
+                Some(Value::Array(items))
+                    if layout == Layout::List && map.contains_key("next_page_token") =>
+                {
                     let mut out = list(items);
                     // The server's other fields beside the list (a total, `partial_failure`,
                     // `sharing_enabled`) are printed too: text mode drops nothing.
@@ -1331,7 +1364,7 @@ mod tests {
     fn render_json_is_one_compact_line() {
         let doc = json!({"a": [1, 2], "b": {"c": null}});
         assert_eq!(
-            render(Mode::Json, &doc, false),
+            render(Mode::Json, &doc, Layout::Document),
             "{\"a\":[1,2],\"b\":{\"c\":null}}\n"
         );
     }
@@ -1343,8 +1376,18 @@ mod tests {
             "next_page_token": "2"
         });
         assert_eq!(
-            text::render(&doc, false),
+            text::render(&doc, Layout::List),
             "id   name\na    first\nbbb  -\nnext page: --page-token 2\n"
+        );
+        // A `get` whose answer has the same fields is one object: no table and no page hint,
+        // which its command does not take.
+        assert_eq!(
+            text::render(&doc, Layout::Document),
+            "items            [{\"id\":\"a\",\"name\":\"first\"},{\"id\":\"bbb\",\"name\":null}]\nnext_page_token  2\n"
+        );
+        assert_eq!(
+            text::render(&doc, Layout::DryRun),
+            text::render(&doc, Layout::Document)
         );
     }
 
@@ -1359,32 +1402,35 @@ mod tests {
             ]
         });
         assert_eq!(
-            text::render(&doc, true),
+            text::render(&doc, Layout::DryRun),
             "dry_run  true\n\nmethod  GET\nurl     https://x/a\n\nmethod  PUT\nbody    {\"k\":1}\n"
         );
         // The same fields in a real run's answer, such as a server's, are a plain block.
-        assert!(text::render(&doc, false).starts_with("dry_run   true\nrequests  "));
+        assert!(text::render(&doc, Layout::Document).starts_with("dry_run   true\nrequests  "));
     }
 
     #[test]
     fn text_block_for_one_object() {
         let doc = json!({"version": "0.1.0", "target": "aarch64-apple-darwin"});
         assert_eq!(
-            text::render(&doc, false),
+            text::render(&doc, Layout::Document),
             "version  0.1.0\ntarget   aarch64-apple-darwin\n"
         );
     }
 
     #[test]
     fn text_scalars_arrays_and_nested_values() {
-        assert_eq!(text::render(&json!("plain"), false), "plain\n");
-        assert_eq!(text::render(&json!(null), false), "-\n");
-        assert_eq!(text::render(&json!(42), false), "42\n");
-        assert_eq!(text::render(&json!(["a", 1, null]), false), "a\n1\n-\n");
-        assert_eq!(text::render(&json!([]), false), "");
-        assert_eq!(text::render(&json!({}), false), "");
+        assert_eq!(text::render(&json!("plain"), Layout::Document), "plain\n");
+        assert_eq!(text::render(&json!(null), Layout::Document), "-\n");
+        assert_eq!(text::render(&json!(42), Layout::Document), "42\n");
         assert_eq!(
-            text::render(&json!({"path": ["a", "b"], "ok": true}), false),
+            text::render(&json!(["a", 1, null]), Layout::Document),
+            "a\n1\n-\n"
+        );
+        assert_eq!(text::render(&json!([]), Layout::Document), "");
+        assert_eq!(text::render(&json!({}), Layout::Document), "");
+        assert_eq!(
+            text::render(&json!({"path": ["a", "b"], "ok": true}), Layout::Document),
             "path  [\"a\",\"b\"]\nok    true\n"
         );
     }
@@ -1392,20 +1438,26 @@ mod tests {
     #[test]
     fn text_table_takes_the_union_of_columns_in_first_seen_order() {
         let doc = json!([{"a": 1}, {"b": 2, "a": 3}]);
-        assert_eq!(text::render(&doc, false), "a  b\n1\n3  2\n");
+        assert_eq!(text::render(&doc, Layout::Document), "a  b\n1\n3  2\n");
     }
 
     #[test]
     fn a_list_mixing_objects_and_scalars_prints_every_item() {
         let doc = json!([{"a": 1}, "loose", 7]);
-        assert_eq!(text::render(&doc, false), "{\"a\":1}\nloose\n7\n");
+        assert_eq!(
+            text::render(&doc, Layout::Document),
+            "{\"a\":1}\nloose\n7\n"
+        );
     }
 
     #[test]
     fn items_without_a_page_token_field_is_a_plain_object() {
-        assert_eq!(text::render(&json!({"items": [1]}), false), "items  [1]\n");
+        assert_eq!(
+            text::render(&json!({"items": [1]}), Layout::List),
+            "items  [1]\n"
+        );
         let last_page = json!({"items": [{"id": "a"}], "next_page_token": null});
-        assert_eq!(text::render(&last_page, false), "id\na\n");
+        assert_eq!(text::render(&last_page, Layout::List), "id\na\n");
     }
 
     /// Only a list with nothing on it and no later page, or an empty object, gets
@@ -1413,9 +1465,13 @@ mod tests {
     #[test]
     fn an_empty_list_or_object_is_noted_and_nothing_else() {
         let empty_page = json!({"count": 0, "items": [], "next_page_token": null});
-        assert_eq!(empty_note(&json!([])), Some("no items"));
-        assert_eq!(empty_note(&empty_page), Some("no items"));
-        assert_eq!(empty_note(&json!({})), Some("no fields"));
+        for layout in [Layout::List, Layout::Document] {
+            assert_eq!(empty_note(&json!([]), layout), Some("no items"));
+            assert_eq!(empty_note(&json!({}), layout), Some("no fields"));
+        }
+        assert_eq!(empty_note(&empty_page, Layout::List), Some("no items"));
+        // A `get` whose answer has an empty `items` prints that field: not an empty list.
+        assert_eq!(empty_note(&empty_page, Layout::Document), None);
         for shown in [
             json!([1]),
             json!({"items": [], "next_page_token": "2"}),
@@ -1426,7 +1482,7 @@ mod tests {
             json!(""),
             json!(null),
         ] {
-            assert_eq!(empty_note(&shown), None, "{shown}");
+            assert_eq!(empty_note(&shown, Layout::List), None, "{shown}");
         }
     }
 
@@ -1441,7 +1497,7 @@ mod tests {
             "partial_failure": true
         });
         assert_eq!(
-            text::render(&doc, false),
+            text::render(&doc, Layout::List),
             "id\na\nsharing_enabled: true\npartial_failure: true\nnext page: --page-token 2\n"
         );
     }
@@ -1471,12 +1527,12 @@ mod tests {
     fn text_escapes_control_characters_everywhere() {
         let doc = json!({"na\tme": "line\nbreak \u{1b}[31mred"});
         assert_eq!(
-            text::render(&doc, false),
+            text::render(&doc, Layout::Document),
             "na\\tme  line\\nbreak \\u{1b}[31mred\n"
         );
         let doc = json!({"items": [{"k\n": "v"}], "next_page_token": "x\ry"});
         assert_eq!(
-            text::render(&doc, false),
+            text::render(&doc, Layout::List),
             "k\\n\nv\nnext page: --page-token x\\ry\n"
         );
     }
@@ -1485,16 +1541,18 @@ mod tests {
     fn text_escapes_characters_that_reorder_or_hide_text() {
         // U+202E reverses what follows, U+200B is invisible, U+009B is a C1 control.
         let doc = json!({"name": "a\u{202E}gpj.exe\u{202C} b\u{200B}c \u{9b}2J \u{2028}"});
-        let rendered = text::render(&doc, false);
+        let rendered = text::render(&doc, Layout::Document);
         for c in ['\u{202E}', '\u{202C}', '\u{200B}', '\u{9b}', '\u{2028}'] {
             assert!(!rendered.contains(c), "{c:?} in {rendered:?}");
         }
         assert!(rendered.contains("\\u{202e}gpj.exe"), "{rendered}");
-        assert!(text::render(&json!({"name": "ünïcødé ✓"}), false).contains("ünïcødé ✓"));
+        assert!(
+            text::render(&json!({"name": "ünïcødé ✓"}), Layout::Document).contains("ünïcødé ✓")
+        );
         // Invisible fillers and tag characters make one name look like another.
         let filler = text::render(
             &json!({"name": "prod\u{3164}", "tag": "a\u{E0041}b\u{E0100}"}),
-            false,
+            Layout::Document,
         );
         for c in ['\u{3164}', '\u{E0041}', '\u{E0100}'] {
             assert!(!filler.contains(c), "{c:?} in {filler:?}");
@@ -1514,7 +1572,7 @@ mod tests {
         // Inside an array or object cell too, which serde_json does not escape.
         let nested = text::render(
             &json!({"items": [{"ports": ["a\u{202E}b"]}], "next_page_token": null}),
-            false,
+            Layout::List,
         );
         assert!(!nested.contains('\u{202E}'), "{nested:?}");
     }
@@ -1546,8 +1604,11 @@ mod tests {
     #[test]
     fn text_pads_by_characters_not_bytes() {
         let doc = json!([{"name": "é", "n": 1}, {"name": "ab", "n": 2}]);
-        assert_eq!(text::render(&doc, false), "name  n\né     1\nab    2\n");
+        assert_eq!(
+            text::render(&doc, Layout::Document),
+            "name  n\né     1\nab    2\n"
+        );
         let doc = json!({"é": 1, "ab": 2});
-        assert_eq!(text::render(&doc, false), "é   1\nab  2\n");
+        assert_eq!(text::render(&doc, Layout::Document), "é   1\nab  2\n");
     }
 }

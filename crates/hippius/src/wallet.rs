@@ -40,9 +40,9 @@ use sha3::Keccak256;
 use unicode_normalization::UnicodeNormalization as _;
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::config::{Guarded, NamedBy, PrivateFile};
 use crate::error::{Error, Result};
 use crate::kubernetes::hex;
+use crate::private_file::{Guarded, NamedBy, PrivateFile};
 use crate::source::Source;
 
 /// The signing context of a Substrate sr25519 signature (`sp_core::sr25519`), which the API

@@ -189,7 +189,7 @@ pub(crate) struct AppCreate {
     pub(crate) os_disk_tier: Option<DiskTier>,
     /// The anti-affinity group: two VMs of the account in one group never share a server
     ///
-    /// A name is 1 to 64 of a-z, 0-9, and -. Fixed for the VM's life.
+    /// A name is 1 to 64 of a-z, 0-9, and -, not starting with -. Fixed for the VM's life.
     #[arg(long, value_name = "NAME", value_parser = placement_group)]
     pub(crate) placement_group: Option<String>,
     /// What a power-off from inside the VM does: restart (the server's default) or stop
