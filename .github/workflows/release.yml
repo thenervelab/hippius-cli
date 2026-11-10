@@ -39,7 +39,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: scripts/release-on-main.sh
+          sparse-checkout: |
+            /Cargo.toml
+            /scripts/release-on-main.sh
+            /scripts/release-version.sh
           sparse-checkout-cone-mode: false
       - name: Check that the tagged commit is on main
         env:
@@ -47,6 +50,12 @@ jobs:
           BUILT: ${{ github.sha }}
           REPO: ${{ github.repository }}
         run: scripts/release-on-main.sh "${REPO}" "${BUILT}"
+      # Once for the whole release: every crate, and through maturin every wheel, takes its
+      # version from [workspace.package], so no build job checks it again.
+      - name: Check that the tag names the workspace version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: scripts/release-version.sh "${TAG}"
 
   ci:
     # The full CI suite (fmt, clippy, tests on Linux and macOS, coverage, deny, lint) runs
@@ -56,11 +65,9 @@ jobs:
 
   build:
     needs: ci
-    # macOS: Apple silicon builds both, and runs the arm64 binary; x86_64 is cross-compiled
-    # and never executed. Linux: each musl target is built natively, so the C in ring
-    # compiles without a cross toolchain, and each static binary runs on the runner that
-    # built it. The runner images are pinned, not -latest, so a rebuild of a tag uses the
-    # same image family and the same tools.
+    # macOS: Apple silicon builds both targets; x86_64 is cross-compiled. Linux: each musl
+    # target is built on its own architecture. The runner images are pinned, not -latest, so
+    # a rebuild of a tag uses the same image family and the same tools.
     strategy:
       matrix:
         include:
@@ -78,54 +85,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - name: Install musl-gcc
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends musl-tools
-      - run: rustup toolchain install
-      - name: Add the target
-        env:
-          TARGET: ${{ matrix.target }}
-        run: rustup target add "${TARGET}"
-      - name: Remap the build paths
-        # The checkout and the cargo home are runner paths that would land in the binary's
-        # panic locations; mapped to fixed names, the same commit builds the same bytes.
-        run: >-
-          echo "RUSTFLAGS=--remap-path-prefix=${GITHUB_WORKSPACE}=/build
-          --remap-path-prefix=${CARGO_HOME:-${HOME}/.cargo}=/cargo" >> "${GITHUB_ENV}"
-      - name: Check that the tag matches the workspace version
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          version=$(cargo metadata --locked --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "hippius-cli") | .version')
-          if [ "v${version}" != "${TAG}" ]; then
-            echo "tag ${TAG} does not match hippius-cli version ${version}" >&2
-            exit 1
-          fi
-      - name: Build
-        env:
-          TARGET: ${{ matrix.target }}
-          # ring's C goes through musl-gcc for the musl targets. cc-rs reads the variable for
-          # the target it builds, so the macOS targets ignore these.
-          CC_x86_64_unknown_linux_musl: musl-gcc
-          CC_aarch64_unknown_linux_musl: musl-gcc
-        run: cargo build --release --locked --target "${TARGET}"
-      - name: Static
-        if: runner.os == 'Linux'
-        env:
-          TARGET: ${{ matrix.target }}
-        run: file "target/${TARGET}/release/hipc" | grep -Eq 'statically linked|static-pie linked'
-      - name: Runs
-        # Every binary the runner can execute: both Linux targets, and arm64 macOS. Rosetta
-        # is not assumed, so the x86_64 macOS binary is not run.
-        if: matrix.target != 'x86_64-apple-darwin'
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          bin="target/${TARGET}/release/hipc"
-          "${bin}" --version
-          "${bin}" version
-          "${bin}" schema > /dev/null
+      - uses: ./.github/actions/release-build # zizmor: ignore[self-repository]
+        with:
+          target: ${{ matrix.target }}
+          package: tarball
       - name: Package
         env:
           TARGET: ${{ matrix.target }}
@@ -384,43 +347,30 @@ jobs:
     outputs:
       build: ${{ steps.check.outputs.build }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
+      # The tag is already known to name the workspace version, which maturin gives the
+      # wheel: `on-main` checked it before any job ran.
       - name: Build the wheels only when PYPI_PUBLISH is true
         id: check
         env:
-          TAG: ${{ github.ref_name }}
           PUBLISH: ${{ vars.PYPI_PUBLISH }}
-        # The tag holds only digits and dots after the v (the trigger's pattern).
         run: |
-          version="${TAG#v}"
           case "${PUBLISH}" in
-            true) ;;
+            true)
+              echo build=true >> "${GITHUB_OUTPUT}"
+              ;;
             '' | false)
               echo "::notice::PYPI_PUBLISH is not true, so no wheel is built for PyPI"
               echo build=false >> "${GITHUB_OUTPUT}"
-              exit 0
               ;;
             *)
               echo "PYPI_PUBLISH is neither true nor false" >&2
               exit 1
               ;;
           esac
-          workspace=$(scripts/pypi-version-check.sh)
-          if [ "${workspace}" != "${version}" ]; then
-            echo "tag ${TAG} does not match the workspace version ${workspace}" >&2
-            exit 1
-          fi
-          echo build=true >> "${GITHUB_OUTPUT}"
 
   pypi-wheels:
     # One binary-only wheel per release target, built by maturin from packaging/pypi on the
-    # runners `build` uses. maturin compiles hipc again for the wheel, from the same commit,
-    # toolchain and musl-gcc as `build`, so a wheel's binary is built the same way as the
-    # tarball's but is not that file. No Docker image: the Linux wheels hold a static musl
-    # binary, so they carry both a manylinux and a musllinux tag and install on glibc and
-    # musl systems alike.
+    # runners `build` uses, through the same action (.github/actions/release-build).
     needs: pypi-version
     if: needs.pypi-version.outputs.build == 'true'
     strategy:
@@ -428,56 +378,22 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             runner: macos-15
-            compatibility: ''
           - target: x86_64-apple-darwin
             runner: macos-15
-            compatibility: ''
           - target: x86_64-unknown-linux-musl
             runner: ubuntu-24.04
-            compatibility: --compatibility manylinux_2_17 musllinux_1_2
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
-            compatibility: --compatibility manylinux_2_17 musllinux_1_2
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - name: Install musl-gcc
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends musl-tools
-      # maturin-action installs patchelf with pip on Linux, which the runner image's system
-      # Python refuses (PEP 668).
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
-        if: runner.os == 'Linux'
+      - uses: ./.github/actions/release-build # zizmor: ignore[self-repository]
         with:
-          python-version: '3.13'
-      - run: rustup toolchain install
-      - name: Add the target
-        env:
-          TARGET: ${{ matrix.target }}
-        run: rustup target add "${TARGET}"
-      - name: Remap the build paths
-        # The checkout and the cargo home are runner paths that would land in the binary's
-        # panic locations; mapped to fixed names, the same commit builds the same bytes.
-        run: >-
-          echo "RUSTFLAGS=--remap-path-prefix=${GITHUB_WORKSPACE}=/build
-          --remap-path-prefix=${CARGO_HOME:-${HOME}/.cargo}=/cargo" >> "${GITHUB_ENV}"
-      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
-        env:
-          # As in `build`: ring's C goes through musl-gcc for the musl targets.
-          CC_x86_64_unknown_linux_musl: musl-gcc
-          CC_aarch64_unknown_linux_musl: musl-gcc
-        with:
-          command: build
           target: ${{ matrix.target }}
-          # The version packaging/pypi/pyproject.toml pins, which Dependabot tracks there; a
-          # test fails while the two differ.
-          maturin-version: v1.16.0
-          container: 'off'
-          working-directory: packaging/pypi
-          args: --release --locked --out wheels ${{ matrix.compatibility }}
+          package: wheel
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: wheel-${{ matrix.target }}
