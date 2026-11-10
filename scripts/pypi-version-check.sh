@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prints the workspace version the PyPI wheel `hippius-cli` is built at.
+# Prints the workspace version the PyPI wheel `hippius` is built at.
 #
 # Usage: scripts/pypi-version-check.sh [path to the workspace Cargo.toml]
 #

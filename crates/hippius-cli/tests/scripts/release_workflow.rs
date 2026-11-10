@@ -280,14 +280,11 @@ fn the_pypi_wheels_wait_for_pypi_publish() {
             "{publish:?} {tag}: {written}"
         );
     }
-    // The wheel and the upload are for the PyPI project `hippius-cli`, not the SDK's `hippius`.
-    assert!(RELEASE_WORKFLOW.contains("      url: https://pypi.org/project/hippius-cli/\n"));
+    // The wheel and the upload are for the PyPI project `hippius`.
+    assert!(RELEASE_WORKFLOW.contains("      url: https://pypi.org/project/hippius/\n"));
     assert!(RELEASE_WORKFLOW.contains("    if: needs.pypi-version.outputs.build == 'true'\n"));
     let pyproject = include_str!("../../../../packaging/pypi/pyproject.toml");
-    assert!(
-        pyproject.contains("\nname = \"hippius-cli\"\n"),
-        "{pyproject}"
-    );
+    assert!(pyproject.contains("\nname = \"hippius\"\n"), "{pyproject}");
 }
 
 /// Every workflow file, by name.
