@@ -175,12 +175,30 @@ fn is_automation(ci: Option<&OsStr>, ai_agent: Option<&OsStr>) -> bool {
     ci.is_some() || ai_agent_set
 }
 
+/// How text mode lays a success document out. The command decides, never the document's
+/// shape: a server's answer to a `get` may hold `items` and `next_page_token`, or `dry_run`
+/// and `requests`, and is still printed as one object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Layout {
+    /// One object as a key-value block, a list of objects as a table.
+    Document,
+    /// The document of a run given `--dry-run`: one with `requests` is printed as a dry run.
+    DryRun,
+    /// A list command's list envelope: a table of `items`, the fields beside it, and the
+    /// `--page-token` hint for the next page ([`crate::commands::Printed::List`]).
+    List,
+}
+
 /// Prints a success document and returns exit 0. `done` is what the command did to the
-/// server, which a failure to write the document must still report. `dry_run` is whether the
-/// run was given `--dry-run`: only then is a document with `requests` rendered as a dry run,
-/// so a server's answer with those fields is printed as any other answer.
-pub(crate) fn document(mode: Mode, document: &Value, done: SideEffects, dry_run: bool) -> ExitCode {
-    stdout(mode, render(mode, document, dry_run).as_bytes(), done)
+/// server, which a failure to write the document must still report. `layout` is how text
+/// mode lays it out.
+pub(crate) fn document(
+    mode: Mode,
+    document: &Value,
+    done: SideEffects,
+    layout: Layout,
+) -> ExitCode {
+    stdout(mode, render(mode, document, layout).as_bytes(), done)
 }
 
 /// Prints bytes that are the output itself in every mode, such as a completion script, and
@@ -244,7 +262,12 @@ pub(crate) fn failure_warned(mode: Mode, error: &Error, warnings: &[String]) -> 
     // A partial failure still prints what succeeded, so no id or row is lost (tenet 3).
     // A failure to write it does not change the exit code, which already says failure.
     if let Some(done) = done_on_failure(error) {
-        drop(write_stdout(render(mode, &done, false).as_bytes()));
+        let layout = if error.stdout_is_list() {
+            Layout::List
+        } else {
+            Layout::Document
+        };
+        drop(write_stdout(render(mode, &done, layout).as_bytes()));
     }
     stderr(&render_failure(mode, error, warnings));
     ExitCode::from(error.code().exit_code())
@@ -346,9 +369,8 @@ pub(crate) fn clap_error(mode: Mode, error: &clap::Error, args: &[OsString]) -> 
     } else {
         usage_message(error)
     };
-    let hint = renamed_hint(error, &path, args)
-        .or_else(|| moved_hint(error, &path, &command, args))
-        .or_else(|| unknown.and_then(|word| nearest_hint(&path, &command, word)))
+    let hint = unknown
+        .and_then(|word| nearest_hint(&path, &command, word))
         .unwrap_or_else(|| format!("run `{path} --help`"));
     let code = failure(mode, &Error::usage(message, hint));
     if missing_subcommand && matches!(mode, Mode::Text) {
@@ -358,229 +380,6 @@ pub(crate) fn clap_error(mode: Mode, error: &clap::Error, args: &[OsString]) -> 
     code
 }
 
-/// The flags renamed before 1.0, by the command that took them: the old name and the new.
-/// They kept no alias, so a caller still typing an old name is told the new one rather than
-/// sent to the help. These hints, and those of [`MOVED`], are removed in 0.16.0.
-const RENAMED: [(&str, &str, &str); 14] = [
-    (
-        "hipc cdn estimate",
-        "--custom-domains",
-        "--custom-hostnames",
-    ),
-    ("hipc cdn estimate", "--gb", "--traffic"),
-    (
-        "hipc s3 configure",
-        "--from-token-json",
-        "--from-token-file",
-    ),
-    ("hipc cdn waf events", "--rule", "--rule-id"),
-    ("hipc api", "--input", "--body-file"),
-    ("hipc drive subscription change", "--funding", "--pay-from"),
-    ("hipc s3 subscription change", "--funding", "--pay-from"),
-    ("hipc cdn purges create", "--all", "--everything"),
-    (
-        "hipc drive subscription change",
-        "--storage-cap-bytes",
-        "--storage-cap",
-    ),
-    (
-        "hipc s3 subscription change",
-        "--storage-cap-bytes",
-        "--storage-cap",
-    ),
-    ("hipc hub keys create", "--expires-days", "--expires-in"),
-    (
-        "hipc account billing-accounts costs",
-        "--group",
-        "--group-by",
-    ),
-    ("hipc compute backups restore", "--point", "--run-id"),
-    // The plan was a positional argument; any extra word is taken as the old form.
-    ("hipc hub subscription subscribe", "", "--plan"),
-];
-
-/// The commands renamed before 1.0: the path a caller types up to the old word, the old
-/// word, and the new path. They kept no alias either. An empty old word marks a leaf that
-/// became a group holding the new leaf (a list is `<noun> list`, tenet 2; a settings read
-/// beside its update is `get`): any word after it but a shelf verb, or none, is the old form.
-/// Removed in 0.16.0, with [`RENAMED`].
-const MOVED: [(&str, &str, &str); 9] = [
-    (
-        "hipc hub namespace",
-        "provision",
-        "hipc hub namespace create",
-    ),
-    (
-        "hipc hub namespace",
-        "check",
-        "hipc hub namespace availability",
-    ),
-    ("hipc network groups", "", "hipc network groups list"),
-    ("hipc network policies", "", "hipc network policies list"),
-    (
-        "hipc network vpcs resources",
-        "",
-        "hipc network vpcs resources list",
-    ),
-    (
-        "hipc network vpcs routers",
-        "",
-        "hipc network vpcs routers list",
-    ),
-    (
-        "hipc compute kubernetes backups",
-        "",
-        "hipc compute kubernetes backups list",
-    ),
-    (
-        "hipc account notifications",
-        "",
-        "hipc account notifications get",
-    ),
-    (
-        "hipc hub namespace robot",
-        "",
-        "hipc hub namespace robot get",
-    ),
-];
-
-/// The hint for a command line that names a command by its old path: an unknown subcommand
-/// that is the old word, or, under a leaf that became a group, an unknown subcommand that is
-/// not a shelf verb, an unknown flag (the old leaf's id or `--reveal`), or nothing at all. It
-/// gives the caller's own line with the path moved, so it runs as typed. A shelf verb there
-/// (`backups delete 7`) is a command that does not exist yet, not the old leaf's id. So is an
-/// unknown flag the new leaf does not take (`notifications --low-credit-alerts`, a flag of
-/// `update`; `network groups --limit 5`): the moved line would fail again, so the hint is the
-/// group's help.
-///
-/// The old leaf given the id `list` parses as the new leaf without its id. That reading is
-/// rare and forgetting the id is not, so a missing id there is answered for the new command
-/// alone, with the id it needs.
-fn moved_hint(
-    error: &clap::Error,
-    path: &str,
-    group: &clap::Command,
-    args: &[OsString],
-) -> Option<String> {
-    if error.kind() == ErrorKind::MissingRequiredArgument
-        && let Some(ContextValue::Strings(missing)) = error.get(ContextKind::InvalidArg)
-        && let Some((_, _, new)) = MOVED
-            .iter()
-            .find(|(_, old, new)| old.is_empty() && *new == path)
-    {
-        return Some(format!("run `{new} {}`", missing.join(" ")));
-    }
-    let typed = unknown_subcommand(error);
-    let unknown_flag = match error.get(ContextKind::InvalidArg) {
-        Some(ContextValue::String(arg)) if error.kind() == ErrorKind::UnknownArgument => {
-            Some(arg.as_str())
-        }
-        _ => None,
-    };
-    // The old leaf's id is a word only where the new leaf takes one.
-    let takes_id =
-        new_leaf(group, path).is_some_and(|leaf| leaf.get_positionals().next().is_some());
-    let leaf_form = typed.is_some_and(|word| takes_id && !crate::spec::VERBS.contains(&word))
-        || unknown_flag.is_some_and(|flag| leaf_takes(new_leaf(group, path), flag))
-        || is_missing_subcommand(error);
-    let (parent, old, new) = MOVED.iter().find(|(parent, old, _)| {
-        *parent == path
-            && if old.is_empty() {
-                leaf_form
-            } else {
-                typed == Some(*old)
-            }
-    })?;
-    let words: Vec<String> = args
-        .iter()
-        .skip(1)
-        .map(|word| word.to_string_lossy().into_owned())
-        .collect();
-    // The parent's words, found in order as `typed_command` found them, all before any `--`;
-    // its last word is where the path moves.
-    let mut at = 0;
-    for name in parent.split(' ').skip(1) {
-        at += words[at..].iter().position(|word| word == name)? + 1;
-    }
-    let new_word = new.rsplit(' ').next()?.to_owned();
-    let mut moved = words.clone();
-    if old.is_empty() {
-        moved.insert(at, new_word);
-    } else {
-        let offset = words[at..].iter().position(|word| word == old)?;
-        moved[at + offset] = new_word;
-    }
-    Some(format!(
-        "run `{}` in place of `{}`",
-        phrase::command(&moved),
-        phrase::command(&words)
-    ))
-}
-
-/// The new leaf under `group` of the [`MOVED`] row whose old leaf `path` was, if any.
-fn new_leaf<'a>(group: &'a clap::Command, path: &str) -> Option<&'a clap::Command> {
-    let (_, _, new) = MOVED
-        .iter()
-        .find(|(parent, old, _)| *parent == path && old.is_empty())?;
-    group.find_subcommand(new.rsplit(' ').next()?)
-}
-
-/// Whether `leaf`, the new leaf of a [`MOVED`] row, takes the long flag `flag`. The new leaf
-/// has the old leaf's flags, so only one of them is the old form. No new leaf has a short
-/// flag, so an unknown short one is never the old form.
-fn leaf_takes(leaf: Option<&clap::Command>, flag: &str) -> bool {
-    let long = flag.strip_prefix("--");
-    leaf.is_some_and(|leaf| {
-        leaf.get_arguments()
-            .any(|arg| long.is_some() && arg.get_long() == long)
-    })
-}
-
-/// The hint for an unknown argument that is a renamed flag of the typed command, or the old
-/// positional plan of the Hub subscribe. Only the words before `--` count: one after it is
-/// not a flag. A command line that already has the new flag gets no rename hint, since the
-/// unknown word is then something else.
-fn renamed_hint(error: &clap::Error, path: &str, args: &[OsString]) -> Option<String> {
-    let arg = match error.get(ContextKind::InvalidArg) {
-        Some(ContextValue::String(arg)) if error.kind() == ErrorKind::UnknownArgument => arg,
-        _ => return None,
-    };
-    // clap names a flag given as `--flag=value` without its value.
-    let old = if arg.starts_with('-') {
-        arg.as_str()
-    } else {
-        ""
-    };
-    let (_, _, new) = RENAMED
-        .iter()
-        .find(|(command, from, _)| *command == path && *from == old)?;
-    let words: Vec<&str> = args
-        .iter()
-        .skip(1)
-        .filter_map(|word| word.to_str())
-        .take_while(|word| *word != "--")
-        .collect();
-    let is = |word: &str, flag: &str| {
-        word == flag
-            || word
-                .strip_prefix(flag)
-                .is_some_and(|rest| rest.starts_with('='))
-    };
-    let typed_old = words.iter().any(|word| is(word, arg));
-    let typed_new = words.iter().any(|word| is(word, new));
-    if !typed_old || typed_new {
-        return None;
-    }
-    Some(if old.is_empty() {
-        format!("pass the plan as `{new} <PLAN>`")
-    } else {
-        format!("pass `{new}` in place of `{old}`")
-    })
-}
-
-/// clap says a subcommand is missing in two ways: `hipc` and `hipc compute` alone show help
-/// (`arg_required_else_help`), and a command line with only flags (`hipc --json`) is
-/// `MissingSubcommand`.
 /// The word of an unknown subcommand, as typed, when that is what clap refused.
 fn unknown_subcommand(error: &clap::Error) -> Option<&str> {
     match error.get(ContextKind::InvalidSubcommand) {
@@ -604,6 +403,9 @@ fn nearest_hint(path: &str, group: &clap::Command, word: &str) -> Option<String>
     Some(format!("run {}", hippius::phrase::join(&near, "or")))
 }
 
+/// clap says a subcommand is missing in two ways: `hipc` and `hipc compute` alone show help
+/// (`arg_required_else_help`), and a command line with only flags (`hipc --json`) is
+/// `MissingSubcommand`.
 fn is_missing_subcommand(error: &clap::Error) -> bool {
     matches!(
         error.kind(),
@@ -880,10 +682,10 @@ fn escape_lines(text: &str) -> String {
         .join("\n")
 }
 
-fn render(mode: Mode, document: &Value, dry_run: bool) -> String {
+fn render(mode: Mode, document: &Value, layout: Layout) -> String {
     match mode {
         Mode::Json => format!("{}\n", json_text(document)),
-        Mode::Text => text::render(document, dry_run),
+        Mode::Text => text::render(document, layout),
     }
 }
 
@@ -932,15 +734,20 @@ fn stderr(text: &str) {
 /// so a person can tell an empty answer from a hang: `no items` for a list with no
 /// items and no later page, and `no fields` for an empty object. `None` for any other
 /// document. stdout is left as [`document`] writes it, so it stays empty, or holds only
-/// the fields beside the list.
-pub(crate) fn empty_note(document: &Value) -> Option<&'static str> {
+/// the fields beside the list. Only a list command's envelope ([`Layout::List`]) is a list
+/// with no items; another document with an empty `items` prints that field.
+pub(crate) fn empty_note(document: &Value, layout: Layout) -> Option<&'static str> {
     match document {
         Value::Array(items) if items.is_empty() => Some("no items"),
         Value::Object(map) if map.is_empty() => Some("no fields"),
-        Value::Object(map) => match (map.get("items"), map.get("next_page_token")) {
-            (Some(Value::Array(items)), Some(Value::Null)) if items.is_empty() => Some("no items"),
-            _ => None,
-        },
+        Value::Object(map) if layout == Layout::List => {
+            match (map.get("items"), map.get("next_page_token")) {
+                (Some(Value::Array(items)), Some(Value::Null)) if items.is_empty() => {
+                    Some("no items")
+                }
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -954,20 +761,25 @@ pub(crate) fn empty_note(document: &Value) -> Option<&'static str> {
 mod text {
     use serde_json::{Map, Value};
 
-    /// `document` as text; with `is_dry_run`, the run's `--dry-run`, a document that lists
-    /// `requests` is a dry run's ([`dry_run`]).
-    pub(super) fn render(document: &Value, is_dry_run: bool) -> String {
+    use super::Layout;
+
+    /// `document` as text, laid out as `layout` says: under [`Layout::DryRun`] a document
+    /// that lists `requests` is a dry run's ([`dry_run`]), and under [`Layout::List`] a
+    /// document with `items` and `next_page_token` is a list envelope.
+    pub(super) fn render(document: &Value, layout: Layout) -> String {
         match document {
             Value::Array(items) => list(items),
             Value::Object(map)
-                if is_dry_run
+                if layout == Layout::DryRun
                     && map.contains_key("dry_run")
                     && map.get("requests").is_some_and(Value::is_array) =>
             {
                 dry_run(map)
             }
             Value::Object(map) => match map.get("items") {
-                Some(Value::Array(items)) if map.contains_key("next_page_token") => {
+                Some(Value::Array(items))
+                    if layout == Layout::List && map.contains_key("next_page_token") =>
+                {
                     let mut out = list(items);
                     // The server's other fields beside the list (a total, `partial_failure`,
                     // `sharing_enabled`) are printed too: text mode drops nothing.
@@ -1154,7 +966,7 @@ mod text {
 
 #[cfg(test)]
 mod tests {
-    use clap::{CommandFactory as _, Parser as _};
+    use clap::Parser as _;
     use serde_json::json;
 
     use super::*;
@@ -1372,71 +1184,6 @@ mod tests {
         Cli::try_parse_from(argv).unwrap_err()
     }
 
-    /// Every row of the rename table names a command that exists, a new flag it takes, and
-    /// an old flag it no longer takes, so the table cannot point at a name that moved again.
-    #[test]
-    fn every_renamed_flag_row_names_a_live_command_and_flag() {
-        let root = Cli::command();
-        for (path, old, new) in RENAMED {
-            let mut command = &root;
-            for word in path.split(' ').skip(1) {
-                command = command
-                    .find_subcommand(word)
-                    .unwrap_or_else(|| panic!("{path}: no `{word}`"));
-            }
-            let takes = |flag: &str| {
-                command
-                    .get_arguments()
-                    .any(|arg| arg.get_long() == flag.strip_prefix("--"))
-            };
-            assert!(takes(new), "{path} has no {new}");
-            assert!(old.is_empty() || !takes(old), "{path} still takes {old}");
-        }
-    }
-
-    /// Every row of the moved-command table names a new path that exists and an old one
-    /// that does not, so the hint cannot send a caller to a command that moved again.
-    #[test]
-    fn every_moved_command_row_names_a_live_path_and_a_gone_one() {
-        let root = Cli::command();
-        let find = |path: &str| {
-            path.split(' ')
-                .skip(1)
-                .try_fold(&root, |command, word| command.find_subcommand(word))
-        };
-        for (parent, old, new) in MOVED {
-            let new_leaf = find(new).unwrap_or_else(|| panic!("no {new}"));
-            assert!(!new_leaf.has_subcommands(), "{new} is not a leaf");
-            // `leaf_takes` reads long flags only.
-            assert!(
-                new_leaf
-                    .get_arguments()
-                    .all(|arg| arg.get_short().is_none()),
-                "{new} has a short flag"
-            );
-            let parent_command = find(parent).unwrap_or_else(|| panic!("no {parent}"));
-            if old.is_empty() {
-                // The old leaf is now the group that holds the new one as a leaf child, and
-                // the bare old line no longer runs.
-                assert!(
-                    parent_command.is_subcommand_required_set(),
-                    "{parent} runs bare"
-                );
-                let leaf = new.rsplit(' ').next().unwrap_or_default();
-                assert_eq!(format!("{parent} {leaf}"), new);
-                assert!(
-                    parent_command.find_subcommand(leaf).is_some(),
-                    "{parent} has no {leaf}"
-                );
-            } else {
-                assert!(
-                    parent_command.find_subcommand(old).is_none(),
-                    "{parent} still has {old}"
-                );
-            }
-        }
-    }
-
     #[test]
     fn a_range_is_digits_around_two_dots() {
         for range in ["1..=500", "1..10", "1.."] {
@@ -1617,7 +1364,7 @@ mod tests {
     fn render_json_is_one_compact_line() {
         let doc = json!({"a": [1, 2], "b": {"c": null}});
         assert_eq!(
-            render(Mode::Json, &doc, false),
+            render(Mode::Json, &doc, Layout::Document),
             "{\"a\":[1,2],\"b\":{\"c\":null}}\n"
         );
     }
@@ -1629,8 +1376,18 @@ mod tests {
             "next_page_token": "2"
         });
         assert_eq!(
-            text::render(&doc, false),
+            text::render(&doc, Layout::List),
             "id   name\na    first\nbbb  -\nnext page: --page-token 2\n"
+        );
+        // A `get` whose answer has the same fields is one object: no table and no page hint,
+        // which its command does not take.
+        assert_eq!(
+            text::render(&doc, Layout::Document),
+            "items            [{\"id\":\"a\",\"name\":\"first\"},{\"id\":\"bbb\",\"name\":null}]\nnext_page_token  2\n"
+        );
+        assert_eq!(
+            text::render(&doc, Layout::DryRun),
+            text::render(&doc, Layout::Document)
         );
     }
 
@@ -1645,32 +1402,35 @@ mod tests {
             ]
         });
         assert_eq!(
-            text::render(&doc, true),
+            text::render(&doc, Layout::DryRun),
             "dry_run  true\n\nmethod  GET\nurl     https://x/a\n\nmethod  PUT\nbody    {\"k\":1}\n"
         );
         // The same fields in a real run's answer, such as a server's, are a plain block.
-        assert!(text::render(&doc, false).starts_with("dry_run   true\nrequests  "));
+        assert!(text::render(&doc, Layout::Document).starts_with("dry_run   true\nrequests  "));
     }
 
     #[test]
     fn text_block_for_one_object() {
         let doc = json!({"version": "0.1.0", "target": "aarch64-apple-darwin"});
         assert_eq!(
-            text::render(&doc, false),
+            text::render(&doc, Layout::Document),
             "version  0.1.0\ntarget   aarch64-apple-darwin\n"
         );
     }
 
     #[test]
     fn text_scalars_arrays_and_nested_values() {
-        assert_eq!(text::render(&json!("plain"), false), "plain\n");
-        assert_eq!(text::render(&json!(null), false), "-\n");
-        assert_eq!(text::render(&json!(42), false), "42\n");
-        assert_eq!(text::render(&json!(["a", 1, null]), false), "a\n1\n-\n");
-        assert_eq!(text::render(&json!([]), false), "");
-        assert_eq!(text::render(&json!({}), false), "");
+        assert_eq!(text::render(&json!("plain"), Layout::Document), "plain\n");
+        assert_eq!(text::render(&json!(null), Layout::Document), "-\n");
+        assert_eq!(text::render(&json!(42), Layout::Document), "42\n");
         assert_eq!(
-            text::render(&json!({"path": ["a", "b"], "ok": true}), false),
+            text::render(&json!(["a", 1, null]), Layout::Document),
+            "a\n1\n-\n"
+        );
+        assert_eq!(text::render(&json!([]), Layout::Document), "");
+        assert_eq!(text::render(&json!({}), Layout::Document), "");
+        assert_eq!(
+            text::render(&json!({"path": ["a", "b"], "ok": true}), Layout::Document),
             "path  [\"a\",\"b\"]\nok    true\n"
         );
     }
@@ -1678,20 +1438,26 @@ mod tests {
     #[test]
     fn text_table_takes_the_union_of_columns_in_first_seen_order() {
         let doc = json!([{"a": 1}, {"b": 2, "a": 3}]);
-        assert_eq!(text::render(&doc, false), "a  b\n1\n3  2\n");
+        assert_eq!(text::render(&doc, Layout::Document), "a  b\n1\n3  2\n");
     }
 
     #[test]
     fn a_list_mixing_objects_and_scalars_prints_every_item() {
         let doc = json!([{"a": 1}, "loose", 7]);
-        assert_eq!(text::render(&doc, false), "{\"a\":1}\nloose\n7\n");
+        assert_eq!(
+            text::render(&doc, Layout::Document),
+            "{\"a\":1}\nloose\n7\n"
+        );
     }
 
     #[test]
     fn items_without_a_page_token_field_is_a_plain_object() {
-        assert_eq!(text::render(&json!({"items": [1]}), false), "items  [1]\n");
+        assert_eq!(
+            text::render(&json!({"items": [1]}), Layout::List),
+            "items  [1]\n"
+        );
         let last_page = json!({"items": [{"id": "a"}], "next_page_token": null});
-        assert_eq!(text::render(&last_page, false), "id\na\n");
+        assert_eq!(text::render(&last_page, Layout::List), "id\na\n");
     }
 
     /// Only a list with nothing on it and no later page, or an empty object, gets
@@ -1699,9 +1465,13 @@ mod tests {
     #[test]
     fn an_empty_list_or_object_is_noted_and_nothing_else() {
         let empty_page = json!({"count": 0, "items": [], "next_page_token": null});
-        assert_eq!(empty_note(&json!([])), Some("no items"));
-        assert_eq!(empty_note(&empty_page), Some("no items"));
-        assert_eq!(empty_note(&json!({})), Some("no fields"));
+        for layout in [Layout::List, Layout::Document] {
+            assert_eq!(empty_note(&json!([]), layout), Some("no items"));
+            assert_eq!(empty_note(&json!({}), layout), Some("no fields"));
+        }
+        assert_eq!(empty_note(&empty_page, Layout::List), Some("no items"));
+        // A `get` whose answer has an empty `items` prints that field: not an empty list.
+        assert_eq!(empty_note(&empty_page, Layout::Document), None);
         for shown in [
             json!([1]),
             json!({"items": [], "next_page_token": "2"}),
@@ -1712,7 +1482,7 @@ mod tests {
             json!(""),
             json!(null),
         ] {
-            assert_eq!(empty_note(&shown), None, "{shown}");
+            assert_eq!(empty_note(&shown, Layout::List), None, "{shown}");
         }
     }
 
@@ -1727,7 +1497,7 @@ mod tests {
             "partial_failure": true
         });
         assert_eq!(
-            text::render(&doc, false),
+            text::render(&doc, Layout::List),
             "id\na\nsharing_enabled: true\npartial_failure: true\nnext page: --page-token 2\n"
         );
     }
@@ -1757,12 +1527,12 @@ mod tests {
     fn text_escapes_control_characters_everywhere() {
         let doc = json!({"na\tme": "line\nbreak \u{1b}[31mred"});
         assert_eq!(
-            text::render(&doc, false),
+            text::render(&doc, Layout::Document),
             "na\\tme  line\\nbreak \\u{1b}[31mred\n"
         );
         let doc = json!({"items": [{"k\n": "v"}], "next_page_token": "x\ry"});
         assert_eq!(
-            text::render(&doc, false),
+            text::render(&doc, Layout::List),
             "k\\n\nv\nnext page: --page-token x\\ry\n"
         );
     }
@@ -1771,16 +1541,18 @@ mod tests {
     fn text_escapes_characters_that_reorder_or_hide_text() {
         // U+202E reverses what follows, U+200B is invisible, U+009B is a C1 control.
         let doc = json!({"name": "a\u{202E}gpj.exe\u{202C} b\u{200B}c \u{9b}2J \u{2028}"});
-        let rendered = text::render(&doc, false);
+        let rendered = text::render(&doc, Layout::Document);
         for c in ['\u{202E}', '\u{202C}', '\u{200B}', '\u{9b}', '\u{2028}'] {
             assert!(!rendered.contains(c), "{c:?} in {rendered:?}");
         }
         assert!(rendered.contains("\\u{202e}gpj.exe"), "{rendered}");
-        assert!(text::render(&json!({"name": "ünïcødé ✓"}), false).contains("ünïcødé ✓"));
+        assert!(
+            text::render(&json!({"name": "ünïcødé ✓"}), Layout::Document).contains("ünïcødé ✓")
+        );
         // Invisible fillers and tag characters make one name look like another.
         let filler = text::render(
             &json!({"name": "prod\u{3164}", "tag": "a\u{E0041}b\u{E0100}"}),
-            false,
+            Layout::Document,
         );
         for c in ['\u{3164}', '\u{E0041}', '\u{E0100}'] {
             assert!(!filler.contains(c), "{c:?} in {filler:?}");
@@ -1800,7 +1572,7 @@ mod tests {
         // Inside an array or object cell too, which serde_json does not escape.
         let nested = text::render(
             &json!({"items": [{"ports": ["a\u{202E}b"]}], "next_page_token": null}),
-            false,
+            Layout::List,
         );
         assert!(!nested.contains('\u{202E}'), "{nested:?}");
     }
@@ -1832,8 +1604,11 @@ mod tests {
     #[test]
     fn text_pads_by_characters_not_bytes() {
         let doc = json!([{"name": "é", "n": 1}, {"name": "ab", "n": 2}]);
-        assert_eq!(text::render(&doc, false), "name  n\né     1\nab    2\n");
+        assert_eq!(
+            text::render(&doc, Layout::Document),
+            "name  n\né     1\nab    2\n"
+        );
         let doc = json!({"é": 1, "ab": 2});
-        assert_eq!(text::render(&doc, false), "é   1\nab  2\n");
+        assert_eq!(text::render(&doc, Layout::Document), "é   1\nab  2\n");
     }
 }

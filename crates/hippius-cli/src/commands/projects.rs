@@ -23,7 +23,8 @@ use crate::cli::{
 use crate::commands::account;
 use crate::commands::credits::{AmountPath, shown_in_credits};
 use crate::commands::{
-    Printed, keyed_list, print_body, print_body_or, print_keyed_list, print_with, store_selection,
+    Printed, keyed_list, print_body, print_body_or, print_keyed_list, print_list_with, print_with,
+    store_selection,
 };
 use crate::context::{Context, Gate, Write};
 use crate::output::Mode;
@@ -566,15 +567,13 @@ fn quota_update(ctx: &Context<'_>, args: &QuotaUpdate) -> Result<Printed> {
 pub(crate) fn project_transfers(ctx: &Context<'_>, command: &ProjectTransfers) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
     match command {
-        ProjectTransfers::List => {
-            print_with(ctx, &client, &transfers_read(), Gate::Open, |response| {
-                let envelope = transfers_envelope(response.json()?)?;
-                Ok(match ctx.mode() {
-                    Mode::Text => transfers_for_a_person(envelope),
-                    Mode::Json => envelope,
-                })
+        ProjectTransfers::List => print_list_with(ctx, &client, &transfers_read(), |response| {
+            let envelope = transfers_envelope(response.json()?)?;
+            Ok(match ctx.mode() {
+                Mode::Text => transfers_for_a_person(envelope),
+                Mode::Json => envelope,
             })
-        }
+        }),
         ProjectTransfers::Accept {
             transfer_id,
             bill_to,

@@ -102,7 +102,7 @@ pub(crate) fn run(ctx: &Context<'_>, args: &Api) -> Result<Printed> {
     let consequence = client.route_value(&request, CONSEQUENCES)?.copied();
     let gate = gate(&request, provisions, permanent, consequence);
     match ctx.call(&client, &request, gate)? {
-        Step::Sent(response) => Ok(Printed::Body(response.bytes().to_vec())),
+        Step::Sent(response) => Ok(Printed::Body(response.into_bytes())),
         Step::DryRun(doc) => Ok(Printed::Document(doc)),
     }
 }

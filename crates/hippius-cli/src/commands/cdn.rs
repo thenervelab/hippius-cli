@@ -140,18 +140,15 @@ fn cap_update(
     // `monthly_cap_credits` is rounded to a few decimals, so a cap just above the one in force
     // could read as equal; `monthly_cap` holds it exactly, in base units, and decides when it
     // is a digit string. The parser refuses a new cap with more decimals than base units
-    // hold, so the order is unknown only when the read holds no amount to compare with.
+    // hold, so the new cap always has base units, and the order is unknown only when the read
+    // holds no amount to compare with.
     let base = current
         .get("monthly_cap")
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()));
-    debug_assert!(
-        base_units(monthly_cap).is_some(),
-        "the parser refused {monthly_cap}"
-    );
-    let order = match base {
-        Some(base) => base_units(monthly_cap).and_then(|new| compare(&new, base)),
-        None => old.as_deref().and_then(|old| compare(monthly_cap, old)),
+    let order = match (base, base_units(monthly_cap)) {
+        (Some(base), Some(new)) => compare(&new, base),
+        _ => old.as_deref().and_then(|old| compare(monthly_cap, old)),
     };
     let question = match (order, old.as_deref()) {
         (Some(Ordering::Less | Ordering::Equal), _) => None,
@@ -270,7 +267,7 @@ fn rules(ctx: &Context<'_>, command: &CdnRules) -> Result<Printed> {
             let current = |answer: Value| {
                 cache_rule_entries(&answer)
                     .map(Found::new)
-                    .ok_or_else(|| replace::unreadable(&read_action))
+                    .ok_or_else(|| crate::commands::unreadable(&read_action))
             };
             replace_list(ctx, &ctx.load_authed_client()?, &replace, current)
         }
@@ -320,10 +317,7 @@ fn check_cache_rules(list: &Value, file: &str) -> Result<()> {
 /// The first key of `rule` that swagger does not list, as the end of a sentence that starts
 /// with the rule's place in the file; `None` when every key is listed.
 fn unknown_cache_key(rule: &Value) -> Option<String> {
-    let listed = |keys: &[&str]| {
-        let keys: Vec<String> = keys.iter().map(|key| format!("`{key}`")).collect();
-        phrase::join(&keys, "and")
-    };
+    let listed = |keys: &[&str]| phrase::ticked(keys, "and");
     let unknown = |object: &Value, keys: &[&str]| {
         object
             .as_object()?
@@ -942,10 +936,7 @@ fn dns_setup_answer(answer: Value, provider: &str) -> Value {
 /// `request_id`, a header, is kept once each spelling of the secrets is redacted from it. An
 /// error with no status (a refused connection, a timeout) holds no server text and is kept.
 fn dns_setup_error(error: Error, credentials: &DnsCredentials, action: &str) -> Error {
-    let error = credentials
-        .redactions()
-        .iter()
-        .fold(error, |error, text| error.redacted(text));
+    let error = error.redacted_all(&credentials.redactions());
     match error.http_status() {
         Some(status) => error.without_server_words(format!(
             "cannot {action}: the API answered with status `{status}`; its words are not shown, \

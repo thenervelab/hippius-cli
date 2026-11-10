@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 
 use crate::cli::{AppEngine, AppEngineApps, GuestComponents};
 use crate::commands::files::write_output_file;
-use crate::commands::{Input, Printed, print_with};
+use crate::commands::{Input, Printed, print_list_with, print_with};
 use crate::context::{Context, Gate};
 
 /// The largest compose file read. The server's limit is lower (`max_compose_bytes` in `hipc
@@ -73,9 +73,10 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
         // and printed as the list envelope, as the VM list is.
         AppEngine::Apps(AppEngineApps::List) => {
             let request = Request::get(path("apps/")).about("list the App Engine apps");
-            show(ctx, &request, |response| {
+            print_list_with(ctx, &ctx.load_authed_client()?, &request, |response| {
                 hippius::page(response.json()?)?.complete_envelope(request.target())
             })
+            .map_err(unavailable_hint)
         }
         AppEngine::Apps(AppEngineApps::Create(args)) => create::create(ctx, args),
         AppEngine::Apps(AppEngineApps::Get { vm_id }) => {
@@ -190,7 +191,7 @@ fn read_compose(path: &Path) -> Result<Compose> {
         flag: "--compose-file",
         what: "compose",
     };
-    let text = input.read_regular_text(MAX_COMPOSE_BYTES)?;
+    let text = input.read_text(MAX_COMPOSE_BYTES)?;
     let name = if path == Path::new("-") {
         "the compose from stdin".to_owned()
     } else {

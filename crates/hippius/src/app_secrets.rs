@@ -26,10 +26,10 @@ use std::path::Path;
 use serde_json::{Map, Value};
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::config::{Guarded, NamedBy, PrivateFile};
-use crate::dns::{UniqueObject, clear_owned, longest_first, secret_spellings};
+use crate::dns::{ObjectFile, clear_owned, load_object, longest_first, secret_spellings};
 use crate::error::{Error, Result};
 use crate::phrase::quote_path;
+use crate::private_file::{Guarded, NamedBy};
 
 /// The secrets of an app, loaded from their file. Its `Debug` counts the secrets and shows
 /// neither a name nor a value.
@@ -69,14 +69,11 @@ impl AppSecrets {
                 file_hint(flag),
             )
         };
-        let Some(bytes) = PrivateFile::load(path, guarded)? else {
-            return Err(refuse("does not exist"));
-        };
-        let bytes = Zeroizing::new(bytes);
-        let mut file = match serde_json::from_slice::<UniqueObject>(&bytes) {
-            Ok(UniqueObject::Object(file)) => file,
-            Ok(UniqueObject::Repeated) => return Err(refuse("names a secret twice")),
-            Err(_) => return Err(refuse("is not a JSON object")),
+        let mut file = match load_object(path, guarded)? {
+            ObjectFile::Object(file) => file,
+            ObjectFile::Missing => return Err(refuse("does not exist")),
+            ObjectFile::Repeated => return Err(refuse("names a secret twice")),
+            ObjectFile::NotAnObject => return Err(refuse("is not a JSON object")),
         };
         let mut secrets = Vec::with_capacity(file.len());
         let mut not_text = None;

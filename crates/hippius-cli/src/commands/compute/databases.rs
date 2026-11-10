@@ -26,7 +26,7 @@ use crate::cli::{
 };
 use crate::commands::compute::balance_hint;
 use crate::commands::files::{NewFileError, write_new};
-use crate::commands::{Printed, keyed_list, print_with, require_reveal_or_file};
+use crate::commands::{Printed, keyed_list, print_list_with, print_with, require_reveal_or_file};
 use crate::context::{Context, Gate};
 
 /// `DELETE /api/databases/<id>/`, which names in its question and a text-mode note what the
@@ -82,7 +82,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
         // whole.
         Databases::List => {
             let request = Request::get("/databases/").about("list the databases");
-            print_with(ctx, &ctx.load_authed_client()?, &request, Gate::Open, |r| {
+            print_list_with(ctx, &ctx.load_authed_client()?, &request, |r| {
                 let list = hippius::page(r.json()?)?.complete_envelope(request.target())?;
                 Ok(without_field(list, CREDENTIALS))
             })
@@ -178,20 +178,14 @@ const DATABASES: &str = "hipc compute databases list";
 /// `request`'s answer, a list under `key` (or a bare array or a page), printed as the list
 /// envelope with the answer's other fields beside `items`, and any `credentials` removed.
 fn print_list(ctx: &Context<'_>, request: &Request, key: &str) -> Result<Printed> {
-    print_with(
-        ctx,
-        &ctx.load_authed_client()?,
-        request,
-        Gate::Open,
-        |response| {
-            let answer = without_credentials(&response)?;
-            if answer.get(key).is_some() {
-                keyed_list(answer, request, key)
-            } else {
-                hippius::page(answer)?.complete_envelope(request.target())
-            }
-        },
-    )
+    print_list_with(ctx, &ctx.load_authed_client()?, request, |response| {
+        let answer = without_credentials(&response)?;
+        if answer.get(key).is_some() {
+            keyed_list(answer, request, key)
+        } else {
+            hippius::page(answer)?.complete_envelope(request.target())
+        }
+    })
 }
 
 /// The answer's document with any `credentials` field removed: only create and restore
@@ -390,17 +384,13 @@ fn withheld(object: &Value) -> Vec<String> {
     secrets
 }
 
-/// `value` with every one of `secrets` in its strings replaced by `<redacted>`: a field
-/// outside `credentials`, such as a `connection_string` that embeds the password, must not
-/// print what `--credentials-dir` moved to its files.
+/// `value` with every one of `secrets` in its strings replaced by `<redacted>`, all at once
+/// ([`hippius::redact_all`]): a field outside `credentials`, such as a
+/// `connection_string` that embeds the password, must not print what `--credentials-dir`
+/// moved to its files.
 fn redacted(value: Value, secrets: &[String]) -> Value {
     match value {
-        Value::String(mut text) => {
-            for secret in secrets {
-                text = text.replace(secret.as_str(), "<redacted>");
-            }
-            Value::String(text)
-        }
+        Value::String(text) => Value::String(hippius::redact_all(text, secrets)),
         Value::Object(fields) => Value::Object(
             fields
                 .into_iter()
@@ -530,4 +520,20 @@ fn document_or_raw(response: &Response) -> Result<Value> {
             )
             .after_write(json!({ "unparsed_answer": String::from_utf8_lossy(cut) }))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    /// The secrets moved to files are redacted at once: a short one cuts neither a
+    /// longer one that holds it nor the marker a longer one wrote.
+    #[test]
+    fn moved_secrets_are_redacted_in_one_pass() {
+        let secrets = ["acted".to_owned(), "d".to_owned()];
+        assert_eq!(
+            super::redacted(json!({"a": ["acted d", 7], "acted": "x"}), &secrets),
+            json!({"a": ["<redacted> <redacted>", 7], "acted": "x"})
+        );
+    }
 }

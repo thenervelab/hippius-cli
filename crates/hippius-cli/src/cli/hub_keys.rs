@@ -2,6 +2,7 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 
+use crate::cli::values::{Charset, Dash, word};
 use crate::cli::{SecretFile, examples, number};
 
 const KEY_ID: &str = "a key id is a whole number, from `hipc hub keys list`";
@@ -114,16 +115,12 @@ impl KeyRole {
 /// leading `-` is refused too: it reads as a flag on a command line. The server judges the
 /// rest.
 fn key_name(value: &str) -> Result<String, String> {
-    let one_word = !value.is_empty()
-        && !value.starts_with('-')
-        && !value.chars().any(|c| c.is_whitespace() || c.is_control());
-    if one_word {
-        Ok(value.to_owned())
-    } else {
-        Err(
-            "a key name is one word, with no spaces or control characters, that does not \
-             start with `-`"
-                .to_owned(),
-        )
-    }
+    word(
+        value,
+        1..=usize::MAX,
+        Charset::OneWord,
+        Dash::Refused,
+        "a key name is one word, with no spaces or control characters, that does not start \
+         with `-`",
+    )
 }

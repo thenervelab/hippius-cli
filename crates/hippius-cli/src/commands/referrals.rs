@@ -15,7 +15,7 @@ use hippius::{Method, Request, Result, phrase};
 use serde_json::{Value, json};
 
 use crate::cli::Referrals;
-use crate::commands::{Printed, print_body, print_with};
+use crate::commands::{Printed, print_body, print_list_with};
 use crate::context::{Context, Gate};
 
 /// The command that lists the referral link ids, for the hint of a 404.
@@ -26,7 +26,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Referrals) -> Result<Printed> {
     match command {
         Referrals::List => {
             let request = Request::get("/referral-codes/").about("list the referral links");
-            print_with(ctx, &client, &request, Gate::Open, |response| {
+            print_list_with(ctx, &client, &request, |response| {
                 let envelope =
                     hippius::page(response.json()?)?.complete_envelope(request.target())?;
                 warn_on_codes(ctx, &envelope);

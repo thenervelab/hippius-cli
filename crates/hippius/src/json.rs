@@ -295,21 +295,53 @@ pub fn without_fields(value: Value, withheld: &dyn Fn(&str) -> bool) -> Value {
 /// What [`redact_value`] writes in place of the secret.
 const REDACTED: &str = "<redacted>";
 
-/// `text` with every occurrence of `secret` replaced by `<redacted>`.
+/// `text` with every occurrence of each of `secrets` replaced by `<redacted>`. Every place any
+/// secret matches is found first, overlapping matches included, and matches that overlap are
+/// one span with one marker: so neither secret of two that overlap in the text shows a part of
+/// itself, a shorter secret is never replaced inside a longer one that holds it, and none is
+/// replaced inside a `<redacted>` another wrote, as a pass per secret would do for a secret
+/// such as `d`. With one secret whose matches cannot overlap it is [`str::replace`]. The text
+/// that held a secret is cleared, not left in freed memory.
 ///
 /// # Panics
 ///
-/// When `secret` is empty, which would match between every two characters.
-pub(crate) fn redact(text: String, secret: &str) -> String {
-    assert!(!secret.is_empty(), "an empty secret cannot be redacted");
-    if text.contains(secret) {
-        let redacted = text.replace(secret, REDACTED);
-        // The text that held the secret is cleared, not left in freed memory.
-        drop(zeroize::Zeroizing::new(text));
-        redacted
-    } else {
-        text
+/// When a secret is empty, which would match between every two characters.
+pub fn redact_all<S: AsRef<str>>(text: String, secrets: &[S]) -> String {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for secret in secrets {
+        let secret = secret.as_ref();
+        assert!(!secret.is_empty(), "an empty secret cannot be redacted");
+        let mut from = 0;
+        while let Some(at) = text[from..].find(secret) {
+            let start = from + at;
+            spans.push((start, start + secret.len()));
+            // The next match may start inside this one: one character on.
+            from = start + text[start..].chars().next().map_or(1, char::len_utf8);
+        }
     }
+    if spans.is_empty() {
+        return text;
+    }
+    spans.sort_unstable();
+    let mut out = String::with_capacity(text.len());
+    let mut written = 0;
+    let mut spans = spans.into_iter().peekable();
+    while let Some((start, mut end)) = spans.next() {
+        // Every later span that starts before this one ends is part of it.
+        while let Some(&(next, next_end)) = spans.peek() {
+            if next >= end {
+                break;
+            }
+            end = end.max(next_end);
+            spans.next();
+        }
+        out.push_str(&text[written..start]);
+        out.push_str(REDACTED);
+        written = end;
+    }
+    out.push_str(&text[written..]);
+    drop(zeroize::Zeroizing::new(text));
+    out
 }
 
 /// `value` with every occurrence of `secret` in a string or a field name replaced by
@@ -326,25 +358,63 @@ pub(crate) fn redact(text: String, secret: &str) -> String {
 ///
 /// When `secret` is empty, which would match between every two characters.
 pub fn redact_value(value: Value, secret: &str) -> Value {
-    assert!(!secret.is_empty(), "an empty secret cannot be redacted");
-    let clean = |text: String| redact(text, secret);
+    redact_value_all(value, &[secret])
+}
+
+/// [`redact_value`] of each of `secrets` at once: every string and field name in one
+/// [`redact_all`] pass, and a number that any of them is.
+///
+/// # Panics
+///
+/// When a secret is empty, which would match between every two characters.
+pub fn redact_value_all<S: AsRef<str>>(value: Value, secrets: &[S]) -> Value {
+    // Checked here too, so a value with no string still refuses an empty secret.
+    assert!(
+        secrets.iter().all(|secret| !secret.as_ref().is_empty()),
+        "an empty secret cannot be redacted"
+    );
+    redacted_value(value, secrets)
+}
+
+/// [`redact_value_all`] once its secrets are checked.
+fn redacted_value<S: AsRef<str>>(value: Value, secrets: &[S]) -> Value {
+    let clean = |text: String| redact_all(text, secrets);
     match value {
         Value::String(text) => Value::String(clean(text)),
-        Value::Object(fields) => Value::Object(
-            fields
-                .into_iter()
-                .map(|(key, value)| (clean(key), redact_value(value, secret)))
-                .collect(),
-        ),
+        Value::Object(fields) => {
+            let mut redacted = Map::new();
+            for (key, value) in fields {
+                insert_unique(&mut redacted, &clean(key), redacted_value(value, secrets));
+            }
+            Value::Object(redacted)
+        }
         Value::Array(items) => Value::Array(
             items
                 .into_iter()
-                .map(|item| redact_value(item, secret))
+                .map(|item| redacted_value(item, secrets))
                 .collect(),
         ),
-        Value::Number(number) if number_holds(&number.to_string(), secret) => Value::from(REDACTED),
+        Value::Number(number)
+            if secrets
+                .iter()
+                .any(|secret| number_holds(&number.to_string(), secret.as_ref())) =>
+        {
+            Value::from(REDACTED)
+        }
         other => other,
     }
+}
+
+/// Inserts `value` under `key`, or under `key (2)`, `key (3)`, and so on when a redacted key
+/// already took it, so no field is lost when two names redact to the same text.
+pub fn insert_unique(fields: &mut Map<String, Value>, key: &str, value: Value) {
+    let mut name = key.to_owned();
+    let mut n = 2;
+    while fields.contains_key(&name) {
+        name = format!("{key} ({n})");
+        n += 1;
+    }
+    fields.insert(name, value);
 }
 
 /// How many digits an all-digit secret needs before any number holding them is redacted.
@@ -370,6 +440,64 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// All secrets at once, whatever order they come in: a short secret cuts neither a longer
+    /// one that holds it nor a marker already written.
+    #[test]
+    fn several_secrets_are_redacted_at_once() {
+        let secrets = ["a", "dacted"];
+        assert_eq!(
+            redact_all("dacted a b".to_owned(), &secrets),
+            "<redacted> <redacted> b"
+        );
+        assert_eq!(redact_all("ééa".to_owned(), &secrets), "éé<redacted>");
+        // Two secrets that start at the same place: the longer is taken whole.
+        assert_eq!(
+            redact_all("tok-1 tok".to_owned(), &["tok", "tok-1"]),
+            "<redacted> <redacted>"
+        );
+        // Two secrets that overlap in the text are one span, so neither shows a part of
+        // itself, whichever starts first.
+        assert_eq!(
+            redact_all("<xaBCDEFG>".to_owned(), &["xa", "aBCDEFG"]),
+            "<<redacted>>"
+        );
+        assert_eq!(
+            redact_all("aBCxyz".to_owned(), &["Cxyz", "aBC"]),
+            "<redacted>"
+        );
+        // A secret that overlaps itself is one span too; apart, each match is its own.
+        assert_eq!(
+            redact_all("aaa b aa".to_owned(), &["aa"]),
+            "<redacted> b <redacted>"
+        );
+        assert_eq!(
+            redact_all("abab".to_owned(), &["ab"]),
+            "<redacted><redacted>"
+        );
+        // Two field names that redact to the same text are both kept.
+        assert_eq!(
+            redact_value_all(json!({"acted": 1, "d": 2}), &["acted", "d"]),
+            json!({"<redacted>": 1, "<redacted> (2)": 2})
+        );
+        assert_eq!(redact_all("x".to_owned(), &[] as &[&str]), "x");
+        // A pass per secret would cut the marker the first one wrote.
+        assert_eq!(
+            redact_all("tok-1".to_owned(), &["tok-1", "d"]),
+            "<redacted>"
+        );
+        let value = json!({"tok-1 d": ["tok-1", 12_345_678], "n": 7});
+        assert_eq!(
+            redact_value_all(value, &["tok-1", "d", "12345678"]),
+            json!({"<redacted> <redacted>": ["<redacted>", "<redacted>"], "n": 7})
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "an empty secret cannot be redacted")]
+    fn an_empty_secret_among_several_panics() {
+        drop(redact_all("x".to_owned(), &["a", ""]));
+    }
 
     #[test]
     fn a_secret_is_redacted_in_every_string_and_field_name() {

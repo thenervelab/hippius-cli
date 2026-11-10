@@ -538,6 +538,11 @@ impl Response {
         &self.body
     }
 
+    /// The body bytes, exactly as received, taken without a copy.
+    pub fn into_bytes(mut self) -> Vec<u8> {
+        std::mem::take(&mut self.body)
+    }
+
     /// The server's `Date` header, as sent, when it sent one that is visible ASCII.
     pub fn date(&self) -> Option<&str> {
         self.date.as_deref()
@@ -627,9 +632,7 @@ impl Response {
 
     /// `error` with each spelling of the token the request carried redacted.
     fn without_token(&self, error: Error) -> Error {
-        self.token_spellings
-            .iter()
-            .fold(error, |error, spelling| error.redacted(spelling))
+        error.redacted_all(&self.token_spellings)
     }
 
     fn unusable(&self, what: &str) -> Error {
@@ -1456,9 +1459,8 @@ impl Client {
             return error;
         };
         // Cleared on drop, as [`Client::sent_token_spellings`] is.
-        zeroize::Zeroizing::new(token_spellings(token.expose()))
-            .iter()
-            .fold(error, |error, spelling| error.redacted(spelling))
+        let spellings = zeroize::Zeroizing::new(token_spellings(token.expose()));
+        error.redacted_all(&spellings)
     }
 }
 
@@ -1795,12 +1797,22 @@ fn split_url(url: &str) -> Result<(String, String)> {
 
 /// Percent-encodes everything outside the unreserved set of RFC 3986, section 2.3.
 fn percent_encode(text: &str) -> String {
+    percent_encode_keeping(text, b"")
+}
+
+/// [`percent_encode`], with uppercase hex, that also leaves the bytes of `kept`, which are
+/// ASCII, as they are.
+pub(crate) fn percent_encode_keeping(text: &str, kept: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    debug_assert!(kept.is_ascii(), "only ASCII bytes are kept");
     let mut out = String::with_capacity(text.len());
     for byte in text.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) || kept.contains(&byte) {
             out.push(char::from(byte));
         } else {
-            out.push_str(&format!("%{byte:02X}"));
+            out.push('%');
+            out.push(char::from(HEX[usize::from(byte >> 4)]));
+            out.push(char::from(HEX[usize::from(byte & 0x0f)]));
         }
     }
     out
@@ -1830,11 +1842,7 @@ fn status_error(answer: &StatusAnswer<'_>) -> Error {
     let details = parse_json(answer.body)
         .filter(|v| !v.is_null())
         .map(without_secret_fields)
-        .map(|body| {
-            answer.token_spellings.iter().fold(body, |body, spelling| {
-                crate::json::redact_value(body, spelling)
-            })
-        });
+        .map(|body| crate::json::redact_value_all(body, answer.token_spellings));
     let server_code = details
         .as_ref()
         .and_then(|d| d.get("code"))
@@ -1941,9 +1949,7 @@ fn status_error(answer: &StatusAnswer<'_>) -> Error {
 
 /// `text` with each of `spellings` redacted, before a cut could split one.
 fn without_token_in(text: String, spellings: &[String]) -> String {
-    spellings
-        .iter()
-        .fold(text, |text, spelling| crate::json::redact(text, spelling))
+    crate::json::redact_all(text, spellings)
 }
 
 /// The hint of a scope refusal the server sent for a request that carried no such header:

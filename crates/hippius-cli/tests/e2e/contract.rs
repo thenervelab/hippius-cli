@@ -672,13 +672,13 @@ fn old_command_names_are_usage_errors() {
     }
 }
 
-/// The commands renamed for tenet 2 kept no alias: each old command line is a `usage` error
-/// whose hint is the caller's own line with the path moved, and that line dry-runs the same
-/// request. A leaf that became a group (holding `list`, or `get` for the Hub robot) gets the
-/// hint whether the old line had an id, a flag first, a global flag before the path, or
-/// nothing after it.
+/// The commands renamed for tenet 2 kept no alias, and the hints that named their new paths
+/// are gone since 0.16.0: each old command line is a plain `usage` error whose hint is the
+/// help of the group it reached, and the new line dry-runs the request. A leaf that became a
+/// group (holding `list`, or `get` for the Hub robot) is the same whether the old line had an
+/// id, a flag first, a global flag before the path, or nothing after it.
 #[test]
-fn old_command_paths_are_usage_errors_that_name_the_new_path() {
+fn old_command_paths_are_plain_usage_errors() {
     // The old command line, the new one, and the URL the new one sends.
     let cases = [
         (
@@ -736,9 +736,16 @@ fn old_command_paths_are_usage_errors_that_name_the_new_path() {
         let mut argv: Vec<&str> = old.split_whitespace().collect();
         argv.push("--dry-run");
         let doc = assert_json_error(&hipc(&argv), 2, "usage");
+        // The group the old line reached: the new path less its last word.
+        let group = new
+            .split_whitespace()
+            .filter(|word| !word.starts_with('-') && *word != "json")
+            .take_while(|word| !["create", "availability", "list", "get"].contains(word))
+            .collect::<Vec<_>>()
+            .join(" ");
         assert_eq!(
             doc["error"]["hint"],
-            format!("run `hipc {new} --dry-run` in place of `hipc {old} --dry-run`"),
+            format!("run `hipc {group} --help`"),
             "{old}"
         );
         let mut argv: Vec<&str> = new.split_whitespace().collect();
@@ -755,39 +762,22 @@ fn old_command_paths_are_usage_errors_that_name_the_new_path() {
     }
 }
 
-/// The hint quotes a word of the caller's line as the shell needs it, and moves the path
-/// only before `--`.
-#[test]
-fn a_moved_command_hint_quotes_the_callers_words() {
-    let doc = assert_json_error(
-        &hipc(&["network", "vpcs", "routers", "a b", "--", "x"]),
-        2,
-        "usage",
-    );
-    assert_eq!(
-        doc["error"]["hint"],
-        "run `hipc network vpcs routers list 'a b' -- x` in place of `hipc network vpcs routers \
-         'a b' -- x`"
-    );
-}
-
 /// The old leaf given the id `list` (a VPC network may be named `list`) parses as the new
-/// leaf without its id. Forgetting the id is the common reading, so the hint names the new
-/// command with the id it needs, and nothing about the old one.
+/// leaf without its id, a plain missing argument whose hint is that command's help.
 #[test]
-fn a_new_list_without_its_id_is_told_the_id() {
+fn a_new_list_without_its_id_is_sent_to_its_help() {
     for (argv, hint) in [
         (
             &["network", "vpcs", "routers", "list"][..],
-            "run `hipc network vpcs routers list <VPC_ID>`",
+            "run `hipc network vpcs routers list --help`",
         ),
         (
             &["network", "vpcs", "resources", "list"],
-            "run `hipc network vpcs resources list <VPC_ID>`",
+            "run `hipc network vpcs resources list --help`",
         ),
         (
             &["compute", "kubernetes", "backups", "list", "--reveal"],
-            "run `hipc compute kubernetes backups list <CLUSTER_ID>`",
+            "run `hipc compute kubernetes backups list --help`",
         ),
     ] {
         let doc = assert_json_error(&hipc(argv), 2, "usage");
@@ -803,15 +793,12 @@ fn a_new_list_without_its_id_is_told_the_id() {
     );
 }
 
-/// Another unknown word under the namespace group, a word after `list`, a shelf verb under
-/// a moved leaf (a command that does not exist yet, not the old leaf's id), a word under a
-/// moved leaf whose new leaf takes no id, an unknown flag the new leaf does not take, or a
-/// missing
-/// argument of a command that is not a moved list is not an old path, and gets the plain
-/// help hint. In text mode the old leaf, now a group, still prints its help after the hint,
-/// as every line that stops before a subcommand does.
+/// An unknown word under a group, a word after `list`, a shelf verb under an old leaf now a
+/// group, an unknown flag, or a missing argument gets the plain help hint. In text mode the
+/// old leaf, now a group, prints its help after the hint, as every line that stops before a
+/// subcommand does.
 #[test]
-fn a_moved_command_hint_is_given_for_the_old_path_only() {
+fn an_unknown_word_or_flag_gets_the_help_hint() {
     for (argv, path) in [
         (
             &["hub", "namespace", "provisions", "acme"][..],
@@ -882,8 +869,7 @@ fn a_moved_command_hint_is_given_for_the_old_path_only() {
     assert!(
         stderr.starts_with(
             "error: a subcommand is required; `hipc network policies` holds `list`\nhint: run \
-             `hipc --output text network policies list` in place of `hipc --output text network \
-             policies`\n\n"
+             `hipc network policies --help`\n\n"
         ),
         "{stderr}"
     );
@@ -891,88 +877,105 @@ fn a_moved_command_hint_is_given_for_the_old_path_only() {
 }
 
 /// The flags renamed before 1.0 kept no alias, so each old spelling is a `usage` error that
-/// names the word it does not know, and the new spelling of the same command parses.
+/// names the word it does not know, with the command's help as its hint (the hint that named
+/// the new flag is gone since 0.16.0), and the new spelling of the same command parses.
 #[test]
 fn old_flag_names_are_usage_errors() {
-    // The old command line, the word it no longer takes, and what replaces that word and its
-    // value.
+    // The old command line, how many of its words name the command, the word it no longer
+    // takes, and what replaces that word and its value.
     let cases = [
         (
             "cdn estimate --custom-domains 1",
+            2,
             "--custom-domains",
             "--custom-hostnames 1",
         ),
         (
             "s3 configure --from-token-json t.json",
+            2,
             "--from-token-json",
             "--from-token-file t.json",
         ),
         (
             "cdn waf events zab12cd34ef56 --rule r1",
+            3,
             "--rule",
             "--rule-id r1",
         ),
         (
             "api POST /accounts/ --input b.json",
+            1,
             "--input",
             "--body-file b.json",
         ),
-        ("hub subscription subscribe Pro", "Pro", "--plan Pro"),
+        ("hub subscription subscribe Pro", 3, "Pro", "--plan Pro"),
         (
             "drive subscription change --funding card",
+            3,
             "--funding",
             "--pay-from card",
         ),
         (
             "s3 subscription change --funding card",
+            3,
             "--funding",
             "--pay-from card",
         ),
         (
             "cdn purges create zab12cd34ef56 --all",
+            3,
             "--all",
             "--everything",
         ),
         (
             "s3 subscription change --storage-cap-bytes 1",
+            3,
             "--storage-cap-bytes",
             "--storage-cap 1",
         ),
         (
             "hub keys create --name ci --role read --expires-days 1",
+            3,
             "--expires-days",
             "--expires-in 1",
         ),
         (
             "account billing-accounts costs default --group day",
+            3,
             "--group",
             "--group-by day",
         ),
         (
             "compute backups restore vm-1 --point r1",
+            3,
             "--point",
             "--run-id r1",
         ),
-        ("cdn estimate --gb FR=1", "--gb", "--traffic FR=1"),
+        ("cdn estimate --gb FR=1", 2, "--gb", "--traffic FR=1"),
         (
             "drive subscription change --storage-cap-bytes 1",
+            3,
             "--storage-cap-bytes",
             "--storage-cap 1",
         ),
     ];
-    for (old, word, new) in cases {
+    for (old, words, word, new) in cases {
         let mut argv: Vec<&str> = old.split_whitespace().collect();
         argv.push("--dry-run");
         let doc = assert_json_error(&hipc(&argv), 2, "usage");
         let message = doc["error"]["message"].as_str().unwrap_or_default();
         assert!(message.contains(&format!("`{word}`")), "{old}: {message}");
-        let flag = new.split_whitespace().next().unwrap_or_default();
-        let hint = if word.starts_with("--") {
-            format!("pass `{flag}` in place of `{word}`")
-        } else {
-            format!("pass the plan as `{flag} <PLAN>`")
-        };
-        assert_eq!(doc["error"]["hint"], hint, "{old}");
+        // The help of the command typed, its words before the first argument.
+        let command = old
+            .split_whitespace()
+            .take(words)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            doc["error"]["hint"],
+            format!("run `hipc {command} --help`"),
+            "{old}"
+        );
         // `--help` after a complete parse prints the help; an argument clap refuses is an
         // error before it, so the new spelling exits 0.
         let new = old.replacen(&word_and_value(old, word), new, 1);
@@ -981,53 +984,6 @@ fn old_flag_names_are_usage_errors() {
         let run = hipc(&argv);
         assert_eq!(run.status.code(), Some(0), "{new}: {}", text(&run.stderr));
     }
-}
-
-/// The renamed-flag hint names a flag given as `--flag=value` too, and is given only on the
-/// command that had the flag: another command's unknown `--all` gets the plain help hint.
-#[test]
-fn a_renamed_flag_hint_names_the_new_flag_on_its_own_command_only() {
-    let doc = assert_json_error(
-        &hipc(&["api", "POST", "/accounts/", "--input=b.json"]),
-        2,
-        "usage",
-    );
-    assert_eq!(
-        doc["error"]["hint"],
-        "pass `--body-file` in place of `--input`"
-    );
-    // A line that already has the new flag, or names the old word only after `--`, gets the
-    // plain help hint: the unknown word is something else.
-    for (argv, path) in [
-        (
-            &["hub", "subscription", "subscribe", "--plan", "1", "extra"][..],
-            "hipc hub subscription subscribe",
-        ),
-        (&["cdn", "estimate", "--", "--gb"], "hipc cdn estimate"),
-        (
-            &[
-                "api",
-                "POST",
-                "/accounts/",
-                "--body-file",
-                "b.json",
-                "--input",
-                "c.json",
-            ],
-            "hipc api",
-        ),
-    ] {
-        let doc = assert_json_error(&hipc(argv), 2, "usage");
-        assert_eq!(
-            doc["error"]["hint"],
-            format!("run `{path} --help`"),
-            "{argv:?}"
-        );
-    }
-    let doc = assert_json_error(&hipc(&["cdn", "zones", "list", "--all"]), 2, "usage");
-    assert_eq!(doc["error"]["hint"], "run `hipc cdn zones list --help`");
-    let doc = assert_json_error(&hipc(&["hub", "keys", "list", "extra"]), 2, "usage");
-    assert_eq!(doc["error"]["hint"], "run `hipc hub keys list --help`");
 }
 
 /// `word` with the value after it in `line`, or alone when it is a switch or a positional
@@ -1339,12 +1295,9 @@ fn an_unknown_subcommand_lists_the_group_and_points_at_the_nearest_command() {
         assert!(got.starts_with(message), "{args:?}: {got}");
         assert_eq!(error["error"]["hint"], hint, "{args:?}");
     }
-    // A command renamed before 1.0 keeps its own hint, which runs the new path.
+    // A command renamed before 1.0 is a plain unknown subcommand now.
     let error = assert_json_error(&hipc(&["hub", "namespace", "check", "x"]), 2, "usage");
-    assert_eq!(
-        error["error"]["hint"],
-        "run `hipc hub namespace availability x` in place of `hipc hub namespace check x`"
-    );
+    assert_eq!(error["error"]["hint"], "run `hipc hub namespace --help`");
 }
 
 /// Flags before the stop make clap say it another way; hipc still says it one way, and

@@ -11,9 +11,9 @@ use serde_json::{Value, json};
 use crate::cli::Cli;
 
 /// The verb shelf of tenet 2: every word a leaf may end in as a verb, in the order tenet 2
-/// lists them. The moved-command hint reads it too: a verb under an old leaf is a
-/// command that does not exist yet, not the old leaf's id.
-pub(crate) const VERBS: [&str; 40] = [
+/// lists them. A test holds every leaf to it.
+#[cfg(test)]
+const VERBS: [&str; 40] = [
     "list",
     "get",
     "create",

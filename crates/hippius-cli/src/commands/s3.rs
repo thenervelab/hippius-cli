@@ -12,6 +12,7 @@ use hippius::{
 };
 use serde_json::{Map, Value, json};
 
+use crate::cli::values::{Charset, Dash, is_word};
 use crate::cli::{
     AclUpdate, BucketAcl, BucketObjects, Buckets, Configure, MAX_CONTINUATION_TOKEN_BYTES,
     ObjectsList, Presign, S3, S3Subscription, TokenCreate, TokenKind, TokenRotate, TokenTarget,
@@ -190,11 +191,11 @@ fn list_objects(ctx: &Context<'_>, args: &ObjectsList) -> Result<Printed> {
         if !args.all {
             let mut doc = hippius::envelope_beside(page.items, page.fields);
             doc["next_page_token"] = page.next.map_or(Value::Null, Value::String);
-            return Ok(Printed::Document(doc));
+            return Ok(Printed::List(doc));
         }
         items.extend(page.items);
         let Some(next) = page.next else {
-            return Ok(Printed::Document(Value::Array(items)));
+            return Ok(Printed::List(Value::Array(items)));
         };
         pages.admit(&next)?;
         token = Some(next);
@@ -403,10 +404,8 @@ fn update_acl(ctx: &Context<'_>, args: &AclUpdate) -> Result<Printed> {
 /// path segment.
 fn check_bucket(name: &str) -> Result<()> {
     let bytes = name.as_bytes();
-    let valid = (3..=63).contains(&bytes.len())
-        && bytes
-            .iter()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-'))
+    // A name that starts with a letter or digit starts with no `-`.
+    let valid = is_word(name, 3..=63, Charset::LowerDotDash, Dash::Refused)
         && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
         && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
         && !name.contains("..");
@@ -486,7 +485,7 @@ fn list_tokens(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
         }
     }
     if dry_runs.is_empty() {
-        Ok(Printed::Document(hippius::envelope(items)))
+        Ok(Printed::List(hippius::envelope(items)))
     } else {
         Ok(Printed::Document(dry_run_requests(dry_runs)))
     }
@@ -913,6 +912,8 @@ mod tests {
             assert!(check_bucket(good).is_ok(), "{good}");
         }
         for bad in [
+            "",
+            "..",
             "ab",
             &"a".repeat(64),
             "Abc",

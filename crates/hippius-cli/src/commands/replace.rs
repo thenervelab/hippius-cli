@@ -120,8 +120,8 @@ impl Found {
 /// read after the question, for the version alone: the flag lets the write remove entries,
 /// not overwrite a list another client published since. With `remove_others` and no version
 /// to send, nothing is read. `current` fails closed: an answer it cannot read is its error
-/// ([`unreadable`]), never an empty list, so a shape `hipc` does not expect cannot turn the
-/// guard off.
+/// ([`crate::commands::unreadable`]), never an empty list, so a shape `hipc` does not expect
+/// cannot turn the guard off.
 ///
 /// A dry run reads nothing. When a real run would read, its document is the write with
 /// [`Replace::draft_body`] and [`Replace::draft_if_match`], and adds `reads_first`, the read,
@@ -219,14 +219,6 @@ fn filled(write: &Request, body: Option<&Value>, if_match: Option<&str>) -> Requ
         write = write.if_match(version);
     }
     write
-}
-
-/// The error for a read, named by its action, whose answer has a shape `hipc` does not read
-/// (`internal`).
-pub(crate) fn unreadable(action: &str) -> Error {
-    Error::internal(format!(
-        "cannot {action}: the API answered with a shape `hipc` does not read"
-    ))
 }
 
 /// The labels of the entries of `now` that the entries of `new` do not keep, in the order
