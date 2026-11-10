@@ -2223,6 +2223,47 @@ fn a_success_resets_the_count_of_failed_polls() {
     assert_eq!(server.requests().len(), 7);
 }
 
+/// The test suite's poll interval (`common::POLL_MS`) replaces the real 2 seconds: three
+/// polls fit in a one-second wait, where the real interval leaves room for one, at the
+/// deadline.
+#[test]
+fn the_test_poll_interval_shortens_every_pause_of_the_wait() {
+    let server = in_sequence(vec![
+        Reply::json(202, &vm("pending")),
+        Reply::json(200, &vm("provisioning")),
+        Reply::json(502, r#"{"detail":"bad gateway"}"#),
+        Reply::json(200, &vm("running")),
+    ]);
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&[&WAITED_LAUNCH[..], &["--wait-timeout", "1"]].concat())
+        .ok();
+    assert_eq!(doc["status"], "running");
+    assert_eq!(server.requests().len(), 4);
+}
+
+/// A test poll interval that is not a whole number of milliseconds above zero is ignored, so
+/// a one-second wait keeps the real 2 seconds and polls once, at the deadline. Zero in
+/// particular would skip the deadline check and poll for ever.
+#[test]
+fn a_test_poll_interval_of_zero_or_not_a_number_is_ignored() {
+    for value in ["0", "x", "-5", "1.5"] {
+        let server = in_sequence(vec![
+            Reply::json(202, &vm("pending")),
+            Reply::json(200, &vm("provisioning")),
+            Reply::json(200, &vm("running")),
+        ]);
+        let run = Hipc::against(&Home::new(), &server)
+            .env("HIPC_TEST_POLL_INTERVAL_MS", value)
+            .run(&[&WAITED_LAUNCH[..], &["--wait-timeout", "1"]].concat());
+        assert_eq!(
+            fails_with_vm(&run, "timeout")["status"],
+            "provisioning",
+            "{value}"
+        );
+        assert_eq!(server.requests().len(), 2, "{value}: one poll");
+    }
+}
+
 fn resize(status: &str) -> String {
     format!(
         concat!(

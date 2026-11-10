@@ -2,7 +2,13 @@
 //! VM launch wait, the App Engine launch wait, and the hAlpha purchase follow. Each reads one
 //! route again and again until what it reads says the wait is over, its deadline passes, or
 //! a read fails for good.
+//!
+//! Every pause of the loop's own goes through [`paced`], so a debug build run by the test
+//! suite can shorten them all with [`TEST_POLL_INTERVAL_MS`]. A release build has no such
+//! variable: the code that reads it is not compiled in.
 
+#[cfg(debug_assertions)]
+use std::num::NonZeroU64;
 use std::time::{Duration, Instant};
 
 use hippius::{Client, Error, Request, Result};
@@ -80,8 +86,9 @@ pub(crate) fn poll_until<W: Wait>(
     schedule: Schedule,
     mut wait: W,
 ) -> Result<W::Output> {
+    let interval = paced(schedule.interval);
     let mut failures = 0;
-    let mut pause = schedule.first;
+    let mut pause = paced(schedule.first);
     // Whether the pause is one the server asked for (`Retry-After`).
     let mut asked = false;
     loop {
@@ -104,17 +111,50 @@ pub(crate) fn poll_until<W: Wait>(
         {
             Ok(answer) => {
                 failures = 0;
-                pause = schedule.interval;
+                pause = interval;
                 asked = false;
                 wait.take(answer)?;
             }
             Err(error) if error.is_retryable() && failures < MAX_POLL_FAILURES => {
                 failures += 1;
-                (pause, asked) = after(error.retry_after_ms(), schedule.interval);
+                (pause, asked) = after(error.retry_after_ms(), interval);
             }
             Err(error) => return Err(wait.failed(error)),
         }
     }
+}
+
+/// The pause `interval` stands for in this build: `interval` itself, except that a debug
+/// build run with [`TEST_POLL_INTERVAL_MS`] set waits that long instead. A zero pause stays
+/// zero, so a read sent at once still is.
+fn paced(interval: Duration) -> Duration {
+    if interval.is_zero() {
+        return interval;
+    }
+    test_poll_interval().unwrap_or(interval)
+}
+
+/// The variable a debug build reads for the pause of every wait, in milliseconds, so the test
+/// suite does not sleep through the real 2 or 3 seconds between two reads. Only debug builds
+/// have it: the release build (`.github/actions/release-build`) fails when its binary holds
+/// the name.
+#[cfg(debug_assertions)]
+const TEST_POLL_INTERVAL_MS: &str = "HIPC_TEST_POLL_INTERVAL_MS";
+
+/// The pause [`TEST_POLL_INTERVAL_MS`] asks for: none when it is unset or not a whole number
+/// of milliseconds above zero. Zero is refused because a zero pause skips the deadline check
+/// in [`poll_until`], so a wait that never ends would read for ever.
+#[cfg(debug_assertions)]
+fn test_poll_interval() -> Option<Duration> {
+    let ms = crate::context::env_os(TEST_POLL_INTERVAL_MS)?;
+    let ms: NonZeroU64 = ms.to_str()?.parse().ok()?;
+    Some(Duration::from_millis(ms.get()))
+}
+
+/// A release build has no test override: every wait keeps its real interval.
+#[cfg(not(debug_assertions))]
+const fn test_poll_interval() -> Option<Duration> {
+    None
 }
 
 /// The pause before the read after a retryable failure whose `Retry-After` was

@@ -699,7 +699,7 @@ pub(crate) const PROXY_VARIABLES: [&str; 8] = [
 /// The `hipc` binary with stdin empty and the clean environment every test starts from: no
 /// `CI` or `AI_AGENT`, no `HIPPIUS_*`, AWS file, or proxy variables from the parent, `HOME`
 /// set to the test home, and `HIPPIUS_API_URL` and `HIPPIUS_TOKEN_ORIGIN` set to
-/// [`no_server()`]. A test that runs `hipc` some other way than [`Hipc`] (a terminal, a
+/// [`no_server()`], and every wait polling each [`POLL_MS`] milliseconds. A test that runs `hipc` some other way than [`Hipc`] (a terminal, a
 /// closed stdout) starts here too, and ends with [`finished`] or [`finish`].
 pub(crate) fn command(home: &Home) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_hipc"));
@@ -728,9 +728,16 @@ pub(crate) fn command(home: &Home) -> Command {
         .env("HOME", home.path())
         .env("HIPPIUS_API_URL", no_server())
         .env("HIPPIUS_TOKEN_ORIGIN", no_server())
+        .env("HIPC_TEST_POLL_INTERVAL_MS", POLL_MS.to_string())
         .stdin(Stdio::null());
     command
 }
+
+/// The pause between two reads of every wait (a VM or App Engine launch, the hAlpha follow)
+/// in a test run, in place of the real 2 or 3 seconds: the debug build `hipc` reads it from
+/// `HIPC_TEST_POLL_INTERVAL_MS`. Short enough that a waited launch costs no real time, long
+/// enough that a wait until `--wait-timeout` sends tens of reads, not thousands.
+pub(crate) const POLL_MS: u64 = 50;
 
 impl Hipc {
     pub(crate) fn new(home: &Home) -> Self {

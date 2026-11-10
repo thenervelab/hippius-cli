@@ -80,6 +80,24 @@ runs:
         file "target/${TARGET}/release/hipc"
         file "target/${TARGET}/release/hipc" | grep -Eq 'statically linked|static-pie linked'
 
+    - name: No test seam
+      # A debug build reads HIPC_TEST_POLL_INTERVAL_MS, which the test suite sets to shorten
+      # every wait (crates/hippius-cli/src/commands/poll.rs). The code that reads it is
+      # compiled only with debug assertions, so a release binary that holds the name was
+      # built with them on and would honour it. A missing binary fails too (grep exits 2).
+      if: inputs.package == 'tarball'
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: |
+        status=0
+        grep -qF HIPC_TEST_POLL_INTERVAL_MS "target/${TARGET}/release/hipc" || status=$?
+        if [ "${status}" -eq 0 ]; then
+          echo "::error::the release binary reads HIPC_TEST_POLL_INTERVAL_MS: it was built with debug assertions"
+          exit 1
+        fi
+        [ "${status}" -eq 1 ]
+
     - name: Runs
       # Every binary the runner can execute: both Linux targets, and arm64 macOS. Rosetta is
       # not assumed, so the x86_64 macOS binary is not run.
