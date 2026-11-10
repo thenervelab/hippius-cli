@@ -1118,6 +1118,20 @@ impl Run {
         if let Ok(document) = serde_json::from_slice::<Value>(&self.0.stdout) {
             assert_warnings(&document);
         }
+        // In JSON mode the warnings of a result with no place for them are one object on
+        // stderr, after any `--debug` lines.
+        if let [debug @ .., line] = &lines[..]
+            && let Ok(object) = serde_json::from_str::<Value>(line)
+            && object.get("warnings").is_some()
+            && object.get("error").is_none()
+        {
+            assert!(
+                debug.iter().all(|other| other.starts_with("debug: ")),
+                "{stderr}"
+            );
+            assert_warnings(&object);
+            return;
+        }
         // In JSON mode the error object is the last line, after any `--debug` lines.
         if let [debug @ .., line] = &lines[..]
             && let Ok(object) = serde_json::from_str::<Value>(line)

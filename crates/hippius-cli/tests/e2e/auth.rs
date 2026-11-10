@@ -1160,6 +1160,46 @@ fn login_names_a_profile_api_url_as_the_source() {
     );
 }
 
+/// A word of token length that a command refuses as an unknown argument, value, or command
+/// is not repeated by any command, not only by `hipc auth`, and the hint names the
+/// command's help.
+#[test]
+fn a_token_shaped_word_is_never_repeated_by_any_usage_error() {
+    let pasted = "tok_pasted_in_the_wrong_place_0123456789";
+    for args in [
+        &["completions", pasted][..],
+        &["compute", "vms", "list", pasted],
+        &["compute", "vms", "lisst-pasted-somewhere-wrong"],
+    ] {
+        let run = Hipc::new(&Home::new()).run(args);
+        let error = run.fails(2, "usage");
+        assert!(
+            !run.stderr().contains("pasted"),
+            "{args:?}: {}",
+            run.stderr()
+        );
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("so the word given is not repeated here"),
+            "{args:?}: {error}"
+        );
+        assert!(
+            error["hint"].as_str().unwrap().ends_with(" --help`"),
+            "{args:?}: {error}"
+        );
+    }
+    // A short word is still quoted, so a typo is easy to see.
+    let error = Hipc::new(&Home::new())
+        .run(&["completions", "lots"])
+        .fails(2, "usage");
+    assert!(
+        error["message"].as_str().unwrap().contains("`lots`"),
+        "{error}"
+    );
+}
+
 /// A token passed where a path or no argument belongs is refused without being repeated: a
 /// stray word after `auth login`, a known token anywhere on a command line, parsed or not, and
 /// a secret-file flag whose path names no file.

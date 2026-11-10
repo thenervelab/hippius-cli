@@ -893,8 +893,8 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
                 {
                     // The URL is not quoted in the note: it is on stdout, and a quoted URL
                     // would lose its query values (tenet 9). The next command carries this
-                    // run's origin and selectors, and is left out when one of them is not a
-                    // plain word a shell would keep whole.
+                    // run's origin and selectors, and is left out when one of them is not
+                    // printable ASCII.
                     let open = "open the `url` in the output to publish the records";
                     match ctx.next_command(&format!("cdn hostnames list {zone_id}")) {
                         Some(next) => {

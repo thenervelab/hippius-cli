@@ -32,7 +32,7 @@ Help, version, and schema never touch the network.
 
 A successful JSON document on stdout is the resource itself, with no `{"ok": true, "data": ...}` wrapper and no `ok` field: a success is exit 0, a failure the error object. Three exceptions add `next_step`, the `hipc` command that goes on with something a person completes in a browser: a Drive or S3 card subscribe (HTTP 202) names the command that reads its progress, `hipc billing auto-reload card-setup` names `hipc billing auto-reload get`, which shows the card it saves, and a CDN hostname's Domain Connect link (`hipc cdn hostnames domain-connect`) names `hipc cdn hostnames list`, which shows the hostname's status. Only `hipc` sets `next_step`: one the server sends, at any depth, is dropped from every document before it is printed. `hipc api` prints the server's body as sent, so a `next_step` there is the server's.
 
-A list is `{"items":[...],"next_page_token":null}`, with any other fields of the server's page (such as `count`) beside `items`. `--all` prints one JSON array and follows pages to the end, at most 1000 pages or 64 MiB, and past either exits 1 `internal` rather than return a list cut short. An answer body is read up to 32 MiB; a larger 2xx answer exits 1 `internal`.
+A list is `{"items":[...],"next_page_token":null}`, with any other fields of the server's page (such as `count`) beside `items`. `--all` prints one JSON array and follows pages to the end, at most 1000 pages or 64 MiB, and past either exits 1 `internal` rather than return a list cut short. An answer body is read up to 32 MiB; a larger 2xx answer exits 1 `internal`. An error answer whose body is larger, or cannot be read, keeps its status's code, and its message says the body was not read.
 
 stdout holds the result and nothing else; stderr holds diagnostics. A failed command leaves stdout empty, except where it has a record of what was done to keep, so an id or a one-time secret is not lost: a failed command that printed a document on stdout printed what was done; keep it. That is `partial_failure`, a VM or app launch whose wait ended before `running` or whose answer `hipc` cannot use, a managed database whose credentials could not all be written to `--credentials-dir`, a one-time secret that could not be written to `--secret-file`, and a database create or restore whose answer is not JSON (`unparsed_answer`). An empty stdout does not mean nothing was done: `side_effects` says whether a write may have been.
 
@@ -255,7 +255,7 @@ The install script checks the hash, and the signature when `cosign` is on `PATH`
 | Stream | Holds | Modes |
 | --- | --- | --- |
 | stdout | The result: the JSON document, the text table, the `hipc api` body, `--help`, `--version`, the completion script. Nothing else. | all |
-| stderr | Everything about the run: `error:`, `hint:`, `note:`, `warning:`, and `debug:` lines, and the confirmation prompt. In JSON mode, the one error object of tenet 4 and no notes. | all |
+| stderr | Everything about the run: `error:`, `hint:`, `note:`, `warning:`, and `debug:` lines, and the confirmation prompt. In JSON mode, the one error object of tenet 4, or the `warnings` object of a result with no place for them, and no notes. | all |
 
 A closed stdout pipe is exit 0 with nothing more written. Any other stdout write failure is `internal`.
 
@@ -268,7 +268,7 @@ Every stderr line in text mode starts with one of these labels:
 | `error:` | What failed, in one line. | Once per failure. |
 | `hint:` | One change likely to fix it. | Only when `hipc` knows a fix; every exit-2 failure has one. |
 | `note:` | A fact about a result that succeeded. | Text mode; `--quiet` drops it. |
-| `warning:` | It worked, but may not do what the caller expects. | Text mode; `--quiet` drops it. Never changes the exit code. JSON mode puts the config file's hard-link warning in a top-level `warnings` array of texts, on the document or beside `error`. |
+| `warning:` | It worked, but may not do what the caller expects. | Text mode; `--quiet` drops it. Never changes the exit code. JSON mode puts a config file warning in a top-level `warnings` array of texts, on the document or beside `error`; a result with no place for a field, the array `--all` prints or a `hipc api` body, keeps its shape, and its warnings go on stderr as one `{"warnings":[...]}` object. |
 | `debug:` | A request or status line, redacted (tenet 9). | Only with `--debug`, in every mode. |
 
 The prompts are the only unlabeled lines. The confirmation prompt is `this will <what>; continue? [y/N] `, and `hipc auth login` asks for the token with ``paste the token from `https://console.hippius.com/dashboard/settings` (it is not shown): ``. Its refusal reuses it: ``this would <what>, and `--yes` was not passed``.

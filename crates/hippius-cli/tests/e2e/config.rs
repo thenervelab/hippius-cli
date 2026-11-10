@@ -132,6 +132,42 @@ fn a_config_key_this_hipc_does_not_know_is_kept_and_warned_about_once() {
     );
 }
 
+/// A result with no place for a `warnings` field, the array `--all` prints or a body printed
+/// as the server sent it, keeps its shape, and JSON mode prints the warnings beside it on
+/// stderr as one `{"warnings": [...]}` object.
+#[test]
+fn a_result_with_no_place_for_warnings_keeps_its_shape_and_warns_on_stderr() {
+    let home = Home::new();
+    home.write_config("[profiles.default]\nsurprise = \"s3cr3t-value\"\n");
+    let server = Server::start(vec![route(
+        "GET",
+        "/api/ssh-keys/",
+        Reply::json(200, r#"{"next":null,"results":[{"id":1}]}"#),
+    )]);
+    for (args, stdout) in [
+        (&["api", "GET", "/ssh-keys/", "--all"][..], "[{\"id\":1}]\n"),
+        (
+            &["api", "GET", "/ssh-keys/"],
+            r#"{"next":null,"results":[{"id":1}]}"#,
+        ),
+    ] {
+        let run = Hipc::against(&home, &server).run(args);
+        assert_eq!(run.code(), Some(0), "{}", run.stderr());
+        assert_eq!(run.stdout(), stdout, "{args:?}");
+        let warned: serde_json::Value = serde_json::from_str(run.stderr()).unwrap();
+        let texts = warned["warnings"].as_array().unwrap();
+        assert_eq!(texts.len(), 1, "{warned}");
+        assert!(
+            texts[0]
+                .as_str()
+                .unwrap()
+                .contains("holds keys this hipc does not know"),
+            "{warned}"
+        );
+        assert!(!run.stderr().contains("s3cr3t"), "{}", run.stderr());
+    }
+}
+
 #[test]
 fn without_home_the_config_location_is_usage() {
     Hipc::new(&Home::new())

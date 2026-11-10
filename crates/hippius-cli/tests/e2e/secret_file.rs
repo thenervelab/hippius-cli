@@ -455,7 +455,7 @@ fn no_note_names_a_command_with_a_profile_that_is_not_a_plain_word() {
     let s3 = issuers().remove(0);
     let server = server_for(&s3, Reply::json(201, &s3.answer));
     let home = Home::new();
-    home.write_config("[profiles.\"my work\"]\n");
+    home.write_config("[profiles.\"café\"]\n");
     let file = home.path().join("secret.txt");
     let mut argv = s3.argv.clone();
     let path = file.to_str().expect("the test path is UTF-8");
@@ -468,7 +468,7 @@ fn no_note_names_a_command_with_a_profile_that_is_not_a_plain_word() {
         "text",
     ]);
     let run = Hipc::against(&home, &server)
-        .env("HIPPIUS_PROFILE", "my work")
+        .env("HIPPIUS_PROFILE", "café")
         .run(&argv);
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert_eq!(run.stderr(), "");

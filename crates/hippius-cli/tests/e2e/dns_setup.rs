@@ -545,15 +545,15 @@ fn domain_connect_next_step_carries_the_selectors_of_the_run() {
     assert_eq!(request.header("x-hippius-project"), Some(PROJECT));
 
     // A profile name with a space is not one plain word: no command is named.
-    home.write_config("[profiles.\"my work\"]\n");
+    home.write_config("[profiles.\"café\"]\n");
     let run = hipc()
-        .env("HIPPIUS_PROFILE", "my work")
+        .env("HIPPIUS_PROFILE", "café")
         .run(&[&["--output", "text"][..], &args].concat());
     assert_eq!(
         run.stderr(),
         "note: open the `url` in the output to publish the records\n"
     );
-    let doc = hipc().env("HIPPIUS_PROFILE", "my work").run(&args).ok();
+    let doc = hipc().env("HIPPIUS_PROFILE", "café").run(&args).ok();
     assert_eq!(doc.get("next_step"), None, "{doc}");
 }
 

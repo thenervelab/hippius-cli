@@ -1949,6 +1949,55 @@ fn a_full_stdout_after_a_write_is_partial() {
     assert_eq!(error["side_effects"], "partial", "the key was deleted");
 }
 
+/// A partial failure whose record of what was done cannot be written to stdout is
+/// `internal`, as any other stdout write failure is, and names the failure it replaces.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_full_stdout_for_a_partial_failure_is_an_internal_error() {
+    let server = common::Server::start(vec![
+        common::route(
+            "GET",
+            "/api/drive/subscription/",
+            common::Reply::json(200, r#"{"plan":"p"}"#),
+        ),
+        common::route(
+            "GET",
+            "/api/s3/subscription/",
+            common::Reply::json(503, r#"{"error":"Chain unreachable"}"#),
+        ),
+        common::route(
+            "GET",
+            "/api/registry/subscriptions/",
+            common::Reply::json(200, "[]"),
+        ),
+        common::route(
+            "GET",
+            "/api/billing/stripe/active-subscription/",
+            common::Reply::json(200, "{}"),
+        ),
+    ]);
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+    let run = common::Hipc::against(&Home::new(), &server)
+        .stdout_to(full)
+        .run(&["billing", "subscriptions"]);
+    let error = run.fails(1, "internal");
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.starts_with(
+            "cannot write to stdout the record of what was done: the device is full; the \
+             command had failed: "
+        ),
+        "{error}"
+    );
+    assert_eq!(
+        error["side_effects"], "none",
+        "the parts that ran were reads"
+    );
+}
+
 #[test]
 fn a_quoted_argument_with_a_line_break_cannot_forge_a_line_in_text_mode() {
     let out = hipc(&[
