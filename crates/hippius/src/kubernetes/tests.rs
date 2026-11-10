@@ -338,47 +338,6 @@ fn the_newest_launch_drop_is_found_by_its_time_among_those_that_can_be_opened() 
 }
 
 #[test]
-fn an_rfc3339_time_is_a_real_date_with_a_real_offset() {
-    for (text, seconds, nanos) in [
-        ("2024-02-29T00:00:00Z", 1_709_164_800, 0),
-        ("2000-02-29T00:00:00Z", 951_782_400, 0),
-        ("2026-12-31T23:59:59Z", 1_798_761_599, 0),
-        ("2026-11-03T10:00:00.5Z", 1_793_700_000, 500_000_000),
-        (
-            "2026-11-03T10:00:00.123456789123Z",
-            1_793_700_000,
-            123_456_789,
-        ),
-        ("2026-11-03T13:59:00+03:59", 1_793_700_000, 0),
-        ("2026-11-03T10:00:00-00:00", 1_793_700_000, 0),
-        // RFC 3339 allows `t` and `z` in lowercase.
-        ("2026-11-03t10:00:00.5z", 1_793_700_000, 500_000_000),
-    ] {
-        assert_eq!(rfc3339(text), Some((seconds, nanos)), "{text}");
-    }
-    for bad in [
-        "2026-02-29T00:00:00Z",
-        "2100-02-29T00:00:00Z",
-        "2026-02-31T00:00:00Z",
-        "2026-04-31T00:00:00Z",
-        "2026-11-03T10:00:00+24:00",
-        "2026-11-03T10:00:00+99:99",
-        "2026-11-03T10:00:00+02:60",
-        "2026-11-03T10:00:00+2:00",
-        "2026-11-03T10:00:00+002:00",
-        "2026-1-03T10:00:00Z",
-        "2026-11-3T10:00:00Z",
-        "26-11-03T10:00:00Z",
-        "2026-11-03T1:00:00Z",
-        "2026-11-03T10:00:00:00Z",
-        "2026-11-03-01T10:00:00Z",
-        "2026-11-03T10:00:00Z02:00",
-    ] {
-        assert_eq!(rfc3339(bad), None, "{bad}");
-    }
-}
-
-#[test]
 fn a_drop_that_does_not_verify_is_refused_before_it_is_opened() {
     let key = vector_key();
     let mut tampered = kubeconfig_drop();
@@ -841,81 +800,6 @@ const CLOCK_HINT: &str = "check the system clock, then run this again with `--de
                           `https://github.com/thenervelab/hippius-cli/issues`";
 
 #[test]
-fn an_http_date_is_read_in_the_imf_fixdate_form_only() {
-    for (date, seconds) in [
-        ("Thu, 01 Jan 1970 00:00:00 GMT", 0),
-        ("Sun, 06 Nov 1994 08:49:37 GMT", 784_111_777),
-        ("Tue, 29 Feb 2000 12:00:00 GMT", 951_825_600),
-        ("Sun, 01 Nov 2026 23:59:59 GMT", 1_793_577_599),
-        ("Mon, 01 Mar 2100 00:00:00 GMT", 4_107_542_400),
-        // A leap second, which IMF-fixdate allows.
-        ("Wed, 31 Dec 2016 23:59:60 GMT", 1_483_228_800),
-    ] {
-        assert_eq!(http_date(date), Some(seconds), "{date}");
-    }
-    for date in [
-        "",
-        "Sunday, 06-Nov-94 08:49:37 GMT",
-        "Sun Nov  6 08:49:37 1994",
-        "Sun, 06 Nov 1994 08:49:37 UTC",
-        "Sun, 06 Nov 1994 08:49:37 GMT ",
-        "Sun, 06 Nov 1994 08:49 GMT",
-        "Sun, 06 Nov 1994 08:49:37:00 GMT",
-        "Sun, 06 Now 1994 08:49:37 GMT",
-        "Sun, 6 Nov 1994 08:49:37 GMT",
-        "Sun, +6 Nov 1994 08:49:37 GMT",
-        "Sun, 06 Nov 94 08:49:37 GMT",
-        "Sun, 06 Nov 1994 8:49:37 GMT",
-        "Sun, 06 Nov 1994 08:4x:37 GMT",
-        "Sun, 06 Nov 1994 08:49:3 GMT",
-        "Wed, 31 Dec 1969 23:59:59 GMT",
-        "Sun, 00 Nov 1994 08:49:37 GMT",
-        "Sun, 32 Nov 1994 08:49:37 GMT",
-        "Sun, 31 Nov 1994 08:49:37 GMT",
-        "Thu, 29 Feb 2001 00:00:00 GMT",
-        "Mon, 29 Feb 2100 00:00:00 GMT",
-        "Thu, 30 Feb 2000 00:00:00 GMT",
-        "Sun, 06 Nov 1994 24:00:00 GMT",
-        "Sun, 06 Nov 1994 08:60:00 GMT",
-        "Sun, 06 Nov 1994 08:49:61 GMT",
-    ] {
-        assert_eq!(http_date(date), None, "{date}");
-    }
-}
-
-/// Every day from 1970 to 2400 is one day after the one before it, by a calendar written
-/// here from the Gregorian leap rule.
-#[test]
-fn each_day_of_the_calendar_is_one_day_after_the_last() {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let mut expected = 0;
-    for year in 1970..=2400 {
-        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-        for (month, name) in MONTHS.iter().enumerate() {
-            let days = match month {
-                1 if leap => 29,
-                1 => 28,
-                3 | 5 | 8 | 10 => 30,
-                _ => 31,
-            };
-            for day in 1..=days {
-                let date = format!("Mon, {day:02} {name} {year} 00:00:00 GMT");
-                assert_eq!(http_date(&date), Some(expected), "{date}");
-                expected += 86_400;
-            }
-        }
-    }
-}
-
-#[test]
-fn a_uuid_gets_the_version_and_variant_bits() {
-    assert_eq!(uuid_v4([0; 16]), "00000000-0000-4000-8000-000000000000");
-    assert_eq!(uuid_v4([0xff; 16]), "ffffffff-ffff-4fff-bfff-ffffffffffff");
-}
-
-#[test]
 fn canonical_json_refuses_what_python_prints_differently() {
     for value in [json!(1.5), json!(1e3), json!({ "a": [0.0] })] {
         assert_eq!(canonical(&value), None, "{value}");
@@ -1214,17 +1098,4 @@ fn debug_shows_the_public_keys_and_never_a_secret_key() {
             assert!(!shown.contains(&hex(&secret)), "{shown}");
         }
     }
-}
-
-#[test]
-fn no_random_bytes_is_internal_and_quotes_the_system() {
-    let error = no_random_bytes(getrandom::Error::UNSUPPORTED);
-    assert_eq!(error.code(), Code::Internal);
-    assert!(
-        error
-            .message()
-            .starts_with("cannot read random bytes for a request id: the system says `"),
-        "{}",
-        error.message()
-    );
 }

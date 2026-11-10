@@ -26,12 +26,12 @@ use std::path::Path;
 
 use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
 use serde_json::{Map, Value};
-use zeroize::{Zeroize as _, Zeroizing};
+use zeroize::Zeroizing;
 
-use crate::client::{lowercase_escapes, percent_encode_keeping, token_spellings};
 use crate::error::{Error, Result};
 use crate::phrase::quote_path;
 use crate::private_file::{Guarded, NamedBy, PrivateFile};
+use crate::redact::redactions;
 
 /// The DNS providers swagger lists for the setup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,145 +175,6 @@ impl DnsCredentials {
                 .map(|(_, text)| text.as_str()),
         )
     }
-}
-
-/// The texts to redact for `secrets`, longest first, for [`crate::redact_all`]: each in every
-/// spelling an answer or an error may repeat it in, such as percent-encoded in a URL or
-/// escaped in a JSON string. An empty secret redacts nothing. They are cleared when dropped.
-pub fn redactions<'a>(secrets: impl IntoIterator<Item = &'a str>) -> Zeroizing<Vec<String>> {
-    Zeroizing::new(longest_first(
-        secrets.into_iter().flat_map(secret_spellings).collect(),
-    ))
-}
-
-/// Every spelling of `text` an answer or an error may repeat it in, for a redaction: the
-/// spellings the API token is redacted in (as it is, with a backtick as `\u{60}`, and
-/// percent-encoded in either hex case), percent-encoded with `/` kept, in either hex case, as
-/// the body of a JSON string, once and twice escaped and with every non-ASCII character as
-/// `\uXXXX` (Python's `json.dumps`), and as `phrase::quote`, Rust's `{:?}`, and Python's
-/// `repr` write it. An empty spelling is left out, since it cannot be redacted. The
-/// temporaries built on the way are cleared when dropped.
-pub(crate) fn secret_spellings(text: &str) -> Vec<String> {
-    let mut spellings = token_spellings(text);
-    let escaped = json_body(text);
-    spellings.push(json_body(&escaped));
-    spellings.push(ascii_escapes(&escaped, false));
-    spellings.push(ascii_escapes(&escaped, true));
-    spellings.push(escaped);
-    // Python's `urllib.parse.quote` keeps `/` by default, so a server written in it encodes
-    // the rest and leaves the slashes.
-    let quoted = percent_encode_keeping_slash(text);
-    spellings.push(lowercase_escapes(&quoted));
-    spellings.push(quoted);
-    // How `phrase::quote` writes it inside a message: a control character as a Rust escape
-    // (`\u{1b}`) and a backtick as `\u{60}`, so a message that quotes the value is redacted too.
-    let in_quote = Zeroizing::new(crate::phrase::quote(text));
-    spellings.push(in_quote[1..in_quote.len() - 1].to_owned());
-    // As Rust's `{:?}` (`\0`) and Python's `repr` (`\x00`) write it, without the quotes, as a
-    // server or a message may quote it.
-    let debug = Zeroizing::new(format!("{text:?}"));
-    spellings.push(debug[1..debug.len() - 1].to_owned());
-    spellings.push(python_escapes(text));
-    spellings.retain(|spelling| !spelling.is_empty());
-    spellings
-}
-
-/// `text` with the escapes of Python's `repr`, without the quotes: `\\`, `\n`, `\r`, `\t`,
-/// and every character Python does not print as `\xNN`, `\uNNNN`, or `\UNNNNNNNN`.
-fn python_escapes(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        let code = u32::from(c);
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if python_prints(c) => out.push(c),
-            _ if code < 0x100 => out.push_str(&format!("\\x{code:02x}")),
-            _ if code < 0x1_0000 => out.push_str(&format!("\\u{code:04x}")),
-            _ => out.push_str(&format!("\\U{code:08x}")),
-        }
-    }
-    out
-}
-
-/// Whether Python's `str.isprintable` holds for `c`, as far as a short table can say: not a
-/// control (Cc), a format character (Cf), a separator other than the space (Zs, Zl, Zp), or a
-/// private-use character (Co). Unassigned characters, which Python also escapes, are not
-/// known here and pass as printable.
-fn python_prints(c: char) -> bool {
-    !(c.is_control()
-        || matches!(
-            c,
-            '\u{a0}'
-                | '\u{ad}'
-                | '\u{600}'..='\u{605}'
-                | '\u{61c}'
-                | '\u{6dd}'
-                | '\u{70f}'
-                | '\u{1680}'
-                | '\u{180e}'
-                | '\u{2000}'..='\u{200f}'
-                | '\u{2028}'..='\u{202f}'
-                | '\u{205f}'..='\u{2064}'
-                | '\u{2066}'..='\u{206f}'
-                | '\u{3000}'
-                | '\u{e000}'..='\u{f8ff}'
-                | '\u{feff}'
-                | '\u{fff9}'..='\u{fffb}'
-                | '\u{e0001}'
-                | '\u{e0020}'..='\u{e007f}'
-                | '\u{f0000}'..='\u{10ffff}'
-        ))
-}
-
-/// A JSON string body with every non-ASCII character as `\uXXXX`, a pair of surrogates
-/// beyond the first plane: in lowercase hex as Python's `json.dumps` writes it by default, or
-/// in uppercase (`\uD83D`) as other encoders do.
-fn ascii_escapes(body: &str, upper: bool) -> String {
-    let mut out = String::with_capacity(body.len());
-    for c in body.chars() {
-        if c.is_ascii() {
-            out.push(c);
-        } else {
-            for unit in c.encode_utf16(&mut [0; 2]) {
-                if upper {
-                    out.push_str(&format!("\\u{unit:04X}"));
-                } else {
-                    out.push_str(&format!("\\u{unit:04x}"));
-                }
-            }
-        }
-    }
-    out
-}
-
-/// `texts` longest first, each once, so a secret that holds another is redacted whole before
-/// the shorter one could cut it. A copy dropped as a duplicate is cleared first.
-pub(crate) fn longest_first(mut texts: Vec<String>) -> Vec<String> {
-    texts.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-    texts.dedup_by(|later, earlier| {
-        let same = later == earlier;
-        if same {
-            later.zeroize();
-        }
-        same
-    });
-    texts
-}
-
-/// `text` as the body of a JSON string: escaped, without the quotes. The quoted copy is
-/// cleared when dropped.
-fn json_body(text: &str) -> String {
-    let quoted = Zeroizing::new(Value::from(text).to_string());
-    quoted[1..quoted.len() - 1].to_owned()
-}
-
-/// `text` percent-encoded outside the unreserved set of RFC 3986 and `/`, with uppercase hex,
-/// as Python's `urllib.parse.quote` writes it.
-fn percent_encode_keeping_slash(text: &str) -> String {
-    percent_encode_keeping(text, b"/")
 }
 
 /// The fields whose values are secrets. `access_key_id` is less secret than its key, but
@@ -501,25 +362,6 @@ mod tests {
     #[test]
     fn a_value_of_any_shape_is_dropped_cleared() {
         clear_owned(serde_json::json!({"a": [1, "s", {"k": "v"}, null, true], "b": 2.5}));
-    }
-
-    #[test]
-    fn the_spellings_include_the_rust_and_python_escapes() {
-        assert_eq!(
-            python_escapes("a\\b\n\r\t\u{1b}\u{7f}é\u{85}\u{a0}\u{ad}\u{200b}\u{e0041}\u{f0001}"),
-            r"a\\b\n\r\t\x1b\x7fé\x85\xa0\xad\u200b\U000e0041\U000f0001"
-        );
-        assert_eq!(ascii_escapes("é\u{1f600}x", false), r"\u00e9\ud83d\ude00x");
-        assert!(secret_spellings("\u{1f600}").contains(&r"\uD83D\uDE00".to_owned()));
-        assert!(secret_spellings("é\u{1b}").contains(&r"\u00e9\u001b".to_owned()));
-        assert_eq!(
-            longest_first(vec!["a".into(), "bb".into(), "a".into()]),
-            ["bb", "a"]
-        );
-        let spellings = secret_spellings("x\u{0}`");
-        for spelling in [r"x\u{0}\u{60}", r"x\0`", r"x\x00`", r"x\u0000`"] {
-            assert!(spellings.contains(&spelling.to_owned()), "{spelling}");
-        }
     }
 
     #[test]

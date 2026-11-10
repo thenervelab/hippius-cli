@@ -26,8 +26,8 @@ use sha2::Sha512;
 use unicode_normalization::UnicodeNormalization as _;
 use zeroize::{Zeroize as _, Zeroizing};
 
+use crate::encode::hex;
 use crate::error::{Error, Result};
-use crate::kubernetes::hex;
 use crate::private_file::{Guarded, NamedBy, PrivateFile};
 use crate::source::Source;
 
@@ -408,25 +408,6 @@ fn base58(bytes: &[u8]) -> String {
             .map(|&d| char::from(ALPHABET[usize::from(d)])),
     );
     text
-}
-
-/// A new random idempotency key: a lowercase version-4 UUID.
-///
-/// # Errors
-///
-/// `internal` when the system gives no random bytes.
-pub fn new_idempotency_key() -> Result<String> {
-    let mut random = [0_u8; 16];
-    getrandom::getrandom(&mut random).map_err(no_random_bytes)?;
-    Ok(crate::kubernetes::uuid_v4(random))
-}
-
-/// The refusal when the system gives no random bytes for a key.
-fn no_random_bytes(error: getrandom::Error) -> Error {
-    Error::internal(format!(
-        "cannot read random bytes for an idempotency key: the system says {}",
-        crate::phrase::quote(error)
-    ))
 }
 
 #[cfg(test)]
@@ -835,21 +816,5 @@ mod tests {
         assert_eq!(base58(&[0, 0, 1]), "112");
         assert_eq!(base58(b"hello world"), "StV1DL6CwTryKyV");
         assert_eq!(base58(&[0xff; 4]), "7YXq9G");
-    }
-
-    #[test]
-    fn no_random_bytes_is_internal() {
-        let error = no_random_bytes(getrandom::Error::UNSUPPORTED);
-        assert_eq!(error.code(), crate::error::Code::Internal);
-        let message = error.message();
-        assert!(message.starts_with("cannot read random bytes for an idempotency key: the system"));
-    }
-
-    #[test]
-    fn idempotency_keys_are_new_v4_uuids() {
-        let first = new_idempotency_key().unwrap();
-        assert_eq!(first.len(), 36);
-        assert_eq!(&first[14..15], "4");
-        assert_ne!(first, new_idempotency_key().unwrap());
     }
 }

@@ -29,16 +29,26 @@ crates/hippius       the library: never prints, never reads argv
   client.rs          the HTTP client: origin, headers, limits, redirects, the answer
   account.rs         which account a request acts in, and the route policy tables
   project.rs         which project and billing account a request acts in
-  error.rs           `Error` and `Code`: the JSON error object and the exit codes (tenet 4)
   config.rs          the config file and the settings of one run (tenet 8)
-  json.rs            the list shapes of the API, the list envelope, redaction
-  phrase.rs          the recurring pieces of a message, built one way (tenet 15)
+  json.rs            the list shapes of the API and the list envelope
   private_file.rs    files only the caller may read: config, AWS files, secret files
   aws.rs             the AWS CLI profile that `hipc s3 configure` writes
   kubernetes.rs      the cluster key: signatures and the sealed kubeconfig
   wallet.rs          BIP-39 phrases and the keys they derive
-  app_secrets.rs, dns.rs, regular.rs, source.rs, clock.rs, digest.rs
-                     secret inputs, file opening, where a value came from, server time, SHA-256
+  app_secrets.rs, dns.rs
+                     the secret input files of App Engine and the CDN DNS setup
+  leaf modules, which import no module above them:
+  error.rs           `Error` and `Code`: the JSON error object and the exit codes (tenet 4)
+  redact.rs          the spellings of a secret, and their redaction from text and JSON (tenet 9)
+  method.rs          the HTTP method, and whether a request may change state
+  selector.rs        the account, project and billing account a run selects
+  url.rs             API origins, and URLs with their query values withheld
+  time.rs            the HTTP `Date` and RFC 3339 forms, and the time now by the API's clock
+  encode.rs          hex and percent-encoding
+  ids.rs             random UUIDs: request ids and idempotency keys
+  phrase.rs          the recurring pieces of a message, built one way (tenet 15)
+  regular.rs, source.rs, digest.rs
+                     file opening, where a value came from, SHA-256
 ```
 
 The layering:
@@ -51,8 +61,10 @@ The layering:
 - The library knows no command, no clap type and no output mode. `hippius-cli` reaches it
   only through the `pub use` list in `crates/hippius/src/lib.rs`.
 - Inside the library, `client` consults `account` and `project` for the header rules, and
-  everything returns `error::Error`. Some library modules still import each other in a
-  cycle; **planned**: leaf modules (method, selector, URL, encoding, time) that break it.
+  everything returns `error::Error`. The modules import each other without a cycle: a leaf
+  module imports only other leaves, `account` imports leaves, `project` imports `account`,
+  `config` imports no route module, and `client` sits on top. Check it with
+  `rg '^use crate::' crates/hippius/src` before adding an import that points up.
 
 ## Routes
 

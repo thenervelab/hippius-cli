@@ -148,7 +148,7 @@ impl AppSecrets {
     /// (`hippius::DnsCredentials::redactions`). An empty value redacts nothing. They are
     /// cleared when dropped.
     pub fn redactions(&self) -> Zeroizing<Vec<String>> {
-        crate::dns::redactions(self.secrets.iter().map(|(_, text)| text.as_str()))
+        crate::redact::redactions(self.secrets.iter().map(|(_, text)| text.as_str()))
     }
 }
 

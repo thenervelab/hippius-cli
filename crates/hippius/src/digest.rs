@@ -6,7 +6,7 @@ use sha2::{Digest as _, Sha256};
 
 /// The SHA-256 of `bytes`, as 64 lowercase hex digits.
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    crate::kubernetes::hex(&Sha256::digest(bytes))
+    crate::encode::hex(&Sha256::digest(bytes))
 }
 
 #[cfg(test)]

@@ -592,7 +592,7 @@ impl Error {
     }
 
     /// [`Error::redacted`] of each of `secrets` at once: each text gets one marker per span of
-    /// overlapping matches ([`crate::json::redact_all`]), so a shorter secret never cuts a
+    /// overlapping matches ([`crate::redact::redact_all`]), so a shorter secret never cuts a
     /// longer one or a marker an earlier one wrote.
     ///
     /// # Panics
@@ -600,18 +600,18 @@ impl Error {
     /// When a secret is empty.
     #[must_use]
     pub fn redacted_all<S: AsRef<str>>(mut self, secrets: &[S]) -> Self {
-        let clean = |text: String| crate::json::redact_all(text, secrets);
+        let clean = |text: String| crate::redact::redact_all(text, secrets);
         let inner = &mut *self.0;
         inner.message = clean(std::mem::take(&mut inner.message));
         inner.hint = inner.hint.take().map(clean);
         inner.details = inner
             .details
             .take()
-            .map(|details| crate::json::redact_value_all(details, secrets));
+            .map(|details| crate::redact::redact_value_all(details, secrets));
         inner.stdout = inner
             .stdout
             .take()
-            .map(|done| crate::json::redact_value_all(done, secrets));
+            .map(|done| crate::redact::redact_value_all(done, secrets));
         inner.request_id = inner.request_id.take().map(clean);
         self
     }

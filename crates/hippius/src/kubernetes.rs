@@ -48,7 +48,7 @@
 //! copy a string it unescapes, and the clearing does not reach such a copy, nor the copies a
 //! move leaves on the stack.
 
-use std::fmt::{self, Write as _};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -60,9 +60,12 @@ use zeroize::Zeroizing;
 
 use crate::client::Response;
 use crate::dns::{ObjectFile, load_object};
+use crate::encode::hex;
 use crate::error::{Code, Error, Result};
+use crate::ids::random_uuid;
 use crate::phrase::{named, quote, quote_path};
 use crate::private_file::{Guarded, NamedBy};
+use crate::time::{clock_hint, http_date, rfc3339};
 
 /// The `kind` of the key file.
 const KIND: &str = "hippius-k8s-cluster-key";
@@ -321,10 +324,9 @@ impl MatchedKey<'_> {
     /// `answered` has a `Date` more than five minutes from the local clock, or when it has no
     /// `Date` and the local clock is set before 1970.
     pub fn sign_add_node(&self, params: &Map<String, Value>, answered: &Response) -> Result<Value> {
-        let mut random = [0_u8; 16];
-        getrandom::getrandom(&mut random).map_err(no_random_bytes)?;
+        let request_id = random_uuid("a request id")?;
         let issued_at = issued_at(answered.date(), SystemTime::now())?;
-        self.add_node_at(params, &uuid_v4(random), issued_at)
+        self.add_node_at(params, &request_id, issued_at)
     }
 
     /// [`MatchedKey::sign_add_node`] with its request id and time given.
@@ -409,147 +411,6 @@ fn issued_at(date: Option<&str>, now: SystemTime) -> Result<u64> {
     }
 }
 
-/// The hint of a refusal to date a signature: the clock is the one thing the caller can fix,
-/// and a server whose `Date` is far off is a bug to report, so the hint keeps both halves of
-/// the `internal` hint it replaces.
-pub(crate) fn clock_hint() -> String {
-    format!(
-        "check the system clock, then run this again with `--debug` and report what it \
-         prints at `{}`",
-        crate::error::ISSUES_URL
-    )
-}
-
-/// Seconds since the Unix epoch of `date`, an HTTP `Date` in the IMF-fixdate form that RFC
-/// 9110 makes servers send (section 5.6.7, <https://www.rfc-editor.org/rfc/rfc9110#section-5.6.7>),
-/// such as `Sun, 06 Nov 1994 08:49:37 GMT`, or `None` for any other text. The two obsolete
-/// forms that section lets a recipient read are left out on purpose: no server `hipc` talks to
-/// sends them, and without a time the caller uses its own clock. The day is checked against
-/// the month's length (no 31 Feb), and the weekday is not checked against the date.
-pub(crate) fn http_date(date: &str) -> Option<u64> {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let (_weekday, rest) = date.split_once(", ")?;
-    let fields: Vec<&str> = rest.split(' ').collect();
-    let [day, month, year, time, "GMT"] = fields[..] else {
-        return None;
-    };
-    let clock: Vec<&str> = time.split(':').collect();
-    let [hour, minute, second] = clock[..] else {
-        return None;
-    };
-    let month = MONTHS.iter().position(|m| *m == month)? as u64 + 1;
-    let [day, hour, minute, second] = [day, hour, minute, second].map(|text| digits(text, 2));
-    let (day, hour, minute, second) = (day?, hour?, minute?, second?);
-    civil_seconds(digits(year, 4)?, month, day, [hour, minute, second])
-}
-
-/// Seconds since the Unix epoch of a UTC date and time of day, or `None` for a date before
-/// 1970 or one that does not exist: a month outside 1 to 12, a day past the month's length
-/// (no 31 Feb, and 29 Feb only in a leap year), an hour past 23, or a minute past 59. A second
-/// of 60 is a leap second, which both IMF-fixdate and RFC 3339 allow.
-fn civil_seconds(year: u64, month: u64, day: u64, [hour, minute, second]: [u64; 3]) -> Option<u64> {
-    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
-    let last_day = match month {
-        2 if leap => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        _ => return None,
-    };
-    if year < 1970 || !(1..=last_day).contains(&day) || hour > 23 || minute > 59 || second > 60 {
-        return None;
-    }
-    Some(days_since_epoch(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second)
-}
-
-/// `text` as a number when it is exactly `width` ASCII digits.
-fn digits(text: &str, width: usize) -> Option<u64> {
-    if text.len() != width || !text.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    text.parse().ok()
-}
-
-/// The seconds since 1970 of an RFC 3339 time as the API writes it,
-/// `YYYY-MM-DDTHH:MM:SS`, an optional fraction, and `Z` or an offset `+HH:MM` or `-HH:MM`, with
-/// `T` and `Z` in either case;
-/// `None` for any other text, a date or an offset that does not exist (`02-31`, `+24:00`), or
-/// a time before 1970.
-pub fn rfc3339_seconds(text: &str) -> Option<u64> {
-    rfc3339(text).map(|(seconds, _)| seconds)
-}
-
-/// [`rfc3339_seconds`] with the fraction of a second, in nanoseconds: digits past the ninth
-/// are dropped, so two times that differ only there compare equal.
-fn rfc3339(text: &str) -> Option<(u64, u32)> {
-    // RFC 3339 section 5.6 allows a lowercase `t` and `z`.
-    let (date, rest) = text.split_once(['T', 't'])?;
-    let (time, zone) = rest.split_at(rest.find(['Z', 'z', '+', '-'])?);
-    let date: Vec<&str> = date.split('-').collect();
-    let [year, month, day] = date[..] else {
-        return None;
-    };
-    let (clock, fraction) = time.split_once('.').unwrap_or((time, "0"));
-    if fraction.is_empty() || !fraction.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let nanos = format!("{:0<9}", &fraction[..fraction.len().min(9)])
-        .parse()
-        .ok()?;
-    let clock: Vec<&str> = clock.split(':').collect();
-    let [hour, minute, second] = clock[..] else {
-        return None;
-    };
-    let local = civil_seconds(
-        digits(year, 4)?,
-        digits(month, 2)?,
-        digits(day, 2)?,
-        [digits(hour, 2)?, digits(minute, 2)?, digits(second, 2)?],
-    )?;
-    let offset = if zone.eq_ignore_ascii_case("Z") {
-        0
-    } else {
-        let (sign, hm) = zone.split_at(1);
-        let (h, m) = hm.split_once(':')?;
-        let (h, m) = (digits(h, 2)?, digits(m, 2)?);
-        if h > 23 || m > 59 {
-            return None;
-        }
-        let seconds = i64::try_from(h * 3600 + m * 60).ok()?;
-        match sign {
-            "+" => seconds,
-            "-" => -seconds,
-            _ => return None,
-        }
-    };
-    let seconds = u64::try_from(i64::try_from(local).ok()? - offset).ok()?;
-    Some((seconds, nanos))
-}
-
-/// The days from 1970-01-01 to `year`-`month`-`day` in the proleptic Gregorian calendar, for a
-/// year from 1970: Howard Hinnant's `days_from_civil`
-/// (<https://howardhinnant.github.io/date_algorithms.html#days_from_civil>), which counts in
-/// 400-year eras of 146097 days from a year that starts in March, so that a leap day falls at
-/// the end of its year. 719468 is the day of 1970-01-01 in that count.
-fn days_since_epoch(year: u64, month: u64, day: u64) -> u64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = year / 400;
-    let year_of_era = year - era * 400;
-    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    era * 146_097 + day_of_era - 719_468
-}
-
-/// The refusal when the system gives no random bytes for a request id.
-fn no_random_bytes(error: getrandom::Error) -> Error {
-    Error::internal(format!(
-        "cannot read random bytes for a request id: the system says {}",
-        quote(error)
-    ))
-}
-
 /// The hint of every refused key file.
 fn key_file_hint(flag: &str) -> String {
     format!(
@@ -626,31 +487,6 @@ fn drop_message(cluster: u64, kind: &str, ciphertext: &str) -> String {
     let digest = Sha256::digest(ciphertext.as_bytes());
     let hex = hex(&digest);
     format!("{DROP_DOMAIN}:{cluster}:{kind}:{hex}")
-}
-
-/// A lowercase version-4 UUID made of `random`: the version nibble set to 4 and the variant
-/// bits to `10`, as RFC 9562 section 5.4 says.
-pub(crate) fn uuid_v4(mut random: [u8; 16]) -> String {
-    random[6] = (random[6] & 0x0f) | 0x40;
-    random[8] = (random[8] & 0x3f) | 0x80;
-    let hex = hex(&random);
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..]
-    )
-}
-
-/// `bytes` in lowercase hex.
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(out, "{byte:02x}").expect("writing to a String does not fail");
-    }
-    out
 }
 
 /// `value` as the backend's canonical JSON (module docs), or `None` for a number that is not

@@ -39,13 +39,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::account::Selection;
-use crate::client::Origin;
 use crate::error::{Error, Result};
 use crate::phrase::{quote, quote_path};
 use crate::private_file::{Guarded, NamedBy, PrivateFile};
-use crate::project::{BillingId, ProjectId};
+use crate::selector::{BillingId, ProjectId, Selection};
 use crate::source::{Given, Source};
+use crate::url::Origin;
 
 /// The API origin when nothing else is configured.
 pub(crate) const DEFAULT_API_URL: &str = "https://api.hippius.com";
@@ -120,7 +119,7 @@ impl Token {
     }
 }
 
-/// Whether `text` holds `token` in any spelling [`crate::client::token_spellings`] lists.
+/// Whether `text` holds `token` in any spelling [`crate::redact::token_spellings`] lists.
 /// The token is trimmed first, as [`Token::new`] trims it before it is sent, so a hand-edited
 /// file's padded token is found as it goes out. A token shorter than [`PREVIEW_MIN_CHARS`]
 /// is in no text: a console token is 40 characters, and a short one, such as `token`, would
@@ -128,7 +127,7 @@ impl Token {
 fn quoted_in(token: &str, text: &str) -> bool {
     let token = token.trim();
     token.chars().count() >= PREVIEW_MIN_CHARS
-        && zeroize::Zeroizing::new(crate::client::token_spellings(token))
+        && zeroize::Zeroizing::new(crate::redact::token_spellings(token))
             .iter()
             .any(|spelling| text.contains(spelling.as_str()))
 }

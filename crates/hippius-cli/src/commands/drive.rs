@@ -133,7 +133,10 @@ fn add_next_charge_date(value: &mut Value) {
             if let Some(day) = day
                 && !fields.contains_key("next_charge_date")
             {
-                fields.insert("next_charge_date".to_owned(), date_of_unix_day(day).into());
+                fields.insert(
+                    "next_charge_date".to_owned(),
+                    hippius::date_of_unix_day(day).into(),
+                );
             }
             fields.values_mut().for_each(add_next_charge_date);
         }
@@ -145,41 +148,9 @@ fn add_next_charge_date(value: &mut Value) {
 /// 9999-12-31, the last day [`add_next_charge_date`] dates.
 const LAST_DAY: i64 = 2_932_896;
 
-/// The proleptic Gregorian date `day` days after 1970-01-01, as `YYYY-MM-DD` (Howard
-/// Hinnant's `civil_from_days`).
-fn date_of_unix_day(day: i64) -> String {
-    let z = day + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-
-    /// The date of a day count, checked against dates worked out by hand, a leap day and
-    /// the turn of a century included.
-    #[test]
-    fn a_unix_day_is_its_utc_date() {
-        for (day, date) in [
-            (0, "1970-01-01"),
-            (-1, "1969-12-31"),
-            (super::LAST_DAY, "9999-12-31"),
-            (59, "1970-03-01"),
-            (11_016, "2000-02-29"),
-            (20_784, "2026-11-27"),
-            (47_541, "2100-03-01"),
-        ] {
-            assert_eq!(super::date_of_unix_day(day), date, "{day}");
-        }
-    }
 
     /// The date goes beside every integer day count, at any depth, and nothing else changes.
     #[test]

@@ -13,59 +13,11 @@
 use std::borrow::Cow;
 use std::cmp::Reverse;
 
-use crate::client::{Method, without_query_values};
-use crate::error::{Code, Error, Result};
+use crate::error::{Code, Result};
+use crate::method::Method;
 use crate::phrase::quote;
-use crate::project::{Selected, Selector, parse_id};
-use crate::source::Source;
-
-/// An account id: `acct_` and 20 lowercase hex characters, and where it came from.
-#[derive(Debug, Clone)]
-pub struct AccountId(Selected);
-
-impl AccountId {
-    /// The id as sent in `X-Hippius-Account`.
-    pub fn as_str(&self) -> &str {
-        &self.0.id
-    }
-
-    /// The `account_scope_unsupported` refusal of something this account cannot do. `what`
-    /// says what; the message goes on to name the account and where it came from.
-    pub fn refusal(&self, what: &str) -> Error {
-        self.0.refusal(what)
-    }
-}
-
-/// The account commands act in.
-#[derive(Debug, Clone)]
-pub enum Selection {
-    /// The caller's own account: no header is ever sent.
-    Own,
-    /// An account the caller is a member of. Any `acct_` id counts, the caller's own
-    /// included: telling them apart would cost a request on every command.
-    Member(AccountId),
-}
-
-impl Selection {
-    /// Parses `self` or an account id, from `source`.
-    ///
-    /// # Errors
-    ///
-    /// `usage` when the text is neither; the message names the source, and the hint the fix
-    /// that belongs to it.
-    pub fn parse(text: &str, source: &Source) -> Result<Self> {
-        Ok(parse_id(Selector::Account, text, source)?
-            .map_or(Self::Own, |id| Self::Member(AccountId(id))))
-    }
-
-    /// The selection as text: `self`, or the account id.
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Own => "self",
-            Self::Member(id) => id.as_str(),
-        }
-    }
-}
+use crate::selector::Selection;
+use crate::url::without_query_values;
 
 /// How a route treats `X-Hippius-Account`.
 ///
@@ -896,6 +848,25 @@ fn database_action(path: &str) -> Option<&str> {
     (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then_some(tail)
 }
 
+/// The recurring card routes. They act in the selected account only beside a billing
+/// account; elsewhere they stay the user's own, so without `X-Hippius-Billing` they keep the
+/// account header's class.
+pub(crate) const BILLING_NAMED_ONLY_PATHS: &[&str] = &[
+    "/api/billing/stripe/active-subscription/",
+    "/api/billing/stripe/create-subscription/",
+    "/api/billing/stripe/customer-portal/",
+];
+
+/// Whether `path` (a request path, its query ignored) is a recurring card route, which
+/// acts in the selected account only beside `X-Hippius-Billing`. A path with a format
+/// suffix is one only when its plain form is one: no entry holds a dot, so the written form
+/// can never name one, and the plain form decides ([`classify`]).
+pub(crate) fn names_billing_only(path: &str) -> bool {
+    let path = without_query(path);
+    let plain = without_format_suffix(path);
+    BILLING_NAMED_ONLY_PATHS.contains(&&*with_trailing_slash(plain.as_deref().unwrap_or(path)))
+}
+
 /// The `X-Hippius-Account` value for a `method` request to `path`, or `None` when no
 /// header goes on it. `billing_header` is the `X-Hippius-Billing` value the request carries:
 /// the recurring card routes act in the selected account only beside one, as the console
@@ -916,9 +887,7 @@ pub(crate) fn header<'a>(
     };
     match route_class(method, path) {
         RouteClass::Scoped => Ok(Some(id.as_str())),
-        RouteClass::Unsupported
-            if billing_header.is_some() && crate::project::names_billing_only(path) =>
-        {
+        RouteClass::Unsupported if billing_header.is_some() && names_billing_only(path) => {
             Ok(Some(id.as_str()))
         }
         RouteClass::Personal => Ok(None),
@@ -933,6 +902,7 @@ pub(crate) fn header<'a>(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::source::Source;
 
     const ID: &str = "acct_0123456789abcdef0123";
 
