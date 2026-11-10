@@ -3,7 +3,6 @@
 //! `common` are all used. `manual_test` runs `scripts/manual_test.sh` with `--offline`,
 //! against a dead origin.
 
-mod access_key;
 mod account;
 mod api;
 mod app_engine;

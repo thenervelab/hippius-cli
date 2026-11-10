@@ -570,7 +570,7 @@ Store, check, or remove the console API token
 Usage: hipc auth <COMMAND>
 
 Commands:
-  login   Store a console API token in the profile, or log in with a 12-word access key; needs --yes at another API origin or to replace a stored token
+  login   Store a console API token in the profile; needs --yes at another API origin or to replace a stored token
   status  Check the token against the API (GET /api/accounts/), and name the signed-in user
   logout  Remove the stored token from the profile; does not revoke it on the server; needs --yes
 
@@ -580,7 +580,6 @@ Options:
 
 Examples:
   hipc auth login --token-file token.txt
-  hipc auth login --access-key-file access-key.txt
   hipc auth status
   hipc auth logout --yes
 ```
@@ -588,15 +587,11 @@ Examples:
 ### hipc auth login
 
 ```text
-Store a console API token in the profile, or log in with a 12-word access key; needs --yes at another API origin or to replace a stored token
+Store a console API token in the profile; needs --yes at another API origin or to replace a stored token
 
-Copy the token from https://console.hippius.com/dashboard/settings, which shows it after a Google, GitHub, or Apple sign-in. At a terminal, run hipc auth login and paste the token at the prompt, which does not show it. Otherwise put it in a file, or pipe it in with --token-file -; without --token-file, the command asks only when stdin, stdout, and stderr are terminals, the output is text, and neither CI, AI_AGENT (unless it is off), nor --no-input is set. A token login sends nothing.
+Create the token in the console at https://console.hippius.com/dashboard/settings. At a terminal, run hipc auth login and paste the token at the prompt, which does not show it. Otherwise put it in a file, or pipe it in with --token-file -; without --token-file, the command asks only when stdin, stdout, and stderr are terminals, the output is text, and neither CI, AI_AGENT (unless it is off), nor --no-input is set. A login sends nothing.
 
-An account that signs in with a 12-word access key has no token in the settings: run hipc auth login --access-key and type the 12 words at the prompt, which does not show them and asks under the same rules, or pass --access-key-file with a file of mode 0600 (or - for stdin); a phrase of 15, 18, 21, or 24 words is read too. hipc derives the key's sr25519 address (SS58 prefix 42) and Ethereum address (m/44'/60'/0'/0/0), asks POST /api/auth/mnemonic/ for a challenge, signs it with both keys, sends the signatures to POST /api/auth/verify/, checks the token it answers with GET /api/accounts/, and stores only that token. The 12 words are never stored, sent, or printed. A 429 means too many logins or new accounts from this client address. --dry-run reads the key and prints the three requests, and signs, sends, and stores nothing; it cannot know whether the account is new, so it never shows the refusal below.
-
-A phrase the API has not seen opens a new, empty account, so one mistyped word opens an account that is not the one meant. When the verify answers is_new, the login is refused with usage and stores no token unless --new-account is passed. By then the server has already opened the empty account, so side_effects is partial; nothing is stored locally, and a later login with the same words logs in to that account without --new-account and answers is_new false, so the refusal guards one run only. A new account has no email and no free Drive plan, and S3 needs no subscription.
-
-An agent asks its user to run hipc auth login in their own terminal rather than handle the token or the 12 words itself. For CI, log in once on a machine you trust and keep only the token on the runner, as HIPPIUS_TOKEN, never the 12 words. Neither the token nor the 12 words are ever read from argv, because argv is visible to other users through ps, and the token is never read from HIPPIUS_TOKEN, which is already in use for the invocation that sets it. Needs --yes when the API origin is not https://api.hippius.com, and when the profile stores a different token, since every later command then acts as the new token's owner; the dry run says which in replaces_token (for an access key, or without --token-file, whether any token is stored). A dry run asks for no token. At a terminal, the question about another origin comes before the prompt for the token.
+An agent asks its user to run hipc auth login in their own terminal rather than handle the token itself. For CI, keep the token on the runner as HIPPIUS_TOKEN. The token is never read from argv, because argv is visible to other users through ps, and never from HIPPIUS_TOKEN, which is already in use for the invocation that sets it; while HIPPIUS_TOKEN is set, later commands send it, not the token stored, and the login warns so. Needs --yes when the API origin is not https://api.hippius.com, and when the profile stores a different token, since every later command then acts as the new token's owner; the dry run says which in replaces_token (without --token-file, whether any token is stored). A dry run asks for no token. At a terminal, the question about another origin comes before the prompt for the token.
 
 Usage: hipc auth login [OPTIONS]
 
@@ -606,26 +601,11 @@ Options:
           
           It is read only as a regular file, never through a symlink; /dev/stdin and <(...) are refused, so pass - for stdin.
 
-      --access-key-file <PATH>
-          The file holding the 12-word access key, or - for stdin
-          
-          A regular file of the current user at mode 0600, never through a symlink, as the config file is checked; it holds only the words.
-
-      --access-key
-          Log in with a 12-word access key typed at a terminal prompt that does not show it
-
-      --new-account
-          Store the token of an access-key login whose verify answers is_new, a new, empty account
-          
-          Without it, a login whose verify answers is_new is refused and stores no token, since a mistyped word also opens a new account. The server has opened the account by the time it answers, with or without this flag.
-
   -h, --help
           Print help (see a summary with '-h')
 
 Examples:
   hipc auth login --token-file token.txt
-  hipc auth login --access-key-file access-key.txt
-  hipc auth login --access-key-file access-key.txt --new-account
 ```
 
 ### hipc auth status
@@ -2466,7 +2446,7 @@ Top up the balance by card, Bitcoin, or hAlpha; needs --yes
 
 A card or Bitcoin top-up takes --amount in US dollars and prints its checkout_url. Nothing is paid until a person pays there; then the balance grows by the amount. hipc does not wait for the payment: hipc billing balance shows it. A member tops up only a billing account, from --billing, HIPPIUS_BILLING, or hipc account billing-accounts use; without one a membership is refused with account_scope_unsupported.
 
-A hAlpha top-up takes --alpha, the hAlpha to spend, and converts it into credits on chain (1 credit = 1 USD). It reads GET /api/billing/native/quote/ and the purchases first, and refuses when the quote is stale or not enabled, when --alpha is below its min_alpha, when --alpha and the 0.01 hAlpha kept for the fee are more than its native_balance, when a purchase from the last 15 minutes is still in flight, or when the account signs its own buys (custodial false), which hipc cannot sign yet. The question names the address whose hAlpha is spent, the credits the quote gives, rounded down, and the minimum it accepts, 1 percent less; a price that falls further makes the chain refuse the buy. A person who was asked has the purchases read again before the buy. Then it sends POST /api/billing/native/buy/ with an Idempotency-Key, and follows GET /api/billing/native/purchases/ every 3 seconds until the purchase is completed or failed, for at most --wait-timeout. A run that stops first prints the purchase as it stands and exits 0; a purchase the chain refused is partial_failure, with the purchase on stdout. The key is printed as idempotency_key. A buy that may have reached the server is retried with the command its error names, which adds --min-credits and --idempotency-key: the retry sends the amounts unchanged, so the API answers it as the first buy, and reads only the quote first, refusing a --min-credits below 90 percent of what --alpha buys now, since under a key the API has not seen it is a new buy. The routes act on the signed-in user's own hAlpha, and the credits go to the user's own balance: a membership (from a flag, a variable, or the profile) is refused, and so is a project from anywhere or a billing account from a flag or a variable; a billing account stored in the profile is skipped. USDC and TAO top-ups stay in the console.
+A hAlpha top-up takes --alpha, the hAlpha to spend, and converts it into credits on chain (1 credit = 1 USD). It reads GET /api/billing/native/quote/ and the purchases first, and refuses when the quote is stale or not enabled, when --alpha is below its min_alpha, when --alpha and the 0.01 hAlpha kept for the fee are more than its native_balance, when a purchase from the last 15 minutes is still in flight, or when the account signs its own buys (custodial false), which are made in the console. The question names the address whose hAlpha is spent, the credits the quote gives, rounded down, and the minimum it accepts, 1 percent less; a price that falls further makes the chain refuse the buy. A person who was asked has the purchases read again before the buy. Then it sends POST /api/billing/native/buy/ with an Idempotency-Key, and follows GET /api/billing/native/purchases/ every 3 seconds until the purchase is completed or failed, for at most --wait-timeout. A run that stops first prints the purchase as it stands and exits 0; a purchase the chain refused is partial_failure, with the purchase on stdout. The key is printed as idempotency_key. A buy that may have reached the server is retried with the command its error names, which adds --min-credits and --idempotency-key: the retry sends the amounts unchanged, so the API answers it as the first buy, and reads only the quote first, refusing a --min-credits below 90 percent of what --alpha buys now, since under a key the API has not seen it is a new buy. The routes act on the signed-in user's own hAlpha, and the credits go to the user's own balance: a membership (from a flag, a variable, or the profile) is refused, and so is a project from anywhere or a billing account from a flag or a variable; a billing account stored in the profile is skipped. USDC and TAO top-ups stay in the console.
 
 Usage: hipc billing top-up [OPTIONS] --method <METHOD>
 

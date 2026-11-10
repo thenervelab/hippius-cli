@@ -3,16 +3,16 @@
 
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, PHRASES, Reply, Route, Server, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Route, SEED_PHRASES, Server, route};
 
 const OVERVIEW: &str = "/api/billing/gamma/";
 const CHALLENGE: &str = "/api/billing/gamma/hotkeys/challenge/";
 const LINK: &str = "/api/billing/gamma/hotkeys/";
 const CONVERSIONS: &str = "/api/billing/gamma/conversions/";
 
-/// The SS58 address of `PHRASES[0]`, the hotkey its words make.
+/// The SS58 address of `SEED_PHRASES[0]`, the hotkey its words make.
 const HOTKEY: &str = "5DfhGyQdFobKM8NsWvEeAKk5EQQgYe9AydgJ7rMB6E1EqRzV";
-/// Another valid address, `PHRASES[1]`'s.
+/// Another valid address, `SEED_PHRASES[1]`'s.
 const OTHER: &str = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
 const NONCE: &str = "4f1c2b3a49d8e7f6";
 const ID: &str = "6f0b2c1e-7b4d-4e8a-9c01-5d6e7f8a5f60";
@@ -45,7 +45,7 @@ fn conversion(status: &str) -> String {
 }
 
 fn hotkey_file(home: &Home) -> String {
-    let path = home.file("hotkey.txt", format!("{}\n", PHRASES[0]).as_bytes());
+    let path = home.file("hotkey.txt", format!("{}\n", SEED_PHRASES[0]).as_bytes());
     path.to_str()
         .expect("the temporary path is UTF-8")
         .to_owned()
@@ -102,7 +102,7 @@ fn a_hotkey_is_linked_with_its_signature_of_the_challenge() {
 fn the_words_can_come_from_stdin() {
     let server = Server::start(vec![challenge_for(HOTKEY), linked()]);
     let doc = Hipc::against(&Home::new(), &server)
-        .stdin(format!("{}\n", PHRASES[0]).as_bytes())
+        .stdin(format!("{}\n", SEED_PHRASES[0]).as_bytes())
         .run(&[
             "billing",
             "gamma",
@@ -202,6 +202,26 @@ fn a_missing_or_unprivate_hotkey_file_is_refused_without_its_words() {
         .fails(2, "usage");
     let text: String = error["message"].as_str().unwrap().to_owned();
     assert!(text.contains("the hotkey file"), "{text}");
+    // A file that is not UTF-8 text is refused by its path, with no byte of it.
+    let binary = home.file("binary.txt", b"\xff\xfe abandon");
+    let error = Hipc::new(&home)
+        .run(&[
+            "billing",
+            "gamma",
+            "hotkeys",
+            "create",
+            "--hotkey-file",
+            binary.to_str().unwrap(),
+        ])
+        .fails(2, "usage");
+    assert_eq!(
+        error["message"],
+        format!("the hotkey file `{}` is not UTF-8 text", binary.display())
+    );
+    assert_eq!(
+        error["hint"],
+        "pass `--hotkey-file` a file that holds only the hotkey's words"
+    );
     let bad = home.file("bad.txt", b"not words at all");
     let error = Hipc::new(&home)
         .run(&[
@@ -217,7 +237,7 @@ fn a_missing_or_unprivate_hotkey_file_is_refused_without_its_words() {
     assert!(text.contains("the hotkey phrase"), "{text}");
     assert!(!text.contains("access key"), "{text}");
     // A file the group or others can read is refused before its words are read.
-    let open = home.file("open.txt", format!("{}\n", PHRASES[0]).as_bytes());
+    let open = home.file("open.txt", format!("{}\n", SEED_PHRASES[0]).as_bytes());
     std::fs::set_permissions(&open, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
     let error = Hipc::new(&home)
         .run(&[

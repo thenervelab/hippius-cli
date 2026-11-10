@@ -506,7 +506,7 @@ account_checks() {
   expect "balance" 'has("balance")'
   online "billing balance in text mode" 0 --output text billing balance
   check "text block" "" grep -q '^balance ' "$OUT/$n.out"
-  # The hAlpha quote is a read; the buy and the access key login stay offline below.
+  # The hAlpha quote is a read; the buy stays offline below.
   online "billing native-quote" 0 billing native-quote
   expect "the quote names its rail state" \
     '(.enabled | type) == "boolean" and (.stale | type) == "boolean" and (.custodial | type) == "boolean"'
@@ -1676,19 +1676,9 @@ refusal_checks() {
   expect_code "--amount with halpha is usage" usage
   offline "hAlpha on a card top-up" 2 billing top-up --method card --alpha 1 --yes
   expect_code "--alpha with card is usage" usage
-  # An access key login would open an account, so only its refusals and its dry run run, with
-  # the public development phrase of Substrate.
-  local phrase="$WORK/phrase.txt"
-  printf '%s\n' "bottom drive obey lake curtain smoke basket hold race lonely fit walk" >"$phrase"
-  chmod 600 "$phrase"
-  offline "login with both files" 2 auth login --access-key-file "$phrase" --token-file "$phrase"
-  expect_code "both login files are usage" usage
-  offline "login --access-key-file --dry-run lists the three requests" 0 --dry-run \
-    auth login --access-key-file "$phrase"
-  expect_requests "the login lists the challenge, the verify, and the token check" \
-    "POST /api/auth/mnemonic/" "POST /api/auth/verify/" "GET /api/accounts/"
-  expect "the dry run derives the Substrate address" \
-    '.body.substrate_address == "5DfhGyQdFobKM8NsWvEeAKk5EQQgYe9AydgJ7rMB6E1EqRzV"'
+  # The access-key login is gone: its flag is a plain usage error, and nothing is sent.
+  offline "login --access-key is gone" 2 auth login --access-key
+  expect_code "the removed access-key flag is usage" usage
   # The profile PUT keeps the fields it leaves out, so the update sends only those given.
   offline "profile update --dry-run is one PUT" 0 --dry-run billing profile update \
     --tax-id GB1

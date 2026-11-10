@@ -454,7 +454,6 @@ const TOP_EXAMPLES: &[&str] = &[
 ];
 const AUTH_EXAMPLES: &[&str] = &[
     "hipc auth login --token-file token.txt",
-    "hipc auth login --access-key-file access-key.txt",
     "hipc auth status",
     "hipc auth logout --yes",
 ];
@@ -1526,23 +1525,24 @@ mod tests {
         let cli = Cli::try_parse_from(["hipc", "auth", "login"]).unwrap();
         assert!(matches!(
             cli.command,
-            Command::Auth(Auth::Login {
-                token_file: None,
-                access_key_file: None,
-                access_key: false,
-                new_account: false,
-            })
+            Command::Auth(Auth::Login { token_file: None })
         ));
-        // Nor a flag that takes the access key's words: `--access-key` takes no value.
-        assert!(Cli::try_parse_from(["hipc", "auth", "login", "--mnemonic", "x"]).is_err());
-        assert!(Cli::try_parse_from(["hipc", "auth", "login", "--access-key=x"]).is_err());
-        for pair in [
-            ["--token-file", "t", "--access-key-file", "k"].as_slice(),
-            &["--token-file", "t", "--access-key"],
-            &["--access-key-file", "k", "--access-key"],
+        // Nor a flag that takes a seed phrase: the access-key login is gone, so each of its
+        // flags is an unknown argument.
+        for flag in [
+            ["--mnemonic", "x"].as_slice(),
+            &["--access-key"],
+            &["--access-key=x"],
+            &["--access-key-file", "k"],
+            &["--new-account"],
         ] {
-            let args = [&["hipc", "auth", "login"][..], pair].concat();
-            assert!(Cli::try_parse_from(args).is_err(), "{pair:?}");
+            let args = [&["hipc", "auth", "login"][..], flag].concat();
+            let error = Cli::try_parse_from(args).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::UnknownArgument,
+                "{flag:?}"
+            );
         }
     }
 

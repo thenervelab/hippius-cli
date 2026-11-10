@@ -66,7 +66,7 @@ impl fmt::Display for Source {
             Self::Flag(flag) => write!(f, "`{flag}`"),
             Self::Variable(name) => write!(f, "`{name}`"),
             Self::File { path, .. } if path == Path::new("-") => f.write_str("stdin"),
-            // An access key passed in place of a path is not repeated, as on the command line.
+            // A seed phrase passed in place of a path is not repeated, as on the command line.
             Self::File { flag, path } if path.to_str().is_some_and(crate::holds_phrase) => {
                 write!(f, "the file `{flag}` names")
             }
@@ -115,7 +115,7 @@ mod tests {
             path: "/t".into(),
         };
         assert_eq!(file.suffix(), " from `/t`");
-        // An access key passed in place of a path is named by its flag, not quoted.
+        // A seed phrase passed in place of a path is named by its flag, not quoted.
         let phrase = Source::File {
             flag: "--body-file",
             path: "bottom drive obey lake curtain smoke basket hold race lonely fit walk".into(),
