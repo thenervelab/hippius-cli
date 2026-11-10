@@ -349,7 +349,6 @@ pub(crate) fn is_new_profile_name(name: &str) -> bool {
 
 /// The refusal of a profile name outside the rules of [`is_new_profile_name`].
 fn invalid_profile_name(given: &Given) -> Error {
-    let name = &given.value;
     let example = format!("`{DEFAULT_PROFILE}`");
     let hint = match &given.source {
         Source::Variable(variable) => {
@@ -358,11 +357,12 @@ fn invalid_profile_name(given: &Given) -> Error {
         // `--profile`, the one other source of a profile name.
         _ => format!("pass a `--profile` such as {example}"),
     };
+    // The name is not repeated: it may be a secret given in its place (tenet 9).
     Error::usage(
         format!(
-            "{}{} is not a profile name: a name is 1 to {MAX_PROFILE_NAME_CHARS} letters, \
-             digits, `.`, `_`, or `-`",
-            crate::phrase::quote(name),
+            "the profile name{} breaks the name rules: a name is 1 to \
+             {MAX_PROFILE_NAME_CHARS} letters, digits, `.`, `_`, or `-`; it is not repeated \
+             here, in case it is a secret",
             given.source.suffix()
         ),
         hint,

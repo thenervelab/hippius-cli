@@ -234,9 +234,9 @@ const PHRASE_WORDS: usize = 12;
 
 /// Whether `text` holds what looks like a seed phrase, such as a hotkey's words or an
 /// account's access key: 12 or more words in a row, each on the English BIP-39 list, in any
-/// letter case. A command line that does is refused without being quoted
-/// ([`phrase_in_argv`]), since an error that repeats it would copy the words into a log or a
-/// transcript.
+/// letter case. `hipc` refuses a command line that does, on every run and before it parses,
+/// without quoting it ([`phrase_in_argv`]), since an error that repeats it would copy the
+/// words into a log or a transcript.
 pub fn holds_phrase(text: &str) -> bool {
     let mut run = 0;
     for word in text.split_whitespace() {

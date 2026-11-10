@@ -182,14 +182,11 @@ fn a_profile_name_outside_the_name_rules_is_usage_and_writes_nothing() {
         let error = Hipc::new(&home)
             .run(&["--profile", bad, "account", "use", "self"])
             .fails(2, "usage");
+        // The name is not repeated: it may be a secret given in its place.
         assert_eq!(
             error["message"],
-            format!(
-                "{} from `--profile` is not a profile name: a name is 1 to 64 letters, digits, \
-                 `.`, `_`, or `-`",
-                // The message escapes the line break, as text mode does.
-                hippius::phrase::quote(bad).replace('\n', "\\n")
-            ),
+            "the profile name from `--profile` breaks the name rules: a name is 1 to 64 \
+             letters, digits, `.`, `_`, or `-`; it is not repeated here, in case it is a secret",
             "{bad:?}"
         );
         assert_eq!(error["hint"], "pass a `--profile` such as `default`");
@@ -198,6 +195,12 @@ fn a_profile_name_outside_the_name_rules_is_usage_and_writes_nothing() {
         .env("HIPPIUS_PROFILE", "a b")
         .run(&["account", "use", "self"])
         .fails(2, "usage");
+    assert!(
+        error["message"].as_str().is_some_and(
+            |message| message.starts_with("the profile name from `HIPPIUS_PROFILE` breaks")
+        ),
+        "{error}"
+    );
     assert_eq!(
         error["hint"],
         "unset `HIPPIUS_PROFILE`, or set it to a profile name such as `default`"

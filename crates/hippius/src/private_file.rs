@@ -80,6 +80,13 @@ pub(crate) enum NamedBy {
 }
 
 impl NamedBy {
+    /// The variable or flag in backticks, as a message names it: `` `--secrets-file` ``.
+    pub(crate) fn name(self) -> String {
+        match self {
+            Self::Variable(name) | Self::Flag(name) => format!("`{name}`"),
+        }
+    }
+
     /// The start of a hint that names another path, before the path: "set `HIPPIUS_CONFIG`
     /// to", or "pass `--cluster-key-file`".
     fn point_at(self) -> String {

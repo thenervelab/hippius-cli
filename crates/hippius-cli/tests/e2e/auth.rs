@@ -206,8 +206,8 @@ fn the_removed_access_key_flags_are_usage_errors() {
 }
 
 /// A seed phrase typed on the command line by mistake, as stray words after the removed
-/// `--access-key` or as the value of a file flag, is refused without being repeated in any
-/// output, and nothing is sent.
+/// `--access-key` or as the value of a flag, is refused without being repeated in any output,
+/// and nothing is sent.
 #[test]
 fn a_seed_phrase_on_the_command_line_is_refused_without_being_repeated() {
     let home = Home::new();
@@ -233,17 +233,27 @@ fn a_seed_phrase_on_the_command_line_is_refused_without_being_repeated() {
             phrase,
             "--yes",
         ],
+        // A value clap takes, which a later check would refuse by quoting it.
+        vec![
+            "s3",
+            "configure",
+            "--access-key-id",
+            "hip_A",
+            "--secret-key-file",
+            "-",
+            "--aws-profile",
+            phrase,
+            "--dry-run",
+        ],
     ] {
         let run = Hipc::new(&home)
             .env("HIPPIUS_API_URL", server.url())
             .run(&args);
         assert_eq!(run.code(), Some(2), "{args:?}");
         let out = format!("{}{}", run.stdout(), run.stderr());
-        // clap refuses the first three, and the run refuses argv that holds the words; a
-        // flag clap accepts reads the file, and names no path that does not exist.
+        // Every run refuses argv that holds the words, before anything reads a flag.
         assert!(
-            out.contains("the command line holds what looks like a seed phrase")
-                || out.contains("does not exist; the path is not repeated here"),
+            out.contains("the command line holds what looks like a seed phrase"),
             "{args:?}: {out}"
         );
         let shown: Vec<String> = out
@@ -1151,7 +1161,7 @@ fn login_names_a_profile_api_url_as_the_source() {
 }
 
 /// A token passed where a path or no argument belongs is refused without being repeated: a
-/// stray word after `auth login`, a known token anywhere on a command line clap refuses, and
+/// stray word after `auth login`, a known token anywhere on a command line, parsed or not, and
 /// a secret-file flag whose path names no file.
 #[test]
 fn a_token_in_the_wrong_place_is_never_repeated() {
@@ -1159,7 +1169,7 @@ fn a_token_in_the_wrong_place_is_never_repeated() {
     let pasted = "tok_pasted_in_the_wrong_place_0123456789";
     let stored = "tok_stored_0123456789abcdef";
     home.write_config(&format!("[profiles.default]\ntoken = \"{stored}\"\n"));
-    let cases: [(Vec<&str>, &str); 8] = [
+    let cases: [(Vec<&str>, &str); 10] = [
         (
             vec!["auth", pasted],
             "`hipc auth` takes no such argument or value, so the word given is not repeated here",
@@ -1182,6 +1192,23 @@ fn a_token_in_the_wrong_place_is_never_repeated() {
         ),
         (
             vec!["compute", "vms", "get", "--bogus", stored],
+            "the command line holds an API token, so it is not repeated here",
+        ),
+        // Values clap takes, which a later check or message would quote.
+        (
+            vec![
+                "s3",
+                "configure",
+                "--access-key-id",
+                stored,
+                "--secret-key-file",
+                "-",
+                "--dry-run",
+            ],
+            "the command line holds an API token, so it is not repeated here",
+        ),
+        (
+            vec!["--profile", stored, "auth", "status"],
             "the command line holds an API token, so it is not repeated here",
         ),
         (

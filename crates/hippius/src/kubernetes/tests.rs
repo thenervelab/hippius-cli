@@ -1131,20 +1131,21 @@ fn a_file_that_is_not_a_version_1_key_file_is_usage() {
 fn the_key_file_is_held_to_the_checks_of_the_config_file() {
     let dir = temp_dir("checks");
     let load = |path: &Path| ClusterKey::load(path, "--cluster-key-file").unwrap_err();
-    let missing = dir.join("missing.key");
-    let error = load(&missing);
-    assert_eq!(error.code(), Code::Usage);
-    assert!(
-        error.message().ends_with("missing.key` does not exist"),
-        "{}",
-        error.message()
-    );
-    let error = load(&dir.join("no-dir").join("x.key"));
-    assert!(
-        error.message().ends_with("x.key` does not exist"),
-        "{}",
-        error.message()
-    );
+    // A path that names no file is not repeated: it may be the key passed in its place.
+    for missing in [dir.join("missing.key"), dir.join("no-dir").join("x.key")] {
+        let error = load(&missing);
+        assert_eq!(error.code(), Code::Usage);
+        assert_eq!(
+            error.message(),
+            "the cluster key file `--cluster-key-file` names does not exist; the path is not \
+             repeated here, in case it is a secret passed in place of the file"
+        );
+        assert!(
+            error
+                .hint()
+                .is_some_and(|hint| hint.starts_with("pass `--cluster-key-file` the"))
+        );
+    }
     let file = dir.join("hippius-cluster-prod.key");
     fs::write(&file, vector_key_file()).unwrap();
     fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();

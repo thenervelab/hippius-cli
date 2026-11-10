@@ -20,6 +20,11 @@ use crate::spec;
 pub(crate) fn run(args: &[OsString]) -> ExitCode {
     disable_core_dumps();
     let terminal = Terminal::detect();
+    // Before anything parses or checks a value, so no message can quote a secret given as one,
+    // whether clap takes the value or a later check refuses it (tenet 9).
+    if let Some(refusal) = secret_in_argv(args) {
+        return output::failure(terminal.resolve_from_args(args), &refusal);
+    }
     let parsed = crate::cli::parse_command()
         .try_get_matches_from(args)
         .and_then(|matches| {
@@ -27,24 +32,7 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         });
     let (cli, path) = match parsed {
         Ok(parsed) => parsed,
-        Err(error) => {
-            let mode = terminal.resolve_from_args(args);
-            // A seed phrase typed on the command line is refused without the words: clap's
-            // message would quote them.
-            let line = args
-                .iter()
-                .map(|arg| arg.to_string_lossy())
-                .collect::<Vec<_>>()
-                .join(" ");
-            if hippius::holds_phrase(&line) {
-                return output::failure(mode, &hippius::phrase_in_argv());
-            }
-            // So is an API token the run knows: `HIPPIUS_TOKEN`, or one the config file stores.
-            if holds_a_known_token(&line) {
-                return output::failure(mode, &token_in_argv());
-            }
-            return output::clap_error(mode, &error, args);
-        }
+        Err(error) => return output::clap_error(terminal.resolve_from_args(args), &error, args),
     };
     let mode = terminal.resolve(&cli.global);
     if let Some(name) = crate::cli::repeated_global(args) {
@@ -104,6 +92,23 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         Ok(Printed::Raw(bytes)) => output::raw(mode, &bytes, ctx.side_effects()),
         Ok(Printed::Body(bytes)) => output::body(&terminal, mode, &bytes, ctx.side_effects()),
         Err(error) => output::failure_warned(mode, &error, &warnings),
+    }
+}
+
+/// The refusal of a command line that holds a seed phrase or an API token the run knows, which
+/// an error that quoted a word of it would copy into a log or a transcript.
+fn secret_in_argv(args: &[OsString]) -> Option<hippius::Error> {
+    let line = args
+        .iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if hippius::holds_phrase(&line) {
+        Some(hippius::phrase_in_argv())
+    } else if holds_a_known_token(&line) {
+        Some(token_in_argv())
+    } else {
+        None
     }
 }
 

@@ -274,7 +274,8 @@ fn a_missing_or_unprivate_hotkey_file_is_refused_without_its_words() {
         .fails(2, "usage");
     let text: String = error["message"].as_str().unwrap().to_owned();
     assert!(text.contains("the hotkey file"), "{text}");
-    // A file whose name is a phrase is named by its flag instead, so the words go no further.
+    // A path that holds a phrase is refused with the command line, before the file is read,
+    // so the words go no further.
     let named = home.file(&format!("x {}", SEED_PHRASES[1]), b"\xff\xfe");
     let error = Hipc::new(&home)
         .run(&[
@@ -286,9 +287,12 @@ fn a_missing_or_unprivate_hotkey_file_is_refused_without_its_words() {
             named.to_str().unwrap(),
         ])
         .fails(2, "usage");
-    assert_eq!(
-        error["message"],
-        "the hotkey file `--hotkey-file` names is not UTF-8 text"
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|message| message
+                .starts_with("the command line holds what looks like a seed phrase")),
+        "{error}"
     );
     // A file that is not UTF-8 text is refused by its path, with no byte of it.
     let binary = home.file("binary.txt", b"\xff\xfe abandon");

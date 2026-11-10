@@ -69,9 +69,8 @@ impl AppSecrets {
                 file_hint(flag),
             )
         };
-        let mut file = match load_object(path, guarded)? {
+        let mut file = match load_object(path, guarded, &file_hint(flag))? {
             ObjectFile::Object(file) => file,
-            ObjectFile::Missing => return Err(refuse("does not exist")),
             ObjectFile::Repeated => return Err(refuse("names a secret twice")),
             ObjectFile::NotAnObject => return Err(refuse("is not a JSON object")),
         };
@@ -317,9 +316,14 @@ mod tests {
     #[test]
     fn a_missing_or_open_file_is_refused() {
         let dir = dir("guard");
-        let missing = AppSecrets::load(&dir.join("missing.json"), FLAG).unwrap_err();
-        let message = missing.message();
-        assert!(message.ends_with("does not exist"), "{message}");
+        // A secret passed in place of the path names no file, and is not repeated.
+        let missing = AppSecrets::load(Path::new("hunter2"), FLAG).unwrap_err();
+        assert_eq!(
+            missing.message(),
+            "the secrets file `--secrets-file` names does not exist; the path is not repeated \
+             here, in case it is a secret passed in place of the file"
+        );
+        assert_eq!(missing.hint(), Some(file_hint(FLAG).as_str()));
         let path = file(&dir, "{}");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
         let open = AppSecrets::load(&path, FLAG).unwrap_err();

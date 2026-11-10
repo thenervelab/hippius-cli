@@ -11,12 +11,12 @@
 use std::fmt;
 use std::fs;
 use std::os::unix::fs::MetadataExt as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
-use crate::phrase::{quote, quote_path};
+use crate::phrase::quote_path;
 use crate::private_file::{Guarded, NamedBy, PrivateFile};
 use crate::source::Source;
 
@@ -179,17 +179,15 @@ impl AwsProfile {
     /// # Errors
     ///
     /// `usage` for an empty, too long, or otherwise unsafe name. A `]` or a newline would
-    /// let the name end its section header and start another.
+    /// let the name end its section header and start another. The message does not repeat
+    /// the name, which may be a secret given in its place (tenet 9).
     pub fn new(name: &str) -> Result<Self> {
         if crate::config::is_new_profile_name(name) {
             Ok(Self(name.to_owned()))
         } else {
             Err(Error::usage(
-                format!(
-                    "{} is not an AWS profile name: a name is 1 to 64 letters, digits, `.`, \
-                     `_`, and `-`",
-                    quote(name)
-                ),
+                "the AWS profile name breaks the name rules: a name is 1 to 64 letters, digits, \
+                 `.`, `_`, and `-`; it is not repeated here, in case it is a secret",
                 "pass an `--aws-profile` of 1 to 64 letters, digits, `.`, `_`, and `-`",
             ))
         }
@@ -236,11 +234,10 @@ impl AccessKeyId {
         if valid {
             Ok(Self(text.to_owned()))
         } else {
+            // Not repeated: the secret key is the value most likely to be given in its place.
             Err(Error::usage(
-                format!(
-                    "{} is not an S3 access key id: an id is `hip_` and letters or digits",
-                    quote(text)
-                ),
+                "the S3 access key id is not one: an id is `hip_` and letters or digits; it is \
+                 not repeated here, in case it is the secret key",
                 "run `hipc s3 tokens list` to see the access key ids",
             ))
         }
@@ -700,7 +697,17 @@ mod tests {
             assert!(AwsProfile::new(good).is_ok(), "{good}");
         }
         for bad in ["", "a b", "a]", "a\n[x]", "a/b", &"a".repeat(65)] {
-            assert!(AwsProfile::new(bad).is_err(), "{bad:?}");
+            let error = AwsProfile::new(bad).unwrap_err();
+            // The refused value may be a secret given in place of the name.
+            assert!(
+                error
+                    .message()
+                    .ends_with("it is not repeated here, in case it is a secret"),
+                "{error:?}"
+            );
+            if !bad.is_empty() {
+                assert!(!error.message().contains(bad), "{bad:?}");
+            }
         }
         assert_eq!(
             AwsProfile::new("default").unwrap().config_header(),
@@ -714,8 +721,20 @@ mod tests {
     #[test]
     fn key_ids_and_secrets_are_checked_and_secrets_never_printed() {
         assert!(AccessKeyId::new("hip_AbC123").is_ok());
-        for bad in ["", "hip_", "AKIA123", "hip_a b", "hip_a\nx", "hip_a=b"] {
-            assert!(AccessKeyId::new(bad).is_err(), "{bad:?}");
+        for bad in [
+            "",
+            "hip_",
+            "AKIA123",
+            "hip_a b",
+            "hip_a\nx",
+            "hip_a=b",
+            "s3cr3t+/=",
+        ] {
+            let error = AccessKeyId::new(bad).unwrap_err();
+            // The secret key is the value most likely to be given in place of the id.
+            if bad.len() > "hip_".len() {
+                assert!(!error.message().contains(bad), "{bad:?}");
+            }
         }
         let secret = SecretKey::new("  s3cr3t+/=\n", &Source::Argument).unwrap();
         assert_eq!(format!("{secret:?}"), "SecretKey(redacted)");

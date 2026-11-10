@@ -108,7 +108,7 @@ impl ClusterKey {
             holds: "the cluster's private keys",
             named_by: NamedBy::Flag(flag),
         };
-        let loaded = load_object(path, guarded)?;
+        let loaded = load_object(path, guarded, &key_file_hint(flag))?;
         let not_a_key_file = |problem: &str| {
             Error::usage(
                 format!(
@@ -123,12 +123,6 @@ impl ClusterKey {
         // counts would depend on the parser.
         let mut fields = match loaded {
             ObjectFile::Object(fields) => fields,
-            ObjectFile::Missing => {
-                return Err(Error::usage(
-                    format!("the cluster key file {} does not exist", quote_path(path)),
-                    key_file_hint(flag),
-                ));
-            }
             ObjectFile::Repeated => return Err(not_a_key_file("names a field twice")),
             ObjectFile::NotAnObject => return Err(not_a_key_file("is not a JSON object")),
         };

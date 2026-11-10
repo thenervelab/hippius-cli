@@ -100,9 +100,8 @@ impl DnsCredentials {
                 file_hint(flag, provider),
             )
         };
-        let mut file = match load_object(path, guarded)? {
+        let mut file = match load_object(path, guarded, &file_hint(flag, provider))? {
             ObjectFile::Object(file) => file,
-            ObjectFile::Missing => return Err(refuse("does not exist")),
             ObjectFile::Repeated => return Err(refuse("names a field twice")),
             ObjectFile::NotAnObject => return Err(refuse("is not a JSON object")),
         };
@@ -320,8 +319,6 @@ const SECRET_FIELDS: [&str; 4] = [
 
 /// A private JSON file a flag names, as [`load_object`] read it.
 pub(crate) enum ObjectFile {
-    /// Nothing is at the path.
-    Missing,
     /// The object names a field twice: which copy counts would depend on the parser.
     Repeated,
     /// The file is not one JSON object.
@@ -331,10 +328,25 @@ pub(crate) enum ObjectFile {
 
 /// Reads the private file at `path` ([`PrivateFile::load`], held to its checks) as one JSON
 /// object, for the DNS credentials, App Engine secrets, and cluster key files. The bytes read
-/// are cleared on the way out, whatever the outcome; each caller words its own refusals.
-pub(crate) fn load_object(path: &Path, guarded: Guarded) -> Result<ObjectFile> {
+/// are cleared on the way out, whatever the outcome; each caller words its own refusals of
+/// what the file holds.
+///
+/// # Errors
+///
+/// The refusals of [`PrivateFile::load`], and `usage` with `hint` when nothing is at the path.
+/// That message does not repeat the path: a secret passed in place of the file that holds it
+/// names no file, and quoting it would copy the secret into a log (tenet 9).
+pub(crate) fn load_object(path: &Path, guarded: Guarded, hint: &str) -> Result<ObjectFile> {
     let Some(bytes) = PrivateFile::load(path, guarded)? else {
-        return Ok(ObjectFile::Missing);
+        return Err(Error::usage(
+            format!(
+                "{} {} names does not exist; the path is not repeated here, in case it is a \
+                 secret passed in place of the file",
+                guarded.what,
+                guarded.named_by.name()
+            ),
+            hint,
+        ));
     };
     let bytes = Zeroizing::new(bytes);
     Ok(match serde_json::from_slice::<UniqueObject>(&bytes) {

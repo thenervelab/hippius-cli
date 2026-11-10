@@ -440,6 +440,17 @@ fn a_bad_credentials_file_is_usage_with_zero_requests() {
         "pass `--credentials-file` a mode-0600 JSON file with `access_key_id` and \
          `secret_access_key`, and optionally `session_token` and `hosted_zone_id`"
     );
+    // The token itself passed in place of the path names no file, and is not repeated, a
+    // dry run included.
+    let run =
+        Hipc::against(&home, &server).run(&setup_args("cloudflare", CF_TOKEN, &["--dry-run"]));
+    let error = run.fails(2, "usage");
+    assert_run_clean(&run);
+    assert_eq!(
+        error["message"],
+        "the DNS credentials file `--credentials-file` names does not exist; the path is not \
+         repeated here, in case it is a secret passed in place of the file"
+    );
     assert!(server.requests().is_empty());
 }
 
