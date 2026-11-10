@@ -3,11 +3,12 @@
 //! swagger types none; each confirmed write sends nothing without `--yes`; and the selectors
 //! go where tenet 12 says, the transfers being personal.
 
+use hippius::routes::account;
 use serde_json::{Value, json};
 
 use crate::common::{
     self, ACCOUNTS, BILLING, Hipc, Home, MEMBER, OWN_ACCOUNT, PROJECT, Reply, Run, Server, draft,
-    no_server, one_request_dry_run, parsed, route,
+    no_server, one_request_dry_run, parsed, route, route_of,
 };
 
 const OTHER: &str = "acct_ffffffffffffffffffff";
@@ -104,9 +105,9 @@ fn confirmed(
 /// trimmed with the Default billing account, as the console does, and prints the project.
 #[test]
 fn projects_create_sends_the_trimmed_name_without_yes() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/accounts/projects/",
+    let server = Server::start(vec![route_of(
+        &account::PROJECT_CREATE,
+        [],
         Reply::json(201, ONE_PROJECT),
     )]);
     let doc = hipc(&server, &projects(&["create", "--name", "  web "])).ok();
@@ -120,9 +121,9 @@ fn projects_create_sends_the_trimmed_name_without_yes() {
 #[test]
 fn billing_accounts_create_and_update_send_the_name_without_yes() {
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/accounts/billing-accounts/",
+        route_of(
+            &account::BILLING_ACCOUNT_CREATE,
+            [],
             Reply::json(201, ONE_BILLING),
         ),
         route(
@@ -479,8 +480,8 @@ fn offered(
 ) {
     let path = format!("/api/accounts/projects/{PROJECT}/transfer/");
     let server = Server::start(vec![
-        route("GET", "/api/accounts/projects/", Reply::json(200, projects)),
-        route("GET", "/api/accounts/", Reply::json(200, accounts)),
+        route_of(&account::PROJECTS, [], Reply::json(200, projects)),
+        route_of(&account::ACCOUNTS, [], Reply::json(200, accounts)),
         route("POST", &path, Reply::json(201, TRANSFER)),
     ]);
     let argv = if code == "confirmation_required" {
@@ -1047,9 +1048,9 @@ fn quota_update_needs_a_limit_and_reads_each_as_a_count_or_none() {
 fn project_transfers_list_is_one_envelope_and_personal() {
     let outgoing = OUTGOING;
     let answer = format!(r#"{{"incoming":[{TRANSFER}],"outgoing":[{outgoing},7],"count":2}}"#);
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/accounts/project-transfers/",
+    let server = Server::start(vec![route_of(
+        &account::PROJECT_TRANSFERS,
+        [],
         Reply::json(200, &answer),
     )]);
     let doc = hipc(&server, &transfers(&["list"])).ok();
@@ -1074,9 +1075,9 @@ fn project_transfers_list_is_one_envelope_and_personal() {
     }
     // A `direction` the API sends is replaced by hipc's, which the list the transfer was in
     // decides.
-    let sent_direction = Server::start(vec![route(
-        "GET",
-        "/api/accounts/project-transfers/",
+    let sent_direction = Server::start(vec![route_of(
+        &account::PROJECT_TRANSFERS,
+        [],
         Reply::json(
             200,
             r#"{"incoming":[{"id":1,"direction":"outgoing"}],"outgoing":[]}"#,
@@ -1086,9 +1087,9 @@ fn project_transfers_list_is_one_envelope_and_personal() {
         hipc(&sent_direction, &transfers(&["list"])).ok()["items"],
         json!([{"id": 1, "direction": "incoming"}])
     );
-    let empty = Server::start(vec![route(
-        "GET",
-        "/api/accounts/project-transfers/",
+    let empty = Server::start(vec![route_of(
+        &account::PROJECT_TRANSFERS,
+        [],
         Reply::json(200, r#"{"incoming":[],"outgoing":[]}"#),
     )]);
     assert_eq!(
@@ -1103,9 +1104,9 @@ fn project_transfers_list_is_one_envelope_and_personal() {
 fn project_transfers_list_names_the_project_and_accounts_in_text() {
     let odd = r#"{"id":8,"project":{"x":1},"from_account":null,"to_account":"acct_x"}"#;
     let answer = format!(r#"{{"incoming":[{TRANSFER}],"outgoing":[{odd}]}}"#);
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/accounts/project-transfers/",
+    let server = Server::start(vec![route_of(
+        &account::PROJECT_TRANSFERS,
+        [],
         Reply::json(200, &answer),
     )]);
     let run = hipc(
@@ -1141,9 +1142,9 @@ fn project_transfers_list_refuses_another_shape() {
         r#"{"incoming":[],"outgoing":null}"#,
         "[]",
     ] {
-        let server = Server::start(vec![route(
-            "GET",
-            "/api/accounts/project-transfers/",
+        let server = Server::start(vec![route_of(
+            &account::PROJECT_TRANSFERS,
+            [],
             Reply::json(200, answer),
         )]);
         let error = hipc(&server, &transfers(&["list"])).fails(1, "internal");
@@ -1309,9 +1310,9 @@ fn a_transfer_is_named_with_what_the_list_gives() {
     ];
     for (transfer, action) in cases {
         let answer = format!(r#"{{"incoming":[{transfer}],"outgoing":[]}}"#);
-        let server = Server::start(vec![route(
-            "GET",
-            "/api/accounts/project-transfers/",
+        let server = Server::start(vec![route_of(
+            &account::PROJECT_TRANSFERS,
+            [],
             Reply::json(200, &answer),
         )]);
         let error = hipc(&server, &transfers(&["decline", "5"])).fails(2, "confirmation_required");
@@ -1329,9 +1330,9 @@ fn a_transfer_is_named_with_what_the_list_gives() {
 /// sent.
 #[test]
 fn a_transfer_not_on_its_side_is_refused_after_the_read() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/accounts/project-transfers/",
+    let server = Server::start(vec![route_of(
+        &account::PROJECT_TRANSFERS,
+        [],
         Reply::json(200, &transfers_answer()),
     )]);
     let cases = [
@@ -1369,9 +1370,9 @@ fn a_transfer_not_on_its_side_is_refused_after_the_read() {
     let requests = server.requests();
     assert_eq!(requests.len(), cases.len());
     assert!(requests.iter().all(|r| r.method == "GET"));
-    let broken = Server::start(vec![route(
-        "GET",
-        "/api/accounts/project-transfers/",
+    let broken = Server::start(vec![route_of(
+        &account::PROJECT_TRANSFERS,
+        [],
         Reply::json(200, r#"{"incoming":[]}"#),
     )]);
     hipc(&broken, &transfers(&["accept", "5", "--yes"])).fails(1, "internal");
@@ -1384,11 +1385,7 @@ fn a_transfer_not_on_its_side_is_refused_after_the_read() {
 fn a_membership_sends_the_account_header_and_is_named() {
     let path = format!("/api/accounts/projects/{PROJECT}/budget/");
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/accounts/projects/",
-            Reply::json(201, ONE_PROJECT),
-        ),
+        route_of(&account::PROJECT_CREATE, [], Reply::json(201, ONE_PROJECT)),
         route("DELETE", &path, Reply::json(204, "")),
     ]);
     hipc(
@@ -1491,14 +1488,14 @@ fn the_selectors_follow_the_route_classes() {
     );
     assert!(server.requests().is_empty());
     let personal = Server::start(vec![
-        route(
-            "GET",
-            "/api/accounts/project-transfers/",
+        route_of(
+            &account::PROJECT_TRANSFERS,
+            [],
             Reply::json(200, &transfers_answer()),
         ),
-        route(
-            "POST",
-            "/api/accounts/project-transfers/5/decline/",
+        route_of(
+            &account::PROJECT_TRANSFER_DECLINE,
+            [&5],
             Reply::json(204, ""),
         ),
     ]);
@@ -1563,9 +1560,9 @@ fn a_stored_selection_is_left_off_a_read_and_a_create() {
     );
     assert!(server.requests().is_empty());
     // The create goes out, and no billing header is on the wire.
-    let creates = Server::start(vec![route(
-        "POST",
-        "/api/accounts/billing-accounts/",
+    let creates = Server::start(vec![route_of(
+        &account::BILLING_ACCOUNT_CREATE,
+        [],
         Reply::json(201, ONE_BILLING),
     )]);
     Hipc::against(&billed, &creates)
@@ -1599,12 +1596,8 @@ fn a_stored_project_is_left_off_a_write_that_names_the_project() {
         route("PUT", &budget, Reply::json(200, BUDGET)),
         route("DELETE", &budget, Reply::json(204, "")),
         route("PATCH", &quota, Reply::json(200, QUOTA)),
-        route(
-            "GET",
-            "/api/accounts/projects/",
-            Reply::json(200, &projects_answer()),
-        ),
-        route("GET", "/api/accounts/", Reply::json(200, ACCOUNTS)),
+        route_of(&account::PROJECTS, [], Reply::json(200, &projects_answer())),
+        route_of(&account::ACCOUNTS, [], Reply::json(200, ACCOUNTS)),
         route("POST", &transfer, Reply::json(201, TRANSFER)),
     ]);
     let writes: [(&[&str], &str, &str); 6] = [

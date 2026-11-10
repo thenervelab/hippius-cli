@@ -2,9 +2,10 @@
 //! their analytics. The routes act as the signed-in user, so no selector header is sent,
 //! and no command is confirmed, since none spends.
 
+use hippius::routes::account;
 use serde_json::{Value, json};
 
-use crate::common::{BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Server, draft, route};
+use crate::common::{BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Server, draft, route, route_of};
 
 /// One link, in the shape swagger gives an entry of `GET /api/referral-codes/`.
 const LINK: &str = concat!(
@@ -22,9 +23,9 @@ const ANALYTICS: &str = r#"{"signups":3,"converted":1,"channels":[{"slug":"tg1",
 
 #[test]
 fn list_prints_the_links_as_the_envelope() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/referral-codes/",
+    let server = Server::start(vec![route_of(
+        &account::REFERRAL_CODES,
+        [],
         Reply::json(200, &format!("[{LINK},{OTHER_LINK}]")),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -41,9 +42,9 @@ fn list_prints_the_links_as_the_envelope() {
         })
     );
     // No links yet is an empty list.
-    let empty = Server::start(vec![route(
-        "GET",
-        "/api/referral-codes/",
+    let empty = Server::start(vec![route_of(
+        &account::REFERRAL_CODES,
+        [],
         Reply::json(200, "[]"),
     )]);
     let doc = Hipc::against(&Home::new(), &empty)
@@ -59,9 +60,9 @@ fn list_prints_the_links_as_the_envelope() {
 fn a_list_of_more_than_one_code_prints_with_a_warning_in_text_mode() {
     let foreign = LINK.replace("HIPREF", "OTHER");
     let body = format!("[{LINK},{foreign}]");
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/referral-codes/",
+    let server = Server::start(vec![route_of(
+        &account::REFERRAL_CODES,
+        [],
         Reply::json(200, &body),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -93,9 +94,9 @@ fn an_empty_or_missing_code_beside_the_current_one_is_not_a_second_code() {
     let null = LINK.replace(r#""code":"HIPREF""#, r#""code":null"#);
     for other in [empty, missing, null] {
         for body in [format!("[{other},{LINK}]"), format!("[{LINK},{other}]")] {
-            let server = Server::start(vec![route(
-                "GET",
-                "/api/referral-codes/",
+            let server = Server::start(vec![route_of(
+                &account::REFERRAL_CODES,
+                [],
                 Reply::json(200, &body),
             )]);
             let run = Hipc::against(&Home::new(), &server).run(&[
@@ -114,9 +115,9 @@ fn an_empty_or_missing_code_beside_the_current_one_is_not_a_second_code() {
 /// A create is free, so it needs no `--yes`, and sends only the name.
 #[test]
 fn create_needs_no_yes_and_sends_only_the_name() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/referral-codes/",
+    let server = Server::start(vec![route_of(
+        &account::REFERRAL_CODE_CREATE,
+        [],
         Reply::json(201, LINK),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -129,9 +130,9 @@ fn create_needs_no_yes_and_sends_only_the_name() {
 /// A name already in use is the server's 409, passed on as `conflict`; nothing was made.
 #[test]
 fn a_name_in_use_is_a_conflict() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/referral-codes/",
+    let server = Server::start(vec![route_of(
+        &account::REFERRAL_CODE_CREATE,
+        [],
         Reply::json(
             409,
             r#"{"detail":"You already have an entry with this name"}"#,
@@ -165,9 +166,9 @@ fn a_name_outside_one_line_of_64_characters_is_usage() {
             );
         }
     }
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/referral-codes/",
+    let server = Server::start(vec![route_of(
+        &account::REFERRAL_CODE_CREATE,
+        [],
         Reply::json(201, LINK),
     )]);
     let widest = "é".repeat(64);
@@ -179,9 +180,9 @@ fn a_name_outside_one_line_of_64_characters_is_usage() {
 
 #[test]
 fn update_renames_the_link_and_sends_only_the_name() {
-    let server = Server::start(vec![route(
-        "PATCH",
-        "/api/referral-codes/4/",
+    let server = Server::start(vec![route_of(
+        &account::REFERRAL_CODE_UPDATE,
+        [&4],
         Reply::json(200, LINK),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -193,9 +194,9 @@ fn update_renames_the_link_and_sends_only_the_name() {
 
 #[test]
 fn update_of_a_missing_link_names_the_list_and_a_bad_id_is_usage() {
-    let server = Server::start(vec![route(
-        "PATCH",
-        "/api/referral-codes/9/",
+    let server = Server::start(vec![route_of(
+        &account::REFERRAL_CODE_UPDATE,
+        [&9],
         Reply::not_found(),
     )]);
     let home = Home::new();
@@ -264,9 +265,9 @@ fn create_and_update_dry_runs_show_the_body_and_send_nothing() {
 #[test]
 fn analytics_prints_the_answer_and_refresh_adds_the_query() {
     let server = Server::start(vec![
-        route(
-            "GET",
-            "/api/referral/analytics/",
+        route_of(
+            &account::REFERRAL_ANALYTICS,
+            [],
             Reply::json(200, ANALYTICS),
         ),
         route(
@@ -299,12 +300,12 @@ fn analytics_prints_the_answer_and_refresh_adds_the_query() {
 #[test]
 fn a_selection_sends_every_referral_command_without_a_selector_header() {
     let server = Server::start(vec![
-        route("GET", "/api/referral-codes/", Reply::json(200, "[]")),
-        route("POST", "/api/referral-codes/", Reply::json(201, LINK)),
-        route("PATCH", "/api/referral-codes/4/", Reply::json(200, LINK)),
-        route(
-            "GET",
-            "/api/referral/analytics/",
+        route_of(&account::REFERRAL_CODES, [], Reply::json(200, "[]")),
+        route_of(&account::REFERRAL_CODE_CREATE, [], Reply::json(201, LINK)),
+        route_of(&account::REFERRAL_CODE_UPDATE, [&4], Reply::json(200, LINK)),
+        route_of(
+            &account::REFERRAL_ANALYTICS,
+            [],
             Reply::json(200, ANALYTICS),
         ),
     ]);

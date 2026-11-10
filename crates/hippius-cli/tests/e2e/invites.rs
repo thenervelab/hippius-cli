@@ -4,9 +4,10 @@
 use std::io::{Read as _, Write as _};
 use std::path::PathBuf;
 
+use hippius::routes::account;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Route, Run, Server, TOKEN, route};
+use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Route, Run, Server, TOKEN, route_of};
 
 /// The invite token every test sends.
 const INVITE: &str = "inv_Qx9Wb2-secret_token";
@@ -23,11 +24,11 @@ const JOINED: &str =
     r#"{"account":{"id":"acct_0123456789abcdef0123","name":"Boss Co","is_owner":false}}"#;
 
 fn preview_route(reply: Reply) -> Route {
-    route("POST", "/api/accounts/invites/preview/", reply)
+    route_of(&account::INVITE_PREVIEW, [], reply)
 }
 
 fn accept_route(reply: Reply) -> Route {
-    route("POST", "/api/accounts/invites/accept/", reply)
+    route_of(&account::INVITE_ACCEPT, [], reply)
 }
 
 /// The invite token, in a private file of `home`.

@@ -11,7 +11,8 @@
 //! user's code on chain on first use, paid by the server's signer, and a rename changes a
 //! label stored on Hippius only. So no command here is confirmed (tenet 5).
 
-use hippius::{Method, Request, Result, phrase};
+use hippius::routes;
+use hippius::{Request, Result, phrase};
 use serde_json::{Value, json};
 
 use crate::cli::Referrals;
@@ -25,7 +26,8 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Referrals) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
     match command {
         Referrals::List => {
-            let request = Request::get("/referral-codes/").about("list the referral links");
+            let request =
+                Request::to(&routes::account::REFERRAL_CODES, []).about("list the referral links");
             print_list_with(ctx, &client, &request, |response| {
                 let envelope =
                     hippius::page(response.json()?)?.complete_envelope(request.target())?;
@@ -34,13 +36,13 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Referrals) -> Result<Printed> {
             })
         }
         Referrals::Create { name } => {
-            let request = Request::new(Method::Post, "/referral-codes/")
+            let request = Request::to(&routes::account::REFERRAL_CODE_CREATE, [])
                 .json(&json!({ "name": name }))
                 .about(format!("create the referral link {}", phrase::quote(name)));
             print_body(ctx, &client, &request, Gate::Open)
         }
         Referrals::Update { referral_id, name } => {
-            let request = Request::new(Method::Patch, format!("/referral-codes/{referral_id}/"))
+            let request = Request::to(&routes::account::REFERRAL_CODE_UPDATE, [referral_id])
                 .json(&json!({ "name": name }))
                 .listed_by(LIST)
                 .about(format!(
@@ -50,7 +52,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Referrals) -> Result<Printed> {
             print_body(ctx, &client, &request, Gate::Open)
         }
         Referrals::Analytics { refresh } => {
-            let request = Request::get("/referral/analytics/");
+            let request = Request::to(&routes::account::REFERRAL_ANALYTICS, []);
             let request = if *refresh {
                 request.query("refresh", "true")
             } else {

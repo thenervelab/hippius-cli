@@ -15,6 +15,7 @@ use hippius::{Client, ConfigFile, Given, Method, Overrides, Request, Settings, S
 use serde_json::Value;
 
 mod fixtures;
+mod routes;
 pub(crate) mod terminal;
 mod watchdog;
 
@@ -300,6 +301,17 @@ pub(crate) struct Route {
 
 pub(crate) fn route(method: &'static str, path: &str, reply: Reply) -> Route {
     route_each(method, path, vec![reply])
+}
+
+/// A route of `hipc`'s own table, with `values` in its placeholders, that answers every
+/// request with `reply`: the test server serves the path the command builds from the same
+/// constant.
+pub(crate) fn route_of<const N: usize>(
+    route: &hippius::routes::Route<N>,
+    values: [&dyn std::fmt::Display; N],
+    reply: Reply,
+) -> Route {
+    self::route(route.method().as_str(), &route.path(values), reply)
 }
 
 /// A route that answers its requests with `replies` in order, and every request after them
@@ -843,6 +855,7 @@ impl Hipc {
         if let Some((server, sent_before, expected)) = expected {
             for request in &snapshot(&server.requests)[sent_before..] {
                 expected.check(&server.url, request);
+                routes::assert_listed(args, request);
             }
         }
         run

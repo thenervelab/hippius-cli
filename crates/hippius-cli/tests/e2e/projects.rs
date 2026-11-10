@@ -2,9 +2,10 @@
 //! and the reads that list their ids: which routes get `X-Hippius-Project` and
 //! `X-Hippius-Billing`, which go out without them, and which are refused with nothing sent.
 
+use hippius::routes::account;
 use serde_json::{Value, json};
 
-use crate::common::{BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Server, draft, route};
+use crate::common::{BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Server, draft, route, route_of};
 
 const PROJECTS: &str = concat!(
     r#"{"projects":[{"id":null,"name":"Default","is_default":true,"#,
@@ -33,10 +34,10 @@ fn reads() -> Server {
             Reply::json(200, r#"{"balance":"1"}"#),
         ),
         route("GET", "/api/s3/plans/", Reply::json(200, "[]")),
-        route("GET", "/api/accounts/projects/", Reply::json(200, PROJECTS)),
-        route(
-            "GET",
-            "/api/accounts/billing-accounts/",
+        route_of(&account::PROJECTS, [], Reply::json(200, PROJECTS)),
+        route_of(
+            &account::BILLING_ACCOUNTS,
+            [],
             Reply::json(200, BILLING_ACCOUNTS),
         ),
     ])
@@ -799,9 +800,9 @@ fn costs_sends_the_range_and_groups_given() {
         server.only_request().target,
         format!("{path}?from=2026-09-01&to=2026-09-30&group=project%2Ckind%2Cday")
     );
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/accounts/billing-accounts/default/costs/",
+    let server = Server::start(vec![route_of(
+        &account::BILLING_ACCOUNT_COSTS,
+        [&"default"],
         Reply::json(200, COSTS),
     )]);
     Hipc::against(&Home::new(), &server)

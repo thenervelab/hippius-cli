@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use hippius::routes;
 use hippius::{ConfigFile, Error, Given, Overrides, Request, Result, Source, Token, phrase};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
@@ -246,8 +247,8 @@ pub(crate) fn status(ctx: &Context<'_>) -> Result<Printed> {
     let config = context::config()?;
     let overrides = ctx.overrides()?;
     let (settings, client) = ctx.authed(&config)?;
-    let check = Request::get("/accounts/").about("check the token");
-    let me = Request::get("/users/me/").about("read the signed-in user");
+    let check = Request::to(&routes::account::ACCOUNTS, []).about("check the token");
+    let me = Request::to(&routes::account::USER, []).about("read the signed-in user");
     if let Step::DryRun(mut doc) = ctx.call(&client, &check, Gate::Open)? {
         doc["requests"] = ctx.describe_each(&client, &[&check, &me])?;
         return Ok(Printed::Document(doc));

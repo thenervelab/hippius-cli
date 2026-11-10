@@ -14,9 +14,10 @@
 use std::fmt;
 use std::path::Path;
 
+use hippius::routes;
 use hippius::{
-    BillingId, Client, Code, ConfigFile, Error, Given, Method, Overrides, ProjectId, Request,
-    Result, Selection, Settings, Source, phrase, redact_value,
+    BillingId, Client, Code, ConfigFile, Error, Given, Overrides, ProjectId, Request, Result,
+    Selection, Settings, Source, phrase, redact_value,
 };
 use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
@@ -40,12 +41,13 @@ enum Fetched {
     DryRun(Value),
 }
 
-/// The accounts list, `GET /api/accounts/`.
-const ACCOUNTS: &str = "/accounts/";
+/// `GET /api/accounts/`.
+fn accounts_request() -> Request {
+    Request::to(&routes::account::ACCOUNTS, []).about("list the accounts the token can act in")
+}
 
 fn accounts(ctx: &Context<'_>, client: &Client) -> Result<Fetched> {
-    let request = Request::get(ACCOUNTS).about("list the accounts the token can act in");
-    let response = match ctx.call(client, &request, Gate::Open)? {
+    let response = match ctx.call(client, &accounts_request(), Gate::Open)? {
         Step::Sent(response) => response,
         Step::DryRun(doc) => return Ok(Fetched::DryRun(doc)),
     };
@@ -92,7 +94,9 @@ fn unexpected() -> Error {
 pub(crate) fn list(ctx: &Context<'_>) -> Result<Printed> {
     Ok(
         match accounts(ctx, &ctx.authed_client(&context::config()?)?)? {
-            Fetched::Accounts(page) => Printed::List(page.complete_envelope(ACCOUNTS)?),
+            Fetched::Accounts(page) => {
+                Printed::List(page.complete_envelope(accounts_request().target())?)
+            }
             Fetched::DryRun(doc) => Printed::Document(doc),
         },
     )
@@ -124,7 +128,7 @@ pub(crate) fn get(ctx: &Context<'_>) -> Result<Printed> {
     }
     // Missing from a page that is not the last is no proof the token cannot act in it: a
     // membership on a later page would otherwise be `not_a_member`.
-    page.into_complete(ACCOUNTS)?;
+    page.into_complete(accounts_request().target())?;
     if matches!(selection, Selection::Own) {
         return Err(no_own_account());
     }
@@ -171,8 +175,6 @@ pub(crate) fn selected_scope(overrides: &Overrides, settings: &Settings) -> Map<
     fields
 }
 
-const NOTIFICATIONS: &str = "/notifications/settings/";
-const MARKETING_CONSENT: &str = "/notifications/marketing-consent/";
 /// The console page where the consent is given, beside the wording it is given to.
 const CONSENT_SETTINGS: &str = "https://console.hippius.com/dashboard/settings";
 
@@ -188,7 +190,9 @@ pub(crate) fn notifications(ctx: &Context<'_>, command: &Notifications) -> Resul
     let client = ctx.load_authed_client()?;
     let mut off = Vec::new();
     let request = match command {
-        Notifications::Get => Request::get(NOTIFICATIONS).about("read the notification settings"),
+        Notifications::Get => {
+            Request::to(&routes::account::NOTIFICATIONS, []).about("read the notification settings")
+        }
         Notifications::Update(args) => {
             off = args
                 .fields()
@@ -202,7 +206,7 @@ pub(crate) fn notifications(ctx: &Context<'_>, command: &Notifications) -> Resul
                 .filter_map(|(key, given)| given.map(|on| (key.to_owned(), Value::from(on))))
                 .collect();
             let named = phrase::ticked(given.keys(), "and");
-            Request::new(Method::Patch, NOTIFICATIONS)
+            Request::to(&routes::account::NOTIFICATIONS_UPDATE, [])
                 .json(&Value::Object(given))
                 .about(format!("update the notification settings {named}"))
         }
@@ -262,11 +266,13 @@ pub(crate) fn marketing_consent(ctx: &Context<'_>, command: &MarketingConsent) -
     let client = ctx.load_authed_client()?;
     let request = match command {
         MarketingConsent::Get => {
-            Request::get(MARKETING_CONSENT).about("read the marketing consent")
+            Request::to(&routes::account::MARKETING_CONSENT, []).about("read the marketing consent")
         }
-        MarketingConsent::Update { .. } => Request::new(Method::Post, MARKETING_CONSENT)
-            .json(&json!({ "granted": false, "source": "settings" }))
-            .about("withdraw the marketing consent"),
+        MarketingConsent::Update { .. } => {
+            Request::to(&routes::account::MARKETING_CONSENT_UPDATE, [])
+                .json(&json!({ "granted": false, "source": "settings" }))
+                .about("withdraw the marketing consent")
+        }
     };
     print_body(ctx, &client, &request, Gate::Open)
 }
@@ -288,11 +294,8 @@ const MEMBERS: &str = "hipc account members list";
 
 /// `GET /api/accounts/members/`: every member, with their grants.
 fn members_list() -> Request {
-    Request::get(MEMBERS_PATH).about("list the team members")
+    Request::to(&routes::account::MEMBERS, []).about("list the team members")
 }
-
-/// The members list route.
-const MEMBERS_PATH: &str = "/accounts/members/";
 
 /// `hipc account members`.
 pub(crate) fn members(ctx: &Context<'_>, command: &Members) -> Result<Printed> {
@@ -303,7 +306,7 @@ pub(crate) fn members(ctx: &Context<'_>, command: &Members) -> Result<Printed> {
         }
         Members::Update(args) => update_member(ctx, args),
         Members::Delete { member_id } => {
-            let request = Request::new(Method::Delete, format!("/accounts/members/{member_id}/"))
+            let request = Request::to(&routes::account::MEMBER_DELETE, [member_id])
                 .listed_by(MEMBERS)
                 .about(format!("remove the member `{member_id}` from the team"));
             let done = json!({ "id": member_id, "deleted": true });
@@ -326,7 +329,7 @@ pub(crate) fn invites(ctx: &Context<'_>, command: &Invites) -> Result<Printed> {
         Invites::List => print_keyed_list(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/accounts/invites/").about("list the pending invites"),
+            &Request::to(&routes::account::INVITES, []).about("list the pending invites"),
             "invites",
         ),
         Invites::Create(args) => create_invite(ctx, args),
@@ -343,7 +346,7 @@ pub(crate) fn invites(ctx: &Context<'_>, command: &Invites) -> Result<Printed> {
             accept(ctx, &client, &settings, &invite)
         }
         Invites::Revoke { invite_id } => {
-            let request = Request::new(Method::Delete, format!("/accounts/invites/{invite_id}/"))
+            let request = Request::to(&routes::account::INVITE_REVOKE, [invite_id])
                 .listed_by("hipc account invites list")
                 .about(format!("revoke the invite `{invite_id}`"));
             let done = json!({ "id": invite_id, "revoked": true });
@@ -358,10 +361,6 @@ pub(crate) fn invites(ctx: &Context<'_>, command: &Invites) -> Result<Printed> {
         }
     }
 }
-
-const PREVIEW: &str = "/accounts/invites/preview/";
-
-const ACCEPT: &str = "/accounts/invites/accept/";
 
 /// What a dry run's body shows in place of the invite token.
 const TOKEN_PLACEHOLDER: &str = "<the invite token from --token-file>";
@@ -417,7 +416,7 @@ impl fmt::Debug for InviteToken {
 /// `POST /api/accounts/invites/preview/ {"token"}`, the console's shape. The token is in the
 /// body, so it stays out of access logs.
 fn preview_request(token: &str) -> Request {
-    Request::new(Method::Post, PREVIEW)
+    Request::to(&routes::account::INVITE_PREVIEW, [])
         .json(&json!({ "token": token }))
         .about("preview the invite")
         .changes_nothing()
@@ -426,7 +425,7 @@ fn preview_request(token: &str) -> Request {
 /// `POST /api/accounts/invites/accept/`, with `confirm_without_email` always false: joining
 /// as a user whose address the invite was not sent to is the console's question to ask.
 fn accept_request(token: &str) -> Request {
-    Request::new(Method::Post, ACCEPT).json(&json!({
+    Request::to(&routes::account::INVITE_ACCEPT, []).json(&json!({
         "token": token,
         "confirm_without_email": false,
     }))
@@ -626,7 +625,7 @@ fn update_member(ctx: &Context<'_>, args: &MemberUpdate) -> Result<Printed> {
         ));
     }
     let id = args.member_id;
-    let request = Request::new(Method::Patch, format!("/accounts/members/{id}/"))
+    let request = Request::to(&routes::account::MEMBER_UPDATE, [&id])
         .listed_by(MEMBERS)
         .json(&Value::Object(body))
         .about(format!(
@@ -693,7 +692,7 @@ fn member_grants(answer: &Value, id: u64) -> Option<Result<Vec<Entry>>> {
     else {
         // Missing from a page that is not the last says nothing about a later page.
         let links = hippius::page_beside(Vec::new(), answer.as_object()?.clone());
-        if let Err(error) = links.and_then(|links| links.into_complete(MEMBERS_PATH)) {
+        if let Err(error) = links.and_then(|links| links.into_complete(members_list().target())) {
             return Some(Err(error));
         }
         let missing = Error::new(Code::NotFound, format!("no member with id `{id}`"));
@@ -757,7 +756,7 @@ fn create_invite(ctx: &Context<'_>, args: &InviteCreate) -> Result<Printed> {
     } else {
         phrase::join(&given, "and")
     };
-    let request = Request::new(Method::Post, "/accounts/invites/")
+    let request = Request::to(&routes::account::INVITE_CREATE, [])
         .json(&Value::Object(body))
         .about(format!(
             "email an invite to `{}` that grants {granted}",

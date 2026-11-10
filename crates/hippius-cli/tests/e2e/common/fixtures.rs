@@ -19,10 +19,11 @@ pub(crate) const OWN_ACCOUNT: &str = "acct_ffffffffffffffffffff";
 
 /// The route prefix every API path starts with: `api("/compute/vms/")` is the route
 /// `/api/compute/vms/`. A test that builds its routes through this follows the prefix if it
-/// ever changes.
+/// ever changes. A route `hipc` sends to is better named by its constant in
+/// `hippius::routes`, which also carries the version.
 pub(crate) fn api(path: &str) -> String {
     assert!(path.starts_with('/'), "an API path starts with `/`: {path}");
-    format!("/api{path}")
+    format!("{}{path}", hippius::routes::API_BASE)
 }
 
 /// A JSON fixture, parsed.

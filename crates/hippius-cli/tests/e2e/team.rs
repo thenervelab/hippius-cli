@@ -1,9 +1,10 @@
 //! `hipc account members` and `hipc account invites`: the team of the selected account.
 
+use hippius::routes::account;
 use serde_json::{Value, json};
 
 use crate::common::{
-    BILLING, Hipc, Home, MEMBER, PROJECT, Recorded, Reply, Route, Run, Server, draft, route,
+    BILLING, Hipc, Home, MEMBER, PROJECT, Recorded, Reply, Route, Run, Server, draft, route_of,
 };
 
 const MEMBERS: &str = concat!(
@@ -32,20 +33,12 @@ const ONE_INVITE: &str = concat!(
 /// Every team route, answering as the console documents it.
 fn team_routes() -> Vec<Route> {
     vec![
-        route("GET", "/api/accounts/members/", Reply::json(200, MEMBERS)),
-        route(
-            "PATCH",
-            "/api/accounts/members/7/",
-            Reply::json(200, ONE_MEMBER),
-        ),
-        route("DELETE", "/api/accounts/members/7/", Reply::json(204, "")),
-        route("GET", "/api/accounts/invites/", Reply::json(200, INVITES)),
-        route(
-            "POST",
-            "/api/accounts/invites/",
-            Reply::json(201, ONE_INVITE),
-        ),
-        route("DELETE", "/api/accounts/invites/3/", Reply::json(204, "")),
+        route_of(&account::MEMBERS, [], Reply::json(200, MEMBERS)),
+        route_of(&account::MEMBER_UPDATE, [&7], Reply::json(200, ONE_MEMBER)),
+        route_of(&account::MEMBER_DELETE, [&7], Reply::json(204, "")),
+        route_of(&account::INVITES, [], Reply::json(200, INVITES)),
+        route_of(&account::INVITE_CREATE, [], Reply::json(201, ONE_INVITE)),
+        route_of(&account::INVITE_REVOKE, [&3], Reply::json(204, "")),
     ]
 }
 
@@ -115,16 +108,8 @@ fn invites_list_is_an_envelope() {
 #[test]
 fn a_list_answer_without_its_key_is_internal() {
     let server = Server::start(vec![
-        route(
-            "GET",
-            "/api/accounts/members/",
-            Reply::json(200, r#"{"owner":{}}"#),
-        ),
-        route(
-            "GET",
-            "/api/accounts/invites/",
-            Reply::json(200, r#"{"items":[]}"#),
-        ),
+        route_of(&account::MEMBERS, [], Reply::json(200, r#"{"owner":{}}"#)),
+        route_of(&account::INVITES, [], Reply::json(200, r#"{"items":[]}"#)),
     ]);
     hipc(&server, &["members", "list"]).fails(1, "internal");
     hipc(&server, &["invites", "list"]).fails(1, "internal");
@@ -731,9 +716,9 @@ fn a_204_prints_the_document_the_plan_names() {
 
 #[test]
 fn a_delete_that_answers_a_body_prints_it() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/accounts/members/7/",
+    let server = Server::start(vec![route_of(
+        &account::MEMBER_DELETE,
+        [&7],
         Reply::json(200, r#"{"detail":"removed"}"#),
     )]);
     assert_eq!(
@@ -781,12 +766,12 @@ fn a_team_refusal_passes_through_by_its_code() {
         )
     };
     let server = Server::start(vec![
-        route(
-            "PATCH",
-            "/api/accounts/members/7/",
+        route_of(
+            &account::MEMBER_UPDATE,
+            [&7],
             refusal("team_management_required"),
         ),
-        route("DELETE", "/api/accounts/members/7/", refusal("owner_only")),
+        route_of(&account::MEMBER_DELETE, [&7], refusal("owner_only")),
     ]);
     let error = hipc(
         &server,
@@ -810,9 +795,9 @@ fn a_team_refusal_passes_through_by_its_code() {
 fn an_invite_refusal_keeps_the_server_body_in_details() {
     for (status, code) in [(400, "validation"), (409, "conflict")] {
         let body = r#"{"error":"the team is full","detail":{"limit":50}}"#;
-        let server = Server::start(vec![route(
-            "POST",
-            "/api/accounts/invites/",
+        let server = Server::start(vec![route_of(
+            &account::INVITE_CREATE,
+            [],
             Reply::json(status, body),
         )]);
         let error = hipc(
@@ -913,9 +898,9 @@ fn update_that_keeps_every_grant_reads_then_patches() {
 #[test]
 fn update_of_a_member_not_in_the_list_is_not_found_without_a_patch() {
     let mut routes = team_routes();
-    routes.push(route(
-        "PATCH",
-        "/api/accounts/members/8/",
+    routes.push(route_of(
+        &account::MEMBER_UPDATE,
+        [&8],
         Reply::json(200, ONE_MEMBER),
     ));
     let server = Server::start(routes);
@@ -952,12 +937,8 @@ fn update_whose_read_has_another_shape_is_internal_without_a_patch() {
         r#"{"members":[{"id":7,"grants":[{"scope":"vms","level":"viewer","project":"p","billing":"b"}]}]}"#,
     ] {
         let server = Server::start(vec![
-            route("GET", "/api/accounts/members/", Reply::json(200, answer)),
-            route(
-                "PATCH",
-                "/api/accounts/members/7/",
-                Reply::json(200, ONE_MEMBER),
-            ),
+            route_of(&account::MEMBERS, [], Reply::json(200, answer)),
+            route_of(&account::MEMBER_UPDATE, [&7], Reply::json(200, ONE_MEMBER)),
         ]);
         let error = hipc(
             &server,
@@ -1081,12 +1062,8 @@ fn the_guard_tells_a_grant_on_a_project_from_one_on_the_account() {
         PROJECT
     );
     let server = Server::start(vec![
-        route("GET", "/api/accounts/members/", Reply::json(200, &members)),
-        route(
-            "PATCH",
-            "/api/accounts/members/7/",
-            Reply::json(200, ONE_MEMBER),
-        ),
+        route_of(&account::MEMBERS, [], Reply::json(200, &members)),
+        route_of(&account::MEMBER_UPDATE, [&7], Reply::json(200, ONE_MEMBER)),
     ]);
     let error = hipc(
         &server,

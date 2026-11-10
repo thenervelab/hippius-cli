@@ -390,6 +390,29 @@ fn every_list_that_does_not_page_is_audited() {
     }
 }
 
+/// The paging these tables give each route is the one its row in `hippius::routes` says: a
+/// route read whole, or followed whole, is not a list the server pages, and one paged by
+/// number is.
+#[test]
+fn every_route_here_pages_as_its_row_says() {
+    let paged = |path: &str| {
+        let rows: Vec<_> = hippius::routes::all()
+            .filter(|row| row.method() == hippius::Method::Get && row.matches(path))
+            .collect();
+        assert!(!rows.is_empty(), "{path} has no row");
+        rows.iter().any(|row| row.paged())
+    };
+    for (_, path, _) in READ_WHOLE {
+        assert!(!paged(path), "{path} is read whole");
+    }
+    for path in FOLLOWED_WHOLE.iter().flat_map(|(_, paths)| *paths) {
+        assert!(!paged(path), "{path} is followed whole");
+    }
+    for (_, path) in PAGED_BY_NUMBER {
+        assert!(paged(path), "{path} is paged by number");
+    }
+}
+
 /// A list followed whole reads every page of each of its routes and prints them as one
 /// list whose `next_page_token` is null, and takes none of the page flags.
 #[test]

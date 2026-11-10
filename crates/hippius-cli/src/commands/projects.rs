@@ -10,9 +10,10 @@
 //! The project transfers, `/api/accounts/project-transfers/`, are personal: they are the
 //! token's own account's whichever account is selected, so they never take the header.
 
+use hippius::routes;
 use hippius::{
-    BillingId, Client, Code, ConfigFile, Error, Method, ProjectId, Request, Result, Selection,
-    Source, phrase,
+    BillingId, Client, Code, ConfigFile, Error, ProjectId, Request, Result, Selection, Source,
+    phrase,
 };
 use serde_json::{Map, Value, json};
 
@@ -47,32 +48,29 @@ pub(crate) fn projects(ctx: &Context<'_>, command: &Projects) -> Result<Printed>
         Projects::List => print_keyed_list(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/accounts/projects/").about("list the projects"),
+            &Request::to(&routes::account::PROJECTS, []).about("list the projects"),
             "projects",
         ),
         Projects::Create(args) => {
             // The console sends `billing: null` for the Default billing account.
-            let request = Request::new(Method::Post, "/accounts/projects/")
+            let request = Request::to(&routes::account::PROJECT_CREATE, [])
                 .json(&json!({ "name": args.name, "billing": null }))
                 .about(format!("create the project {}", phrase::quote(&args.name)));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         Projects::Update(args) => {
-            let request = Request::new(
-                Method::Patch,
-                format!("/accounts/projects/{}/", args.project_id),
-            )
-            .json(&json!({ "name": args.name }))
-            .listed_by(PROJECTS)
-            .about(format!(
-                "rename the project `{}` to {}",
-                args.project_id,
-                phrase::quote(&args.name)
-            ));
+            let request = Request::to(&routes::account::PROJECT_UPDATE, [&args.project_id])
+                .json(&json!({ "name": args.name }))
+                .listed_by(PROJECTS)
+                .about(format!(
+                    "rename the project `{}` to {}",
+                    args.project_id,
+                    phrase::quote(&args.name)
+                ));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         Projects::Delete { project_id } => {
-            let request = Request::new(Method::Delete, format!("/accounts/projects/{project_id}/"))
+            let request = Request::to(&routes::account::PROJECT_DELETE, [project_id])
                 .listed_by(PROJECTS)
                 .about(format!(
                     "archive the project `{project_id}`, which must own nothing"
@@ -147,11 +145,11 @@ pub(crate) fn billing_accounts(ctx: &Context<'_>, command: &BillingAccounts) -> 
         BillingAccounts::List => print_keyed_list(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/accounts/billing-accounts/").about("list the billing accounts"),
+            &Request::to(&routes::account::BILLING_ACCOUNTS, []).about("list the billing accounts"),
             "billing_accounts",
         ),
         BillingAccounts::Create { name } => {
-            let request = Request::new(Method::Post, "/accounts/billing-accounts/")
+            let request = Request::to(&routes::account::BILLING_ACCOUNT_CREATE, [])
                 .json(&json!({ "name": name }))
                 .about(format!(
                     "create the billing account {}",
@@ -163,9 +161,9 @@ pub(crate) fn billing_accounts(ctx: &Context<'_>, command: &BillingAccounts) -> 
             billing_account_id,
             name,
         } => {
-            let request = Request::new(
-                Method::Patch,
-                format!("/accounts/billing-accounts/{billing_account_id}/"),
+            let request = Request::to(
+                &routes::account::BILLING_ACCOUNT_UPDATE,
+                [billing_account_id],
             )
             .json(&json!({ "name": name }))
             .listed_by(BILLING_ACCOUNTS)
@@ -196,10 +194,10 @@ pub(crate) fn billing_accounts(ctx: &Context<'_>, command: &BillingAccounts) -> 
 /// and `to`, and `group` as a comma list in the console's order. The query sends only
 /// those three, each only when given, so the server's defaults apply.
 fn costs(ctx: &Context<'_>, args: &Costs) -> Result<Printed> {
-    let mut request = Request::get(format!(
-        "/accounts/billing-accounts/{}/costs/",
-        args.billing_account_id
-    ))
+    let mut request = Request::to(
+        &routes::account::BILLING_ACCOUNT_COSTS,
+        [&args.billing_account_id],
+    )
     .about(format!(
         "get the costs of the billing account `{}`",
         args.billing_account_id
@@ -252,24 +250,22 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
         ));
     }
     let write = |project: &str, from: &str| {
-        Request::new(
-            Method::Post,
-            format!("/accounts/projects/{}/transfer/", args.project_id),
-        )
-        .json(&json!({ "to_account": args.to_account }))
-        .listed_by(PROJECTS)
-        .about(format!(
-            "offer the project {project} to the account `{}`{from}",
-            args.to_account
-        ))
+        Request::to(&routes::account::PROJECT_TRANSFER, [&args.project_id])
+            .json(&json!({ "to_account": args.to_account }))
+            .listed_by(PROJECTS)
+            .about(format!(
+                "offer the project {project} to the account `{}`{from}",
+                args.to_account
+            ))
     };
     let own = " from the token's own account";
     let shown_id = format!("`{}`", args.project_id);
     let draft = write(&shown_id, if member.is_some() { "" } else { own });
-    let projects = Request::get("/accounts/projects/")
+    let projects = Request::to(&routes::account::PROJECTS, [])
         .about("list the projects")
         .listed_by(PROJECTS);
-    let accounts = Request::get("/accounts/").about("list the accounts the token can act in");
+    let accounts =
+        Request::to(&routes::account::ACCOUNTS, []).about("list the accounts the token can act in");
     let checked = match ctx.check_write(&client, &draft)? {
         Write::DryRun(mut doc) => {
             let reads: Vec<&Request> = if member.is_some() {
@@ -437,22 +433,19 @@ fn resource(resource: &Value) -> Option<String> {
 fn budget(ctx: &Context<'_>, command: &Budget) -> Result<Printed> {
     match command {
         Budget::Get { project_id } => {
-            let request = Request::get(format!("/accounts/projects/{project_id}/budget/"))
+            let request = Request::to(&routes::account::PROJECT_BUDGET, [project_id])
                 .listed_by(PROJECTS)
                 .about(format!("get the budget of the project `{project_id}`"));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         Budget::Update(args) => budget_update(ctx, args),
         Budget::Delete { project_id } => {
-            let request = Request::new(
-                Method::Delete,
-                format!("/accounts/projects/{project_id}/budget/"),
-            )
-            .listed_by(PROJECTS)
-            .about(format!(
-                "remove the monthly budget of the project `{project_id}`, with its alerts and \
+            let request = Request::to(&routes::account::PROJECT_BUDGET_DELETE, [project_id])
+                .listed_by(PROJECTS)
+                .about(format!(
+                    "remove the monthly budget of the project `{project_id}`, with its alerts and \
                  any launch block"
-            ));
+                ));
             let done = json!({ "project": project_id, "deleted": true });
             let client = ctx.load_authed_client()?;
             print_body_or(
@@ -494,22 +487,19 @@ fn budget_update(ctx: &Context<'_>, args: &BudgetUpdate) -> Result<Printed> {
     } else {
         "allowing new launches over it"
     };
-    let request = Request::new(
-        Method::Put,
-        format!("/accounts/projects/{}/budget/", args.project_id),
-    )
-    .json(&json!({
-        "monthly_limit": limit,
-        "thresholds": thresholds,
-        "block_launch_over": args.block_launches,
-    }))
-    .listed_by(PROJECTS)
-    .about(format!(
-        "set the monthly budget of the project `{}` to `{limit}` USD, mailing at {} percent \
+    let request = Request::to(&routes::account::PROJECT_BUDGET_UPDATE, [&args.project_id])
+        .json(&json!({
+            "monthly_limit": limit,
+            "thresholds": thresholds,
+            "block_launch_over": args.block_launches,
+        }))
+        .listed_by(PROJECTS)
+        .about(format!(
+            "set the monthly budget of the project `{}` to `{limit}` USD, mailing at {} percent \
          of it and {launches}",
-        args.project_id,
-        phrase::join(&shown, "and")
-    ));
+            args.project_id,
+            phrase::join(&shown, "and")
+        ));
     print_body(
         ctx,
         &ctx.load_authed_client()?,
@@ -523,7 +513,7 @@ fn budget_update(ctx: &Context<'_>, args: &BudgetUpdate) -> Result<Printed> {
 fn quota(ctx: &Context<'_>, command: &Quota) -> Result<Printed> {
     match command {
         Quota::Get { project_id } => {
-            let request = Request::get(format!("/accounts/projects/{project_id}/quota/"))
+            let request = Request::to(&routes::account::PROJECT_QUOTA, [project_id])
                 .listed_by(PROJECTS)
                 .about(format!("get the quota of the project `{project_id}`"));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
@@ -543,17 +533,14 @@ fn quota_update(ctx: &Context<'_>, args: &QuotaUpdate) -> Result<Printed> {
         limits.insert(key.to_owned(), value);
         shown.push(text);
     }
-    let request = Request::new(
-        Method::Patch,
-        format!("/accounts/projects/{}/quota/", args.project_id),
-    )
-    .json(&json!({ "limits": limits }))
-    .listed_by(PROJECTS)
-    .about(format!(
-        "set the compute limits of the project `{}`: {}",
-        args.project_id,
-        phrase::join(&shown, "and")
-    ));
+    let request = Request::to(&routes::account::PROJECT_QUOTA_UPDATE, [&args.project_id])
+        .json(&json!({ "limits": limits }))
+        .listed_by(PROJECTS)
+        .about(format!(
+            "set the compute limits of the project `{}`: {}",
+            args.project_id,
+            phrase::join(&shown, "and")
+        ));
     print_body(
         ctx,
         &ctx.load_authed_client()?,
@@ -593,25 +580,19 @@ pub(crate) fn project_transfers(ctx: &Context<'_>, command: &ProjectTransfers) -
                 ),
             };
             let write = |named: &str| {
-                Request::new(
-                    Method::Post,
-                    format!("/accounts/project-transfers/{transfer_id}/accept/"),
-                )
-                .json(&body)
-                .about(format!(
-                    "accept the project transfer {named} into the token's own account, billed \
+                Request::to(&routes::account::PROJECT_TRANSFER_ACCEPT, [transfer_id])
+                    .json(&body)
+                    .about(format!(
+                        "accept the project transfer {named} into the token's own account, billed \
                      to {billed}"
-                ))
+                    ))
             };
             decide(ctx, &client, (*transfer_id, Side::Incoming), write, None)
         }
         ProjectTransfers::Decline { transfer_id } => {
             let write = |named: &str| {
-                Request::new(
-                    Method::Post,
-                    format!("/accounts/project-transfers/{transfer_id}/decline/"),
-                )
-                .about(format!("decline the project transfer {named}"))
+                Request::to(&routes::account::PROJECT_TRANSFER_DECLINE, [transfer_id])
+                    .about(format!("decline the project transfer {named}"))
             };
             let done = json!({ "id": transfer_id, "declined": true });
             decide(
@@ -624,11 +605,8 @@ pub(crate) fn project_transfers(ctx: &Context<'_>, command: &ProjectTransfers) -
         }
         ProjectTransfers::Cancel { transfer_id } => {
             let write = |named: &str| {
-                Request::new(
-                    Method::Delete,
-                    format!("/accounts/project-transfers/{transfer_id}/"),
-                )
-                .about(format!("cancel the project transfer {named}"))
+                Request::to(&routes::account::PROJECT_TRANSFER_CANCEL, [transfer_id])
+                    .about(format!("cancel the project transfer {named}"))
             };
             let done = json!({ "id": transfer_id, "cancelled": true });
             decide(
@@ -644,11 +622,8 @@ pub(crate) fn project_transfers(ctx: &Context<'_>, command: &ProjectTransfers) -
 
 /// `GET /api/accounts/project-transfers/`: the list, and the read before a decision.
 fn transfers_read() -> Request {
-    Request::get(TRANSFERS_PATH).about("list the project transfers")
+    Request::to(&routes::account::PROJECT_TRANSFERS, []).about("list the project transfers")
 }
-
-/// The project transfers route. Swagger documents no page for it, so it is read whole.
-const TRANSFERS_PATH: &str = "/accounts/project-transfers/";
 
 /// Which of the token's own account's transfers a decision acts on: an accept or a decline
 /// one offered to it, a cancel one it offered.
@@ -698,7 +673,7 @@ fn decide(
         .find(|transfer| transfer.get("id").and_then(Value::as_u64) == Some(id))
     else {
         // Missing from a page that is not the last says nothing about a later page.
-        lists.links.into_complete(TRANSFERS_PATH)?;
+        lists.links.into_complete(transfers_read().target())?;
         // Decided by what the server listed, not by the command line (tenet 4).
         let missing = Error::new(Code::NotFound, missing);
         return Err(missing.with_hint(format!("run `{TRANSFERS}` to see the transfer ids")));
@@ -758,7 +733,7 @@ fn transfers_envelope(answer: Value) -> Result<Value> {
     } = transfer_lists(answer)?;
     let rest = std::mem::take(&mut links.fields);
     // The list is printed whole, so a `next` link is refused rather than dropped.
-    links.into_complete(TRANSFERS_PATH)?;
+    links.into_complete(transfers_read().target())?;
     let marked = |list: Vec<Value>, direction: &'static str| {
         list.into_iter().map(move |mut transfer| {
             if let Value::Object(fields) = &mut transfer {

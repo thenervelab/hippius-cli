@@ -1,15 +1,16 @@
 //! `hipc account list`, `get`, `notifications get`, and `use`.
 
+use hippius::routes::account;
 use serde_json::json;
 
 use crate::common::{
-    ACCOUNTS, Hipc, Home, MEMBER, OWN_ACCOUNT, PROJECT, Reply, Server, draft, route,
+    ACCOUNTS, Hipc, Home, MEMBER, OWN_ACCOUNT, PROJECT, Reply, Server, draft, route_of,
 };
 
 fn accounts_server() -> Server {
-    Server::start(vec![route(
-        "GET",
-        "/api/accounts/",
+    Server::start(vec![route_of(
+        &account::ACCOUNTS,
+        [],
         Reply::json(200, ACCOUNTS),
     )])
 }
@@ -34,9 +35,9 @@ fn list_is_an_envelope_and_never_sends_the_account_header() {
 
 #[test]
 fn a_server_field_named_like_the_envelope_does_not_replace_it() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/accounts/",
+    let server = Server::start(vec![route_of(
+        &account::ACCOUNTS,
+        [],
         Reply::json(
             200,
             r#"{"accounts":[{"id":"a"}],"items":"x","next_page_token":"9"}"#,
@@ -52,7 +53,11 @@ fn a_server_field_named_like_the_envelope_does_not_replace_it() {
 #[test]
 fn an_unexpected_accounts_shape_is_internal() {
     for body in ["[]", r#"{"accounts":{}}"#, r#"{"other":[]}"#, "<html>"] {
-        let server = Server::start(vec![route("GET", "/api/accounts/", Reply::json(200, body))]);
+        let server = Server::start(vec![route_of(
+            &account::ACCOUNTS,
+            [],
+            Reply::json(200, body),
+        )]);
         Hipc::against(&Home::new(), &server)
             .run(&["account", "list"])
             .fails(1, "internal");
@@ -93,8 +98,8 @@ fn get_and_status_name_the_selected_project_and_billing_account_and_their_source
     let home = Home::new();
     let get = |env: &[(&str, &str)], flags: &[&str], command: &[&str]| {
         let server = Server::start(vec![
-            route("GET", "/api/accounts/", Reply::json(200, ACCOUNTS)),
-            route("GET", "/api/users/me/", Reply::json(200, crate::common::ME)),
+            route_of(&account::ACCOUNTS, [], Reply::json(200, ACCOUNTS)),
+            route_of(&account::USER, [], Reply::json(200, crate::common::ME)),
         ]);
         let mut hipc = Hipc::against(&home, &server);
         for (name, value) in env {
@@ -210,8 +215,13 @@ fn get_of_an_account_the_token_cannot_reach_is_not_a_member() {
 /// membership as the token's own.
 #[test]
 fn get_of_self_is_the_account_marked_is_owner() {
-    let answer =
-        |body: &str| Server::start(vec![route("GET", "/api/accounts/", Reply::json(200, body))]);
+    let answer = |body: &str| {
+        Server::start(vec![route_of(
+            &account::ACCOUNTS,
+            [],
+            Reply::json(200, body),
+        )])
+    };
     let member_first = answer(
         r#"{"accounts":[{"id":"acct_0123456789abcdef0123","is_owner":false},
             {"id":"acct_ffffffffffffffffffff","is_owner":true}]}"#,
@@ -324,9 +334,9 @@ fn notifications_reads_the_users_own_settings_without_the_header() {
         r#"{"email_enabled":true,"low_credit_alerts":true,"zero_balance_alerts":false,"#,
         r#""marketing_emails":false,"future_field":1}"#
     );
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/notifications/settings/",
+    let server = Server::start(vec![route_of(
+        &account::NOTIFICATIONS,
+        [],
         Reply::json(200, settings),
     )]);
     for account in ["self", MEMBER] {
@@ -357,9 +367,9 @@ fn notifications_reads_the_users_own_settings_without_the_header() {
 /// A failed read is the server's error, and no token sends nothing.
 #[test]
 fn notifications_fails_like_any_read() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/notifications/settings/",
+    let server = Server::start(vec![route_of(
+        &account::NOTIFICATIONS,
+        [],
         Reply::json(401, r#"{"detail":"Invalid token."}"#),
     )]);
     let error = Hipc::against(&Home::new(), &server)

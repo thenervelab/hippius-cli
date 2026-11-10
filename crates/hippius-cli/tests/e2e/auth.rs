@@ -2,11 +2,12 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 
+use hippius::routes::account;
 use serde_json::Value;
 
 use crate::common::{
     ACCOUNTS, Hipc, Home, ME, MEMBER, Recorded, Reply, Server, TOKEN, draft, no_server, route,
-    status_routes,
+    route_of, status_routes,
 };
 
 fn mode(path: &std::path::Path) -> u32 {
@@ -429,8 +430,8 @@ fn status_proves_the_token_without_the_account_header() {
 fn status_reads_the_user_from_a_page_of_one() {
     let page = format!(r#"{{"count":1,"next":null,"previous":null,"results":[{ME}]}}"#);
     let server = Server::start(vec![
-        route("GET", "/api/accounts/", Reply::json(200, ACCOUNTS)),
-        route("GET", "/api/users/me/", Reply::json(200, &page)),
+        route_of(&account::ACCOUNTS, [], Reply::json(200, ACCOUNTS)),
+        route_of(&account::USER, [], Reply::json(200, &page)),
     ]);
     let doc = Hipc::against(&Home::new(), &server)
         .run(&["auth", "status"])
@@ -476,8 +477,8 @@ fn status_keeps_the_token_check_when_the_user_read_fails() {
         (Reply::json(200, "[]"), "internal", unreadable),
     ] {
         let server = Server::start(vec![
-            route("GET", "/api/accounts/", Reply::json(200, ACCOUNTS)),
-            route("GET", "/api/users/me/", reply),
+            route_of(&account::ACCOUNTS, [], Reply::json(200, ACCOUNTS)),
+            route_of(&account::USER, [], reply),
         ]);
         let doc = Hipc::against(&Home::new(), &server)
             .run(&["auth", "status"])
@@ -529,9 +530,9 @@ fn status_with_a_stored_token() {
 
 #[test]
 fn status_with_a_rejected_token_is_auth() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/accounts/",
+    let server = Server::start(vec![route_of(
+        &account::ACCOUNTS,
+        [],
         Reply::json(401, r#"{"detail":"Invalid token."}"#),
     )]);
     let home = Home::new();

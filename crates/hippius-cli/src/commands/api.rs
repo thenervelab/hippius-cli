@@ -422,4 +422,34 @@ mod tests {
             Gate::Open
         ));
     }
+
+    /// `template` with each placeholder written `{}`, so a row's named placeholders and a
+    /// table's `{id}`, `{n}`, and `{..}` compare equal.
+    fn unnamed(template: &str) -> String {
+        template
+            .split('/')
+            .map(|segment| {
+                if segment.starts_with('{') {
+                    "{}"
+                } else {
+                    segment
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    /// Each consequence `hipc api` asks with is a curated command's, so its route is a row of
+    /// `hippius::routes`, with the method the command sends.
+    #[test]
+    fn every_consequence_names_a_route_a_command_sends() {
+        for (method, pattern, _) in CONSEQUENCES {
+            assert!(
+                hippius::routes::all()
+                    .any(|row| row.method() == *method
+                        && unnamed(row.template()) == unnamed(pattern)),
+                "{method} {pattern} has no row"
+            );
+        }
+    }
 }
