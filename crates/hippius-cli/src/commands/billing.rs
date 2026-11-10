@@ -332,7 +332,7 @@ fn read_auto_reload() -> Request {
 /// URLs are the console's own pages, and the server falls back to its own without them. The
 /// document gains `next_step`, the command that shows the saved card: tenet 3 allows it on a
 /// document that waits for a person, since JSON mode prints no note. It repeats the run's
-/// selectors, or is left out when one is not a plain word ([`Context::next_command`]).
+/// selectors, or is left out when one is not printable ASCII ([`Context::next_command`]).
 fn card_setup(ctx: &Context<'_>, client: &hippius::Client) -> Result<Printed> {
     let request = Request::new(Method::Post, format!("{AUTO_RELOAD}card-setup/"))
         .json(&json!({}))

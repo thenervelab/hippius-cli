@@ -127,11 +127,12 @@ impl<'a> Context<'a> {
     /// exported one is harmless. `HIPPIUS_CONFIG` has no flag to repeat, so a one-shot one is not
     /// carried over.
     ///
-    /// `None` when a value is not one plain word, which a shell could split, glob, or
-    /// expand, or clap read as a flag: a note then names no command rather than one that
-    /// fails. A selector override that is not a valid id is left off instead: a command
-    /// that never reads it, such as `hipc auth login`, does not refuse it, and the next
-    /// command would exit 2 on it.
+    /// A value a shell could split, glob, or expand is single-quoted, and one clap could read
+    /// as a flag is joined to its flag with `=`. `None` when a value holds a character that is
+    /// not printable ASCII, which a note would show escaped and so not as it must be typed: a
+    /// note then names no command rather than one that fails. A selector override that is not
+    /// a valid id is left off instead: a command that never reads it, such as `hipc auth
+    /// login`, does not refuse it, and the next command would exit 2 on it.
     ///
     /// `None` too when [`Context::overrides`] refuses them. A note follows a write that has
     /// already happened, and its answer may hold a secret shown only once, so a note that
@@ -544,24 +545,21 @@ fn may_have_written(is_read: bool, sent: &Result<Response>) -> bool {
         )
 }
 
-/// `hipc`, each global given in `globals` as `flag value`, then `words`; `None` when a value
-/// is not one plain word (see [`Context::next_command`]).
+/// `hipc`, each global given in `globals` as `flag value`, then `words`, ready to paste into
+/// a POSIX shell; `None` when a value holds a character that is not printable ASCII (see
+/// [`Context::next_command`]).
 fn command_line(words: &str, globals: &[(&str, Option<Given>)]) -> Option<String> {
     let mut command = "hipc".to_owned();
     for (flag, given) in globals {
         let Some(given) = given else { continue };
-        // An empty value would print `--profile  words`, which a shell reads as `--profile
-        // words`.
-        let plain = !given.value.is_empty()
-            && !given.value.starts_with('-')
-            && given
-                .value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b".:/_-".contains(&b));
-        if !plain {
+        let value = &given.value;
+        if !value.chars().all(|c| c == ' ' || c.is_ascii_graphic()) {
             return None;
         }
-        command.push_str(&format!(" {flag} {}", given.value));
+        // An empty value is quoted too, so `--profile ''` stays two words.
+        let word = hippius::phrase::shell_word(value);
+        let joiner = if value.starts_with('-') { '=' } else { ' ' };
+        command.push_str(&format!(" {flag}{joiner}{word}"));
     }
     Some(format!("{command} {words}"))
 }
@@ -657,21 +655,32 @@ mod tests {
         assert!(!may_have_written(false, &refused()));
     }
 
-    /// A global value that is not one plain word, an empty one included, gives no command:
-    /// `--profile ""` would print `--profile  words`, which a shell reads as `--profile words`.
+    /// A global value a shell would split or expand is quoted, an empty one included, and one
+    /// that starts with `-` is joined to its flag, so the command runs as this one did. A value
+    /// a note would show escaped gives no command.
     #[test]
-    fn a_next_command_repeats_only_plain_global_values() {
+    fn a_next_command_quotes_the_global_values_it_repeats() {
         let given = |value: &str| {
             Some(Given {
                 value: value.to_owned(),
                 source: Source::Flag("--profile"),
             })
         };
-        assert_eq!(
-            command_line("auth status", &[("--profile", given("work"))]).as_deref(),
-            Some("hipc --profile work auth status")
-        );
-        for value in ["", "-work", "my work", "a;b"] {
+        for (value, line) in [
+            ("work", "hipc --profile work auth status"),
+            ("", "hipc --profile '' auth status"),
+            ("-work", "hipc --profile=-work auth status"),
+            ("my work", "hipc --profile 'my work' auth status"),
+            ("a;b", "hipc --profile 'a;b' auth status"),
+            ("it's", r"hipc --profile 'it'\''s' auth status"),
+        ] {
+            assert_eq!(
+                command_line("auth status", &[("--profile", given(value))]).as_deref(),
+                Some(line),
+                "{value:?}"
+            );
+        }
+        for value in ["a\nb", "caf\u{e9}", "a\u{200b}b", "a\tb"] {
             assert_eq!(
                 command_line("auth status", &[("--profile", given(value))]),
                 None,

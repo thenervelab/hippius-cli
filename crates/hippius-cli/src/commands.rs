@@ -53,8 +53,8 @@ pub(crate) fn set_up_first(error: &Error, route: &str) -> bool {
 }
 
 /// A hint that runs `hipc <words>` with the profile, origin, and selectors this run was
-/// given, so a copied line acts where this one did, then says `why`. Without a plain form
-/// of those ([`Context::next_command`]), it names the bare command.
+/// given, so a copied line acts where this one did, then says `why`. When one of those
+/// cannot be written as typed ([`Context::next_command`]), it names the bare command.
 pub(crate) fn run_hint(ctx: &Context<'_>, words: &str, why: &str) -> String {
     let command = ctx
         .next_command(words)
@@ -565,8 +565,9 @@ pub(crate) fn drop_next_step(document: &mut Value) {
 /// JSON mode prints no note, so without it an agent would not learn how the flow goes on.
 /// It is always a `hipc` command that runs as printed, so it is added only for an
 /// `intent_id` the checkout command accepts and that cannot be read as a flag; such an id
-/// needs no shell quoting. It repeats the run's profile, origin, and selectors, and is left
-/// out when one of them is not a plain word ([`Context::next_command`]). A field of that
+/// needs no shell quoting. It repeats the run's profile, origin, and selectors, quoted where
+/// a shell needs it, and is left out when one of them is not printable ASCII
+/// ([`Context::next_command`]). A field of that
 /// name in the answer is dropped first ([`drop_next_step`]).
 pub(crate) fn subscribed(ctx: &Context<'_>, response: &Response, service: &str) -> Result<Value> {
     let mut body = response.document()?;

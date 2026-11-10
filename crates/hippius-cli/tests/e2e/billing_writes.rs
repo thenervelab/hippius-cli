@@ -870,27 +870,24 @@ fn card_setup_prints_the_checkout_and_names_the_next_step() {
     );
 }
 
-/// A selector that is not one plain word gives no command to name, and an answer that is not
-/// an object gains no field.
+/// A profile name clap would read as a flag is joined to `--profile` in the next command, and
+/// an answer that is not an object gains no field.
 #[test]
-fn card_setup_leaves_out_a_next_step_it_cannot_name() {
+fn card_setup_joins_a_flag_shaped_profile_and_adds_no_field_to_a_non_object() {
     let server = Server::start(vec![route("POST", CARD_SETUP, Reply::json(200, CHECKOUT))]);
     let home = Home::new();
     home.write_config("[profiles.\"-work\"]\n");
-    let run = Hipc::against(&home, &server)
-        .env("HIPPIUS_PROFILE", "-work")
-        .run(&["--output", "text", "billing", "auto-reload", "card-setup"]);
-    assert_eq!(run.code(), Some(0), "{}", run.stderr());
-    assert_eq!(
-        run.stderr(),
-        "note: nothing is charged: the card is saved once the checkout at `checkout_url` in the \
-         output is completed\n"
-    );
     let doc = Hipc::against(&home, &server)
         .env("HIPPIUS_PROFILE", "-work")
         .run(&["billing", "auto-reload", "card-setup"])
         .ok();
-    assert!(doc.get("next_step").is_none(), "{doc}");
+    assert_eq!(
+        doc["next_step"],
+        format!(
+            "hipc --profile=-work --api-url {} billing auto-reload get",
+            server.url()
+        )
+    );
     let list = Server::start(vec![route("POST", CARD_SETUP, Reply::json(200, "[]"))]);
     assert_eq!(
         hipc(&list, &["billing", "auto-reload", "card-setup"]).ok(),

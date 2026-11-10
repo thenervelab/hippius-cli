@@ -468,8 +468,8 @@ fn rotate_refuses_an_answer_with_any_other_docker_login_command() {
             )
         );
     }
-    // A profile name clap would read as a flag cannot be repeated, so the hint names no
-    // command rather than one that fails.
+    // A profile name clap would read as a flag is joined to `--profile`, so it runs as a
+    // value.
     let body = json!({"robot_secret": "s3cr3t-rotated", "help": "docker login"});
     let server = rotate(Reply::json(201, &body.to_string()));
     let error = Hipc::against(&Home::new(), &server)
@@ -478,7 +478,12 @@ fn rotate_refuses_an_answer_with_any_other_docker_login_command() {
         .fails(1, "internal");
     assert_eq!(
         error["hint"],
-        "report the refused answer at `https://github.com/thenervelab/hippius-cli/issues`"
+        format!(
+            "run `hipc --profile=-work --api-url {} hub namespace robot rotate --reveal --yes` to \
+             issue a new secret, and if it is refused too, report the refused answer at `{}`",
+            server.url(),
+            "https://github.com/thenervelab/hippius-cli/issues"
+        )
     );
 }
 

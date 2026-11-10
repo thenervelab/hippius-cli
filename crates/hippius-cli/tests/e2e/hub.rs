@@ -998,9 +998,9 @@ fn namespace_create_without_a_secret_succeeds_and_text_mode_names_the_rotate() {
     );
     // A profile that is not one plain word gives no command to name.
     let home = Home::new();
-    home.write_config("[profiles.\"my work\"]\n");
+    home.write_config("[profiles.\"café\"]\n");
     let run = Hipc::against(&home, &server)
-        .env("HIPPIUS_PROFILE", "-work")
+        .env("HIPPIUS_PROFILE", "café")
         .run(&text);
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert_eq!(
@@ -1878,10 +1878,10 @@ fn namespace_robot_refuses_a_login_command_that_passes_a_password() {
     }
 }
 
-/// A profile name clap would read as a flag cannot be repeated in a command, so the hint
-/// names none rather than one that fails.
+/// A profile name clap would read as a flag is joined to `--profile` in the command the hint
+/// names, so it runs as a value.
 #[test]
-fn namespace_robot_refusal_names_no_command_it_cannot_repeat() {
+fn namespace_robot_refusal_joins_a_flag_shaped_profile_to_its_flag() {
     let body = r#"{"argv":["docker","login","-u","r","-p","s3cr3t"]}"#;
     let server = Server::start(vec![route(
         "GET",
@@ -1894,7 +1894,12 @@ fn namespace_robot_refusal_names_no_command_it_cannot_repeat() {
         .fails(1, "internal");
     assert_eq!(
         error["hint"],
-        "log in with `docker login --password-stdin`, which reads the secret from stdin"
+        format!(
+            "log in with `docker login --password-stdin`, which reads the secret from stdin; \
+             `hipc --profile=-work --api-url {} hub namespace robot rotate --reveal --yes` \
+             issues a new one",
+            server.url()
+        )
     );
 }
 #[test]

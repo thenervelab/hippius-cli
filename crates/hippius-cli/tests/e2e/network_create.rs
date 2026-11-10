@@ -341,9 +341,9 @@ fn the_hint_carries_the_runs_account_and_profile() {
     // A profile name that is not one plain word cannot be repeated safely, so the hint
     // names the bare command.
     let spaced = Home::new();
-    spaced.write_config("[profiles.\"my work\"]\n");
+    spaced.write_config("[profiles.\"café\"]\n");
     let error = Hipc::against(&spaced, &server)
-        .env("HIPPIUS_PROFILE", "my work")
+        .env("HIPPIUS_PROFILE", "café")
         .run(&["network", "peers", "list"])
         .fails(1, "permission");
     assert_eq!(

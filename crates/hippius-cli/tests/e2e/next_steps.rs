@@ -152,7 +152,7 @@ fn an_accepted_invite_points_at_account_use() {
         let home = Home::new();
         let file = home.file("invite.txt", b"inv_secret\n");
         // A profile whose name is not one plain word, for the case with no command.
-        home.write_config("[profiles.\"my work\"]\n");
+        home.write_config("[profiles.\"café\"]\n");
         let server = Server::start(vec![
             route(
                 "POST",
@@ -209,7 +209,7 @@ fn an_accepted_invite_points_at_account_use() {
         )
     );
     // A profile the command could not name as one word: no note.
-    let (run, _) = accept(&joined, &[("HIPPIUS_PROFILE", "my work")], &[]);
+    let (run, _) = accept(&joined, &[("HIPPIUS_PROFILE", "café")], &[]);
     assert_eq!(run.stderr(), "");
     // No id, `self`, and an id `hipc account use` refuses: no note.
     for joined in [
@@ -295,11 +295,24 @@ fn a_login_points_at_auth_status_with_the_profile_and_origin_it_was_given() {
         "warning: `HIPPIUS_TOKEN` is set, so later commands send it, not the token just stored; \
          unset it to act as the stored token's owner\n"
     );
-    // An origin a shell would glob gets no command.
-    assert_eq!(login(&home, &[], &["--api-url", "http://[::1]:9"]), "");
-    // Nor does a profile the file names with a space.
-    home.write_config("[profiles.\"my work\"]\n");
-    assert_eq!(login(&home, &[], &["--profile", "my work"]), "");
+    // An origin a shell would glob, and a profile the file names with a space, are quoted,
+    // and a profile that starts with `-` is joined to its flag, so clap reads it as a value.
+    assert_eq!(
+        login(&home, &[], &["--api-url", "http://[::1]:9"]),
+        note("hipc --api-url 'http://[::1]:9' auth status")
+    );
+    home.write_config("[profiles.\"my work\"]\n[profiles.\"-work\"]\n");
+    assert_eq!(
+        login(&home, &[], &["--profile", "my work"]),
+        note("hipc --profile 'my work' auth status")
+    );
+    assert_eq!(
+        login(&home, &[], &["--profile=-work"]),
+        note("hipc --profile=-work auth status")
+    );
+    // A profile a note would show escaped, not as it is typed, gets no command.
+    home.write_config("[profiles.\"caf\u{e9}\"]\n");
+    assert_eq!(login(&home, &[], &["--profile", "caf\u{e9}"]), "");
 }
 
 #[test]
@@ -393,9 +406,9 @@ fn a_flow_with_no_next_step_of_its_own_drops_the_servers() {
         Reply::json(200, &body),
     )]);
     let home = Home::new();
-    home.write_config("[profiles.\"my work\"]\n");
+    home.write_config("[profiles.\"café\"]\n");
     let doc = Hipc::against(&home, &server)
-        .env("HIPPIUS_PROFILE", "my work")
+        .env("HIPPIUS_PROFILE", "café")
         .run(&["billing", "auto-reload", "card-setup"])
         .ok();
     assert_eq!(
