@@ -326,7 +326,7 @@ fn printable(value: &Value, redactions: &[String]) -> Value {
                 .collect(),
             other => printed(other, redactions),
         };
-        insert_unique(&mut out, &printed_key(name, redactions), item);
+        hippius::insert_unique(&mut out, &printed_key(name, redactions), item);
     }
     Value::Object(out)
 }
@@ -342,7 +342,7 @@ fn printed(value: &Value, redactions: &[String]) -> Value {
         Value::Object(fields) => {
             let mut out = Map::new();
             for (name, item) in fields {
-                insert_unique(
+                hippius::insert_unique(
                     &mut out,
                     &printed_key(name, redactions),
                     printed(item, redactions),
@@ -363,18 +363,6 @@ fn printed_key(key: &str, redactions: &[String]) -> String {
     } else {
         "<redacted>".to_owned()
     }
-}
-
-/// Inserts `value` under `key`, or under `key (2)`, `key (3)`, and so on when a redacted key
-/// already took it, so no field is lost.
-fn insert_unique(fields: &mut Map<String, Value>, key: &str, value: Value) {
-    let mut name = key.to_owned();
-    let mut n = 2;
-    while fields.contains_key(&name) {
-        name = format!("{key} ({n})");
-        n += 1;
-    }
-    fields.insert(name, value);
 }
 
 /// Whether `text`, under the top-level `key`, has the one shape hipc reads that key as: a

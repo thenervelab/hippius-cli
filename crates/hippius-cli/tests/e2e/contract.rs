@@ -881,82 +881,100 @@ fn an_unknown_word_or_flag_gets_the_help_hint() {
 /// the new flag is gone since 0.16.0), and the new spelling of the same command parses.
 #[test]
 fn old_flag_names_are_usage_errors() {
-    // The old command line, the word it no longer takes, and what replaces that word and its
-    // value.
+    // The old command line, how many of its words name the command, the word it no longer
+    // takes, and what replaces that word and its value.
     let cases = [
         (
             "cdn estimate --custom-domains 1",
+            2,
             "--custom-domains",
             "--custom-hostnames 1",
         ),
         (
             "s3 configure --from-token-json t.json",
+            2,
             "--from-token-json",
             "--from-token-file t.json",
         ),
         (
             "cdn waf events zab12cd34ef56 --rule r1",
+            3,
             "--rule",
             "--rule-id r1",
         ),
         (
             "api POST /accounts/ --input b.json",
+            1,
             "--input",
             "--body-file b.json",
         ),
-        ("hub subscription subscribe Pro", "Pro", "--plan Pro"),
+        ("hub subscription subscribe Pro", 3, "Pro", "--plan Pro"),
         (
             "drive subscription change --funding card",
+            3,
             "--funding",
             "--pay-from card",
         ),
         (
             "s3 subscription change --funding card",
+            3,
             "--funding",
             "--pay-from card",
         ),
         (
             "cdn purges create zab12cd34ef56 --all",
+            3,
             "--all",
             "--everything",
         ),
         (
             "s3 subscription change --storage-cap-bytes 1",
+            3,
             "--storage-cap-bytes",
             "--storage-cap 1",
         ),
         (
             "hub keys create --name ci --role read --expires-days 1",
+            3,
             "--expires-days",
             "--expires-in 1",
         ),
         (
             "account billing-accounts costs default --group day",
+            3,
             "--group",
             "--group-by day",
         ),
         (
             "compute backups restore vm-1 --point r1",
+            3,
             "--point",
             "--run-id r1",
         ),
-        ("cdn estimate --gb FR=1", "--gb", "--traffic FR=1"),
+        ("cdn estimate --gb FR=1", 2, "--gb", "--traffic FR=1"),
         (
             "drive subscription change --storage-cap-bytes 1",
+            3,
             "--storage-cap-bytes",
             "--storage-cap 1",
         ),
     ];
-    for (old, word, new) in cases {
+    for (old, words, word, new) in cases {
         let mut argv: Vec<&str> = old.split_whitespace().collect();
         argv.push("--dry-run");
         let doc = assert_json_error(&hipc(&argv), 2, "usage");
         let message = doc["error"]["message"].as_str().unwrap_or_default();
         assert!(message.contains(&format!("`{word}`")), "{old}: {message}");
-        let hint = doc["error"]["hint"].as_str().unwrap_or_default();
-        assert!(
-            hint.starts_with("run `hipc ") && hint.ends_with(" --help`"),
-            "{old}: {hint}"
+        // The help of the command typed, its words before the first argument.
+        let command = old
+            .split_whitespace()
+            .take(words)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            doc["error"]["hint"],
+            format!("run `hipc {command} --help`"),
+            "{old}"
         );
         // `--help` after a complete parse prints the help; an argument clap refuses is an
         // error before it, so the new spelling exits 0.

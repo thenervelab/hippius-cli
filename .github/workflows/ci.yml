@@ -92,7 +92,7 @@ jobs:
       # so a new closure that never runs fails even when its line is covered.
       - run: >-
           cargo llvm-cov --locked --include-build-script --fail-uncovered-lines 0
-          --fail-uncovered-functions 23 --show-missing-lines
+          --fail-uncovered-functions 20 --show-missing-lines
 
   test-macos:
     runs-on: macos-latest

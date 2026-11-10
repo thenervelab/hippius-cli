@@ -381,12 +381,13 @@ fn redacted_value<S: AsRef<str>>(value: Value, secrets: &[S]) -> Value {
     let clean = |text: String| redact_all(text, secrets);
     match value {
         Value::String(text) => Value::String(clean(text)),
-        Value::Object(fields) => Value::Object(
-            fields
-                .into_iter()
-                .map(|(key, value)| (clean(key), redacted_value(value, secrets)))
-                .collect(),
-        ),
+        Value::Object(fields) => {
+            let mut redacted = Map::new();
+            for (key, value) in fields {
+                insert_unique(&mut redacted, &clean(key), redacted_value(value, secrets));
+            }
+            Value::Object(redacted)
+        }
         Value::Array(items) => Value::Array(
             items
                 .into_iter()
@@ -402,6 +403,18 @@ fn redacted_value<S: AsRef<str>>(value: Value, secrets: &[S]) -> Value {
         }
         other => other,
     }
+}
+
+/// Inserts `value` under `key`, or under `key (2)`, `key (3)`, and so on when a redacted key
+/// already took it, so no field is lost when two names redact to the same text.
+pub fn insert_unique(fields: &mut Map<String, Value>, key: &str, value: Value) {
+    let mut name = key.to_owned();
+    let mut n = 2;
+    while fields.contains_key(&name) {
+        name = format!("{key} ({n})");
+        n += 1;
+    }
+    fields.insert(name, value);
 }
 
 /// How many digits an all-digit secret needs before any number holding them is redacted.
@@ -461,6 +474,11 @@ mod tests {
         assert_eq!(
             redact_all("abab".to_owned(), &["ab"]),
             "<redacted><redacted>"
+        );
+        // Two field names that redact to the same text are both kept.
+        assert_eq!(
+            redact_value_all(json!({"acted": 1, "d": 2}), &["acted", "d"]),
+            json!({"<redacted>": 1, "<redacted> (2)": 2})
         );
         assert_eq!(redact_all("x".to_owned(), &[] as &[&str]), "x");
         // A pass per secret would cut the marker the first one wrote.

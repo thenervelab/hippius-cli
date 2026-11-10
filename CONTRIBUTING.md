@@ -51,7 +51,7 @@ Coverage is a gate: every line under `src/` and `build.rs` runs under the test s
 
 ```sh
 cargo llvm-cov --locked --include-build-script --fail-uncovered-lines 0 \
-  --fail-uncovered-functions 23 --show-missing-lines
+  --fail-uncovered-functions 20 --show-missing-lines
 ```
 
 The gate is the exit status and the `Uncovered Lines` list. The summary table's `Missed
