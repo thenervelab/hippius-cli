@@ -767,7 +767,8 @@ fn cosign_on_path_checks_the_signature_against_the_release_workflow() {
         !stderr.contains("cosign: certificate"),
         "a passing check prints nothing of cosign"
     );
-    let log = std::fs::read_to_string(machine.home.path().join("cosign.log")).expect("log");
+    let log = std::fs::read_to_string(machine.home.path().join("cosign.log"))
+        .expect("the fake cosign writes its log");
     let (args, bundle) = log
         .split_once('\n')
         .expect("the arguments, then the bundle");
@@ -1081,7 +1082,8 @@ fn a_failed_wget_download_shows_the_reason_wget_gave() {
         assert!(!stderr.contains("\n\n"), "{args:?}: {stderr}");
         assert!(stderr.contains(message), "{args:?}: {stderr}");
         assert!(!machine.install_dir().exists(), "{args:?}");
-        let log = std::fs::read_to_string(machine.home.path().join("wget.log")).expect("log");
+        let log = std::fs::read_to_string(machine.home.path().join("wget.log"))
+            .expect("the fake wget writes its log");
         assert!(
             log.starts_with("--no-config --https-only --tries=3 --timeout=15 -S "),
             "{log}"
@@ -1116,7 +1118,8 @@ fn wget_refuses_a_redirect_from_https_to_plain_http() {
             "{stderr}"
         );
         assert!(!machine.install_dir().exists());
-        let log = std::fs::read_to_string(machine.home.path().join("wget.log")).expect("log");
+        let log = std::fs::read_to_string(machine.home.path().join("wget.log"))
+            .expect("the fake wget writes its log");
         assert!(
             log.starts_with("--no-config --https-only --tries=3 --timeout=15 "),
             "{log}"

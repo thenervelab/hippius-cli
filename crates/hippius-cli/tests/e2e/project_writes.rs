@@ -728,7 +728,11 @@ fn projects_transfer_dry_run_from_the_own_account_lists_both_reads() {
         .as_array()
         .expect("requests")
         .iter()
-        .map(|request| request["url"].as_str().expect("url"))
+        .map(|request| {
+            request["url"]
+                .as_str()
+                .expect("each recorded request has a url")
+        })
         .collect();
     assert_eq!(
         urls,

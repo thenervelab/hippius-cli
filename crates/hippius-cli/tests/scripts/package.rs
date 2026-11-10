@@ -152,7 +152,10 @@ fn bad_input_is_refused() {
         String::from_utf8_lossy(&out.stderr)
             .contains("package: SOURCE_DATE_EPOCH is not a number of seconds")
     );
-    let out = Command::new(PACKAGE).arg("one").output().expect("run");
+    let out = Command::new(PACKAGE)
+        .arg("one")
+        .output()
+        .expect("the package script starts");
     assert_eq!(out.status.code(), Some(2));
     if gnu_tar() {
         assert!(package(&binary, &tarball, None).status.success());
