@@ -43,7 +43,7 @@ pub mod support;
 
 use std::fmt;
 
-use crate::encode::{percent_encode, percent_encode_keeping};
+use crate::encode::percent_encode_keeping;
 use crate::error::Code;
 use crate::method::Method;
 
@@ -449,8 +449,10 @@ impl<const N: usize> Route<N> {
     }
 
     /// The path with `values` in its placeholders, in order, each percent-encoded as
-    /// RFC 3986 encodes a path segment: a `{name..}` placeholder keeps the `/` between its
-    /// segments, and a `{name}` one encodes it, so no value reaches another route.
+    /// RFC 3986 (section 3.3) encodes a path segment: the characters a segment may hold as
+    /// they are ([`SEGMENT_KEEPS`]) stay, a `{name..}` placeholder keeps the `/` between its
+    /// segments, and a `{name}` one encodes it, so no value reaches another route. A Hub
+    /// digest such as `sha256:0a1b` goes as it is.
     pub fn path(&self, values: [&dyn fmt::Display; N]) -> String {
         let mut values = values.into_iter();
         self.endpoint.filled(|_name, kind| {
@@ -459,12 +461,20 @@ impl<const N: usize> Route<N> {
                 .expect("the type holds one value per placeholder")
                 .to_string();
             match kind {
-                Placeholder::Segment => percent_encode(&value),
-                Placeholder::Segments => percent_encode_keeping(&value, b"/"),
+                Placeholder::Segment => percent_encode_keeping(&value, SEGMENT_KEEPS),
+                Placeholder::Segments => percent_encode_keeping(&value, SEGMENTS_KEEP),
             }
         })
     }
 }
+
+/// The characters beside the unreserved ones that a path segment holds as they are: RFC 3986
+/// `pchar`'s sub-delims, `:` and `@`, without `;`, which the client refuses in a path because a
+/// front end may read it as the end of the segment.
+const SEGMENT_KEEPS: &[u8] = b"!$&'()*+,=:@";
+
+/// [`SEGMENT_KEEPS`], and the `/` between the segments of a `{name..}` value.
+const SEGMENTS_KEEP: &[u8] = b"!$&'()*+,=:@/";
 
 /// The number of placeholders in `template`, or `usize::MAX` when one is not a whole
 /// segment, `{`, a name, and `}` between two `/`.

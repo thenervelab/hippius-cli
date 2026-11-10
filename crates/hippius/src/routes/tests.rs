@@ -130,8 +130,11 @@ fn placeholders_fill_one_segment_each_percent_encoded() {
     const TWO: Route<2> = Route::delete("/api/r/{repository..}/t/{tag}/").own_account();
     assert_eq!(ONE.path([&7]), "/api/a/7/b/");
     assert_eq!(ONE.path([&"x/../y z"]), "/api/a/x%2F..%2Fy%20z/b/");
+    assert_eq!(ONE.path([&"sha256:0a+b=c@d"]), "/api/a/sha256:0a+b=c@d/b/");
+    assert_eq!(ONE.path([&"a;b?c#d%e"]), "/api/a/a%3Bb%3Fc%23d%25e/b/");
     assert_eq!(TWO.path([&"team/app", &"v1"]), "/api/r/team/app/t/v1/");
     assert_eq!(TWO.path([&"a b/c", &"x/y"]), "/api/r/a%20b/c/t/x%2Fy/");
+    assert_eq!(TWO.path([&"a:b/c", &"x"]), "/api/r/a:b/c/t/x/");
     assert_eq!(ONE.method(), Method::Get);
     assert_eq!(ONE.endpoint().template(), "/api/a/{id}/b/");
 }
