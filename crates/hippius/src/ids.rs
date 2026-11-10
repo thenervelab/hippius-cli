@@ -17,7 +17,7 @@ pub fn new_idempotency_key() -> Result<String> {
 /// refusal when the system gives no random bytes.
 pub(crate) fn random_uuid(purpose: &str) -> Result<String> {
     let mut random = [0_u8; 16];
-    getrandom::getrandom(&mut random).map_err(|error| no_random_bytes(purpose, error))?;
+    refused_without_random(getrandom::getrandom(&mut random), purpose)?;
     Ok(uuid_v4(random))
 }
 
@@ -37,12 +37,18 @@ fn uuid_v4(mut random: [u8; 16]) -> String {
     )
 }
 
-/// The refusal when the system gives no random bytes for `purpose`.
-fn no_random_bytes(purpose: &str, error: getrandom::Error) -> Error {
-    Error::internal(format!(
-        "cannot read random bytes for {purpose}: the system says {}",
-        quote(error)
-    ))
+/// `filled`, the outcome of reading random bytes for `purpose`, with the system's refusal as
+/// an `internal` error that names the purpose.
+fn refused_without_random(
+    filled: std::result::Result<(), getrandom::Error>,
+    purpose: &str,
+) -> Result<()> {
+    filled.map_err(|error| {
+        Error::internal(format!(
+            "cannot read random bytes for {purpose}: the system says {}",
+            quote(error)
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -59,14 +65,11 @@ mod tests {
     #[test]
     fn no_random_bytes_is_internal_and_names_its_purpose() {
         for purpose in ["a request id", "an idempotency key"] {
-            let error = no_random_bytes(purpose, getrandom::Error::UNSUPPORTED);
+            let error =
+                refused_without_random(Err(getrandom::Error::UNSUPPORTED), purpose).unwrap_err();
             assert_eq!(error.code(), Code::Internal);
             let expected = format!("cannot read random bytes for {purpose}: the system says `");
-            assert!(
-                error.message().starts_with(&expected),
-                "{}",
-                error.message()
-            );
+            assert_eq!(error.message().get(..expected.len()), Some(&*expected));
         }
     }
 

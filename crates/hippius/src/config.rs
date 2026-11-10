@@ -517,7 +517,7 @@ impl ConfigFile {
             });
         };
         // Cleared when dropped: the text holds every stored token. The parsed document clears
-        // its own copies ([`Profile`]'s `Drop`).
+        // its own copies (each `Profile`'s token is `Zeroizing`).
         let text = utf8_text(bytes).ok_or_else(|| {
             Error::usage(
                 format!("the config file {} is not UTF-8 text", quote_path(&path)),
