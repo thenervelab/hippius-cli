@@ -4579,7 +4579,7 @@ Options:
       --placement-group <NAME>
           The anti-affinity group: two VMs of the account in one group never share a server
           
-          A name is 1 to 64 of a-z, 0-9, and -. Fixed for the VM's life.
+          A name is 1 to 64 of a-z, 0-9, and -, not starting with -. Fixed for the VM's life.
 
       --on-guest-poweroff <POLICY>
           What a power-off from inside the VM does: restart (the server's default) or stop
@@ -4936,7 +4936,7 @@ Options:
       --placement-group <NAME>
           The anti-affinity group: two VMs of the account in one group never share a server
           
-          A name is 1 to 64 of a-z, 0-9, and -. Fixed for the VM's life. hipc compute placement-groups says whether the server offers groups.
+          A name is 1 to 64 of a-z, 0-9, and -, not starting with -. Fixed for the VM's life. hipc compute placement-groups says whether the server offers groups.
 
       --os-disk-tier <TIER>
           The OS disk's tier, a minimum: the disk may land on a faster one; the server defaults it to nvme
@@ -6696,7 +6696,7 @@ Arguments:
 
 Options:
       --name <NAME>
-          The pool's name: lowercase letters, digits, and -, at most 20 characters
+          The pool's name: lowercase letters, digits, and -, at most 20 characters, not starting with -
 
       --flavor <FLAVOR>
           The flavor of the pool's nodes, a code from hipc compute flavors

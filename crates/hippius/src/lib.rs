@@ -16,6 +16,7 @@ mod error;
 mod json;
 mod kubernetes;
 pub mod phrase;
+mod private_file;
 mod project;
 mod regular;
 mod source;
@@ -29,16 +30,17 @@ pub use crate::client::{
 };
 pub use crate::clock::Now;
 pub use crate::config::{
-    ConfigFile, HubMarker, Overrides, Settings, Token, config_path, on_lock_wait, take_split_link,
+    ConfigFile, HubMarker, Overrides, Settings, Token, config_path, take_split_link,
 };
 pub use crate::digest::sha256_hex;
 pub use crate::dns::{DnsCredentials, DnsProvider};
 pub use crate::error::{CHECK_FIRST_HINT, Code, Error, ISSUES_URL, Result, SideEffects};
 pub use crate::json::{
-    CursorPage, Page, cursor_page, envelope, envelope_beside, number_holds, page, page_beside,
-    redact_value, without_field, without_fields,
+    CursorPage, Page, cursor_page, envelope, envelope_beside, insert_unique, number_holds, page,
+    page_beside, redact_all, redact_value, redact_value_all, without_field, without_fields,
 };
 pub use crate::kubernetes::{ClusterKey, MatchedKey, rfc3339_seconds};
+pub use crate::private_file::on_lock_wait;
 pub use crate::project::{BillingId, DEFAULT, ProjectId};
 pub use crate::regular::{OpenRegularError, open_regular};
 pub use crate::source::{Given, Source};

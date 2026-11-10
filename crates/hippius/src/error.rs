@@ -347,6 +347,9 @@ struct Inner {
     details: Option<Value>,
     /// What a multi-call command did before it failed, printed on stdout (tenet 3).
     stdout: Option<Value>,
+    /// Whether `stdout` is a list command's list envelope, which text mode prints as a table
+    /// ([`Error::with_stdout_as_list`]).
+    stdout_is_list: bool,
 }
 
 /// Whether the caller may retry, and after how long. `hipc` itself never retries
@@ -391,6 +394,7 @@ impl Error {
             side_effects: SideEffects::None,
             details: None,
             stdout: None,
+            stdout_is_list: false,
         }))
     }
 
@@ -560,6 +564,21 @@ impl Error {
         self
     }
 
+    /// The error with its stdout document marked as a list command's list envelope, so text
+    /// mode prints it as the list it is. Only a list command marks it: a document that merely
+    /// holds `items` and `next_page_token` is not a list.
+    #[must_use]
+    pub fn with_stdout_as_list(mut self) -> Self {
+        self.0.stdout_is_list = true;
+        self
+    }
+
+    /// Whether the stdout document is a list command's list envelope
+    /// ([`Error::with_stdout_as_list`]).
+    pub fn stdout_is_list(&self) -> bool {
+        self.0.stdout_is_list
+    }
+
     /// The error with every occurrence of `secret`, a value the caller sent such as an
     /// invite token, replaced by `<redacted>` in its message, hint, details, stdout document,
     /// and request id, so a server that repeats it cannot get it printed (tenet 9).
@@ -568,19 +587,31 @@ impl Error {
     ///
     /// When `secret` is empty.
     #[must_use]
-    pub fn redacted(mut self, secret: &str) -> Self {
-        let clean = |text: String| crate::json::redact(text, secret);
+    pub fn redacted(self, secret: &str) -> Self {
+        self.redacted_all(&[secret])
+    }
+
+    /// [`Error::redacted`] of each of `secrets` at once: each text gets one marker per span of
+    /// overlapping matches ([`crate::json::redact_all`]), so a shorter secret never cuts a
+    /// longer one or a marker an earlier one wrote.
+    ///
+    /// # Panics
+    ///
+    /// When a secret is empty.
+    #[must_use]
+    pub fn redacted_all<S: AsRef<str>>(mut self, secrets: &[S]) -> Self {
+        let clean = |text: String| crate::json::redact_all(text, secrets);
         let inner = &mut *self.0;
         inner.message = clean(std::mem::take(&mut inner.message));
         inner.hint = inner.hint.take().map(clean);
         inner.details = inner
             .details
             .take()
-            .map(|details| crate::json::redact_value(details, secret));
+            .map(|details| crate::json::redact_value_all(details, secrets));
         inner.stdout = inner
             .stdout
             .take()
-            .map(|done| crate::json::redact_value(done, secret));
+            .map(|done| crate::json::redact_value_all(done, secrets));
         inner.request_id = inner.request_id.take().map(clean);
         self
     }
@@ -995,6 +1026,34 @@ mod tests {
         let plain = Error::new(Code::NotFound, "x").redacted("s3cr3t");
         assert_eq!(plain.hint(), None);
         assert_eq!(plain.details(), None);
+    }
+
+    /// Several secrets are redacted at once in every text: a short one cuts neither
+    /// a longer one that holds it nor a marker already written, whatever their order.
+    #[test]
+    fn several_secrets_are_redacted_in_one_pass() {
+        let error = Error::new(Code::NotFound, "x acted y d")
+            .with_hint("acted")
+            .with_http(404, Some("acted-d".into()))
+            .redacted_all(&["d", "acted"]);
+        assert_eq!(error.message(), "x <redacted> y <redacted>");
+        assert_eq!(error.hint(), Some("<redacted>"));
+        assert_eq!(
+            error.to_json()["error"]["request_id"],
+            "<redacted>-<redacted>"
+        );
+        // A list-replace or partial failure keeps a stdout and details of its own.
+        let error = Error::partial_failure(
+            "x",
+            json!({"acted": 12_345_678}),
+            json!(["d"]),
+            SideEffects::None,
+        )
+        .redacted_all(&["acted", "d", "12345678"]);
+        assert_eq!(error.stdout(), Some(&json!({"<redacted>": "<redacted>"})));
+        assert_eq!(error.details(), Some(&json!(["<redacted>"])));
+        assert!(!error.stdout_is_list());
+        assert!(error.with_stdout_as_list().stdout_is_list());
     }
 
     #[test]

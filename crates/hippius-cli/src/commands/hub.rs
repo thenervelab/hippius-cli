@@ -14,6 +14,7 @@ use hippius::{
 };
 use serde_json::{Map, Value, json};
 
+use crate::cli::values::{Charset, Dash, is_word};
 use crate::cli::{
     Hub, HubArtifacts, HubNamespace, HubRepositories, HubRobot, HubSubscribe, HubSubscription,
     PayFrom, Visibility,
@@ -1093,12 +1094,7 @@ fn provision(
 /// Namespace names are 1 to 63 lowercase letters, digits, and dashes, and do not start with
 /// a dash, which a command line would read as a flag.
 fn check_namespace(name: &str) -> Result<()> {
-    let valid = (1..=63).contains(&name.len())
-        && !name.starts_with('-')
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    if valid {
+    if is_word(name, 1..=63, Charset::LowerDash, Dash::Refused) {
         Ok(())
     } else {
         Err(Error::usage(
@@ -1116,3 +1112,37 @@ fn check_namespace(name: &str) -> Result<()> {
 pub(crate) const CANCELLED: &str = "the namespace stays available for a 30-day grace period, \
                                     and subscribing again within it keeps everything; when it \
                                     ends, the namespace and everything in it are deleted for good";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The namespace rule: 1 to 63 of `a-z`, `0-9`, and `-`, not starting with `-`.
+    #[test]
+    fn namespace_names_hold_one_rule() {
+        for good in ["a", "my-team", "a-", "0", &"a".repeat(63)] {
+            assert!(check_namespace(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            &"a".repeat(64),
+            "-a",
+            "..",
+            "a.b",
+            "A",
+            "a_b",
+            "a/b",
+            "a b",
+            "é",
+        ] {
+            let error = check_namespace(bad).expect_err(bad);
+            assert!(
+                error.message().ends_with(
+                    "is not a namespace name: a name is 1 to 63 lowercase letters, digits, and \
+                     `-`, and does not start with `-`"
+                ),
+                "{bad}: {error}"
+            );
+        }
+    }
+}

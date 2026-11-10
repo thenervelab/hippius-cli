@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand, ValueEnum};
 
+use crate::cli::values::{Charset, Dash, word};
 use crate::cli::{StatsStep, examples, number, zone_id};
 
 #[derive(Debug, Subcommand)]
@@ -615,18 +616,13 @@ pub(crate) enum ListItems {
 /// A WAF list name: swagger's `^[a-z0-9_]{1,32}$`, which also keeps a `/`, `?`, or `..` out
 /// of the URL path it goes into.
 fn list_name(value: &str) -> Result<String, String> {
-    let valid = (1..=32).contains(&value.len())
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
-    if valid {
-        Ok(value.to_owned())
-    } else {
-        Err(
-            "a WAF list name is 1 to 32 lowercase letters, digits, and `_`, such as `blocked_ips`"
-                .to_owned(),
-        )
-    }
+    word(
+        value,
+        1..=32,
+        Charset::LowerUnderscore,
+        Dash::Refused,
+        "a WAF list name is 1 to 32 lowercase letters, digits, and `_`, such as `blocked_ips`",
+    )
 }
 
 /// The longest list description, in characters (swagger: `maxLength` 256).

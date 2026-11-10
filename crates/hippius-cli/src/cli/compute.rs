@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand, ValueEnum};
 
+use crate::cli::values::{Charset, Dash, word};
 use crate::cli::{
     AppEngine, BackupInterval, Backups, Databases, Exposures, FailoverMode, Firewall, Kubernetes,
     ListArgs, RESIZE_ID, Runners, SSH_KEY_ID, examples, number, region, vm_id,
@@ -516,8 +517,8 @@ pub(crate) struct VmCreate {
     pub(crate) open_ssh: bool,
     /// The anti-affinity group: two VMs of the account in one group never share a server
     ///
-    /// A name is 1 to 64 of a-z, 0-9, and -. Fixed for the VM's life. hipc compute placement-groups
-    /// says whether the server offers groups.
+    /// A name is 1 to 64 of a-z, 0-9, and -, not starting with -. Fixed for the VM's life. hipc
+    /// compute placement-groups says whether the server offers groups.
     #[arg(long, value_name = "NAME", value_parser = placement_group)]
     pub(crate) placement_group: Option<String>,
     /// The OS disk's tier, a minimum: the disk may land on a faster one; the server defaults it
@@ -639,17 +640,16 @@ pub(crate) enum SshKeys {
 
 /// A placement group name, checked here because it is the caller's own label, and a bad
 /// one would otherwise fail only at launch. The pattern is swagger's (`POST
-/// /api/compute/vms/`, `placement_group`): 1 to 64 of `a-z`, `0-9`, and `-`.
+/// /api/compute/vms/`, `placement_group`): 1 to 64 of `a-z`, `0-9`, and `-`. A leading `-`
+/// is refused too, as for every name the caller picks: a command line reads it as a flag.
 pub(crate) fn placement_group(value: &str) -> Result<String, String> {
-    let valid = (1..=64).contains(&value.len())
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    if valid {
-        Ok(value.to_owned())
-    } else {
-        Err("a placement group is 1 to 64 of `a-z`, `0-9`, and `-`".to_owned())
-    }
+    word(
+        value,
+        1..=64,
+        Charset::LowerDash,
+        Dash::Refused,
+        "a placement group is 1 to 64 of `a-z`, `0-9`, and `-`, and does not start with `-`",
+    )
 }
 
 /// A `--flavor`: a code from `hipc compute flavors`, so not empty, in lowercase, and with no

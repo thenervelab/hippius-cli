@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+pub(crate) use crate::cli::values::number;
+use crate::cli::values::{Charset, Dash, word};
+
 mod account;
 mod api;
 mod app_engine;
@@ -33,6 +36,7 @@ mod projects;
 mod runners;
 mod s3;
 mod support;
+pub(crate) mod values;
 mod waf;
 
 pub(crate) use crate::cli::app_engine::{AppCreate, AppEngine, AppEngineApps, GuestComponents};
@@ -607,9 +611,11 @@ fn reference(value: &str) -> Result<String, String> {
 /// wide enough for the UUIDs and slugs seen, and narrow enough that no `/` or `?` can
 /// change the route.
 pub(crate) fn vm_id(value: &str) -> Result<String, String> {
-    slug_id(
+    word(
         value,
-        64,
+        1..=64,
+        Charset::Slug,
+        Dash::Taken,
         "a VM id is 1 to 64 letters, digits, `-`, and `_`",
     )
 }
@@ -631,28 +637,6 @@ const INVITE_ID: &str = "an invite id is a whole number, from `hipc account invi
 const TICKET_ID: &str = "a ticket id is a whole number, from `hipc support tickets list`";
 const REFERRAL_ID: &str =
     "a referral link id is a whole number, from `hipc account referrals list`";
-
-/// A parser for a numeric id, which goes into the URL path or the body as a number.
-/// `refusal` says what the id is and which command prints it, in place of Rust's "invalid
-/// digit found in string". The digits are read as `u64` parses them.
-fn number(refusal: &'static str) -> impl Fn(&str) -> Result<u64, String> + Clone {
-    move |value| value.parse().map_err(|_| refusal.to_owned())
-}
-
-/// The one rule of every slug id parser: `value` when it is 1 to `max` ASCII letters,
-/// digits, `-`, and `_`, else `refusal`, which names the id and states that rule. No `/`,
-/// `?`, `.`, or space gets past it, so an id cannot change a URL path it goes into.
-fn slug_id(value: &str, max: usize, refusal: &str) -> Result<String, String> {
-    let valid = (1..=max).contains(&value.len())
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    if valid {
-        Ok(value.to_owned())
-    } else {
-        Err(refusal.to_owned())
-    }
-}
 
 /// A compute region: two ASCII letters (ISO 3166-1 alpha-2), as swagger documents every
 /// compute `region` (the launch, feasibility, and public IP availability) and as runners
@@ -779,9 +763,11 @@ pub(crate) fn with_id(words: &str, id: &str, flags: &str) -> String {
 /// payment intents (`pi_...`); 1 to 128 letters, digits, `-`, and `_` fits those and keeps
 /// `/` and `?` out of the route.
 pub(crate) fn intent_id(value: &str) -> Result<String, String> {
-    slug_id(
+    word(
         value,
-        128,
+        1..=128,
+        Charset::Slug,
+        Dash::Taken,
         "an intent id is 1 to 128 letters, digits, `-`, and `_`",
     )
 }
@@ -1567,84 +1553,173 @@ mod tests {
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
     }
 
-    /// Every slug id parser holds the one rule, 1 to its maximum of ASCII letters, digits,
-    /// `-`, and `_`, and refuses with its own message, whichever command takes it.
+    /// The name and id parsers: a command line with `{}` where the value goes (a positional
+    /// value follows `--`, so a leading `-` reaches the parser), the longest value, the
+    /// characters, whether a leading `-` is taken, and the refusal.
+    const WORD_PARSERS: [(&[&str], usize, values::Charset, values::Dash, &str); 11] = [
+        (
+            &["compute", "vms", "get", "--", "{}"],
+            64,
+            values::Charset::Slug,
+            values::Dash::Taken,
+            "a VM id is 1 to 64 letters, digits, `-`, and `_`",
+        ),
+        (
+            &["compute", "backups", "restore", "vm-1", "--run-id={}"],
+            64,
+            values::Charset::Slug,
+            values::Dash::Taken,
+            "a backup point is 1 to 64 letters, digits, `-`, and `_`",
+        ),
+        (
+            &["network", "peers", "get", "--", "{}"],
+            64,
+            values::Charset::Slug,
+            values::Dash::Taken,
+            "a peer id is 1 to 64 letters, digits, `-`, and `_`, from `hipc network peers list`",
+        ),
+        (
+            &["network", "vpcs", "routers", "list", "--", "{}"],
+            64,
+            values::Charset::Slug,
+            values::Dash::Taken,
+            "a VPC network id is 1 to 64 letters, digits, `-`, and `_`, from \
+             `hipc network vpcs list`",
+        ),
+        (
+            &["compute", "kubernetes", "nodes", "delete", "7", "--", "{}"],
+            64,
+            values::Charset::Slug,
+            values::Dash::Taken,
+            "a node name is 1 to 64 letters, digits, `-`, and `_`, from \
+             `hipc compute kubernetes node-pools list`",
+        ),
+        (
+            &["s3", "subscription", "checkout", "--", "{}"],
+            128,
+            values::Charset::Slug,
+            values::Dash::Taken,
+            "an intent id is 1 to 128 letters, digits, `-`, and `_`",
+        ),
+        (
+            &["drive", "subscription", "checkout", "--", "{}"],
+            128,
+            values::Charset::Slug,
+            values::Dash::Taken,
+            "an intent id is 1 to 128 letters, digits, `-`, and `_`",
+        ),
+        (
+            &[
+                "compute",
+                "vms",
+                "create",
+                "--flavor",
+                "small",
+                "--ssh-key-id",
+                "1",
+                "--placement-group={}",
+            ],
+            64,
+            values::Charset::LowerDash,
+            values::Dash::Refused,
+            "a placement group is 1 to 64 of `a-z`, `0-9`, and `-`, and does not start with `-`",
+        ),
+        (
+            &[
+                "compute",
+                "kubernetes",
+                "node-pools",
+                "create",
+                "7",
+                "--flavor",
+                "small",
+                "--name={}",
+            ],
+            20,
+            values::Charset::LowerDash,
+            values::Dash::Refused,
+            "a node pool name is 1 to 20 of `a-z`, `0-9`, and `-`, and does not start with `-`",
+        ),
+        (
+            &["cdn", "lists", "get", "--", "{}"],
+            32,
+            values::Charset::LowerUnderscore,
+            values::Dash::Refused,
+            "a WAF list name is 1 to 32 lowercase letters, digits, and `_`, such as `blocked_ips`",
+        ),
+        (
+            &["hub", "keys", "create", "--role", "read", "--name={}"],
+            usize::MAX,
+            values::Charset::OneWord,
+            values::Dash::Refused,
+            "a key name is one word, with no spaces or control characters, that does not start \
+             with `-`",
+        ),
+    ];
+
+    /// Every name and id parser holds the one rule of [`values::word`], with its own length,
+    /// characters, and leading-`-` rule, and refuses with its own message, whichever command
+    /// takes it: the empty value, the longest value and one past it, a leading `-` (taken for
+    /// an id the server issues, refused for a name the caller picks), `..`, and a character of
+    /// no set. `{}` in a row's line is where the value goes; a positional value follows `--`,
+    /// so a leading `-` reaches the parser.
     #[test]
-    fn every_slug_id_parser_holds_one_rule_with_its_own_message() {
-        let parsers: [(&[&str], &[&str], usize, &str); 7] = [
-            (
-                &["compute", "vms", "get"],
-                &[],
-                64,
-                "a VM id is 1 to 64 letters, digits, `-`, and `_`",
-            ),
-            (
-                &["compute", "backups", "restore", "vm-1", "--run-id"],
-                &[],
-                64,
-                "a backup point is 1 to 64 letters, digits, `-`, and `_`",
-            ),
-            (
-                &["network", "peers", "get"],
-                &[],
-                64,
-                "a peer id is 1 to 64 letters, digits, `-`, and `_`, from `hipc network peers list`",
-            ),
-            (
-                &["network", "vpcs", "routers", "list"],
-                &[],
-                64,
-                "a VPC network id is 1 to 64 letters, digits, `-`, and `_`, from \
-                 `hipc network vpcs list`",
-            ),
-            (
-                &["compute", "kubernetes", "nodes", "delete", "7"],
-                &[],
-                64,
-                "a node name is 1 to 64 letters, digits, `-`, and `_`, from \
-                 `hipc compute kubernetes node-pools list`",
-            ),
-            (
-                &["s3", "subscription", "checkout"],
-                &[],
-                128,
-                "an intent id is 1 to 128 letters, digits, `-`, and `_`",
-            ),
-            (
-                &["drive", "subscription", "checkout"],
-                &[],
-                128,
-                "an intent id is 1 to 128 letters, digits, `-`, and `_`",
-            ),
-        ];
-        for (command, after, max, refusal) in parsers {
+    fn every_name_and_id_parser_holds_its_rule_with_its_own_message() {
+        use values::Charset::{LowerUnderscore, OneWord, Slug};
+        use values::Dash::{Refused, Taken};
+        for (line, max, charset, dash, refusal) in WORD_PARSERS {
             let parse = |value: &str| {
-                let argv = ["hipc"]
-                    .iter()
-                    .chain(command)
-                    .copied()
-                    .chain([value])
-                    .chain(after.iter().copied());
+                let argv = ["hipc".to_owned()]
+                    .into_iter()
+                    .chain(line.iter().map(|word| word.replace("{}", value)));
                 Cli::try_parse_from(argv)
             };
-            let longest = "a".repeat(max);
-            for good in ["a", "A-9_z", "-", "_x", longest.as_str()] {
-                assert!(parse(good).is_ok(), "{command:?} {good:?}");
+            let refused = |value: &str| {
+                let error = parse(value).expect_err(value).to_string();
+                assert!(error.contains(refusal), "{line:?} {value:?}: {error}");
+            };
+            // A value of the set: lowercase letters and digits are in every one.
+            let longest = "a".repeat(max.min(300));
+            for good in ["a", "a9", longest.as_str()] {
+                assert!(parse(good).is_ok(), "{line:?} {good:?}");
             }
-            let too_long = "a".repeat(max + 1);
-            for bad in [
-                "",
-                too_long.as_str(),
-                "a.b",
-                "..",
-                "a/b",
-                "a?b",
-                "a b",
-                "a%2F",
-                "é",
-            ] {
-                let error = parse(bad).expect_err(bad).to_string();
-                assert!(error.contains(refusal), "{command:?} {bad:?}: {error}");
+            if max < 300 {
+                refused(&"a".repeat(max + 1));
+            }
+            refused("");
+            match dash {
+                Taken => assert!(parse("-a").is_ok(), "{line:?}"),
+                Refused => refused("-a"),
+            }
+            if charset == OneWord {
+                // One word may hold a dot and any letter, but no space.
+                for good in ["..", "a.b", "é", "A_b"] {
+                    assert!(parse(good).is_ok(), "{line:?} {good:?}");
+                }
+                for bad in ["a b", "a\tb", "a\u{85}b"] {
+                    refused(bad);
+                }
+                continue;
+            }
+            for bad in ["..", "a.b", "a/b", "a?b", "a b", "a%2F", "é"] {
+                refused(bad);
+            }
+            match charset {
+                Slug => {
+                    for good in ["A_z", "a-9", "-", "_x"] {
+                        assert!(parse(good).is_ok(), "{line:?} {good:?}");
+                    }
+                }
+                LowerUnderscore => {
+                    assert!(parse("a_z").is_ok(), "{line:?}");
+                    refused("A");
+                    refused("a-z");
+                }
+                _ => {
+                    assert!(parse("a-9").is_ok(), "{line:?}");
+                    refused("A");
+                    refused("a_z");
+                }
             }
         }
     }

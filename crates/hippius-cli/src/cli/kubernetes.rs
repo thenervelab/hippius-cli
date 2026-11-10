@@ -8,7 +8,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
-use crate::cli::{examples, flavor, new_file, number, slug_id};
+use crate::cli::values::{Charset, Dash, word};
+use crate::cli::{examples, flavor, new_file, number};
 
 const CLUSTER_ID: &str =
     "a cluster id is a whole number, from `hipc compute kubernetes clusters list`";
@@ -231,7 +232,8 @@ pub(crate) struct NodePoolCreate {
     /// The cluster id from hipc compute kubernetes clusters list
     #[arg(value_parser = number(CLUSTER_ID))]
     pub(crate) cluster_id: u64,
-    /// The pool's name: lowercase letters, digits, and -, at most 20 characters
+    /// The pool's name: lowercase letters, digits, and -, at most 20 characters, not starting
+    /// with -
     #[arg(long, value_parser = pool_name)]
     pub(crate) name: String,
     /// The flavor of the pool's nodes, a code from hipc compute flavors
@@ -248,17 +250,16 @@ pub(crate) struct NodePoolCreate {
     pub(crate) taints: Vec<String>,
 }
 
-/// A node pool `--name`: 1 to 20 of `a-z`, `0-9`, and `-`, as its help says.
+/// A node pool `--name`: 1 to 20 of `a-z`, `0-9`, and `-`, as its help says, not starting
+/// with `-`, which a command line reads as a flag.
 fn pool_name(text: &str) -> Result<String, String> {
-    let valid = (1..=20).contains(&text.len())
-        && text
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-    if valid {
-        Ok(text.to_owned())
-    } else {
-        Err("a node pool name is 1 to 20 of `a-z`, `0-9`, and `-`".to_owned())
-    }
+    word(
+        text,
+        1..=20,
+        Charset::LowerDash,
+        Dash::Refused,
+        "a node pool name is 1 to 20 of `a-z`, `0-9`, and `-`, and does not start with `-`",
+    )
 }
 
 /// The effects a Kubernetes taint takes.
@@ -401,9 +402,11 @@ pub(crate) struct NodeReplace {
 /// as a string. The rule of a VM id, 1 to 64 letters, digits, `-`, and `_`, takes them, and
 /// no `/`, `?`, or dot segment can change the route.
 fn node_name(value: &str) -> Result<String, String> {
-    slug_id(
+    word(
         value,
-        64,
+        1..=64,
+        Charset::Slug,
+        Dash::Taken,
         "a node name is 1 to 64 letters, digits, `-`, and `_`, from \
          `hipc compute kubernetes node-pools list`",
     )

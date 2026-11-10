@@ -378,11 +378,8 @@ fn update_profile(ctx: &Context<'_>, args: &ProfileUpdate) -> Result<Printed> {
         .into_iter()
         .filter_map(|(key, given)| given.map(|value| (key.to_owned(), Value::from(value))))
         .collect();
-    let named: Vec<String> = given.keys().map(|key| format!("`{key}`")).collect();
-    let request = put(PROFILE, given).about(format!(
-        "update the billing profile's {}",
-        phrase::join(&named, "and")
-    ));
+    let named = phrase::ticked(given.keys(), "and");
+    let request = put(PROFILE, given).about(format!("update the billing profile's {named}"));
     require_billing_account(&client, &request, "a billing profile update")?;
     let check = |error| check_first(error, "hipc billing profile get");
     let Some(email) = args.billing_email.as_deref() else {
@@ -733,7 +730,7 @@ fn subscriptions(ctx: &Context<'_>, client: &hippius::Client) -> Result<Printed>
         return Ok(Printed::Document(dry_run_requests(dry_runs)));
     }
     match first_error {
-        None => Ok(Printed::Document(hippius::envelope(rows))),
+        None => Ok(Printed::List(hippius::envelope(rows))),
         Some(error) if rows.is_empty() => Err(error),
         Some(_) => {
             let mut done = hippius::envelope(rows);
@@ -749,7 +746,8 @@ fn subscriptions(ctx: &Context<'_>, client: &hippius::Client) -> Result<Printed>
                 done,
                 Value::Array(failures),
                 SideEffects::None,
-            ))
+            )
+            .with_stdout_as_list())
         }
     }
 }

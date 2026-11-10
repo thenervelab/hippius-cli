@@ -2,16 +2,19 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 
-use crate::cli::{examples, slug_id, vm_id};
+use crate::cli::values::{Charset, Dash, word};
+use crate::cli::{examples, vm_id};
 
 /// A backup `run_id`. Swagger types it as a string with no pattern. It goes into the
 /// request body, not the path, but is held to the same rule as a `vm_id`, wide enough for
 /// the UUIDs and slugs seen, so a pasted value with spaces or quotes is refused before the
 /// confirmation rather than by the server after it.
 fn point_id(value: &str) -> Result<String, String> {
-    slug_id(
+    word(
         value,
-        64,
+        1..=64,
+        Charset::Slug,
+        Dash::Taken,
         "a backup point is 1 to 64 letters, digits, `-`, and `_`",
     )
 }

@@ -138,12 +138,12 @@ fn run_paged(
         // Without `--page-token` the first page is page 1.
         answered_as_asked(&page, page_number.as_deref().unwrap_or("1"), start_over)?;
         if !args.all {
-            return Ok(Printed::Document(page.envelope()?));
+            return Ok(Printed::List(page.envelope()?));
         }
         let next = page.next_page_token()?;
         items.extend(page.items);
         let Some(number) = next else {
-            return Ok(Printed::Document(Value::Array(items)));
+            return Ok(Printed::List(Value::Array(items)));
         };
         pages.admit(&number)?;
         page_number = Some(number);
@@ -275,11 +275,11 @@ pub(crate) fn run_cursor(
         };
         let page = hippius::cursor_page(answer)?;
         if !args.all {
-            return Ok(Printed::Document(page.envelope()));
+            return Ok(Printed::List(page.envelope()));
         }
         items.extend(page.items);
         let Some(next) = page.next_page_token else {
-            return Ok(Printed::Document(Value::Array(items)));
+            return Ok(Printed::List(Value::Array(items)));
         };
         pages.admit(&next)?;
         cursor = Some(next);

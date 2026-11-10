@@ -28,10 +28,10 @@ use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
 use serde_json::{Map, Value};
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::client::{lowercase_escapes, token_spellings};
-use crate::config::{Guarded, NamedBy, PrivateFile};
+use crate::client::{lowercase_escapes, percent_encode_keeping, token_spellings};
 use crate::error::{Error, Result};
 use crate::phrase::quote_path;
+use crate::private_file::{Guarded, NamedBy, PrivateFile};
 
 /// The DNS providers swagger lists for the setup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,14 +100,11 @@ impl DnsCredentials {
                 file_hint(flag, provider),
             )
         };
-        let Some(bytes) = PrivateFile::load(path, guarded)? else {
-            return Err(refuse("does not exist"));
-        };
-        let bytes = Zeroizing::new(bytes);
-        let mut file = match serde_json::from_slice::<UniqueObject>(&bytes) {
-            Ok(UniqueObject::Object(file)) => file,
-            Ok(UniqueObject::Repeated) => return Err(refuse("names a field twice")),
-            Err(_) => return Err(refuse("is not a JSON object")),
+        let mut file = match load_object(path, guarded)? {
+            ObjectFile::Object(file) => file,
+            ObjectFile::Missing => return Err(refuse("does not exist")),
+            ObjectFile::Repeated => return Err(refuse("names a field twice")),
+            ObjectFile::NotAnObject => return Err(refuse("is not a JSON object")),
         };
         let (required, optional) = provider.fields();
         let mut fields = Vec::new();
@@ -309,15 +306,7 @@ fn json_body(text: &str) -> String {
 /// `text` percent-encoded outside the unreserved set of RFC 3986 and `/`, with uppercase hex,
 /// as Python's `urllib.parse.quote` writes it.
 fn percent_encode_keeping_slash(text: &str) -> String {
-    text.bytes()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'/') {
-                char::from(byte).to_string()
-            } else {
-                format!("%{byte:02X}")
-            }
-        })
-        .collect()
+    percent_encode_keeping(text, b"/")
 }
 
 /// The fields whose values are secrets. `access_key_id` is less secret than its key, but
@@ -328,6 +317,32 @@ const SECRET_FIELDS: [&str; 4] = [
     "secret_access_key",
     "session_token",
 ];
+
+/// A private JSON file a flag names, as [`load_object`] read it.
+pub(crate) enum ObjectFile {
+    /// Nothing is at the path.
+    Missing,
+    /// The object names a field twice: which copy counts would depend on the parser.
+    Repeated,
+    /// The file is not one JSON object.
+    NotAnObject,
+    Object(Fields),
+}
+
+/// Reads the private file at `path` ([`PrivateFile::load`], held to its checks) as one JSON
+/// object, for the DNS credentials, App Engine secrets, and cluster key files. The bytes read
+/// are cleared on the way out, whatever the outcome; each caller words its own refusals.
+pub(crate) fn load_object(path: &Path, guarded: Guarded) -> Result<ObjectFile> {
+    let Some(bytes) = PrivateFile::load(path, guarded)? else {
+        return Ok(ObjectFile::Missing);
+    };
+    let bytes = Zeroizing::new(bytes);
+    Ok(match serde_json::from_slice::<UniqueObject>(&bytes) {
+        Ok(UniqueObject::Object(fields)) => ObjectFile::Object(fields),
+        Ok(UniqueObject::Repeated) => ObjectFile::Repeated,
+        Err(_) => ObjectFile::NotAnObject,
+    })
+}
 
 /// The file as a JSON object, or the fact that it names a field twice. Any other JSON value is
 /// a deserialization error. What was read is cleared when either is dropped or the read

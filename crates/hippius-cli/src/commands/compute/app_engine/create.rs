@@ -259,25 +259,10 @@ fn check_secret_names(
     Ok(())
 }
 
-/// `text` with every text of `redactions` replaced by `<redacted>`, one character included, in
-/// one pass from the left that takes the longest text matching at each place: `redactions` is
-/// longest first, so a short value never cuts a marker an earlier one wrote.
+/// `text` with every text of `redactions` replaced by `<redacted>`, all at once, so a short
+/// value never cuts a marker another wrote ([`hippius::redact_all`]).
 fn redact_text(text: &str, redactions: &[String]) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(c) = rest.chars().next() {
-        if let Some(secret) = redactions
-            .iter()
-            .find(|secret| rest.starts_with(secret.as_str()))
-        {
-            out.push_str("<redacted>");
-            rest = &rest[secret.len()..];
-        } else {
-            out.push(c);
-            rest = &rest[c.len_utf8()..];
-        }
-    }
-    out
+    hippius::redact_all(text.to_owned(), redactions)
 }
 
 /// Whether `text`, which has a shape hipc checks, may still be printed as it came: it is no
@@ -341,7 +326,7 @@ fn printable(value: &Value, redactions: &[String]) -> Value {
                 .collect(),
             other => printed(other, redactions),
         };
-        insert_unique(&mut out, &printed_key(name, redactions), item);
+        hippius::insert_unique(&mut out, &printed_key(name, redactions), item);
     }
     Value::Object(out)
 }
@@ -357,7 +342,7 @@ fn printed(value: &Value, redactions: &[String]) -> Value {
         Value::Object(fields) => {
             let mut out = Map::new();
             for (name, item) in fields {
-                insert_unique(
+                hippius::insert_unique(
                     &mut out,
                     &printed_key(name, redactions),
                     printed(item, redactions),
@@ -378,18 +363,6 @@ fn printed_key(key: &str, redactions: &[String]) -> String {
     } else {
         "<redacted>".to_owned()
     }
-}
-
-/// Inserts `value` under `key`, or under `key (2)`, `key (3)`, and so on when a redacted key
-/// already took it, so no field is lost.
-fn insert_unique(fields: &mut Map<String, Value>, key: &str, value: Value) {
-    let mut name = key.to_owned();
-    let mut n = 2;
-    while fields.contains_key(&name) {
-        name = format!("{key} ({n})");
-        n += 1;
-    }
-    fields.insert(name, value);
 }
 
 /// Whether `text`, under the top-level `key`, has the one shape hipc reads that key as: a
@@ -877,7 +850,7 @@ mod tests {
         );
     }
 
-    /// One pass from the left, longest first: a short value cannot cut a marker already
+    /// All values at once: a short value cannot cut a marker already
     /// written, and a longer value that holds a shorter one is redacted whole.
     #[test]
     fn redaction_is_one_pass_longest_first() {

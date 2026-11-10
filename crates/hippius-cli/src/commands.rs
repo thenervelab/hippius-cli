@@ -62,11 +62,25 @@ pub(crate) fn run_hint(ctx: &Context<'_>, words: &str, why: &str) -> String {
     format!("run `{command}` {why}")
 }
 
+/// The error for a read, named by its action, whose answer has a shape `hipc` does not read
+/// (`internal`): every command that reads a field it depends on from an answer.
+pub(crate) fn unreadable(action: &str) -> Error {
+    Error::internal(format!(
+        "cannot {action}: the API answered with a shape `hipc` does not read"
+    ))
+}
+
 /// What a successful command prints.
 #[derive(Debug)]
 pub(crate) enum Printed {
     /// A JSON document, rendered by the output mode.
     Document(Value),
+    /// The list envelope (`TENETS.md` tenet 6) of a command that prints one, or the bare
+    /// array `--all` prints: every list command, and `hipc hub subscription get`, which reads
+    /// the subscriptions whole as a list. Only such a command returns it, so text mode prints a
+    /// table and the `--page-token` hint for this and never for a `get` whose answer happens
+    /// to hold `items` and `next_page_token`.
+    List(Value),
     /// Bytes hipc wrote that are the output itself, in every mode: a completion script, or
     /// the schema (which exists for programs, so it is JSON even on a terminal).
     Raw(Vec<u8>),
@@ -185,12 +199,6 @@ impl Input<'_> {
         })?;
         self.refuse_secret_store(file.metadata().ok().as_ref())?;
         Ok(Opened::File(file))
-    }
-
-    /// [`Input::read_text`]: every file flag reads a regular file only, or stdin for `-`
-    /// ([`Input::read`]).
-    pub(crate) fn read_regular_text(&self, limit: u64) -> Result<String> {
-        self.read_text(limit)
     }
 
     /// Refuses the file whose metadata is `opened` when it is the hipc config file, which
@@ -426,6 +434,20 @@ pub(crate) fn print_with(
     }
 }
 
+/// Sends `request`, a GET of a list, and prints what `render` makes of the answer, the list
+/// envelope, as a list ([`Printed::List`]), or the dry-run document.
+pub(crate) fn print_list_with(
+    ctx: &Context<'_>,
+    client: &Client,
+    request: &Request,
+    render: impl FnOnce(Response) -> Result<Value>,
+) -> Result<Printed> {
+    match ctx.call(client, request, Gate::Open)? {
+        Step::Sent(response) => render(response).map(Printed::List),
+        Step::DryRun(doc) => Ok(Printed::Document(doc)),
+    }
+}
+
 /// Prints the server's body as it was sent. An empty 2xx is `internal`, `partial` after a
 /// write: a command whose route answers 204 uses [`print_body_or`].
 pub(crate) fn print_body(
@@ -458,7 +480,7 @@ pub(crate) fn print_envelope(
     client: &Client,
     request: &Request,
 ) -> Result<Printed> {
-    print_with(ctx, client, request, Gate::Open, |response| {
+    print_list_with(ctx, client, request, |response| {
         hippius::page(response.json()?)?.complete_envelope(request.target())
     })
 }
@@ -660,7 +682,7 @@ pub(crate) fn print_keyed_list(
     request: &Request,
     key: &str,
 ) -> Result<Printed> {
-    print_with(ctx, client, request, Gate::Open, |response| {
+    print_list_with(ctx, client, request, |response| {
         keyed_list(response.json()?, request, key)
     })
 }

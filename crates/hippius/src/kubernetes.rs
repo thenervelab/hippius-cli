@@ -59,10 +59,10 @@ use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use crate::client::Response;
-use crate::config::{Guarded, NamedBy, PrivateFile};
-use crate::dns::UniqueObject;
+use crate::dns::{ObjectFile, load_object};
 use crate::error::{Code, Error, Result};
 use crate::phrase::{named, quote, quote_path};
+use crate::private_file::{Guarded, NamedBy};
 
 /// The `kind` of the key file.
 const KIND: &str = "hippius-k8s-cluster-key";
@@ -108,16 +108,7 @@ impl ClusterKey {
             holds: "the cluster's private keys",
             named_by: NamedBy::Flag(flag),
         };
-        let Some(bytes) = PrivateFile::load(path, guarded)? else {
-            return Err(Error::usage(
-                format!("the cluster key file {} does not exist", quote_path(path)),
-                key_file_hint(flag),
-            ));
-        };
-        Self::parse(&Zeroizing::new(bytes), path, flag)
-    }
-
-    fn parse(bytes: &[u8], path: &Path, flag: &'static str) -> Result<Self> {
+        let loaded = load_object(path, guarded)?;
         let not_a_key_file = |problem: &str| {
             Error::usage(
                 format!(
@@ -130,10 +121,16 @@ impl ClusterKey {
         };
         // A field given twice is refused, as the other private files refuse it: which copy
         // counts would depend on the parser.
-        let mut fields = match serde_json::from_slice::<UniqueObject>(bytes) {
-            Ok(UniqueObject::Object(fields)) => fields,
-            Ok(UniqueObject::Repeated) => return Err(not_a_key_file("names a field twice")),
-            Err(_) => return Err(not_a_key_file("is not a JSON object")),
+        let mut fields = match loaded {
+            ObjectFile::Object(fields) => fields,
+            ObjectFile::Missing => {
+                return Err(Error::usage(
+                    format!("the cluster key file {} does not exist", quote_path(path)),
+                    key_file_hint(flag),
+                ));
+            }
+            ObjectFile::Repeated => return Err(not_a_key_file("names a field twice")),
+            ObjectFile::NotAnObject => return Err(not_a_key_file("is not a JSON object")),
         };
         // Taken out of the map first, so that each refusal below drops them cleared.
         let sign_secret = secret_text(&mut fields, "sign_secret_key");

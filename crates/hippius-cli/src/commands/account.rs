@@ -25,7 +25,7 @@ use crate::cli::{
     Access, Grant, GrantArg, InviteCreate, Invites, MarketingConsent, MemberUpdate, Members,
     Notifications,
 };
-use crate::commands::replace::{self, Entry, Found, Replace, replace_list};
+use crate::commands::replace::{Entry, Found, Replace, replace_list};
 use crate::commands::{
     Input, Printed, print_body, print_body_or, print_keyed_list, store_selection,
 };
@@ -90,12 +90,12 @@ fn unexpected() -> Error {
 
 /// `hipc account list`.
 pub(crate) fn list(ctx: &Context<'_>) -> Result<Printed> {
-    Ok(Printed::Document(
+    Ok(
         match accounts(ctx, &ctx.authed_client(&context::config()?)?)? {
-            Fetched::Accounts(page) => page.complete_envelope(ACCOUNTS)?,
-            Fetched::DryRun(doc) => doc,
+            Fetched::Accounts(page) => Printed::List(page.complete_envelope(ACCOUNTS)?),
+            Fetched::DryRun(doc) => Printed::Document(doc),
         },
-    ))
+    )
 }
 
 /// `hipc account get`: the selected account, or the caller's own for `self`.
@@ -203,13 +203,10 @@ pub(crate) fn notifications(ctx: &Context<'_>, command: &Notifications) -> Resul
                 .into_iter()
                 .filter_map(|(key, given)| given.map(|on| (key.to_owned(), Value::from(on))))
                 .collect();
-            let named: Vec<String> = given.keys().map(|key| format!("`{key}`")).collect();
+            let named = phrase::ticked(given.keys(), "and");
             Request::new(Method::Patch, NOTIFICATIONS)
                 .json(&Value::Object(given))
-                .about(format!(
-                    "update the notification settings {}",
-                    phrase::join(&named, "and")
-                ))
+                .about(format!("update the notification settings {named}"))
         }
     };
     let flags: Vec<String> = off
@@ -664,7 +661,7 @@ fn update_member(ctx: &Context<'_>, args: &MemberUpdate) -> Result<Printed> {
     };
     replace_list(ctx, &client, &replace, |answer| {
         member_grants(&answer, id)
-            .ok_or_else(|| replace::unreadable(&members_list().action()))?
+            .ok_or_else(|| crate::commands::unreadable(&members_list().action()))?
             .map(Found::new)
     })
 }
