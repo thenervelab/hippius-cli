@@ -660,7 +660,7 @@ const REFUSED_BEFORE_THE_CONFIG: &[(&[&str], &str, &str)] = &[
     (
         &["compute", "runners", "settings", "update"],
         "usage",
-        "nothing to change",
+        "--max-concurrent",
     ),
     (
         &[
