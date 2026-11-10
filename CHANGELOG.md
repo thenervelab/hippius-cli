@@ -31,6 +31,18 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - The help of `hipc cdn rules update`, `hipc account members update --grant`, and `hipc cdn lists items update` says that the route takes no version, so a change someone else makes between the read and the write is lost; for a member, a grant revoked in that window comes back if a `--grant` names it.
 - The `hipc compute app-engine apps create` question says that stored backups are billed per GB-hour at the price `hipc compute backups options` shows, and names where the OS disk tier's price is shown, as the `hipc compute vms create` question does. The `hipc compute backups policy update --failover auto` question says, as the launch questions do, that what was written after the latest backup is lost; one clause now serves all three. An App Engine launch that sent secrets keeps a kebab `code` in a refusal's `details` and message, as it keeps `error`.
 - A placement group (`--placement-group` of `hipc compute vms create` and `hipc compute app-engine apps create`) and a node pool name (`hipc compute kubernetes node-pools create --name`) that start with `-` are refused as `usage`, as a Hub namespace, a Hub key name, and a bucket name are, so a command that names them later never has a flag-shaped word to work around. Ids the server issues, such as a VM id, are still taken with a leading `-`.
+- `hipc` accepts a config file key it does not know, at the top level, in a profile, or in a profile's `hub_subscribe`, such as one a newer `hipc` wrote: it keeps the key when it rewrites the file, and warns once per run where the file holds one, in text mode on stderr and in JSON in `warnings`, without naming the key or its value. Such a file used to fail every command with `usage`. TENETS tenet 8 says so.
+- `hipc compute runners settings update --max-concurrent 0` needs `--yes`, as a raise does, unless the setting is already `0`: the server does not document what `0` means, and it may mean no cap. The help says the read of the settings and the write are separate requests. An update with no setting is refused by the parser, and `hipc schema` lists the five settings as a required group.
+- `hipc cdn zones update --prefix` without `--bucket` reads the zone and sends its whole `origin`, its `kind` and `bucket` with the new `prefix`, which is right whether the API merges `origin` or replaces it. The dry run lists the read, then the `PATCH` with placeholders; a zone whose `origin` has no `bucket` is `internal`, with a hint to pass `--bucket`.
+- `hipc compute firewall update --remove-others` without `--base-revision` reads the rules after the question and sends their `revision` as `base_revision`, so a rule another client adds in between makes the update a `conflict` rather than being deleted; the dry run lists the read. The conflict's hint says to run the command again.
+- `hipc hub namespace get` and `status` drop every spelling of a robot secret at any depth, as `hipc hub namespace robot get` does, and print nothing of an answer that holds a `docker login` command (`internal`).
+- The `402` hint of `hipc hub namespace create` names no amount: the server sets the minimum balance, and the hint names `hipc billing balance` and `hipc billing top-up`.
+- `hipc cdn estimate --traffic` sends the region in upper case, as every compute region is sent, so `--traffic FR=1 --traffic fr=2` is refused as one region given twice.
+- `hipc cdn zones create --name` and `hipc cdn zones update --name` take one line of 1 to 64 characters, checked before the question.
+- `hipc compute kubernetes node-pools create --taint` refuses a key or a value that holds `:`.
+- `hipc compute databases restore --target-time` takes a lowercase `t` and `z`, as RFC 3339 allows, and sends them in upper case; a time the API answers is read the same way.
+- `hipc schema` and `hipc api --help` state each refusal of `hipc api` exactly: a refusal listed for one write method holds for every write method, so a `PUT` or `PATCH` of `/api/account/deletion/`, any write of a DNS setup or of `/api/registry/subscribe/`, and any write of `/api/compute/app-engine/apps/` with `secrets` are named. The support check is described as it runs, a token split by an invisible joining character and an access key included, in `hipc api`'s row and in the `support tickets create` and `reply` rows. The help of each `hipc billing top-up` flag that one `--method` takes names it.
+- TENETS tenet 5 lists the hAlpha top-up's `reads_first`, its read of the quote, and tenet 9 says that a JSON number `hipc` redacts becomes the string `"<redacted>"`.
 
 ### Removed
 
@@ -57,10 +69,24 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - `hipc account projects delete` clears the stored project only if it is still the archived one when the config file is locked, so a `hipc account projects use` another run stored meanwhile is kept.
 - `hipc compute vms create --open-port` sets the rules on a launched VM whose id starts with `-`. Every command a VM hint or warning prints (the failed rules update, `public-ip create`'s inbound warning, the firewall `409` hint, and the exposure `404` hint) puts such an id after `--`, so it runs as written.
 - An App Engine 403 that carries `app-engine-unavailable` in `code` rather than `error` gets the hint to run `hipc compute app-engine get` too.
+- `hipc s3 configure --dry-run` is refused, as the real run is, when `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` name one file in a directory that does not exist yet; before, only the real run refused it, after creating the directory.
+- `hipc s3 configure` that cannot create the AWS credentials file no longer leaves the empty config file it created for the profile.
+- `hipc s3 configure` keeps the blank and comment lines that end a profile section it replaces, such as `# work account` above `[profile work]`, which describe the section after them.
+- `hipc auth login` with the token a profile stores with spaces around it, from a hand edit, no longer takes it for another token and asks for `--yes`.
+- A wait (a VM or App Engine launch, a hAlpha purchase) whose retryable failure carries a `Retry-After` shorter than its interval sends its last read before the deadline, as it does without the header.
+- A note no longer names a next command for an empty `--profile` or other empty global value, which a shell would read as the next word.
+- Backspace at the hidden token prompt erases the last character whole, not its last byte.
+- A note after `hipc hub namespace create` no longer says no `robot_secret` was issued when the answer holds the secret under another of its names.
+- A redacted all-digit value no longer turns a number into `<redacted>` when only zeros differ: numbers are compared with it by value, so a value `1000` leaves the counts `1` and `10` as they are.
 
 ### Security
 
 - More copies of secrets are cleared from memory when they are dropped: a secret read from `--token-file`, `--secret-key-file`, or an invite's `--token-file`, now read into a buffer of its full size, and from stdin without the standard library's buffer; the S3 token document `--from-token-file` reads; the S3 secret key and the AWS credentials text read and written; the one-time secret `--secret-file` moves; the DNS credential's redactions; every field of a DNS credentials, app secrets, or cluster key file, on every refusal; and the text an error held before a secret was redacted from it.
+- A path given to `--credentials-file`, `--secrets-file`, or `--cluster-key-file` that names no file is no longer repeated in the error.
+- Every command line is checked for what looks like a seed phrase or a known API token before the command runs, not only one that fails to parse, and is refused without being repeated. A value that `--profile`, `--aws-profile`, or `--access-key-id` refuses is no longer repeated in the error.
+- Text mode escapes U+180B to U+180D, U+180F, U+17B4, U+17B5, and U+2800, which print as nothing.
+- The database credentials `--credentials-dir` moves to files are redacted from the rest of the answer in every spelling `hipc` redacts a secret in, percent-encoded included, and the file paths the document names are never redacted.
+- The copies of the DNS credential in the `hipc cdn hostnames dns-setup` request body are cleared once the body is serialized.
 
 ## [0.15.0] - 2026-11-09
 
