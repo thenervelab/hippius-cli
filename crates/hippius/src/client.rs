@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
+use zeroize::Zeroizing;
 
 use ureq::unversioned::resolver::DefaultResolver;
 use ureq::unversioned::transport::{
@@ -75,7 +76,9 @@ pub struct Request {
     method: Method,
     target: String,
     query: Vec<(String, String)>,
-    body: Option<Vec<u8>>,
+    /// Cleared when dropped: a body can hold a secret sent once, such as an App Engine
+    /// launch's secrets or a DNS provider credential.
+    body: Option<Zeroizing<Vec<u8>>>,
     /// What the request does, as [`Request::action`] says it.
     about: Option<String>,
     /// [`Request::listed_by`].
@@ -191,14 +194,14 @@ impl Request {
     /// Sets a JSON body, sent with `Content-Type: application/json`.
     #[must_use]
     pub fn json(mut self, body: &Value) -> Self {
-        self.body = Some(body.to_string().into_bytes());
+        self.body = Some(Zeroizing::new(body.to_string().into_bytes()));
         self
     }
 
     /// Sets a body the caller already holds as JSON bytes.
     #[must_use]
     pub fn raw_json(mut self, body: Vec<u8>) -> Self {
-        self.body = Some(body);
+        self.body = Some(Zeroizing::new(body));
         self
     }
 
@@ -245,7 +248,7 @@ impl fmt::Debug for Request {
             .field("method", &self.method)
             .field("target", &without_query_values(&self.target))
             .field("query_params", &self.query.len())
-            .field("body_len", &self.body.as_ref().map(Vec::len))
+            .field("body_len", &self.body.as_deref().map(Vec::len))
             .field("about", &self.about)
             .field("listed_by", &self.listed_by)
             .field("accept", &self.accept)
@@ -763,14 +766,14 @@ impl Client {
             let flags = match rule {
                 RouteRule::Needs(flags) => flags,
                 RouteRule::NeedsWhenSet(flags, key) => {
-                    if sets_key(request.body.as_deref(), key) {
+                    if sets_key(request.body.as_deref().map(Vec::as_slice), key) {
                         flags
                     } else {
                         &[]
                     }
                 }
                 RouteRule::NeedsUnlessFalse(flags, key) => {
-                    if sets_key_to_false(request.body.as_deref(), key) {
+                    if sets_key_to_false(request.body.as_deref().map(Vec::as_slice), key) {
                         &[]
                     } else {
                         flags
@@ -780,7 +783,7 @@ impl Client {
                     return Err(Error::usage(for_method(message, request.method), hint));
                 }
                 RouteRule::RefusedWhenSet { key, message, hint } => {
-                    if sets_key(request.body.as_deref(), key) {
+                    if sets_key(request.body.as_deref().map(Vec::as_slice), key) {
                         return Err(Error::usage(for_method(message, request.method), hint));
                     }
                     &[]
@@ -1048,7 +1051,7 @@ impl Client {
         // curl sends it. Without a body ureq frames those methods as chunked with one empty
         // chunk, which servers and proxies handle inconsistently.
         let empty = Vec::new();
-        let body = match &request.body {
+        let body = match request.body.as_deref() {
             Some(body) => Some(body),
             None if request.method.always_has_body() => Some(&empty),
             None => None,

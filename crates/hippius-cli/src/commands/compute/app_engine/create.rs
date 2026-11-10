@@ -20,7 +20,7 @@
 
 use std::time::{Duration, Instant};
 
-use hippius::{AppSecrets, Code, Error, Method, Request, Result, phrase};
+use hippius::{AppSecrets, Code, Error, Method, Request, Result, SecretValue, phrase};
 use serde_json::{Map, Value};
 
 use super::{APPS, Compose, Hashed, app_path, check_hash, path, read_compose, unavailable_hint};
@@ -55,11 +55,10 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
             .listed_by(APPS)
     };
     let validate = compose.request("validate/", "validate");
-    let draft = launch(&create_body(
-        args,
-        &compose,
-        secrets.as_ref().map(AppSecrets::placeholder_body),
-    ));
+    let placeholders = secrets
+        .as_ref()
+        .map(|secrets| SecretValue::new(secrets.placeholder_body()));
+    let draft = launch(create_body(args, &compose, placeholders).as_value());
     let checked = match ctx.check_write(&client, &draft)? {
         Write::DryRun(mut doc) => {
             doc["requests"] = ctx.describe_each(&client, &[&validate, &draft])?;
@@ -85,11 +84,10 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
     ctx.confirm_write(checked, &question, None)?;
     let redactions = secrets.as_ref().map(AppSecrets::redactions);
     let redactions: &[String] = redactions.as_ref().map_or(&[], |texts| texts.as_slice());
-    let mut body = create_body(args, &compose, secrets.as_ref().map(AppSecrets::body));
-    let request = launch(&body);
-    // The body's copies of the values are cleared once it is serialized, and the file's with
-    // `secrets`; the serialized bytes the request holds are not.
-    hippius::clear_strings(&mut body);
+    // The body's copies of the values are cleared once it is serialized, the file's with
+    // `secrets`, and the request's bytes when it is dropped.
+    let request =
+        launch(create_body(args, &compose, secrets.as_ref().map(AppSecrets::body)).as_value());
     drop(secrets);
     let response = ctx
         .send(&client, &request)
@@ -158,13 +156,18 @@ fn launch_action(args: &AppCreate) -> String {
 /// The launch body: the flavor, the compose byte for byte, `secrets` when there are any, and
 /// exactly the flags given. `public_ip` is never sent: the server's default, true, is the
 /// only value it takes.
-fn create_body(args: &AppCreate, compose: &Compose, secrets: Option<Value>) -> Value {
-    let mut body = Map::new();
-    body.insert("flavor".to_owned(), args.flavor.clone().into());
-    body.insert("compose".to_owned(), compose.text.clone().into());
-    if let Some(secrets) = secrets {
-        body.insert("secrets".to_owned(), secrets);
-    }
+fn create_body(args: &AppCreate, compose: &Compose, secrets: Option<SecretValue>) -> SecretValue {
+    let mut fields = Map::new();
+    fields.insert("flavor".to_owned(), args.flavor.clone().into());
+    fields.insert("compose".to_owned(), compose.text.clone().into());
+    let mut body = match secrets {
+        Some(secrets) => secrets.within("secrets", fields),
+        None => SecretValue::new(Value::Object(fields)),
+    };
+    let body_fields = body
+        .as_value_mut()
+        .as_object_mut()
+        .expect("the body is built as an object above");
     for (key, value) in [
         ("name", args.name.as_deref()),
         ("region", args.region.as_deref()),
@@ -177,13 +180,13 @@ fn create_body(args: &AppCreate, compose: &Compose, secrets: Option<Value>) -> V
         ("failover_mode", args.failover.map(FailoverMode::code)),
     ] {
         if let Some(value) = value {
-            body.insert(key.to_owned(), value.into());
+            body_fields.insert(key.to_owned(), value.into());
         }
     }
     if let Some(interval) = args.backup_interval {
-        body.insert("backup_interval_s".to_owned(), interval.seconds().into());
+        body_fields.insert("backup_interval_s".to_owned(), interval.seconds().into());
     }
-    Value::Object(body)
+    body
 }
 
 /// Refuses a launch whose secrets are not the ones the compose declares, as validate read
@@ -259,57 +262,29 @@ fn check_secret_names(
     Ok(())
 }
 
-/// `text` with every text of `redactions` replaced by `<redacted>`, all at once, so a short
-/// value never cuts a marker another wrote ([`hippius::redact_all`]).
-fn redact_text(text: &str, redactions: &[String]) -> String {
-    hippius::redact_all(text.to_owned(), redactions)
-}
-
-/// Whether `text`, which has a shape hipc checks, may still be printed as it came: it is no
-/// text of `redactions` and holds none of 8 bytes or more. A shape such as 40 hex digits fits
-/// a key as well as an id, so the shape alone is no proof that it is not a value sent.
-fn holds_no_secret(text: &str, redactions: &[String]) -> bool {
-    !redactions
-        .iter()
-        .any(|secret| secret == text || (secret.len() >= 8 && text.contains(secret.as_str())))
-}
-
 /// `text`, which [`shaped`] or an error field's own check passed, as printed: as it came, or
-/// `<redacted>` whole when it may be a value sent ([`holds_no_secret`]).
+/// `<redacted>` whole when it may be a value sent ([`hippius::holds_secret`]): a shape such as
+/// 40 hex digits fits a key as well as an id, so the shape alone is no proof that it is not
+/// a value sent.
 fn checked_text(text: String, redactions: &[String]) -> Value {
-    if holds_no_secret(&text, redactions) {
+    if hippius::holds_secret(&text, redactions) {
+        Value::from("<redacted>")
+    } else {
         Value::String(text)
-    } else {
-        Value::from("<redacted>")
-    }
-}
-
-/// `number` as printed: `<redacted>` when it spells an all-digit value sent, or holds one of
-/// 8 digits or more (`hippius::number_holds`), else as it came.
-fn printed_number(number: &Value, redactions: &[String]) -> Value {
-    let text = number.to_string();
-    if redactions
-        .iter()
-        .any(|secret| hippius::number_holds(&text, secret))
-    {
-        Value::from("<redacted>")
-    } else {
-        number.clone()
     }
 }
 
 /// The copy of an answer that is printed. Every decision reads the answer as it came; this
 /// copy is only shown. A top-level field hipc checked by its shape ([`shaped`]), and a name in
 /// the top-level `secret_names`, is printed as it came unless it may be a value sent
-/// ([`checked_text`]). Every other string and number is redacted ([`redact_text`],
-/// [`printed_number`]), and every key that may be a value ([`printed_key`]); two keys that
-/// redact to one are told apart by a number. With no secrets sent the answer is printed as it came.
+/// ([`checked_text`]). Everything else is redacted as [`hippius::redact_value_all`] redacts
+/// it. With no secrets sent the answer is printed as it came.
 fn printable(value: &Value, redactions: &[String]) -> Value {
     if redactions.is_empty() {
         return value.clone();
     }
     let Value::Object(fields) = value else {
-        return printed(value, redactions);
+        return hippius::redact_value_all(value.clone(), redactions);
     };
     let mut out = Map::new();
     for (name, item) in fields {
@@ -321,48 +296,15 @@ fn printable(value: &Value, redactions: &[String]) -> Value {
                     Value::String(text) if hippius::is_secret_name(text) => {
                         checked_text(text.clone(), redactions)
                     }
-                    other => printed(other, redactions),
+                    other => hippius::redact_value_all(other.clone(), redactions),
                 })
                 .collect(),
-            other => printed(other, redactions),
+            other => hippius::redact_value_all(other.clone(), redactions),
         };
-        hippius::insert_unique(&mut out, &printed_key(name, redactions), item);
+        let name = hippius::redact_name(name.clone(), redactions);
+        hippius::insert_unique(&mut out, &name, item);
     }
     Value::Object(out)
-}
-
-/// `value` with every string, key, and number redacted, at any depth.
-fn printed(value: &Value, redactions: &[String]) -> Value {
-    match value {
-        Value::String(text) => Value::String(redact_text(text, redactions)),
-        Value::Number(_) => printed_number(value, redactions),
-        Value::Array(items) => {
-            Value::Array(items.iter().map(|item| printed(item, redactions)).collect())
-        }
-        Value::Object(fields) => {
-            let mut out = Map::new();
-            for (name, item) in fields {
-                hippius::insert_unique(
-                    &mut out,
-                    &printed_key(name, redactions),
-                    printed(item, redactions),
-                );
-            }
-            Value::Object(out)
-        }
-        _ => value.clone(),
-    }
-}
-
-/// `key` as printed: a field name is the server's, not free text, so it is redacted whole
-/// only when it may be a value sent ([`holds_no_secret`]); a short value would otherwise
-/// rewrite every name it occurs in.
-fn printed_key(key: &str, redactions: &[String]) -> String {
-    if holds_no_secret(key, redactions) {
-        key.to_owned()
-    } else {
-        "<redacted>".to_owned()
-    }
 }
 
 /// Whether `text`, under the top-level `key`, has the one shape hipc reads that key as: a
@@ -389,7 +331,7 @@ fn is_token(text: &str) -> bool {
 
 /// A failure of a request sent after the secrets: the launch, or a poll of the app. With no
 /// secrets sent it is unchanged. Otherwise, of the server's body, only [`kept_fields`] stays;
-/// a request id stays only as an id that holds no value ([`holds_no_secret`]); and the message
+/// a request id stays only as an id that holds no value ([`hippius::holds_secret`]); and the message
 /// of any status outside 2xx (a redirect, whose target may hold anything, or a refusal) is
 /// built from those fields alone, never from the server's own text, so a field that was
 /// dropped cannot reach it. A failure with no status, or a 2xx hipc could not use, keeps a
@@ -406,12 +348,12 @@ fn sanitized(error: Error, action: &str, redactions: &[String]) -> Error {
         Some(status) if !(200..300).contains(&status) => {
             refusal_message(action, status, kept.as_ref().unwrap_or(&Value::Null))
         }
-        _ => redact_text(error.message(), redactions),
+        _ => hippius::redact_all(error.message().to_owned(), redactions),
     };
     error
         .with_details_kept(|_| kept)
         .with_request_id_kept(|id| {
-            (is_request_id(&id) && holds_no_secret(&id, redactions)).then_some(id)
+            (is_request_id(&id) && !hippius::holds_secret(&id, redactions)).then_some(id)
         })
         .with_message(message)
 }
@@ -448,7 +390,7 @@ fn is_request_id(id: &str) -> bool {
 /// The fields of an error body kept when the request carried secrets: `error` or `code` when it is a
 /// kebab code ([`checked_text`]), `detail` and `source` as redacted text, `line` as a number,
 /// and in `issues`, each one's `rule` (a kebab code), `line` and `column`, and its redacted
-/// `message` and `hint`. A number is redacted as [`printed_number`] does. A body that is not an
+/// `message` and `hint`. A number is redacted as [`hippius::redact_value_all`] does. A body that is not an
 /// object keeps nothing.
 fn kept_fields(details: Value, redactions: &[String]) -> Option<Value> {
     let Value::Object(fields) = details else {
@@ -462,9 +404,9 @@ fn kept_fields(details: Value, redactions: &[String]) -> Option<Value> {
                 checked_text(code, redactions)
             }
             ("detail" | "source", Value::String(text)) => {
-                Value::String(redact_text(&text, redactions))
+                Value::String(hippius::redact_all(text, redactions))
             }
-            ("line", line) if line.is_u64() => printed_number(&line, redactions),
+            ("line", line) if line.is_u64() => hippius::redact_value_all(line, redactions),
             ("issues", Value::Array(issues)) => issues
                 .into_iter()
                 .filter_map(|issue| kept_issue(issue, redactions))
@@ -486,9 +428,11 @@ fn kept_issue(issue: Value, redactions: &[String]) -> Option<Value> {
     for (key, value) in fields {
         let value = match (key.as_str(), value) {
             ("rule", Value::String(code)) if is_kebab(&code) => checked_text(code, redactions),
-            ("line" | "column", number) if number.is_u64() => printed_number(&number, redactions),
+            ("line" | "column", number) if number.is_u64() => {
+                hippius::redact_value_all(number, redactions)
+            }
             ("message" | "hint", Value::String(text)) => {
-                Value::String(redact_text(&text, redactions))
+                Value::String(hippius::redact_all(text, redactions))
             }
             _ => continue,
         };
@@ -558,10 +502,10 @@ fn wait(
     // The id is quoted only once it passes the rule of the argument, as the poll URL needs,
     // and holds no value sent: the printable copy redacts such an id, and the note, the poll's
     // `--debug` line, the error, and the hint would otherwise print it raw on stderr.
-    let pollable = if holds_no_secret(&vm_id, redactions) {
-        crate::cli::vm_id(&vm_id)
-    } else {
+    let pollable = if hippius::holds_secret(&vm_id, redactions) {
         Err("it may be a secret value sent".to_owned())
+    } else {
+        crate::cli::vm_id(&vm_id)
     };
     let app_named = match &pollable {
         Ok(_) => format!("the app {}", phrase::quote(&vm_id)),
@@ -654,7 +598,7 @@ impl Wait for AppLaunch<'_> {
                 let named = match other {
                     Some(other)
                         if crate::cli::vm_id(other).is_ok()
-                            && holds_no_secret(other, self.redactions) =>
+                            && !hippius::holds_secret(other, self.redactions) =>
                     {
                         format!("the app {}", phrase::quote(other))
                     }
@@ -848,23 +792,6 @@ mod tests {
                 "issues": [{"rule": "<redacted>", "line": "<redacted>", "column": 1}],
             }))
         );
-    }
-
-    /// All values at once: a short value cannot cut a marker already
-    /// written, and a longer value that holds a shorter one is redacted whole.
-    #[test]
-    fn redaction_is_one_pass_longest_first() {
-        let secrets = ["dacted".to_owned(), "a".to_owned()];
-        assert_eq!(
-            redact_text("dacted a b", &secrets),
-            "<redacted> <redacted> b"
-        );
-        assert_eq!(
-            redact_text("<redacted>", &["d".to_owned()]),
-            "<re<redacted>acte<redacted>>"
-        );
-        assert_eq!(redact_text("ééa", &secrets), "éé<redacted>");
-        assert_eq!(redact_text("x", &[]), "x");
     }
 
     /// A refusal's message comes from the kept code, else the kept detail, else the status.

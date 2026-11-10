@@ -52,3 +52,16 @@ pub(crate) fn lowercase_escapes(encoded: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bytes_encode_as_rfc_3986_says() {
+        assert_eq!(hex(&[0x00, 0x0f, 0xab]), "000fab");
+        assert_eq!(percent_encode("a-._~ /é"), "a-._~%20%2F%C3%A9");
+        assert_eq!(percent_encode_keeping("a /b", b"/"), "a%20/b");
+        assert_eq!(lowercase_escapes("%C3%A9AB%2F"), "%c3%a9AB%2f");
+    }
+}

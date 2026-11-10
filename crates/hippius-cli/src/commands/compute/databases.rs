@@ -360,8 +360,9 @@ fn save_credentials(dir: &Path, created: Value) -> Result<(Value, Vec<String>)> 
     // Each value in every spelling a field may repeat it in, such as percent-encoded in a URL.
     // Redacted before the fields `hipc` writes go in, so a short withheld value cannot rewrite
     // the paths of the files.
-    let secrets = hippius::redactions(withheld(object).iter().map(String::as_str));
-    let mut saved = redacted(created, &secrets);
+    let withheld = zeroize::Zeroizing::new(withheld(object));
+    let secrets = hippius::redactions(withheld.iter().map(String::as_str));
+    let mut saved = hippius::redact_value_all(created, &secrets);
     saved[CREDENTIALS] = Value::Object(shown);
     Ok((saved, written))
 }
@@ -384,29 +385,6 @@ fn withheld(object: &Value) -> Vec<String> {
         }
     }
     secrets
-}
-
-/// `value` with every one of `secrets` in its strings replaced by `<redacted>`, all at once
-/// ([`hippius::redact_all`]): a field outside `credentials`, such as a
-/// `connection_string` that embeds the password, must not print what `--credentials-dir`
-/// moved to its files.
-fn redacted(value: Value, secrets: &[String]) -> Value {
-    match value {
-        Value::String(text) => Value::String(hippius::redact_all(text, secrets)),
-        Value::Object(fields) => Value::Object(
-            fields
-                .into_iter()
-                .map(|(key, value)| (key, redacted(value, secrets)))
-                .collect(),
-        ),
-        Value::Array(items) => Value::Array(
-            items
-                .into_iter()
-                .map(|item| redacted(item, secrets))
-                .collect(),
-        ),
-        other => other,
-    }
 }
 
 /// The `.env` `--credentials-dir` writes: the libpq settings a client such as psql reads from
@@ -523,20 +501,4 @@ fn document_or_raw(response: &Response) -> Result<Value> {
             )
             .after_write(json!({ "unparsed_answer": String::from_utf8_lossy(cut) }))
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    /// The secrets moved to files are redacted at once: a short one cuts neither a
-    /// longer one that holds it nor the marker a longer one wrote.
-    #[test]
-    fn moved_secrets_are_redacted_in_one_pass() {
-        let secrets = ["acted".to_owned(), "d".to_owned()];
-        assert_eq!(
-            super::redacted(json!({"a": ["acted d", 7], "acted": "x"}), &secrets),
-            json!({"a": ["<redacted> <redacted>", 7], "acted": "x"})
-        );
-    }
 }

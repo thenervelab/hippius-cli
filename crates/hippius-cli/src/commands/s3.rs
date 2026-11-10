@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use hippius::{
     AccessKeyId, AwsFiles, AwsProfile, Client, Error, Method, Request, Response, Result, SecretKey,
-    phrase, without_fields,
+    SecretValue, phrase, without_fields,
 };
 use serde_json::{Map, Value, json};
 
@@ -20,9 +20,9 @@ use crate::cli::{
 };
 use crate::commands::files::{save_secret, shown_once};
 use crate::commands::{
-    Cleared, Input, Pages, Printed, dry_run_requests, list, local_dry_run, plan_setting,
-    print_body, print_body_or, print_envelope, print_keyed_list, print_with, require_public,
-    require_reveal, require_reveal_or_file, subscribed,
+    Input, Pages, Printed, dry_run_requests, list, local_dry_run, plan_setting, print_body,
+    print_body_or, print_envelope, print_keyed_list, print_with, require_public, require_reveal,
+    require_reveal_or_file, subscribed,
 };
 use crate::context::{self, Context, Gate, Question, Step};
 
@@ -759,8 +759,12 @@ fn key_pair_from_document(path: &Path) -> Result<(AccessKeyId, SecretKey)> {
     // Text mode prints a key-value block, not JSON, so the hint names `--json`.
     let print_one = "pass the JSON output of `hipc --json s3 tokens create --reveal` or \
                      `hipc --json s3 tokens rotate --reveal`";
-    let parsed = serde_json::from_slice::<Value>(&bytes).map(Cleared);
-    let Some(document) = parsed.as_ref().ok().and_then(|parsed| parsed.0.as_object()) else {
+    let parsed = serde_json::from_slice::<Value>(&bytes).map(SecretValue::new);
+    let Some(document) = parsed
+        .as_ref()
+        .ok()
+        .and_then(|parsed| parsed.as_value().as_object())
+    else {
         return Err(refused("is not a JSON object", print_one));
     };
     let Some(id) = document.get("access_key_id").and_then(Value::as_str) else {

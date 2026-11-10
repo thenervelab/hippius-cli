@@ -32,7 +32,7 @@ use crate::phrase::quote_path;
 use crate::private_file::{Guarded, NamedBy};
 use crate::private_object::load_private_object;
 use crate::redact::redactions;
-use crate::secret::clear_owned;
+use crate::secret::{SecretValue, clear_owned};
 
 /// The DNS providers swagger lists for the setup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,14 +133,14 @@ impl DnsCredentials {
         Ok(Self { provider, fields })
     }
 
-    /// The `credentials` object of the request body.
-    pub fn body(&self) -> Value {
-        Value::Object(
+    /// The `credentials` object of the request body, cleared when dropped.
+    pub fn body(&self) -> SecretValue {
+        SecretValue::new(Value::Object(
             self.fields
                 .iter()
                 .map(|(name, text)| ((*name).to_owned(), Value::from(text.as_str())))
                 .collect(),
-        )
+        ))
     }
 
     /// The `credentials` object a dry run shows: the file's field names, each with a

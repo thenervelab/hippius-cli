@@ -42,7 +42,7 @@ mod url;
 mod wallet;
 
 pub use crate::account::{PROVISIONING_ROUTES, RouteFlag, SECRET_ROUTES, same_route};
-pub use crate::app_secrets::{AppSecrets, clear_strings, is_secret_name};
+pub use crate::app_secrets::{AppSecrets, is_secret_name};
 pub use crate::aws::{AccessKeyId, AwsFiles, AwsProfile, SecretKey, configure};
 pub use crate::client::{Client, Request, Response, follow, is_default_origin};
 pub use crate::config::{
@@ -60,10 +60,11 @@ pub use crate::kubernetes::{ClusterKey, MatchedKey};
 pub use crate::method::Method;
 pub use crate::private_file::on_lock_wait;
 pub use crate::redact::{
-    insert_unique, number_holds, redact_all, redact_value, redact_value_all, redactions,
-    without_field, without_fields,
+    holds_secret, insert_unique, redact_all, redact_name, redact_value, redact_value_all,
+    redactions, without_field, without_fields,
 };
 pub use crate::regular::{OpenRegularError, open_regular};
+pub use crate::secret::SecretValue;
 pub use crate::selector::{BillingId, DEFAULT, ProjectId, Selection};
 pub use crate::source::{Given, Source};
 pub use crate::time::{Now, date_of_unix_day, rfc3339_seconds};

@@ -956,8 +956,7 @@ fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
     let provider = provider.provider();
     let credentials = DnsCredentials::load(credentials_file, "--credentials-file", provider)?;
     let path = format!("{}hostnames/{hostname}/dns-setup/", zone_path(zone_id));
-    let body =
-        |credentials: Value| json!({ "provider": provider.code(), "credentials": credentials });
+    let provider_field = || Map::from_iter([("provider".to_owned(), provider.code().into())]);
     let request = |body: &Value| {
         Request::new(Method::Post, path.as_str())
             .json(body)
@@ -968,7 +967,9 @@ fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
             ))
     };
     let client = ctx.load_authed_client()?;
-    let draft = request(&body(credentials.placeholder_body()));
+    let mut placeholders = provider_field();
+    placeholders.insert("credentials".to_owned(), credentials.placeholder_body());
+    let draft = request(&Value::Object(placeholders));
     let checked = match ctx.check_write(&client, &draft)? {
         Write::DryRun(doc) => return Ok(Printed::Document(doc)),
         Write::Checked(checked) => checked,
@@ -976,11 +977,14 @@ fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
     let consequence = "it adds or changes records in the domain's DNS zone at the provider";
     ctx.confirm_write(checked, &draft.action(), Some(consequence))?;
     let action = draft.action();
-    let mut sent = body(credentials.body());
-    let request = request(&sent);
-    // The body's copies of the credential are cleared once it is serialized, as an App Engine
-    // launch clears its secrets; the serialized bytes the request holds are not (tenet 8).
-    hippius::clear_strings(&mut sent);
+    // The body's copies of the credential are cleared once it is serialized, and the request's
+    // bytes when it is dropped (tenet 8).
+    let request = request(
+        credentials
+            .body()
+            .within("credentials", provider_field())
+            .as_value(),
+    );
     ctx.send(&client, &request)
         .and_then(|response| response.document())
         .map(|done| Printed::Document(dns_setup_answer(done, provider.code())))

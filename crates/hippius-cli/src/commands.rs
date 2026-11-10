@@ -107,16 +107,6 @@ pub(crate) struct Input<'a> {
     pub(crate) what: &'static str,
 }
 
-/// A JSON value that holds a secret, every string in it cleared when dropped
-/// ([`hippius::clear_strings`]).
-pub(crate) struct Cleared(pub(crate) Value);
-
-impl Drop for Cleared {
-    fn drop(&mut self) {
-        hippius::clear_strings(&mut self.0);
-    }
-}
-
 /// What [`Input::open`] opened: stdin, or a regular file that passed the checks.
 enum Opened {
     Stdin,

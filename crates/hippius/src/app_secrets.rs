@@ -24,13 +24,13 @@ use std::fmt;
 use std::path::Path;
 
 use serde_json::{Map, Value};
-use zeroize::{Zeroize as _, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 use crate::phrase::quote_path;
 use crate::private_file::{Guarded, NamedBy};
 use crate::private_object::load_private_object;
-use crate::secret::clear_owned;
+use crate::secret::{SecretValue, clear_owned};
 
 /// The secrets of an app, loaded from their file. Its `Debug` counts the secrets and shows
 /// neither a name nor a value.
@@ -104,14 +104,14 @@ impl AppSecrets {
         self.secrets.iter().map(|(name, _)| name.as_str())
     }
 
-    /// The `secrets` object of the request body.
-    pub fn body(&self) -> Value {
-        Value::Object(
+    /// The `secrets` object of the request body, cleared when dropped.
+    pub fn body(&self) -> SecretValue {
+        SecretValue::new(Value::Object(
             self.secrets
                 .iter()
                 .map(|(name, text)| (name.clone(), Value::from(text.as_str())))
                 .collect(),
-        )
+        ))
     }
 
     /// The `secrets` object a dry run shows: each name with a placeholder, so the dry run says
@@ -147,18 +147,6 @@ impl AppSecrets {
     /// cleared when dropped.
     pub fn redactions(&self) -> Zeroizing<Vec<String>> {
         crate::redact::redactions(self.secrets.iter().map(|(_, text)| text.as_str()))
-    }
-}
-
-/// Clears every string in `value`, at any depth, in place: for a request body built from
-/// [`AppSecrets::body`] once it is serialized, so its copies of the values are not left in
-/// freed memory. The serialized bytes the request holds are not cleared.
-pub fn clear_strings(value: &mut Value) {
-    match value {
-        Value::String(text) => text.zeroize(),
-        Value::Array(items) => items.iter_mut().for_each(clear_strings),
-        Value::Object(fields) => fields.values_mut().for_each(clear_strings),
-        _ => {}
     }
 }
 
@@ -233,8 +221,8 @@ mod tests {
             ["B_KEY", "A_KEY", "C", "bad key"]
         );
         assert_eq!(
-            secrets.body(),
-            serde_json::json!({"B_KEY": " padded \n", "A_KEY": "", "C": "x\u{1b}\u{0}",
+            secrets.body().as_value(),
+            &serde_json::json!({"B_KEY": " padded \n", "A_KEY": "", "C": "x\u{1b}\u{0}",
                                "bad key": "y"})
         );
         // A name the server would not take is described by its place, not printed.
@@ -326,16 +314,6 @@ mod tests {
             "{message}"
         );
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn clear_strings_empties_every_string_at_any_depth() {
-        let mut body = serde_json::json!({"a": "x", "b": ["y", {"c": "z"}], "n": 1});
-        clear_strings(&mut body);
-        assert_eq!(
-            body,
-            serde_json::json!({"a": "", "b": ["", {"c": ""}], "n": 1})
-        );
     }
 
     #[test]

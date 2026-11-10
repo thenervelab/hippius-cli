@@ -1734,6 +1734,38 @@ fn credentials_dir_redacts_a_secret_repeated_outside_credentials() {
     assert_eq!(doc["credentials"]["username"], "app");
 }
 
+/// A number that is a withheld value becomes the string `<redacted>`, and a field name that is
+/// one, or holds one of eight characters or more, becomes `<redacted>` (tenet 9); a field name
+/// that holds only a shorter one is kept.
+#[test]
+fn credentials_dir_redacts_a_withheld_value_in_a_number_or_a_field_name() {
+    let mut answer = with_credentials(database("provisioning"));
+    answer["credentials"]["pin"] = json!("48151623");
+    answer["credentials"]["tag"] = json!("ab");
+    answer["pin_echo"] = json!(48_151_623);
+    answer["echoes"] = Value::Object(serde_json::Map::from_iter([
+        (PASSWORD.to_owned(), json!(1)),
+        (format!("user {PASSPHRASE}"), json!(2)),
+        ("label".to_owned(), json!(3)),
+    ]));
+    let server = Server::start(vec![route(
+        "POST",
+        "/api/databases/",
+        Reply::json(202, &answer.to_string()),
+    )]);
+    let home = Home::new();
+    let dir = empty_dir(&home, "creds");
+    let run = create_into(&home, &server, &dir, &[]);
+    let doc = run.ok();
+    no_secret(&run);
+    assert!(!run.stdout().contains("48151623"), "{}", run.stdout());
+    assert_eq!(doc["pin_echo"], "<redacted>");
+    assert_eq!(
+        doc["echoes"],
+        json!({"<redacted>": 1, "<redacted> (2)": 2, "label": 3})
+    );
+}
+
 /// A withheld value repeated in another spelling, percent-encoded in a URL or escaped in a
 /// JSON string, is redacted too; and a short withheld value does not rewrite the file paths
 /// `hipc` names, nor a marker.

@@ -43,6 +43,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - `hipc compute databases restore --target-time` takes a lowercase `t` and `z`, as RFC 3339 allows, and sends them in upper case; a time the API answers is read the same way.
 - `hipc schema` and `hipc api --help` state each refusal of `hipc api` exactly: a refusal listed for one write method holds for every write method, so a `PUT` or `PATCH` of `/api/account/deletion/`, any write of a DNS setup or of `/api/registry/subscribe/`, and any write of `/api/compute/app-engine/apps/` with `secrets` are named. The support check is described as it runs, a token split by an invisible joining character and an access key included, in `hipc api`'s row and in the `support tickets create` and `reply` rows. The help of each `hipc billing top-up` flag that one `--method` takes names it.
 - TENETS tenet 5 lists the hAlpha top-up's `reads_first`, its read of the quote, and tenet 9 says that a JSON number `hipc` redacts becomes the string `"<redacted>"`.
+- A field name in a redacted answer or error (the API token in an error, an invite token, a DNS credential, a database credential `--credentials-dir` moved, App Engine secrets) is replaced whole by `<redacted>` when it is one of the redacted values or holds one of eight characters or more, as App Engine launch output already did. A field name that holds only a shorter value is kept as the server wrote it, as a number is, where before a name was redacted character by character.
 
 ### Removed
 
@@ -87,6 +88,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - Text mode escapes U+180B to U+180D, U+180F, U+17B4, U+17B5, and U+2800, which print as nothing.
 - The database credentials `--credentials-dir` moves to files are redacted from the rest of the answer in every spelling `hipc` redacts a secret in, percent-encoded included, and the file paths the document names are never redacted.
 - The copies of the DNS credential in the `hipc cdn hostnames dns-setup` request body are cleared once the body is serialized.
+- The database credentials `--credentials-dir` moves to files are redacted from the field names and numbers of the rest of the answer too, as tenet 9 says: a number that is one of them becomes the string `"<redacted>"`.
+- The request body of an App Engine launch and of a DNS setup is cleared from memory when the request is dropped, and so is the token each profile of the config file stores.
 
 ## [0.15.0] - 2026-11-09
 

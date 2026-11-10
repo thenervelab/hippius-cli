@@ -1,5 +1,18 @@
 //! Keeping secrets out of what `hipc` prints: the spellings a secret may come back in, and the
-//! redaction of those spellings from text and from JSON values (tenet 9).
+//! redaction of those spellings from text and from JSON values (tenet 9). This is the one
+//! redactor; every caller, in either crate, goes through it.
+//!
+//! The rules, whatever the secret:
+//!
+//! - A secret is redacted in every spelling an answer or an error may repeat it in
+//!   ([`redactions`], [`token_spellings`]), longest first.
+//! - Text is redacted in one pass ([`redact_all`]): every match of every spelling is found
+//!   first, and each span of matches that overlap becomes one `<redacted>`, so a short secret
+//!   never cuts a longer one or a marker.
+//! - A field name or a number is the server's, not free text: it is replaced whole, and only
+//!   when it may be the secret ([`redact_name`], [`number_holds`]), so a short secret does not
+//!   turn every name and count into markers. Two names that redact alike are both kept
+//!   ([`insert_unique`]).
 
 use serde_json::{Map, Value};
 use zeroize::{Zeroize as _, Zeroizing};
@@ -85,20 +98,20 @@ pub fn redact_all<S: AsRef<str>>(text: String, secrets: &[S]) -> String {
         written = end;
     }
     out.push_str(&text[written..]);
-    drop(zeroize::Zeroizing::new(text));
+    drop(Zeroizing::new(text));
     out
 }
 
-/// `value` with every occurrence of `secret` in a string or a field name replaced by
-/// `<redacted>`, at any depth: for a secret the caller sent, such as an invite token, which an
-/// answer has no reason to repeat but must never print if it does (tenet 9). A number that is
-/// the secret, as an all-digit secret echoed unquoted would be, becomes the string
-/// `<redacted>`. Both are compared as decimal values: the number without its sign, with its
-/// exponent applied, and without leading zeros before its point or trailing zeros after it
-/// (`-12345.0` and `1.2345e4` are `12345`, and `10` stays `10`), and the secret without its
-/// leading zeros. A number whose digits only hold the secret's is redacted once the secret has
-/// `LONG_DIGITS` digits or more; below that it is left alone, so a short secret does not turn
-/// counts and ids into markers.
+/// `value` with `secret` redacted at any depth: for a secret the caller sent, such as an invite
+/// token, which an answer has no reason to repeat but must never print if it does (tenet 9).
+/// Every occurrence of it in a string is replaced by `<redacted>` ([`redact_all`]). A field
+/// name or a number is replaced whole, by `<redacted>`, when it may be the secret
+/// ([`redact_name`], `number_holds`): a name or a number is the server's, not free text, so
+/// a short secret does not turn every name and count it occurs in into markers. Two names
+/// that redact to the same text are both kept ([`insert_unique`]).
+///
+/// A number becomes the string `<redacted>`, so a redacted copy can hold a string where the
+/// answer held a number.
 ///
 /// # Panics
 ///
@@ -107,8 +120,8 @@ pub fn redact_value(value: Value, secret: &str) -> Value {
     redact_value_all(value, &[secret])
 }
 
-/// [`redact_value`] of each of `secrets` at once: every string and field name in one
-/// [`redact_all`] pass, and a number that any of them is.
+/// [`redact_value`] of each of `secrets` at once: every string in one [`redact_all`] pass, and
+/// a field name or a number that may be any of them.
 ///
 /// # Panics
 ///
@@ -124,13 +137,13 @@ pub fn redact_value_all<S: AsRef<str>>(value: Value, secrets: &[S]) -> Value {
 
 /// [`redact_value_all`] once its secrets are checked.
 fn redacted_value<S: AsRef<str>>(value: Value, secrets: &[S]) -> Value {
-    let clean = |text: String| redact_all(text, secrets);
     match value {
-        Value::String(text) => Value::String(clean(text)),
+        Value::String(text) => Value::String(redact_all(text, secrets)),
         Value::Object(fields) => {
             let mut redacted = Map::new();
             for (key, value) in fields {
-                insert_unique(&mut redacted, &clean(key), redacted_value(value, secrets));
+                let key = redact_name(key, secrets);
+                insert_unique(&mut redacted, &key, redacted_value(value, secrets));
             }
             Value::Object(redacted)
         }
@@ -163,14 +176,41 @@ pub fn insert_unique(fields: &mut Map<String, Value>, key: &str, value: Value) {
     fields.insert(name, value);
 }
 
-/// How many digits an all-digit secret needs before any number holding them is redacted.
-/// Arbitrary: eight digits are rare by chance in a count, an id, or a size, and a token that
-/// short is weak anyway.
-const LONG_DIGITS: usize = 8;
+/// How long a secret must be, in bytes, before a field name, a number, or a text of a checked
+/// shape that only holds it is redacted; below it, only one that is the secret is. Arbitrary:
+/// eight characters are rare by chance in a field name, a count, an id, or a size, and a
+/// token that short is weak anyway.
+const LONG_SECRET: usize = 8;
 
-/// Whether the JSON number `text` spells `secret` (see [`redact_value`]): the rule for a
-/// number in any redacted copy of an answer.
-pub fn number_holds(text: &str, secret: &str) -> bool {
+/// Whether `text`, a field name or a text whose shape the caller checked (an id, a status
+/// word), may be one of `secrets`, so that it is printed only as `<redacted>`: it is one of
+/// them, or holds one of eight bytes or more.
+pub fn holds_secret<S: AsRef<str>>(text: &str, secrets: &[S]) -> bool {
+    secrets
+        .iter()
+        .map(AsRef::as_ref)
+        .any(|secret| secret == text || (secret.len() >= LONG_SECRET && text.contains(secret)))
+}
+
+/// The field name `name` as a redacted copy prints it: `<redacted>` when it may be one of
+/// `secrets` ([`holds_secret`]), else as it came. The name replaced is cleared.
+pub fn redact_name<S: AsRef<str>>(name: String, secrets: &[S]) -> String {
+    if holds_secret(&name, secrets) {
+        drop(Zeroizing::new(name));
+        REDACTED.to_owned()
+    } else {
+        name
+    }
+}
+
+/// Whether the JSON number `text` may be the all-digit `secret`, as an all-digit secret echoed
+/// unquoted would be: the rule for a number in any redacted copy of an answer. Both are
+/// compared as decimal values: the number without its sign, with its exponent applied, and
+/// without leading zeros before its point or trailing zeros after it (`-12345.0` and
+/// `1.2345e4` are `12345`, and `10` stays `10`), and the secret without its leading zeros. A
+/// number whose digits only hold the secret's may be it once the secret has [`LONG_SECRET`]
+/// digits or more.
+pub(crate) fn number_holds(text: &str, secret: &str) -> bool {
     if secret.is_empty() || !secret.bytes().all(|b| b.is_ascii_digit()) {
         return false;
     }
@@ -178,7 +218,7 @@ pub fn number_holds(text: &str, secret: &str) -> bool {
     let mantissa = text.split(['e', 'E']).next().unwrap_or(text);
     let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
     decimal(text).as_deref() == Some(secret)
-        || (secret.len() >= LONG_DIGITS && digits.contains(secret))
+        || (secret.len() >= LONG_SECRET && digits.contains(secret))
 }
 
 /// `digits` without leading zeros, or `0` when nothing else is left.
@@ -240,22 +280,12 @@ fn decimal(text: &str) -> Option<String> {
 /// no shorter spelling is replaced inside a longer one before the longer one is.
 pub(crate) fn token_spellings(token: &str) -> Vec<String> {
     let encoded = percent_encode(token);
-    let mut spellings = vec![
+    longest_first(vec![
         token.to_owned(),
         token.replace('`', r"\u{60}"),
         lowercase_escapes(&encoded),
         encoded,
-    ];
-    spellings.sort_by_key(|spelling| std::cmp::Reverse(spelling.len()));
-    // A copy dropped as a duplicate is cleared first.
-    spellings.dedup_by(|later, earlier| {
-        let same = later == earlier;
-        if same {
-            zeroize::Zeroize::zeroize(later);
-        }
-        same
-    });
-    spellings
+    ])
 }
 
 /// The texts to redact for `secrets`, longest first, for [`crate::redact_all`]: each in every
@@ -451,8 +481,38 @@ mod tests {
         let value = json!({"tok-1 d": ["tok-1", 12_345_678], "n": 7});
         assert_eq!(
             redact_value_all(value, &["tok-1", "d", "12345678"]),
-            json!({"<redacted> <redacted>": ["<redacted>", "<redacted>"], "n": 7})
+            json!({"tok-1 d": ["<redacted>", "<redacted>"], "n": 7})
         );
+    }
+
+    /// A field name is the server's, so it is replaced whole, and only when it may be a
+    /// secret: when it is one, or holds one of eight bytes or more. A name that holds only a
+    /// short secret is kept, as a number that holds only a short one is.
+    #[test]
+    fn a_field_name_is_redacted_whole_when_it_may_be_a_secret() {
+        let secrets = ["a", "tok-1234"];
+        let value = json!({
+            "a": 1,
+            "name": 2,
+            "x tok-1234 y": 3,
+            "tok-123": 4,
+            "nested": [{"tok-1234": 5}],
+        });
+        assert_eq!(
+            redact_value_all(value, &secrets),
+            json!({
+                "<redacted>": 1,
+                "name": 2,
+                "<redacted> (2)": 3,
+                "tok-123": 4,
+                "nested": [{"<redacted>": 5}],
+            })
+        );
+        assert_eq!(redact_name("name".to_owned(), &secrets), "name");
+        assert_eq!(redact_name("a".to_owned(), &secrets), "<redacted>");
+        assert!(holds_secret("xtok-1234", &secrets));
+        assert!(!holds_secret("tok-123", &secrets));
+        assert!(!holds_secret("x", &[] as &[&str]));
     }
 
     #[test]
