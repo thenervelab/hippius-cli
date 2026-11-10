@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt as _;
 
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Server, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Server, command, draft, route};
 
 /// A secret the server returns once. Tests assert where it may and may not appear.
 const SECRET: &str = "s3cr3t-QZ7-only-once";
@@ -1078,6 +1078,127 @@ fn configure_writes_a_profile_for_s3_hippius_com_and_keeps_other_profiles() {
     assert_eq!(mode(&aws.join("credentials")), 0o600);
 }
 
+/// `hipc s3 configure`, run by `/bin/sh` after `setup`, with the secret key in `secret`.
+fn configure_under_sh(home: &Home, setup: &str, secret: &std::path::Path) -> std::process::Output {
+    let hipc = command(home);
+    let mut shell = std::process::Command::new("/bin/sh");
+    for (name, value) in hipc.get_envs() {
+        match value {
+            Some(value) => shell.env(name, value),
+            None => shell.env_remove(name),
+        };
+    }
+    shell
+        .args(["-c", &format!("{setup}; exec \"$0\" \"$@\"")])
+        .arg(hipc.get_program())
+        .args([
+            "--json",
+            "s3",
+            "configure",
+            "--yes",
+            "--access-key-id",
+            "hip_KEY1",
+        ])
+        .arg("--secret-key-file")
+        .arg(secret)
+        .output()
+        .expect("run hipc under sh")
+}
+
+/// A umask that clears the owner's write bit does not leave the new `.aws` directory or files
+/// read-only: they are `0700` and `0600`, and a second run can replace the profile.
+#[test]
+fn configure_under_a_strict_umask_makes_files_it_can_write_again() {
+    let home = Home::new();
+    let secret = home.file("secret", SECRET.as_bytes());
+    let aws = home.path().join(".aws");
+    let run = configure_under_sh(&home, "umask 0277", &secret);
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert_eq!(mode(&aws), 0o700);
+    assert_eq!(mode(&aws.join("config")), 0o600);
+    assert_eq!(mode(&aws.join("credentials")), 0o600);
+    let other = home.file("other", b"other-secret");
+    let run = configure_under_sh(&home, "umask 0277", &other);
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    let credentials = std::fs::read_to_string(aws.join("credentials")).unwrap();
+    assert!(credentials.contains("aws_secret_access_key = other-secret\n"));
+}
+
+/// A run that waits for another one's lock of an AWS file says so in text mode, then does its
+/// work once the lock is free; in JSON mode it waits without a word (tenet 3).
+#[test]
+fn configure_says_when_it_waits_for_another_runs_lock() {
+    use std::io::BufRead as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    for output in ["text", "json"] {
+        let home = Home::new();
+        let aws = home.path().join(".aws");
+        std::fs::create_dir_all(&aws).expect("mkdir .aws");
+        std::fs::set_permissions(&aws, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(aws.join(".credentials.lock"))
+            .expect("open the lock file");
+        rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive).expect("flock");
+        let secret = home.file("secret", SECRET.as_bytes());
+        let mut child = command(&home)
+            .args([
+                "--output",
+                output,
+                "s3",
+                "configure",
+                "--access-key-id",
+                "hip_KEY1",
+            ])
+            .arg("--secret-key-file")
+            .arg(&secret)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn hipc");
+        let stderr = child.stderr.take().expect("a piped stderr");
+        let (told, first_line) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut stderr = std::io::BufReader::new(stderr);
+            let mut line = String::new();
+            stderr.read_line(&mut line).expect("read stderr");
+            drop(told.send(line.clone()));
+            let mut rest = String::new();
+            std::io::Read::read_to_string(&mut stderr, &mut rest).expect("read stderr");
+            line + &rest
+        });
+        let wait = std::time::Duration::from_millis(if output == "text" { 30_000 } else { 500 });
+        let line = first_line.recv_timeout(wait);
+        assert!(
+            !aws.join("credentials").exists(),
+            "{output}: written while it waits"
+        );
+        drop(lock);
+        let run = child.wait_with_output().expect("wait for hipc");
+        let stderr = reader.join().expect("the stderr reader");
+        assert_eq!(run.status.code(), Some(0), "{output}: {stderr}");
+        let credentials = std::fs::read_to_string(aws.join("credentials")).unwrap();
+        assert!(credentials.contains("[hippius]"), "{output}");
+        if output == "text" {
+            assert_eq!(
+                line.expect("a note before the wait"),
+                format!(
+                    "note: waiting for another run of hipc to finish with the AWS credentials \
+                     file `{}`\n",
+                    aws.join("credentials").display()
+                )
+            );
+        } else {
+            assert!(line.is_err(), "{line:?}");
+            assert_eq!(stderr, "");
+        }
+    }
+}
+
 #[test]
 fn configure_over_an_existing_profile_needs_yes_and_then_replaces_the_secret() {
     let home = Home::new();
@@ -1106,7 +1227,10 @@ fn configure_over_an_existing_profile_needs_yes_and_then_replaces_the_secret() {
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
     names.sort();
-    assert_eq!(names, [".credentials.lock", "config", "credentials"]);
+    assert_eq!(
+        names,
+        [".config.lock", ".credentials.lock", "config", "credentials"]
+    );
     let credentials = home.path().join(".aws").join("credentials");
     assert!(
         std::fs::read_to_string(&credentials)

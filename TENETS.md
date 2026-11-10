@@ -107,7 +107,7 @@ Each exit-2 code other than `usage` names exactly one flag, and its hint adds it
 
 `side_effects` is `none` or `partial`. A failed read, or a write the server rejected with a 4xx, is `none`. A timeout, a 5xx, or a redirect after a write was sent is `partial` and not retryable, because a retry could do the write twice. One exception: a 503 with `Retry-After` to the Drive or S3 subscribe is `none` and retryable after that delay.
 
-`hipc` does not retry a request; `retryable` and `retry_after_ms` tell the caller when to. Two loops read again, each through up to three retryable read failures in a row: the VM launch wait, and the follow of a hAlpha top-up's purchase, every 3 seconds for at most 15 minutes, which ends with the purchase as it stands and exit 0.
+`hipc` does not retry a request; `retryable` and `retry_after_ms` tell the caller when to. Three loops read again, each through up to three retryable read failures in a row, and after a failure that carries `Retry-After` they wait that long when it is longer than their interval: the VM launch wait and the App Engine launch wait, every 2 seconds, and the follow of a hAlpha top-up's purchase, every 3 seconds for at most 15 minutes, which ends with the purchase as it stands and exit 0. A `Retry-After` that runs past a loop's deadline ends the loop at the deadline, without another read.
 
 Text mode prints `error:` and `hint:` lines on stderr instead, with the same exit code and an empty stdout.
 

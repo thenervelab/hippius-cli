@@ -269,7 +269,8 @@ fn spec(path: &[&str]) -> Option<Spec> {
             "balance" | "subscriptions" | "stripe" | "summary" | "usage" | "native-quote",
         ]
         | ["billing", "auto-reload", "get" | "history"]
-        | ["billing", "profile", "get"]
+        | ["billing", "gamma" | "profile", "get"]
+        | ["billing", "gamma", "conversions", "get"]
         | ["drive" | "s3" | "hub", "plans"]
         | ["drive" | "s3" | "hub", "subscription", "get"]
         | ["drive" | "s3", "subscription", "checkout"]
@@ -335,6 +336,7 @@ fn spec(path: &[&str]) -> Option<Spec> {
         | ["cdn", "lists", "list" | "get"]
         | ["support", "tickets", "get"] => Some(READ_ONLY),
         ["billing", "transactions"]
+        | ["billing", "gamma", "conversions", "list"]
         | ["support", "tickets", "list"]
         | ["support", "tickets", "messages", "list"]
         | ["billing", "invoices", "list"]
@@ -427,6 +429,8 @@ fn spec(path: &[&str]) -> Option<Spec> {
         | ["compute", "runners", "connect"]
         // A card setup charges nothing (swagger); a repeat starts another checkout.
         | ["billing", "auto-reload", "card-setup"]
+        // A hotkey link spends nothing; a repeat asks for, and spends, another challenge.
+        | ["billing", "gamma", "hotkeys", "create"]
         // A consent withdrawal spends nothing; swagger appends each one to the consent
         // history, so a repeat adds another entry.
         | ["account", "marketing-consent", "update"] => Some(Spec {
@@ -443,7 +447,9 @@ fn spec(path: &[&str]) -> Option<Spec> {
             refused_when: Some(TICKET_HOLDS_A_TOKEN),
             ..SPEND
         }),
-        ["drive" | "s3", "subscription", "subscribe" | "change"]
+        // A conversion burns gamma on chain, which cannot be refunded; a repeat burns again.
+        ["billing", "gamma", "conversions", "create"]
+        | ["drive" | "s3", "subscription", "subscribe" | "change"]
         | ["s3", "buckets", "create"]
         | ["compute", "vms", "create" | "reboot" | "resize"]
         // An app is a VM with a public IPv4, so a repeat launches, and bills, a second one.
@@ -496,6 +502,8 @@ fn spec(path: &[&str]) -> Option<Spec> {
         | ["drive" | "s3" | "hub", "subscription", "cancel"]
         | ["s3", "buckets", "delete"]
         | ["s3", "tokens", "revoke"]
+        // An unlink leaves the gamma in its deposit; a repeat finds the hotkey unlinked (404).
+        | ["billing", "gamma", "hotkeys", "delete"]
         // A repeat delete of a Hub key, repository, or artifact finds it gone. Hub data
         // deleted there is gone for good, which the question says; `--yes` is the one
         // confirmation (tenet 5).
@@ -1370,7 +1378,7 @@ mod tests {
 
     /// Every command, with its effect and whether it asks, written out by hand so a
     /// change to a command's gate fails here.
-    const PLAN_ROWS: [(&str, &str, bool); 267] = [
+    const PLAN_ROWS: [(&str, &str, bool); 273] = [
         ("version", "read_only", false),
         ("status", "read_only", false),
         ("schema", "read_only", false),
@@ -1432,6 +1440,12 @@ mod tests {
         ("billing profile get", "read_only", false),
         ("billing profile update", "idempotent", true),
         ("billing native-quote", "read_only", false),
+        ("billing gamma get", "read_only", false),
+        ("billing gamma hotkeys create", "non_idempotent", false),
+        ("billing gamma hotkeys delete", "idempotent", true),
+        ("billing gamma conversions create", "non_idempotent", true),
+        ("billing gamma conversions list", "read_only", false),
+        ("billing gamma conversions get", "read_only", false),
         ("billing top-up", "non_idempotent", true),
         ("drive plans", "read_only", false),
         ("drive subscription get", "read_only", false),

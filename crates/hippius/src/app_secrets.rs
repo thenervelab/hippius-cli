@@ -27,7 +27,7 @@ use serde_json::{Map, Value};
 use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::config::{Guarded, NamedBy, PrivateFile};
-use crate::dns::{UniqueObject, longest_first, secret_spellings};
+use crate::dns::{UniqueObject, clear_owned, longest_first, secret_spellings};
 use crate::error::{Error, Result};
 use crate::phrase::quote_path;
 
@@ -73,18 +73,22 @@ impl AppSecrets {
             return Err(refuse("does not exist"));
         };
         let bytes = Zeroizing::new(bytes);
-        let file = match serde_json::from_slice::<UniqueObject>(&bytes) {
+        let mut file = match serde_json::from_slice::<UniqueObject>(&bytes) {
             Ok(UniqueObject::Object(file)) => file,
             Ok(UniqueObject::Repeated) => return Err(refuse("names a secret twice")),
             Err(_) => return Err(refuse("is not a JSON object")),
         };
         let mut secrets = Vec::with_capacity(file.len());
         let mut not_text = None;
-        for (name, value) in file {
+        for (name, value) in std::mem::take(&mut *file) {
             match value {
                 Value::String(text) => secrets.push((name, Zeroizing::new(text))),
-                // Every string is still taken, so each is cleared on the way out.
-                _ => not_text = not_text.or(Some(name)),
+                // Every string is still taken, so each is cleared on the way out, and so is
+                // anything else.
+                other => {
+                    clear_owned(other);
+                    not_text = not_text.or(Some(name));
+                }
             }
         }
         if let Some(name) = not_text {

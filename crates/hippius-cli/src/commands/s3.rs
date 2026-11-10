@@ -19,9 +19,9 @@ use crate::cli::{
 };
 use crate::commands::files::{save_secret, shown_once};
 use crate::commands::{
-    Input, Pages, Printed, dry_run_requests, list, local_dry_run, plan_setting, print_body,
-    print_body_or, print_envelope, print_keyed_list, print_with, require_public, require_reveal,
-    require_reveal_or_file, subscribed,
+    Cleared, Input, Pages, Printed, dry_run_requests, list, local_dry_run, plan_setting,
+    print_body, print_body_or, print_envelope, print_keyed_list, print_with, require_public,
+    require_reveal, require_reveal_or_file, subscribed,
 };
 use crate::context::{self, Context, Gate, Question, Step};
 
@@ -229,12 +229,12 @@ fn objects_page(answer: Value) -> Result<ObjectsPage> {
     let Value::Object(mut fields) = answer else {
         return Err(not_a_list());
     };
-    let items = match fields.remove("Contents") {
+    let items = match fields.shift_remove("Contents") {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(items)) => items,
         Some(_) => return Err(not_a_list()),
     };
-    let next = match fields.remove("NextContinuationToken") {
+    let next = match fields.shift_remove("NextContinuationToken") {
         None | Some(Value::Null) => None,
         Some(Value::String(token)) => Some(token).filter(|token| !token.is_empty()),
         Some(_) => {
@@ -723,7 +723,8 @@ fn key_pair_from_document(path: &Path) -> Result<(AccessKeyId, SecretKey)> {
         flag: "--from-token-file",
         what: "S3 token document",
     };
-    let bytes = input.read(MAX_TOKEN_DOCUMENT_BYTES)?;
+    // The document holds the secret: it is read, parsed, and dropped cleared.
+    let bytes = input.read_cleared(MAX_TOKEN_DOCUMENT_BYTES)?;
     let name = input.name();
     let refused = |problem: &str, hint: &str| {
         Error::usage(format!("the S3 token document from {name} {problem}"), hint)
@@ -731,7 +732,8 @@ fn key_pair_from_document(path: &Path) -> Result<(AccessKeyId, SecretKey)> {
     // Text mode prints a key-value block, not JSON, so the hint names `--json`.
     let print_one = "pass the JSON output of `hipc --json s3 tokens create --reveal` or \
                      `hipc --json s3 tokens rotate --reveal`";
-    let Ok(Value::Object(document)) = serde_json::from_slice::<Value>(&bytes) else {
+    let parsed = serde_json::from_slice::<Value>(&bytes).map(Cleared);
+    let Some(document) = parsed.as_ref().ok().and_then(|parsed| parsed.0.as_object()) else {
         return Err(refused("is not a JSON object", print_one));
     };
     let Some(id) = document.get("access_key_id").and_then(Value::as_str) else {

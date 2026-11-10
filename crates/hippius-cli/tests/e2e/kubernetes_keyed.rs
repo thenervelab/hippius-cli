@@ -978,7 +978,10 @@ fn a_kubeconfig_directory_that_cannot_be_written_is_usage() {
 #[test]
 fn a_cluster_and_a_pool_are_named_by_what_the_answer_gives() {
     let mut cluster = cluster(Some(GUEST));
-    cluster.as_object_mut().expect("an object").remove("name");
+    cluster
+        .as_object_mut()
+        .expect("an object")
+        .shift_remove("name");
     let home = home();
     let key = key_path(&home);
     let replace = |pool: Value| {
@@ -1215,7 +1218,7 @@ fn a_pool_whose_flavor_is_not_the_signed_one_is_refused() {
         pools
     };
     let mut bare = pools();
-    bare[1].as_object_mut().unwrap().remove("flavor");
+    bare[1].as_object_mut().unwrap().shift_remove("flavor");
     let mut bare_null = bare.clone();
     bare_null[1]["signing_params"]["flavor"] = Value::Null;
     // A pool whose own flavor is not text is refused too, whatever the map signs: the list
@@ -1277,7 +1280,7 @@ fn signing_params_that_would_sign_what_the_question_does_not_name_are_refused() 
     let home = home();
     let workers = "the pool `workers` (`3`) of the Kubernetes cluster `prod` (`42`)";
     let mut unnamed = pools();
-    unnamed[1].as_object_mut().unwrap().remove("name");
+    unnamed[1].as_object_mut().unwrap().shift_remove("name");
     unnamed[1]["signing_params"]["pool"] = json!("gpu");
     let mut tainted = pools();
     tainted[1]["taints"] = Value::Null;
@@ -1401,7 +1404,7 @@ fn a_key_the_pool_has_and_the_map_leaves_out_is_refused() {
         pools[1]["signing_params"]
             .as_object_mut()
             .unwrap()
-            .remove(key);
+            .shift_remove(key);
         pools
     };
     let mut dedicated = without("taints");
@@ -1477,10 +1480,10 @@ fn the_question_names_what_is_signed_and_refuses_what_it_cannot() {
     // A pool without a flavor of its own gets no flavor check, so a flavor signed as a number
     // or an object is refused rather than shown, or signed unnamed.
     let mut numbered = pools();
-    numbered[1].as_object_mut().unwrap().remove("flavor");
+    numbered[1].as_object_mut().unwrap().shift_remove("flavor");
     numbered[1]["signing_params"] = json!({ "pool": "workers", "flavor": 7 });
     let mut objected = pools();
-    objected[1].as_object_mut().unwrap().remove("flavor");
+    objected[1].as_object_mut().unwrap().shift_remove("flavor");
     objected[1]["signing_params"] =
         json!({ "pool": "workers", "flavor": { "cpu": 2 }, "image": "ubuntu" });
     let refused = [(numbered, "`7`"), (objected, "`{\"cpu\":2}`")].map(|(pools, names)| {

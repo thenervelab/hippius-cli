@@ -373,7 +373,7 @@ impl<'a> Context<'a> {
         let mut doc = client.describe(request)?;
         // `dry_run` is said once, at the top of the document, not in each request.
         if let Value::Object(fields) = &mut doc {
-            fields.remove("dry_run");
+            fields.shift_remove("dry_run");
         }
         if self.terminal.person_reads_stdout(self.mode)
             && let Some(Value::String(url)) = doc.get_mut("url")
