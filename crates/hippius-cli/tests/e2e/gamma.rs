@@ -12,7 +12,7 @@ const CONVERSIONS: &str = "/api/billing/gamma/conversions/";
 
 /// The SS58 address of `SEED_PHRASES[0]`, the hotkey its words make.
 const HOTKEY: &str = "5DfhGyQdFobKM8NsWvEeAKk5EQQgYe9AydgJ7rMB6E1EqRzV";
-/// Another valid address, `SEED_PHRASES[1]`'s.
+/// Another valid SS58 address, Substrate's `//Alice`.
 const OTHER: &str = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
 const NONCE: &str = "4f1c2b3a49d8e7f6";
 const ID: &str = "6f0b2c1e-7b4d-4e8a-9c01-5d6e7f8a5f60";
@@ -274,6 +274,22 @@ fn a_missing_or_unprivate_hotkey_file_is_refused_without_its_words() {
         .fails(2, "usage");
     let text: String = error["message"].as_str().unwrap().to_owned();
     assert!(text.contains("the hotkey file"), "{text}");
+    // A file whose name is a phrase is named by its flag instead, so the words go no further.
+    let named = home.file(&format!("x {}", SEED_PHRASES[1]), b"\xff\xfe");
+    let error = Hipc::new(&home)
+        .run(&[
+            "billing",
+            "gamma",
+            "hotkeys",
+            "create",
+            "--hotkey-file",
+            named.to_str().unwrap(),
+        ])
+        .fails(2, "usage");
+    assert_eq!(
+        error["message"],
+        "the hotkey file `--hotkey-file` names is not UTF-8 text"
+    );
     // A file that is not UTF-8 text is refused by its path, with no byte of it.
     let binary = home.file("binary.txt", b"\xff\xfe abandon");
     let error = Hipc::new(&home)

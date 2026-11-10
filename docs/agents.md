@@ -26,7 +26,7 @@ An account that signs its own hAlpha buys (`custodial` false in the quote) makes
 
 For CI, store only the token, as the runner's `HIPPIUS_TOKEN` secret. Never put a 12-word access key on a runner: it controls the whole account and its balance. `hipc auth logout` removes the stored token from the profile but does not revoke it on the server.
 
-Never ask the user to paste the token, the 12-word access key, a Drive unlock password, a recovery seed, or a one-time database password into the chat. The token goes to `hipc auth login` on their machine, and nothing else is an input to `hipc`.
+Never ask the user to paste the token, the 12-word access key, a Drive unlock password, a recovery seed, or a one-time database password into the chat. The token goes to `hipc auth login` on their machine, and nothing else is an input to `hipc`, except a Bittensor hotkey's words, which go only in the file `--hotkey-file` names, on their machine.
 
 ## Discovery
 

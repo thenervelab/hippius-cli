@@ -91,8 +91,8 @@ impl Hotkey {
     ///
     /// The message must name this key's hotkey: the API links the hotkey the challenge was
     /// issued for, and a message that names another is not one this key was asked to sign.
-    /// The signature is over the message's raw bytes, not the `<Bytes>` wrapping a browser
-    /// extension adds, which the API verifies.
+    /// The signature is over the message's raw bytes, which the API verifies; it is not a
+    /// signature of the `<Bytes>` wrapping a browser extension adds.
     ///
     /// # Errors
     ///
@@ -210,16 +210,19 @@ pub fn read_hotkey_file(path: &Path, flag: &'static str) -> Result<Zeroizing<Str
             format!("pass `{flag}` a file that holds only the hotkey's words"),
         ));
     };
+    // A path that is itself a phrase is named by its flag, as a missing one is.
+    let named = if path.to_str().is_some_and(holds_phrase) {
+        format!("`{flag}` names")
+    } else {
+        crate::phrase::quote_path(path)
+    };
     String::from_utf8(bytes)
         .map(Zeroizing::new)
         .map_err(|error| {
             // The bytes the conversion hands back are cleared too.
             drop(Zeroizing::new(error.into_bytes()));
             Error::usage(
-                format!(
-                    "{what} {} is not UTF-8 text",
-                    crate::phrase::quote_path(path)
-                ),
+                format!("{what} {named} is not UTF-8 text"),
                 format!("pass `{flag}` a file that holds only the hotkey's words"),
             )
         })
@@ -748,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_challenge_is_signed() {
+    fn only_a_challenge_passes_the_checks() {
         let key = key(TEST_PHRASE);
         let nonce = "8f2c41d09a7b";
         let ok = format!("Sign in to Hippius with challenge {nonce}");

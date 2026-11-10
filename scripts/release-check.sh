@@ -1679,6 +1679,10 @@ refusal_checks() {
   # The access-key login is gone: its flag is a plain usage error, and nothing is sent.
   offline "login --access-key is gone" 2 auth login --access-key
   expect_code "the removed access-key flag is usage" usage
+  offline "login --access-key-file is gone" 2 auth login --access-key-file "$WORK/key.txt"
+  expect_code "the removed access-key file flag is usage" usage
+  offline "login --new-account is gone" 2 auth login --new-account
+  expect_code "the removed new-account flag is usage" usage
   # The profile PUT keeps the fields it leaves out, so the update sends only those given.
   offline "profile update --dry-run is one PUT" 0 --dry-run billing profile update \
     --tax-id GB1
