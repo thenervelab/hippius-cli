@@ -353,10 +353,10 @@ fn read_words_file(
         // Nor is a path that names no file, which may be a secret passed in its place.
         return Err(Error::usage(
             format!(
-                "the access key file `{flag}` names does not exist; the path is not repeated \
-                 here, in case it is the access key itself"
+                "{what} `{flag}` names does not exist; the path is not repeated here, in case \
+                 it is the {owner} itself"
             ),
-            format!("pass `{flag}` a file that holds only the access key's words"),
+            format!("pass `{flag}` a file that holds only the {owner}'s words"),
         ));
     };
     let mut bytes = Zeroizing::new(bytes);
