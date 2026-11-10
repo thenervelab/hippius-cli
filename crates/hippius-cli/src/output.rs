@@ -258,32 +258,59 @@ pub(crate) fn failure(mode: Mode, error: &Error) -> ExitCode {
 
 /// [`failure`], with the run's `warnings`, which JSON mode adds to the error object as a
 /// `warnings` array of their texts ([`add_warnings`]); text mode has printed them already.
+///
+/// A failure with a record of what was done prints it on stdout first, so no id or row is
+/// lost (tenet 3). When that write fails, as [`stdout`] treats a document it cannot write,
+/// the failure printed is `internal` (tenet 15), naming the failure it replaces, so the
+/// caller knows the record is lost; a closed pipe is the reader's choice and changes nothing.
 pub(crate) fn failure_warned(mode: Mode, error: &Error, warnings: &[String]) -> ExitCode {
-    // A partial failure still prints what succeeded, so no id or row is lost (tenet 3).
-    // A failure to write it does not change the exit code, which already says failure.
-    if let Some(done) = done_on_failure(error) {
+    let lost = done_on_failure(error).and_then(|done| {
         let layout = if error.stdout_is_list() {
             Layout::List
         } else {
             Layout::Document
         };
-        drop(write_stdout(render(mode, &done, layout).as_bytes()));
-    }
-    stderr(&render_failure(mode, error, warnings));
-    ExitCode::from(error.code().exit_code())
+        write_stdout(render(mode, &done, layout).as_bytes())
+            .err()
+            .filter(|lost| lost.kind() != io::ErrorKind::BrokenPipe)
+    });
+    let replacement = lost.map(|lost| {
+        Error::internal(format!(
+            "cannot write to stdout the record of what was done: {}; the command had failed: {}",
+            phrase::io_reason(&lost),
+            error.message()
+        ))
+        .with_side_effects(error.side_effects())
+    });
+    let printed = replacement.as_ref().unwrap_or(error);
+    stderr(&render_failure(mode, printed, warnings));
+    ExitCode::from(printed.code().exit_code())
 }
 
 /// Adds the run's `warnings` to a JSON-mode document as a top-level `warnings` array of their
 /// texts, the `warning:` lines text mode writes on stderr. A document only gains fields
 /// (tenet 15), and the array is there only when there is a warning. A document that is not
-/// an object, such as an `--all` array, has no place for it; no command that can warn prints
-/// one.
+/// an object, such as the array `--all` prints, has no place for a field and keeps its shape
+/// (tenet 3), so its warnings go to stderr ([`warnings_aside`]).
 pub(crate) fn add_warnings(mode: Mode, document: &mut Value, warnings: &[String]) {
-    if matches!(mode, Mode::Json)
-        && !warnings.is_empty()
-        && let Value::Object(fields) = document
-    {
-        fields.insert("warnings".to_owned(), warnings.into());
+    match document {
+        Value::Object(fields) if matches!(mode, Mode::Json) && !warnings.is_empty() => {
+            fields.insert("warnings".to_owned(), warnings.into());
+        }
+        _ => warnings_aside(mode, warnings),
+    }
+}
+
+/// Prints the run's `warnings` for a JSON-mode result that has no place for a field (an
+/// array, or a body printed as the server sent it) on stderr, as one object, `{"warnings":
+/// [...]}`, the form they take beside `error` on a failure. A config warning applies to every
+/// command, so any result can carry one. Text mode has printed them already.
+pub(crate) fn warnings_aside(mode: Mode, warnings: &[String]) {
+    if matches!(mode, Mode::Json) && !warnings.is_empty() {
+        stderr(&format!(
+            "{}\n",
+            json_text(&serde_json::json!({ "warnings": warnings }))
+        ));
     }
 }
 
@@ -295,6 +322,10 @@ fn done_on_failure(error: &Error) -> Option<Value> {
     crate::commands::drop_next_step(&mut done);
     Some(done)
 }
+
+/// The length, in characters, from which a word a usage error would quote is not repeated:
+/// a console token is 40 characters and no command name is 20, so the cut sits between them.
+const TOKEN_SHAPED_CHARS: usize = 20;
 
 /// Prints a clap parse result that is not a successful parse: help and version go to
 /// stdout with exit 0, a real argv error is a `usage` failure, printed like every other
@@ -311,31 +342,37 @@ pub(crate) fn clap_error(mode: Mode, error: &clap::Error, args: &[OsString]) -> 
         return raw(mode, rendered.as_bytes(), SideEffects::None);
     }
     let (path, mut command) = typed_command(args);
-    // No `hipc auth` command takes an argument, and a word given to one, or as any command's
-    // name, that is too long to be a command name is likely the token pasted in the wrong
-    // place, so it is not repeated: clap's message would quote it. A mistyped command name
-    // still gets the usual message and its nearest command.
-    let auth = path == "hipc auth" || path.starts_with("hipc auth ");
-    // Only the errors that quote a word the caller gave; a missing subcommand's context names
-    // the command instead.
+    // A word the caller gave that is too long to be a command name or a value from a fixed
+    // list may be a token pasted in the wrong place, so a refusal of it as unknown never
+    // repeats it: clap's message, and [`usage_message`], would quote it. A word shorter than that, such as a mistyped command
+    // name, still gets the usual message and its nearest command. clap's own name for an
+    // argument (`--name <NAME>`, `<VM_ID>`) is not the caller's word.
+    // Only the errors that refuse a word as unknown; a validator's refusal is its own message,
+    // which says what was wrong without the value where the value may be a secret.
     let refuses_a_word = matches!(
         error.kind(),
         ErrorKind::UnknownArgument | ErrorKind::InvalidValue | ErrorKind::InvalidSubcommand
     );
-    let quoted = [
+    let token_shaped =
+        |word: &str| !word.starts_with(['-', '<']) && word.chars().count() >= TOKEN_SHAPED_CHARS;
+    let quotes_a_token = [
         ContextKind::InvalidArg,
         ContextKind::InvalidValue,
         ContextKind::InvalidSubcommand,
     ]
     .into_iter()
-    .filter(|&kind| auth || kind == ContextKind::InvalidSubcommand)
-    .filter_map(|kind| match error.get(kind) {
-        Some(ContextValue::String(word)) => Some(word.as_str()),
-        _ => None,
-    });
-    // A console token is 40 characters; no command name is 20.
-    let token_shaped = |word: &str| !word.starts_with('-') && word.chars().count() >= 20;
-    if refuses_a_word && quoted.into_iter().any(token_shaped) {
+    .any(|kind| matches!(error.get(kind), Some(ContextValue::String(word)) if token_shaped(word)));
+    if refuses_a_word && quotes_a_token {
+        // No `hipc auth` command takes a word, so the token goes to a login there; elsewhere
+        // the word may be a value the command takes, whose form its help gives.
+        let auth = path == "hipc auth" || path.starts_with("hipc auth ");
+        let hint = if auth {
+            "pass the token with `hipc auth login --token-file <path>` or at its prompt, never \
+             on the command line"
+                .to_owned()
+        } else {
+            format!("run `{path} --help`")
+        };
         return failure(
             mode,
             &Error::usage(
@@ -344,8 +381,7 @@ pub(crate) fn clap_error(mode: Mode, error: &clap::Error, args: &[OsString]) -> 
                      repeated here; if it is a token, treat it as exposed to anyone who can \
                      read this machine's process list or shell history"
                 ),
-                "pass the token with `hipc auth login --token-file <path>` or at its \
-                 prompt, never on the command line",
+                hint,
             ),
         );
     }
