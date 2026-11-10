@@ -15,7 +15,7 @@ brew install thenervelab/tap/hipc
 curl -q --proto '=https' --tlsv1.2 -fsSL https://github.com/thenervelab/hippius-cli/releases/latest/download/install.sh | sh
 ```
 
-On PyPI the package is `hippius` and the command it installs is `hipc`: `pip install hippius`, `uv tool install hippius`, or `pipx install hippius` installs the same `hipc` command. The PyPI project `hipc` is unrelated to Hippius. Then check it:
+On PyPI the package is `hippius` and the command it installs is `hipc`, with wheels for macOS and Linux: `pip install hippius`, `uv tool install hippius`, or `pipx install hippius` installs the same `hipc` command. The PyPI project `hipc` is unrelated to Hippius. Then check it:
 
 ```sh
 hipc version
