@@ -596,7 +596,7 @@ An account that signs in with a 12-word access key has no token in the settings:
 
 A phrase the API has not seen opens a new, empty account, so one mistyped word opens an account that is not the one meant. When the verify answers is_new, the login is refused with usage and stores no token unless --new-account is passed. By then the server has already opened the empty account, so side_effects is partial; nothing is stored locally, and a later login with the same words logs in to that account without --new-account and answers is_new false, so the refusal guards one run only. A new account has no email and no free Drive plan, and S3 needs no subscription.
 
-An agent asks its user to run hipc auth login in their own terminal rather than handle the token or the 12 words itself. For CI, log in once on a machine you trust and keep only the token on the runner, as HIPPIUS_TOKEN, never the 12 words. Neither the token nor the 12 words are ever read from argv, because argv is visible to other users through ps, and the token is never read from HIPPIUS_TOKEN, which is already in use for the invocation that sets it. Needs --yes when the API origin is not https://api.hippius.com, and when the profile stores a different token, since every later command then acts as the new token's owner; the dry run says which in replaces_token (for an access key, whether any token is stored).
+An agent asks its user to run hipc auth login in their own terminal rather than handle the token or the 12 words itself. For CI, log in once on a machine you trust and keep only the token on the runner, as HIPPIUS_TOKEN, never the 12 words. Neither the token nor the 12 words are ever read from argv, because argv is visible to other users through ps, and the token is never read from HIPPIUS_TOKEN, which is already in use for the invocation that sets it. Needs --yes when the API origin is not https://api.hippius.com, and when the profile stores a different token, since every later command then acts as the new token's owner; the dry run says which in replaces_token (for an access key, or without --token-file, whether any token is stored). A dry run asks for no token. At a terminal, the question about another origin comes before the prompt for the token.
 
 Usage: hipc auth login [OPTIONS]
 
@@ -8474,7 +8474,7 @@ Examples:
 ```text
 Open a ticket that a person on the support team reads; needs --yes
 
-The message is read from a file, or from stdin with --body-file -, never from argv. A subject or message that holds an API token, HIPPIUS_TOKEN or one the config file stores, as it is, quoted, or percent-encoded, is refused before anything is sent.
+The message is read from a file, or from stdin with --body-file -, never from argv. A subject or message that holds an API token, HIPPIUS_TOKEN or one the config file stores, as it is, quoted, percent-encoded, or split by whitespace, or an access key whose checksum holds, is refused before anything is sent. The check catches an accident, such as a pasted config file, not a secret encoded on purpose.
 
 Usage: hipc support tickets create [OPTIONS] --subject <SUBJECT> --body-file <PATH>
 
@@ -8506,7 +8506,7 @@ Examples:
 ```text
 Add a message to a ticket
 
-The message is read as for create. A reply is not confirmed: the ticket already exists, and a person reads the reply there. A message that holds an API token, HIPPIUS_TOKEN or one the config file stores, is refused, as it is for create.
+The message is read as for create. A reply is not confirmed: the ticket already exists, and a person reads the reply there. A message that holds an API token, HIPPIUS_TOKEN or one the config file stores, or an access key, is refused, as it is for create.
 
 Usage: hipc support tickets reply --body-file <PATH> <TICKET_ID>
 

@@ -14,6 +14,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 - The HTTP library is ureq 3.5. A user name or password in a proxy variable's URL (`HTTPS_PROXY=http://user:p%40ss@proxy:3128`) is now percent-decoded once before it is sent to the proxy, so a literal `%` in it must be written `%25`; a user name or password that decodes to invalid UTF-8 is refused with exit 2 `usage`, as a proxy URL the library cannot parse is.
 - The secp256k1, SHA-256, SHA-512, Keccak-256, HMAC-SHA-512, PBKDF2, and BLAKE2b crates move to their current releases. Every address, key, signature, and SHA-256 hash stays byte for byte as before, which known-answer tests check. The HMAC and SHA-512 state of an access-key login is now cleared from memory when dropped.
+- A confirmation question discards what was typed at the terminal before it was shown, and reads its answer without keeping what follows the line, so a `y` typed while an earlier read ran, or the second line of a paste that answered an earlier question, no longer answers a question the person has not seen.
+- `hipc auth login` without `--token-file` asks about a non-default API origin before it asks for the token, so a person sees where the token goes before pasting it. The question says the token is asked for next, at the hidden prompt. A dry run without `--token-file` asks for no token: `replaces_token` says whether the profile stores one, as the access-key dry run does.
+- `hipc support tickets create` and `reply`, and a support write through `hipc api`, also refuse a text that holds an access key (12 to 24 words in a row on the BIP-39 list whose checksum holds, with punctuation and numbering between them read as spaces), and find the API token when whitespace splits it or when it is split between the subject and the message. The help says the check catches an accident, not a secret encoded on purpose.
+- An access-key login refuses to sign a challenge message that holds a Unicode line or paragraph separator, as it refuses one with a line break.
 
 ### Fixed
 

@@ -720,8 +720,8 @@ fn spec(path: &[&str]) -> Option<Spec> {
 /// subscribe` the one path to a Hub subscribe, since it reads the current plans first. The
 /// three App Engine routes
 /// that take `secrets` are refused when the body sets it: `hipc compute app-engine apps
-/// create` is the path for those values. A support write whose body holds an API token is
-/// refused as `hipc support tickets create` and `reply` refuse one. It lists refused requests
+/// create` is the path for those values. A support write whose body holds an API token or an
+/// access key is refused as `hipc support tickets create` and `reply` refuse one. It lists refused requests
 /// only; what `hipc api` sends that a curated command refuses or never sends, the data-loss
 /// resume and a ticket `PATCH` with any body, is in its help.
 const API_REFUSED_WHEN: &str = "the target is a full URL off the configured API origin, or \
@@ -736,8 +736,9 @@ const API_REFUSED_WHEN: &str = "the target is a full URL off the configured API 
                                 (a body that is not a JSON object counts as setting it), or a \
                                 `POST`, `PUT`, `PATCH`, or `DELETE` under `/api/support/` \
                                 whose body holds `HIPPIUS_TOKEN` or a token a profile of the \
-                                config file stores, as it is, quoted, percent-encoded, or \
-                                behind a JSON escape, with or without the trailing slash or a \
+                                config file stores, as it is, quoted, percent-encoded, behind \
+                                a JSON escape, or split by whitespace, or an access key \
+                                whose checksum holds, with or without the trailing slash or a \
                                 format suffix";
 
 /// When `hipc api` asks: the one route it confirms on a read is the one the rows of
@@ -2038,8 +2039,9 @@ mod tests {
              /api/compute/app-engine/validate/` whose body sets `secrets` (a body that is not a \
              JSON object counts as setting it), or a `POST`, `PUT`, `PATCH`, or `DELETE` under \
              `/api/support/` whose body holds `HIPPIUS_TOKEN` or a token a profile of the config \
-             file stores, as it is, quoted, percent-encoded, or behind a JSON escape, with or \
-             without the trailing slash or a format suffix"
+             file stores, as it is, quoted, percent-encoded, behind a JSON escape, or split by \
+             whitespace, or an access key whose checksum holds, with or without the trailing slash \
+             or a format suffix"
         );
         for noun in ["repositories", "artifacts"] {
             let delete = commands
