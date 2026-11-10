@@ -89,6 +89,15 @@ same tree, with each command's effect, confirmation, guards, and flags as JSON, 
 - [`hipc billing profile get`](#hipc-billing-profile-get)
 - [`hipc billing profile update`](#hipc-billing-profile-update)
 - [`hipc billing native-quote`](#hipc-billing-native-quote)
+- [`hipc billing gamma`](#hipc-billing-gamma)
+- [`hipc billing gamma get`](#hipc-billing-gamma-get)
+- [`hipc billing gamma hotkeys`](#hipc-billing-gamma-hotkeys)
+- [`hipc billing gamma hotkeys create`](#hipc-billing-gamma-hotkeys-create)
+- [`hipc billing gamma hotkeys delete`](#hipc-billing-gamma-hotkeys-delete)
+- [`hipc billing gamma conversions`](#hipc-billing-gamma-conversions)
+- [`hipc billing gamma conversions create`](#hipc-billing-gamma-conversions-create)
+- [`hipc billing gamma conversions list`](#hipc-billing-gamma-conversions-list)
+- [`hipc billing gamma conversions get`](#hipc-billing-gamma-conversions-get)
 - [`hipc billing top-up`](#hipc-billing-top-up)
 - [`hipc drive`](#hipc-drive)
 - [`hipc drive plans`](#hipc-drive-plans)
@@ -587,7 +596,7 @@ An account that signs in with a 12-word access key has no token in the settings:
 
 A phrase the API has not seen opens a new, empty account, so one mistyped word opens an account that is not the one meant. When the verify answers is_new, the login is refused with usage and stores no token unless --new-account is passed. By then the server has already opened the empty account, so side_effects is partial; nothing is stored locally, and a later login with the same words logs in to that account without --new-account and answers is_new false, so the refusal guards one run only. A new account has no email and no free Drive plan, and S3 needs no subscription.
 
-An agent asks its user to run hipc auth login in their own terminal rather than handle the token or the 12 words itself. For CI, log in once on a machine you trust and keep only the token on the runner, as HIPPIUS_TOKEN, never the 12 words. Neither the token nor the 12 words are ever read from argv, because argv is visible to other users through ps, and the token is never read from HIPPIUS_TOKEN, which is already in use for the invocation that sets it. Needs --yes when the API origin is not https://api.hippius.com, and when the profile stores a different token, since every later command then acts as the new token's owner; the dry run says which in replaces_token (for an access key, whether any token is stored).
+An agent asks its user to run hipc auth login in their own terminal rather than handle the token or the 12 words itself. For CI, log in once on a machine you trust and keep only the token on the runner, as HIPPIUS_TOKEN, never the 12 words. Neither the token nor the 12 words are ever read from argv, because argv is visible to other users through ps, and the token is never read from HIPPIUS_TOKEN, which is already in use for the invocation that sets it. Needs --yes when the API origin is not https://api.hippius.com, and when the profile stores a different token, since every later command then acts as the new token's owner; the dry run says which in replaces_token (for an access key, or without --token-file, whether any token is stored). A dry run asks for no token. At a terminal, the question about another origin comes before the prompt for the token.
 
 Usage: hipc auth login [OPTIONS]
 
@@ -1836,6 +1845,7 @@ Commands:
   auto-reload    The balance auto-reload setting, the card it charges, and the attempts it made
   profile        The billing profile: the company name, address, tax id, and email invoices carry
   native-quote   The hAlpha price and the account's hAlpha: what a hAlpha top-up would buy
+  gamma          Pay with the Bittensor gamma of subnet 75: link a hotkey, read its deposit, and burn its gamma for credits
   top-up         Top up the balance by card, Bitcoin, or hAlpha; needs --yes
 
 Options:
@@ -2250,6 +2260,201 @@ Options:
 
 Examples:
   hipc billing native-quote
+```
+
+### hipc billing gamma
+
+```text
+Pay with the Bittensor gamma of subnet 75: link a hotkey, read its deposit, and burn its gamma for credits
+
+Gamma is subnet 75's prepaid credit on Bittensor, minted by burning its alpha; one gamma is worth one US dollar. A conversion burns gamma from a deposit you hold and adds the same amount in USD to the balance. The deposit must name the Hippius spender, which hipc billing gamma get prints, and its hotkey must be linked to the account first. The routes act on the signed-in user's own account: a membership (from a flag, a variable, or the profile) is refused, and so is a project or a billing account from a flag or a variable. Every route answers 404 while the server has gamma payments off.
+
+Usage: hipc billing gamma <COMMAND>
+
+Commands:
+  get          The subnet, the Hippius spender a deposit must name, its service hotkey, the minimum, and each linked hotkey with its deposit read from the chain
+  hotkeys      Link a hotkey to the account, or unlink one
+  conversions  Burn gamma for credits, and follow the conversions
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma get
+  hipc billing gamma hotkeys create --hotkey-file hotkey.txt
+  hipc billing gamma conversions create --hotkey 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --amount 10 --yes
+  hipc billing gamma conversions get 6f0b2c1e-7b4d-4e8a-9c01-5d6e7f8a5f60
+```
+
+### hipc billing gamma get
+
+```text
+The subnet, the Hippius spender a deposit must name, its service hotkey, the minimum, and each linked hotkey with its deposit read from the chain
+
+spender is the account a deposit must name, and service_hotkey the hotkey that btcli's gamma mint takes to name it; service_hotkey is null until Hippius publishes its service. A hotkey's deposit is null when it holds none on the subnet, or when the chain could not be read, which chain unavailable says. names_hippius false means the deposit names another spender, so Hippius cannot spend it. spendable is the balance as the deposit's daily spend cap limits it now. Amounts are gamma with 9 decimals, as strings.
+
+Usage: hipc billing gamma get
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma get
+```
+
+### hipc billing gamma hotkeys
+
+```text
+Link a hotkey to the account, or unlink one
+
+Usage: hipc billing gamma hotkeys <COMMAND>
+
+Commands:
+  create  Link the hotkey whose words --hotkey-file holds: hipc signs the server's challenge with it, and the words go nowhere else
+  delete  Unlink a hotkey from the account; needs --yes
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma hotkeys create --hotkey-file hotkey.txt
+  hipc billing gamma hotkeys delete 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --yes
+```
+
+### hipc billing gamma hotkeys create
+
+```text
+Link the hotkey whose words --hotkey-file holds: hipc signs the server's challenge with it, and the words go nowhere else
+
+The hotkey is the SS58 address the words make. hipc asks POST /api/billing/gamma/hotkeys/challenge/ for a challenge, checks that its message is a link of that hotkey, signs it with the hotkey's sr25519 key, and sends the signature to POST /api/billing/gamma/hotkeys/. A challenge is spent by its first answer, even a refusal; a hotkey linked to another account is refused with 409 hotkey_linked_elsewhere. The file is held to the config file's checks: a regular file of the current user, with no bits for the group or others. A file of - reads the words from stdin. A dry run reads the words too, to name the hotkey.
+
+Usage: hipc billing gamma hotkeys create --hotkey-file <PATH>
+
+Options:
+      --hotkey-file <PATH>
+          The file that holds the hotkey's BIP-39 words, or - for stdin
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma hotkeys create --hotkey-file hotkey.txt
+```
+
+### hipc billing gamma hotkeys delete
+
+```text
+Unlink a hotkey from the account; needs --yes
+
+A conversion from it then needs it linked again, which takes its words. Its gamma stays in its deposit on the chain.
+
+Usage: hipc billing gamma hotkeys delete <HOTKEY>
+
+Arguments:
+  <HOTKEY>
+          The hotkey's SS58 address, as hipc billing gamma get lists it
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma hotkeys delete 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --yes
+```
+
+### hipc billing gamma conversions
+
+```text
+Burn gamma for credits, and follow the conversions
+
+Usage: hipc billing gamma conversions <COMMAND>
+
+Commands:
+  create  Burn gamma from a linked hotkey's deposit for the same amount in USD; spends money, and needs --yes
+  list    The account's conversions, newest first, one page at a time
+  get     One conversion: its status, its on-chain reference, and the transaction that credited it
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma conversions create --hotkey 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --amount 10 --yes
+  hipc billing gamma conversions list
+  hipc billing gamma conversions get 6f0b2c1e-7b4d-4e8a-9c01-5d6e7f8a5f60
+```
+
+### hipc billing gamma conversions create
+
+```text
+Burn gamma from a linked hotkey's deposit for the same amount in USD; spends money, and needs --yes
+
+POST /api/billing/gamma/conversions/ answers 202 with the conversion pending: the API then signs the spend on chain and credits the balance once a finalized block holds it. hipc does not wait: hipc billing gamma conversions get <id> shows it, spent once it is credited, skipped or failed when nothing was spent or credited. Burned gamma cannot be refunded. The API refuses a hotkey not linked to the account, a deposit that does not name its spender or cannot spend the amount now, a chain price too far from its own, a daily limit reached, and a second conversion while one is in flight.
+
+Usage: hipc billing gamma conversions create --hotkey <SS58> --amount <GAMMA>
+
+Options:
+      --hotkey <SS58>
+          The linked hotkey whose deposit pays, as hipc billing gamma get lists it
+
+      --amount <GAMMA>
+          The gamma to burn, at least 0.1 and at most 9 decimals; credited 1:1 in USD
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma conversions create --hotkey 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --amount 10 --yes
+```
+
+### hipc billing gamma conversions list
+
+```text
+The account's conversions, newest first, one page at a time
+
+Usage: hipc billing gamma conversions list [OPTIONS]
+
+Options:
+      --limit <LIMIT>
+          Items per page, 1 to 500
+          
+          [default: 100]
+
+      --page-token <TOKEN>
+          The page to fetch, from a previous answer's next_page_token
+
+      --all
+          Follow every page: one JSON array, or one table in text mode
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma conversions list
+  hipc billing gamma conversions list --limit 20
+  hipc billing gamma conversions list --all
+```
+
+### hipc billing gamma conversions get
+
+```text
+One conversion: its status, its on-chain reference, and the transaction that credited it
+
+Usage: hipc billing gamma conversions get <CONVERSION_ID>
+
+Arguments:
+  <CONVERSION_ID>
+          The conversion id, from the answer of hipc billing gamma conversions create or list
+
+Options:
+  -h, --help
+          Print help (see a summary with '-h')
+
+Examples:
+  hipc billing gamma conversions get 6f0b2c1e-7b4d-4e8a-9c01-5d6e7f8a5f60
 ```
 
 ### hipc billing top-up
@@ -8269,7 +8474,7 @@ Examples:
 ```text
 Open a ticket that a person on the support team reads; needs --yes
 
-The message is read from a file, or from stdin with --body-file -, never from argv. A subject or message that holds an API token, HIPPIUS_TOKEN or one the config file stores, as it is, quoted, or percent-encoded, is refused before anything is sent.
+The message is read from a file, or from stdin with --body-file -, never from argv. A subject or message that holds an API token, HIPPIUS_TOKEN or one the config file stores, as it is, quoted, percent-encoded, or split by whitespace, or an access key whose checksum holds, is refused before anything is sent. The check catches an accident, such as a pasted config file, not a secret encoded on purpose.
 
 Usage: hipc support tickets create [OPTIONS] --subject <SUBJECT> --body-file <PATH>
 
@@ -8301,7 +8506,7 @@ Examples:
 ```text
 Add a message to a ticket
 
-The message is read as for create. A reply is not confirmed: the ticket already exists, and a person reads the reply there. A message that holds an API token, HIPPIUS_TOKEN or one the config file stores, is refused, as it is for create.
+The message is read as for create. A reply is not confirmed: the ticket already exists, and a person reads the reply there. A message that holds an API token, HIPPIUS_TOKEN or one the config file stores, or an access key, is refused, as it is for create.
 
 Usage: hipc support tickets reply --body-file <PATH> <TICKET_ID>
 

@@ -27,8 +27,9 @@ use super::{APPS, Compose, Hashed, app_path, check_hash, path, read_compose, una
 use crate::cli::{AppCreate, DiskTier, FailoverMode, GuestPoweroff};
 use crate::commands::Printed;
 use crate::commands::compute::{
-    MAX_POLL_FAILURES, POLL_INTERVAL, STAYS_STOPPED, balance_hint, launch_wait,
+    POLL_INTERVAL, STAYS_STOPPED, balance_hint, failover_clause, launch_wait,
 };
+use crate::commands::poll::{Next, Schedule, Wait, poll_until};
 use crate::context::{Context, Write};
 
 /// The flag that names the secrets file, in its placeholders and hints.
@@ -142,14 +143,7 @@ fn launch_action(args: &AppCreate) -> String {
         ));
     }
     if let Some(interval) = args.backup_interval {
-        let failover = match args.failover {
-            Some(FailoverMode::Auto) => {
-                " and failover `auto`, which restarts it on another server from its latest \
-                 backup if its server dies, losing what was written after that backup"
-            }
-            Some(FailoverMode::Manual) => " and failover `manual`",
-            None => "",
-        };
+        let failover = failover_clause(args.failover);
         more.push(format!(
             "backups every {}{failover}",
             phrase::count(u64::from(interval.seconds()), "second")
@@ -575,8 +569,9 @@ fn launch_state(app: &Value) -> Launch {
 /// `timeout` has passed. Every decision reads the documents as they came; every document
 /// printed, on success or on a failure, is the [`printable`] copy. Every failure prints the
 /// last app document seen, so `vm_id` is not lost, and is never retryable: a retry of the
-/// launch would launch, and bill, a second app. The VM launch's wait (`hipc compute vms
-/// create`) is the model, with its poll interval and its tolerance of passing outages.
+/// launch would launch, and bill, a second app. It shares the VM launch's loop
+/// ([`poll_until`]), with its poll interval, its tolerance of passing outages, and its
+/// respect for `Retry-After`.
 fn wait(
     ctx: &Context<'_>,
     client: &hippius::Client,
@@ -622,71 +617,104 @@ fn wait(
             "launched {app_named}; waiting until it is running"
         ));
     }
-    let deadline = Instant::now() + timeout;
     let request = Request::get(app_path(&vm_id, "")).about(format!("poll {app_named}"));
-    let mut app = launched;
-    let mut failures = 0;
-    loop {
-        match launch_state(&app) {
-            Launch::Done => return Ok(Printed::Document(print(&app))),
+    let schedule = Schedule {
+        first: POLL_INTERVAL,
+        interval: POLL_INTERVAL,
+        deadline: Instant::now() + timeout,
+    };
+    let launch = AppLaunch {
+        app: launched,
+        vm_id: &vm_id,
+        app_named: &app_named,
+        hint: &hint,
+        action: request.action(),
+        redactions,
+        timeout,
+    };
+    poll_until(ctx, client, &request, schedule, launch)
+}
+
+/// The wait of an App Engine launch: the last app document seen, and how its messages name
+/// it. Every document it prints is the [`printable`] copy.
+struct AppLaunch<'a> {
+    app: Value,
+    vm_id: &'a str,
+    app_named: &'a str,
+    hint: &'a str,
+    /// The poll's action, for an error the poll answered ([`sanitized`]).
+    action: String,
+    redactions: &'a [String],
+    timeout: Duration,
+}
+
+impl AppLaunch<'_> {
+    fn print(&self) -> Value {
+        printable(&self.app, self.redactions)
+    }
+}
+
+impl Wait for AppLaunch<'_> {
+    type Output = Printed;
+
+    fn next(&mut self) -> Next<Printed> {
+        match launch_state(&self.app) {
+            Launch::Done => Next::Stop(Ok(Printed::Document(self.print()))),
             Launch::Ended(state) => {
-                let message = format!("{app_named} reached `{state}` instead of `running`");
-                return Err(Error::new(Code::PartialFailure, message)
-                    .with_hint(hint)
-                    .after_write(print(&app)));
+                let message = format!("{} reached `{state}` instead of `running`", self.app_named);
+                Next::Stop(Err(Error::new(Code::PartialFailure, message)
+                    .with_hint(self.hint)
+                    .after_write(self.print())))
             }
-            Launch::Waiting => {}
+            Launch::Waiting => Next::Poll,
         }
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            let message = format!(
-                "{app_named} was not running after {}",
-                phrase::count(timeout.as_secs(), "second")
-            );
-            return Err(Error::new(Code::Timeout, message)
-                .with_hint(hint)
-                .after_write(print(&app)));
+    }
+
+    fn take(&mut self, polled: Value) -> Result<()> {
+        // A document for another app, or for none, is not this launch.
+        match polled.get("vm_id").and_then(Value::as_str) {
+            Some(id) if id == self.vm_id => {
+                self.app = polled;
+                Ok(())
+            }
+            other => {
+                let named = match other {
+                    Some(other)
+                        if crate::cli::vm_id(other).is_ok()
+                            && holds_no_secret(other, self.redactions) =>
+                    {
+                        format!("the app {}", phrase::quote(other))
+                    }
+                    Some(_) => "another app".to_owned(),
+                    None => "no app".to_owned(),
+                };
+                let message = format!(
+                    "the poll of {} answered with the document of {named}",
+                    self.app_named
+                );
+                Err(Error::internal(message)
+                    .with_hint(self.hint)
+                    .after_write(self.print()))
+            }
         }
-        std::thread::sleep(POLL_INTERVAL.min(left));
-        app = match ctx
-            .send(client, &request)
-            .and_then(|response| response.document())
-        {
-            // A document for another app, or for none, is not this launch.
-            Ok(polled) => match polled.get("vm_id").and_then(Value::as_str) {
-                Some(id) if id == vm_id => {
-                    failures = 0;
-                    polled
-                }
-                other => {
-                    let named = match other {
-                        Some(other)
-                            if crate::cli::vm_id(other).is_ok()
-                                && holds_no_secret(other, redactions) =>
-                        {
-                            format!("the app {}", phrase::quote(other))
-                        }
-                        Some(_) => "another app".to_owned(),
-                        None => "no app".to_owned(),
-                    };
-                    let message =
-                        format!("the poll of {app_named} answered with the document of {named}");
-                    return Err(Error::internal(message)
-                        .with_hint(hint)
-                        .after_write(print(&app)));
-                }
-            },
-            // A poll is a read, so polling on after a passing outage cannot launch twice.
-            Err(error) if error.is_retryable() && failures < MAX_POLL_FAILURES => {
-                failures += 1;
-                continue;
-            }
-            Err(error) => {
-                return Err(sanitized(error, &request.action(), redactions)
-                    .with_hint(hint)
-                    .after_write(print(&app)));
-            }
-        };
+    }
+
+    fn timed_out(self) -> Result<Printed> {
+        let message = format!(
+            "{} was not running after {}",
+            self.app_named,
+            phrase::count(self.timeout.as_secs(), "second")
+        );
+        Err(Error::new(Code::Timeout, message)
+            .with_hint(self.hint)
+            .after_write(self.print()))
+    }
+
+    // A poll is a read, so polling on after a passing outage cannot launch twice.
+    fn failed(self, error: Error) -> Error {
+        sanitized(error, &self.action, self.redactions)
+            .with_hint(self.hint)
+            .after_write(self.print())
     }
 }
 

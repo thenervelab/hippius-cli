@@ -129,13 +129,8 @@ impl DnsCredentials {
             }
         }
         // What is left was not asked for. Its name is not quoted: a misplaced secret can sit
-        // in a field name as well as in a value. Its string values are cleared on the way out.
+        // in a field name as well as in a value. It is cleared on the way out ([`Fields`]).
         if !file.is_empty() {
-            for value in file.into_values() {
-                if let Value::String(text) = value {
-                    drop(Zeroizing::new(text));
-                }
-            }
             return Err(refuse(&format!(
                 "has a field that `--provider {}` does not take",
                 provider.code()
@@ -174,15 +169,16 @@ impl DnsCredentials {
     /// in either hex case), percent-encoded with `/` kept, in either hex case, and as the body
     /// of a JSON string, once and twice escaped, as an error may quote it. The ids
     /// (`zone_id`, `hosted_zone_id`) are not secrets and are left alone: a short id would
-    /// otherwise mangle every answer that happens to contain its characters.
-    pub fn redactions(&self) -> Vec<String> {
-        longest_first(
+    /// otherwise mangle every answer that happens to contain its characters. They are cleared
+    /// when dropped, as `hippius::AppSecrets::redactions` are.
+    pub fn redactions(&self) -> Zeroizing<Vec<String>> {
+        Zeroizing::new(longest_first(
             self.fields
                 .iter()
                 .filter(|(name, _)| SECRET_FIELDS.contains(name))
                 .flat_map(|(_, text)| secret_spellings(text))
                 .collect(),
-        )
+        ))
     }
 }
 
@@ -334,16 +330,59 @@ const SECRET_FIELDS: [&str; 4] = [
 ];
 
 /// The file as a JSON object, or the fact that it names a field twice. Any other JSON value is
-/// a deserialization error.
+/// a deserialization error. What was read is cleared when either is dropped or the read
+/// fails: a field named twice and its earlier value included.
 pub(crate) enum UniqueObject {
-    Object(Map<String, Value>),
+    Object(Fields),
     Repeated,
+}
+
+/// The fields of a private file's JSON object, every name and string in them cleared when
+/// dropped ([`clear_owned`]), so a refusal that returns before a field is taken out leaves no
+/// copy of it in freed memory.
+pub(crate) struct Fields(Map<String, Value>);
+
+impl std::ops::Deref for Fields {
+    type Target = Map<String, Value>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Fields {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for Fields {
+    fn drop(&mut self) {
+        clear_owned(Value::Object(std::mem::take(&mut self.0)));
+    }
+}
+
+/// Drops `value` with every string in it and every field name cleared, at any depth, for a
+/// value read from a private file that is not kept. A number is not cleared: `serde_json`
+/// gives no way to reach its digits.
+pub(crate) fn clear_owned(value: Value) {
+    match value {
+        Value::String(text) => drop(Zeroizing::new(text)),
+        Value::Array(items) => items.into_iter().for_each(clear_owned),
+        Value::Object(fields) => {
+            for (name, value) in fields {
+                drop(Zeroizing::new(name));
+                clear_owned(value);
+            }
+        }
+        _ => {}
+    }
 }
 
 impl<'de> Deserialize<'de> for UniqueObject {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        struct Fields;
-        impl<'de> Visitor<'de> for Fields {
+        struct Object;
+        impl<'de> Visitor<'de> for Object {
             type Value = UniqueObject;
 
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -354,12 +393,21 @@ impl<'de> Deserialize<'de> for UniqueObject {
                 self,
                 mut access: A,
             ) -> std::result::Result<UniqueObject, A::Error> {
-                let mut fields = Map::new();
+                // Cleared when dropped, so a syntax error later in the file, which returns
+                // here, leaves nothing read before it behind.
+                let mut fields = Fields(Map::new());
                 let mut repeated = false;
                 while let Some((name, value)) = access.next_entry::<String, Value>()? {
                     // The whole object is still read, so a syntax error later in the file
-                    // is reported as one.
-                    repeated |= fields.insert(name, value).is_some();
+                    // is reported as one. A second copy is not kept: it is cleared now, and
+                    // the first when `fields` is dropped.
+                    if fields.contains_key(&name) {
+                        repeated = true;
+                        drop(Zeroizing::new(name));
+                        clear_owned(value);
+                    } else {
+                        fields.insert(name, value);
+                    }
                 }
                 Ok(if repeated {
                     UniqueObject::Repeated
@@ -368,7 +416,7 @@ impl<'de> Deserialize<'de> for UniqueObject {
                 })
             }
         }
-        deserializer.deserialize_map(Fields)
+        deserializer.deserialize_map(Object)
     }
 }
 
@@ -379,12 +427,16 @@ enum Taken {
     NotText,
 }
 
-/// Takes `name` out of `file`: a non-empty string, kept to be cleared on drop.
+/// Takes `name` out of `file`: a non-empty string, kept to be cleared on drop. Any other value
+/// is cleared now.
 fn take_text(file: &mut Map<String, Value>, name: &str) -> Taken {
-    match file.remove(name) {
+    match file.shift_remove(name) {
         None => Taken::Missing,
         Some(Value::String(text)) if !text.is_empty() => Taken::Text(Zeroizing::new(text)),
-        Some(_) => Taken::NotText,
+        Some(other) => {
+            clear_owned(other);
+            Taken::NotText
+        }
     }
 }
 
@@ -408,6 +460,13 @@ fn file_hint(flag: &str, provider: DnsProvider) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every string, at any depth, and every name is dropped through `Zeroizing`; numbers and
+    /// the rest are dropped as they are.
+    #[test]
+    fn a_value_of_any_shape_is_dropped_cleared() {
+        clear_owned(serde_json::json!({"a": [1, "s", {"k": "v"}, null, true], "b": 2.5}));
+    }
 
     #[test]
     fn the_spellings_include_the_rust_and_python_escapes() {
@@ -452,7 +511,7 @@ mod tests {
             ],
         };
         assert_eq!(
-            credentials.redactions(),
+            *credentials.redactions(),
             [
                 "s%2F%22%601",
                 "s%2f%22%601",

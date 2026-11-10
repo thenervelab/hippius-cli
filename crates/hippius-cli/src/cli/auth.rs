@@ -45,7 +45,9 @@ pub(crate) enum Auth {
     /// the invocation that sets it. Needs --yes when the API origin is not
     /// https://api.hippius.com, and when the profile stores a different token, since every
     /// later command then acts as the new token's owner; the dry run says which in
-    /// replaces_token (for an access key, whether any token is stored).
+    /// replaces_token (for an access key, or without --token-file, whether any token is
+    /// stored). A dry run asks for no token. At a terminal, the question about another origin
+    /// comes before the prompt for the token.
     #[command(after_help = examples(&[
         "hipc auth login --token-file token.txt",
         "hipc auth login --access-key-file access-key.txt",

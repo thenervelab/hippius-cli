@@ -9,6 +9,7 @@
 use std::cell::Cell;
 use std::ffi::OsString;
 use std::io::{self, BufRead};
+use std::os::fd::AsFd as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -372,7 +373,7 @@ impl<'a> Context<'a> {
         let mut doc = client.describe(request)?;
         // `dry_run` is said once, at the top of the document, not in each request.
         if let Value::Object(fields) = &mut doc {
-            fields.remove("dry_run");
+            fields.shift_remove("dry_run");
         }
         if self.terminal.person_reads_stdout(self.mode)
             && let Some(Value::String(url)) = doc.get_mut("url")
@@ -490,11 +491,26 @@ impl<'a> Context<'a> {
     /// [`Context::call`], or [`Context::check_write`] and [`Context::confirm_write`], and
     /// [`Context::confirm_origin`] before a secret goes to an origin.
     pub(crate) fn confirm(&self, question: Question<'_>) -> Result<()> {
+        let will_ask = self.will_ask();
+        let stdin = io::stdin();
+        // The answer is read from the descriptor, not through std's process-wide stdin
+        // buffer: a terminal in canonical mode gives one line per read, and whatever a read
+        // takes past the line is dropped with this reader rather than kept to answer the next
+        // question.
+        let mut input = io::BufReader::new(crate::hidden::Unbuffered(stdin.as_fd()));
+        if will_ask {
+            // What was typed before the question appears answers nothing: a `y` typed while an
+            // earlier read ran, or the second line of a paste that answered an earlier
+            // question, is discarded. The flush comes just before the question is written, not
+            // after: after it, an answer a script types as soon as the question shows could be
+            // discarded too, and the question would wait for ever.
+            crate::hidden::discard_typed_ahead();
+        }
         confirm_with(
             question,
             self.global.yes,
             self.can_prompt(),
-            &mut io::stdin().lock(),
+            &mut input,
             &mut output::note,
         )
     }

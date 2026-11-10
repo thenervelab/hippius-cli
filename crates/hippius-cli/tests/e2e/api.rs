@@ -2137,6 +2137,59 @@ fn the_neighbours_of_the_network_get_stay_reads() {
     }
 }
 
+/// A support write through `hipc api` whose body holds an access key, or a token split by
+/// whitespace, is refused as one with the token whole is, and the refusal quotes neither.
+#[test]
+fn a_support_write_with_an_access_key_or_a_split_token_is_refused() {
+    let server = Server::start(vec![route(
+        "POST",
+        "/api/support/tickets/7/messages/",
+        Reply::json(201, "{}"),
+    )]);
+    let home = Home::new();
+    let stored = "tok_stored_0123456789";
+    home.write_config(&format!(
+        "[profiles.other]\ntoken = \"{stored}\"\ntoken_origin = \"https://api.hippius.com\"\n"
+    ));
+    let wrapped = format!("{}\n{}", &stored[..8], &stored[8..]);
+    for (body, what, it) in [
+        (
+            json!({ "body": crate::common::PHRASES[0] }).to_string(),
+            "what looks like an access key",
+            "the 12 words",
+        ),
+        (
+            json!({ "body": wrapped }).to_string(),
+            "an API token",
+            "the token",
+        ),
+    ] {
+        let file = home.file("body.json", body.as_bytes());
+        let argv = [
+            "api",
+            "POST",
+            "/support/tickets/7/messages/",
+            BODY,
+            file.to_str().unwrap(),
+            "--yes",
+        ];
+        let error = Hipc::against(&home, &server).run(&argv).fails(2, "usage");
+        assert_eq!(
+            error["message"],
+            format!(
+                "`hipc api` does not send a support ticket write whose body holds {what}, which \
+                 a person on the Hippius support team would read"
+            )
+        );
+        assert_eq!(
+            error["hint"],
+            format!("remove {it} from the body; the support team never needs it")
+        );
+        assert!(!error.to_string().contains("curtain"), "{error}");
+    }
+    assert!(server.requests().is_empty());
+}
+
 /// A support write through `hipc api` (any method but `GET` and `HEAD` under `/api/support/`)
 /// is refused, as `hipc support tickets create` and `reply` are, when its body holds
 /// `HIPPIUS_TOKEN` or a stored token: as written, inside a key or a nested array, or behind a

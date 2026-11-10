@@ -275,7 +275,8 @@ fn spec(path: &[&str]) -> Option<Spec> {
             "balance" | "subscriptions" | "stripe" | "summary" | "usage" | "native-quote",
         ]
         | ["billing", "auto-reload", "get" | "history"]
-        | ["billing", "profile", "get"]
+        | ["billing", "gamma" | "profile", "get"]
+        | ["billing", "gamma", "conversions", "get"]
         | ["drive" | "s3" | "hub", "plans"]
         | ["drive" | "s3" | "hub", "subscription", "get"]
         | ["drive" | "s3", "subscription", "checkout"]
@@ -341,6 +342,7 @@ fn spec(path: &[&str]) -> Option<Spec> {
         | ["cdn", "lists", "list" | "get"]
         | ["support", "tickets", "get"] => Some(READ_ONLY),
         ["billing", "transactions"]
+        | ["billing", "gamma", "conversions", "list"]
         | ["support", "tickets", "list"]
         | ["support", "tickets", "messages", "list"]
         | ["billing", "invoices", "list"]
@@ -433,6 +435,8 @@ fn spec(path: &[&str]) -> Option<Spec> {
         | ["compute", "runners", "connect"]
         // A card setup charges nothing (swagger); a repeat starts another checkout.
         | ["billing", "auto-reload", "card-setup"]
+        // A hotkey link spends nothing; a repeat asks for, and spends, another challenge.
+        | ["billing", "gamma", "hotkeys", "create"]
         // A consent withdrawal spends nothing; swagger appends each one to the consent
         // history, so a repeat adds another entry.
         | ["account", "marketing-consent", "update"] => Some(Spec {
@@ -449,7 +453,9 @@ fn spec(path: &[&str]) -> Option<Spec> {
             refused_when: Some(TICKET_HOLDS_A_TOKEN),
             ..SPEND
         }),
-        ["drive" | "s3", "subscription", "subscribe" | "change"]
+        // A conversion burns gamma on chain, which cannot be refunded; a repeat burns again.
+        ["billing", "gamma", "conversions", "create"]
+        | ["drive" | "s3", "subscription", "subscribe" | "change"]
         | ["s3", "buckets", "create"]
         | ["compute", "vms", "create" | "reboot" | "resize"]
         // An app is a VM with a public IPv4, so a repeat launches, and bills, a second one.
@@ -502,6 +508,8 @@ fn spec(path: &[&str]) -> Option<Spec> {
         | ["drive" | "s3" | "hub", "subscription", "cancel"]
         | ["s3", "buckets", "delete"]
         | ["s3", "tokens", "revoke"]
+        // An unlink leaves the gamma in its deposit; a repeat finds the hotkey unlinked (404).
+        | ["billing", "gamma", "hotkeys", "delete"]
         // A repeat delete of a Hub key, repository, or artifact finds it gone. Hub data
         // deleted there is gone for good, which the question says; `--yes` is the one
         // confirmation (tenet 5).
@@ -718,8 +726,8 @@ fn spec(path: &[&str]) -> Option<Spec> {
 /// subscribe` the one path to a Hub subscribe, since it reads the current plans first. The
 /// three App Engine routes
 /// that take `secrets` are refused when the body sets it: `hipc compute app-engine apps
-/// create` is the path for those values. A support write whose body holds an API token is
-/// refused as `hipc support tickets create` and `reply` refuse one. It lists refused requests
+/// create` is the path for those values. A support write whose body holds an API token or an
+/// access key is refused as `hipc support tickets create` and `reply` refuse one. It lists refused requests
 /// only; what `hipc api` sends that a curated command refuses or never sends, the data-loss
 /// resume and a ticket `PATCH` with any body, is in its help.
 const API_REFUSED_WHEN: &str = "the target is a full URL off the configured API origin, or \
@@ -735,8 +743,9 @@ const API_REFUSED_WHEN: &str = "the target is a full URL off the configured API 
                                 (a body that is not a JSON object counts as setting it), or a \
                                 `POST`, `PUT`, `PATCH`, or `DELETE` under `/api/support/` \
                                 whose body holds `HIPPIUS_TOKEN` or a token a profile of the \
-                                config file stores, as it is, quoted, percent-encoded, or \
-                                behind a JSON escape, with or without the trailing slash or a \
+                                config file stores, as it is, quoted, percent-encoded, behind \
+                                a JSON escape, or split by whitespace, or an access key \
+                                whose checksum holds, with or without the trailing slash or a \
                                 format suffix";
 
 /// When `hipc api` asks: the one route it confirms on a read is the one the rows of
@@ -1377,7 +1386,7 @@ mod tests {
 
     /// Every command, with its effect and whether it asks, written out by hand so a
     /// change to a command's gate fails here.
-    const PLAN_ROWS: [(&str, &str, bool); 267] = [
+    const PLAN_ROWS: [(&str, &str, bool); 273] = [
         ("version", "read_only", false),
         ("status", "read_only", false),
         ("schema", "read_only", false),
@@ -1439,6 +1448,12 @@ mod tests {
         ("billing profile get", "read_only", false),
         ("billing profile update", "idempotent", true),
         ("billing native-quote", "read_only", false),
+        ("billing gamma get", "read_only", false),
+        ("billing gamma hotkeys create", "non_idempotent", false),
+        ("billing gamma hotkeys delete", "idempotent", true),
+        ("billing gamma conversions create", "non_idempotent", true),
+        ("billing gamma conversions list", "read_only", false),
+        ("billing gamma conversions get", "read_only", false),
         ("billing top-up", "non_idempotent", true),
         ("drive plans", "read_only", false),
         ("drive subscription get", "read_only", false),
@@ -2032,8 +2047,9 @@ mod tests {
              /api/compute/app-engine/validate/` whose body sets `secrets` (a body that is not a \
              JSON object counts as setting it), or a `POST`, `PUT`, `PATCH`, or `DELETE` under \
              `/api/support/` whose body holds `HIPPIUS_TOKEN` or a token a profile of the config \
-             file stores, as it is, quoted, percent-encoded, or behind a JSON escape, with or \
-             without the trailing slash or a format suffix"
+             file stores, as it is, quoted, percent-encoded, behind a JSON escape, or split by \
+             whitespace, or an access key whose checksum holds, with or without the trailing slash \
+             or a format suffix"
         );
         for noun in ["repositories", "artifacts"] {
             let delete = commands

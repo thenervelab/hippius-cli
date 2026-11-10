@@ -807,7 +807,7 @@ fn transfer_lists(answer: Value) -> Result<Transfers> {
     let Value::Object(mut body) = answer else {
         return Err(unexpected_transfers());
     };
-    match (body.remove("incoming"), body.remove("outgoing")) {
+    match (body.shift_remove("incoming"), body.shift_remove("outgoing")) {
         (Some(Value::Array(incoming)), Some(Value::Array(outgoing))) => Ok(Transfers {
             incoming,
             outgoing,

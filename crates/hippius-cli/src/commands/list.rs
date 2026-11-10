@@ -236,7 +236,7 @@ fn digits_of(number: &serde_json::Number) -> Option<String> {
 fn with_items_as_results(answer: Value, key: &str) -> Value {
     match answer {
         Value::Object(mut fields) if key != RESULTS && !fields.contains_key(RESULTS) => {
-            if let Some(items) = fields.remove(key) {
+            if let Some(items) = fields.shift_remove(key) {
                 fields.insert(RESULTS.to_owned(), items);
             }
             Value::Object(fields)

@@ -396,6 +396,42 @@ thread_local! {
     /// The config file the last [`ConfigFile::edit`] on this thread rewrote while it had
     /// another hard link, until [`take_split_link`] takes it.
     static SPLIT_LINK: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+
+    /// What [`on_lock_wait`] set on this thread.
+    static LOCK_WAIT: std::cell::RefCell<Option<LockWait>> = const { std::cell::RefCell::new(None) };
+}
+
+/// What a lock does before it waits ([`on_lock_wait`]).
+type LockWait = Box<dyn Fn(&str)>;
+
+/// Sets what a lock on this thread does before it waits for another process that holds the
+/// lock of the config file or an AWS file: `note` is given a sentence that names the file,
+/// such as ``waiting for another run of hipc to finish with the config file `/h/c.toml` ``.
+/// `hipc s3 configure` holds its lock across its question, so without a word a second run
+/// would seem to hang. The library never prints; the binary decides where the sentence goes.
+/// Thread-local, so a test sees only its own.
+pub fn on_lock_wait(note: impl Fn(&str) + 'static) {
+    LOCK_WAIT.with(|hook| *hook.borrow_mut() = Some(Box::new(note)));
+}
+
+/// Creates `dir` and each missing directory above it, each with mode `0700`, and sets that
+/// mode again on each one it created, since `mkdir` masks it with the umask: under `0277`
+/// the directory would be `0500`, and no file could be created in it. A directory that
+/// another process creates first is left as it is. The mode is set through a descriptor
+/// opened without following a symlink, so a name swapped for a link after the create is
+/// never followed; a umask that also clears the owner's read bit leaves a directory that
+/// cannot be opened, and that fails as it did before.
+fn create_private_dirs(dir: &Path) -> std::io::Result<()> {
+    if dir.as_os_str().is_empty() || fs::symlink_metadata(dir).is_ok() {
+        return Ok(());
+    }
+    create_private_dirs(dir.parent().unwrap_or(Path::new("")))?;
+    match fs::DirBuilder::new().mode(0o700).create(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
+        created => created?,
+    }
+    let fd = rustix::fs::open(dir, DIRECTORY_FLAGS, Mode::empty())?;
+    Ok(rustix::fs::fchmod(&fd, Mode::RWXU)?)
 }
 
 /// The config file a [`ConfigFile::edit`] on this thread rewrote while it had another hard
@@ -977,17 +1013,14 @@ pub(crate) struct PrivateFile {
 }
 
 impl PrivateFile {
-    /// Opens and checks the directory of `path`, first creating it with mode `0700` when it
-    /// is missing.
+    /// Opens and checks the directory of `path`, first creating it, and each missing
+    /// directory above it, with mode `0700` when it is missing ([`create_private_dirs`]).
     pub(crate) fn ensure(path: &Path, guarded: Guarded) -> Result<Self> {
         let name = file_name(path, guarded)?;
         let dir = directory(path);
         let opened = match rustix::fs::open(dir, DIRECTORY_FLAGS, Mode::empty()) {
             Err(Errno::NOENT) => {
-                fs::DirBuilder::new()
-                    .recursive(true)
-                    .mode(0o700)
-                    .create(dir)
+                create_private_dirs(dir)
                     .map_err(|e| file_error("create", dir, &e, Denied::Moved(guarded.named_by)))?;
                 rustix::fs::open(dir, DIRECTORY_FLAGS, Mode::empty())
             }
@@ -1039,11 +1072,50 @@ impl PrivateFile {
 
     /// Takes the exclusive lock for the file: `flock` on `.<name>.lock` in the directory,
     /// created with mode `0600` and opened without following a symlink. Waits while another
-    /// process holds it. The lock ends when the returned descriptor is dropped, or when the
-    /// process exits.
+    /// process holds it, after telling the hook [`on_lock_wait`] set. The lock ends when the
+    /// returned descriptor is dropped, or when the process exits.
     pub(crate) fn lock(&self) -> Result<OwnedFd> {
+        let mut locks = Self::lock_all(&[self])?;
+        Ok(locks.pop().expect("one file, one lock"))
+    }
+
+    /// [`PrivateFile::lock`] of each of `files`, all held together. Every lock file is opened
+    /// first, and they are locked in the order of their device and inode, so two runs that
+    /// lock the same files never each hold one and wait for the other. Two names whose lock is
+    /// one file (the same name, or two spellings a case-insensitive volume or Unicode
+    /// normalization makes one) are locked once: a second `flock` of the file through another
+    /// descriptor would wait for this process forever.
+    pub(crate) fn lock_all(files: &[&Self]) -> Result<Vec<OwnedFd>> {
+        // Each lock file's device and inode, its descriptor, and its file.
+        let mut opened = Vec::new();
+        for &file in files {
+            let fd = file.open_lock()?;
+            // Without its identity a lock file could be locked twice, or out of order, so a
+            // lock file that cannot be inspected is refused.
+            let stat = rustix::fs::fstat(&fd).map_err(file.lock_error())?;
+            let id = (stat.st_dev, stat.st_ino);
+            if opened.iter().all(|(other, _, _)| *other != id) {
+                opened.push((id, fd, file));
+            }
+        }
+        opened.sort_by_key(|(id, ..)| *id);
+        let mut locks = Vec::with_capacity(opened.len());
+        for (_, fd, file) in opened {
+            locks.push(file.flock(fd)?);
+        }
+        for file in files {
+            file.remove_stale_temporaries();
+        }
+        Ok(locks)
+    }
+
+    /// Opens the file's lock file, `.<name>.lock`, creating it with mode `0600` (less under a
+    /// strict umask, which does no harm: it is opened read-only).
+    fn open_lock(&self) -> Result<OwnedFd> {
         let name = self.sibling("lock");
-        let flags = OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        // Read-only: `flock` needs no write access, so a lock file an older run left `0400`
+        // under a strict umask still opens.
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         // Created with `O_EXCL`, then opened without `O_CREAT` when it exists. On macOS
         // (Darwin 24, APFS), `openat` with `O_CREAT` and without `O_EXCL` can fail with
         // `ENOENT` when another thread or process creates the same name at the same moment.
@@ -1052,27 +1124,53 @@ impl PrivateFile {
             Err(Errno::EXIST) => rustix::fs::openat(&self.dir, &name, flags, Mode::empty()),
             opened => opened,
         };
-        let locked = opened
-            .and_then(|fd| rustix::fs::flock(&fd, FlockOperation::LockExclusive).map(|()| fd))
-            .map_err(|e| {
-                let dir = directory(&self.path);
-                file_error(
-                    "lock",
-                    &dir.join(name),
-                    &e.into(),
-                    Denied::Chmod("700", dir),
-                )
-            })?;
-        self.remove_stale_temporaries();
-        Ok(locked)
+        opened.map_err(self.lock_error())
+    }
+
+    /// Takes the exclusive `flock` of `fd`, the file's lock file. When another process holds
+    /// it, the hook [`on_lock_wait`] set is told before the wait, so a run that waits for
+    /// another one's question does not seem to hang.
+    fn flock(&self, fd: OwnedFd) -> Result<OwnedFd> {
+        let locked = match rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive) {
+            Err(Errno::WOULDBLOCK) => {
+                let Guarded { what, .. } = self.guarded;
+                let waiting = format!(
+                    "waiting for another run of hipc to finish with {what} {}",
+                    quote_path(&self.path)
+                );
+                LOCK_WAIT.with(|hook| hook.borrow().as_ref().map(|hook| hook(&waiting)));
+                rustix::fs::flock(&fd, FlockOperation::LockExclusive)
+            }
+            locked => locked,
+        };
+        locked.map(|()| fd).map_err(self.lock_error())
+    }
+
+    /// The error of a lock file that cannot be opened, inspected, or locked.
+    fn lock_error(&self) -> impl Fn(Errno) -> Error + '_ {
+        |error| {
+            let dir = directory(&self.path);
+            file_error(
+                "lock",
+                &dir.join(self.sibling("lock")),
+                &error.into(),
+                Denied::Chmod("700", dir),
+            )
+        }
     }
 
     /// Creates the file empty with mode `0600` when it is missing, never through a symlink,
-    /// and returns whether it did.
+    /// and returns whether it did. The mode is set again once it is created, since `open`
+    /// masks it with the umask: under `0277` the file would be `0400`, and every later write,
+    /// which keeps the owner bits a file has, would keep it so.
     pub(crate) fn create_if_missing(&self) -> Result<bool> {
         let flags = OFlags::WRONLY | CREATE_NEW;
         match rustix::fs::openat(&self.dir, &self.name, flags | OFlags::CLOEXEC, PRIVATE) {
-            Ok(_) => Ok(true),
+            // Best effort: the file exists now, and the caller must know it made it.
+            Ok(fd) => {
+                let _best_effort = rustix::fs::fchmod(&fd, PRIVATE);
+                Ok(true)
+            }
             // It exists, or it is a symlink, which the read refuses with its own message.
             Err(Errno::EXIST) => Ok(false),
             Err(e) => Err(file_error(
@@ -1267,8 +1365,8 @@ impl PrivateFile {
         // That relies on std's `read_to_end` filling spare capacity before it reallocates,
         // which it does today but its docs do not promise, and on the file not growing
         // between the `fstat` and the read. Cleared on every refusal below; on success the
-        // caller owns the bytes. `read` returns a plain `Vec` because the config and AWS
-        // readers turn it into a `String` they do not clear; only the key file clears it.
+        // caller owns the bytes, and every caller clears them in turn: the config and AWS
+        // readers, and the DNS credentials, app secrets, and cluster key files.
         let capacity = usize::try_from(metadata.len())
             .map_or(MAX_FILE_BYTES, |len| len.min(MAX_FILE_BYTES))
             + 1;

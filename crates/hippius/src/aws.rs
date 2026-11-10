@@ -13,6 +13,8 @@ use std::fs;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
+use zeroize::Zeroizing;
+
 use crate::config::{Guarded, NamedBy, PrivateFile};
 use crate::error::{Error, Result};
 use crate::phrase::{quote, quote_path};
@@ -250,8 +252,8 @@ impl AccessKeyId {
     }
 }
 
-/// An S3 secret key. `Debug` never prints it.
-pub struct SecretKey(String);
+/// An S3 secret key, cleared when dropped. `Debug` never prints it.
+pub struct SecretKey(Zeroizing<String>);
 
 impl SecretKey {
     /// Wraps a secret read from `source`, a file or stdin. Surrounding whitespace is trimmed.
@@ -275,7 +277,7 @@ impl SecretKey {
                 "leave only the secret key in the file `--secret-key-file` names: one word",
             ));
         }
-        Ok(Self(secret.to_owned()))
+        Ok(Self(Zeroizing::new(secret.to_owned())))
     }
 }
 
@@ -288,10 +290,11 @@ impl fmt::Debug for SecretKey {
 /// Writes the profile into both files, replacing any section of the same name and keeping
 /// everything else, and asks `confirm` first when either file already has that profile.
 ///
-/// The read, the question, and the write happen under the lock on the credentials file, so
-/// a concurrent `hipc s3 configure` cannot be lost, and the answer is about the files as they
-/// are written. The lock is `flock` on `.<credentials name>.lock` beside the credentials
-/// file, created on the first run and never removed. A new file gets mode `0600` and a file
+/// The read, the question, and the write happen under the locks on both files, so a
+/// concurrent `hipc s3 configure` that shares either file cannot be lost, and the answer is
+/// about the files as they are written. Each lock is `flock` on `.<name>.lock` beside its
+/// file, created on the first run and never removed (`PrivateFile::lock_all`). A new file gets
+/// mode `0600` and a file
 /// that exists keeps its owner bits (`PrivateFile::write`), through a temporary file and a
 /// rename. Both directories are checked, since
 /// `AWS_CONFIG_FILE` can name a different one than the credentials file, and someone who can
@@ -323,39 +326,49 @@ pub fn configure(
     // that exist are compared now, before any question; a missing one only once the write
     // is certain, so declining the question creates neither file. It does not leave the
     // disk as it was: `ensure` above has already created a missing directory, and the lock
-    // below creates `.<credentials name>.lock` beside the credentials file, which stays, as
-    // every lock file does. A refusal at that later point leaves the empty file it created.
+    // below create `.<config name>.lock` and `.<credentials name>.lock` beside the two
+    // files, which stay, as every lock file does. A refusal at that later point leaves the empty file it created.
     refuse_one_file(files)?;
-    // The lock also removes the credentials file's leftover temporary files, which hold the
-    // secret (`PrivateFile::lock`). The config file holds none, and it is not locked on its
-    // own: both variables can name one missing file, and a second `flock` on it would wait
-    // for this process forever.
-    let _lock = credentials_file.lock()?;
+    // Both files are locked, so two runs that share only one of them cannot lose each
+    // other's section. The locks also remove each file's leftover temporary files, which for
+    // the credentials file hold the secret. Both variables can name one missing file; the
+    // locks then share one lock file, which is locked once (`PrivateFile::lock_all`).
+    let _locks = PrivateFile::lock_all(&[&config_file, &credentials_file])?;
     let config = read(&config_file)?;
     let credentials = read(&credentials_file)?;
-    let config_name = profile.config_name();
-    if has_section(&config, &config_name) || has_section(&credentials, &profile.0) {
+    if has_section(&config, Kind::Config, &profile.0)
+        || has_section(&credentials, Kind::Credentials, &profile.0)
+    {
         confirm(&format!("replace the AWS profile `{}`", profile.0))?;
     }
     let config = set_section(
         &config,
-        &config_name,
+        Kind::Config,
+        &profile.0,
         &profile.config_header(),
         &[
-            format!("endpoint_url = {ENDPOINT}"),
-            format!("region = {REGION}"),
-            "s3 =".to_owned(),
-            "    addressing_style = path".to_owned(),
+            &format!("endpoint_url = {ENDPOINT}"),
+            &format!("region = {REGION}"),
+            "s3 =",
+            "    addressing_style = path",
         ],
     );
+    // Built at its final size, so no growth leaves a copy of the secret in freed memory.
+    let secret_line = |key: &str, value: &str| {
+        let mut line = Zeroizing::new(String::with_capacity(key.len() + 3 + value.len()));
+        line.push_str(key);
+        line.push_str(" = ");
+        line.push_str(value);
+        line
+    };
+    let id_line = secret_line("aws_access_key_id", &access_key_id.0);
+    let secret_line = secret_line("aws_secret_access_key", &secret.0);
     let credentials = set_section(
         &credentials,
+        Kind::Credentials,
         &profile.0,
         &profile.credentials_header(),
-        &[
-            format!("aws_access_key_id = {}", access_key_id.0),
-            format!("aws_secret_access_key = {}", secret.0),
-        ],
+        &[id_line.as_str(), secret_line.as_str()],
     );
     let created = [
         (&config_file, config_file.create_if_missing()?),
@@ -429,65 +442,185 @@ fn refuse_or_take_back(files: &AwsFiles, created: [(&PrivateFile, bool); 2]) -> 
     refused
 }
 
-/// Reads an AWS file. A missing file is empty. A symlink is refused, because the rename
-/// that writes it would replace the link with a file and quietly change the user's setup.
-fn read(file: &PrivateFile) -> Result<String> {
+/// Reads an AWS file, cleared when dropped: the credentials file holds every profile's key.
+/// A missing file is empty. A symlink is refused, because the rename that writes it would
+/// replace the link with a file and quietly change the user's setup.
+fn read(file: &PrivateFile) -> Result<Zeroizing<String>> {
     let Some(bytes) = file.read()? else {
-        return Ok(String::new());
+        return Ok(Zeroizing::default());
     };
     let path = file.path();
-    String::from_utf8(bytes).map_err(|_| {
-        Error::usage(
-            format!("the AWS file {} is not UTF-8 text", quote_path(path)),
-            format!("save {} as UTF-8 text", quote_path(path)),
-        )
+    String::from_utf8(bytes)
+        .map(Zeroizing::new)
+        .map_err(|refused| {
+            // The bytes the error holds are the file's, keys included.
+            drop(Zeroizing::new(refused.into_bytes()));
+            Error::usage(
+                format!("the AWS file {} is not UTF-8 text", quote_path(path)),
+                format!("save {} as UTF-8 text", quote_path(path)),
+            )
+        })
+}
+
+/// Which AWS file a text is: botocore names a profile's section differently in each.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// The config file: `[default]` or `[profile <name>]`, the name split as a shell would.
+    Config,
+    /// The credentials file: `[<name>]`, the text between the brackets as it is.
+    Credentials,
+}
+
+/// Each line of `text`, with its line ending, beside the section header it is, as Python's
+/// `configparser` reads the file for botocore: a header is a line that is `[`, at least one
+/// character, and `]` once surrounding whitespace is stripped, and the header is the text up
+/// to the last `]`. A line indented deeper than the option above it in a section continues that
+/// option's value, as `addressing_style` continues `s3 =`, so it is never a header, however
+/// it looks; blank lines and comments in between do not end the value.
+fn lines_and_headers(text: &str) -> impl Iterator<Item = (&str, Option<&str>)> {
+    // Whether a section has started, whether its last option line named an option, and the
+    // indent of the last line that was not a continuation.
+    let mut in_section = false;
+    let mut option = false;
+    let mut indent = 0;
+    text.split_inclusive('\n').map(move |line| {
+        let value = line.trim();
+        if value.is_empty() || value.starts_with(['#', ';']) {
+            return (line, None);
+        }
+        let this_indent = line.chars().take_while(|c| c.is_whitespace()).count();
+        if in_section && option && this_indent > indent {
+            return (line, None);
+        }
+        indent = this_indent;
+        let header = value
+            .strip_prefix('[')
+            .and_then(|rest| rest.rsplit_once(']'))
+            .map(|(header, _)| header)
+            .filter(|header| !header.is_empty());
+        if header.is_some() {
+            in_section = true;
+            option = false;
+        } else if let Some(at) = value.find(['=', ':']) {
+            // `configparser` takes `=` or `:` as the separator; a line with no name before it
+            // is an error that names no option. A line with neither leaves the option as it was.
+            option = !value[..at].trim_end().is_empty();
+        }
+        (line, header)
     })
 }
 
-/// The section a header line opens, normalized: the text between `[` and the first `]`,
-/// with runs of whitespace as one space, and `profile default` read as `default`, as the AWS
-/// CLI reads it. `None` for any other line. A comment after the `]` is ignored.
-fn section_name(line: &str) -> Option<String> {
-    let inner = line.trim().strip_prefix('[')?.split_once(']')?.0;
-    let name = inner.split_whitespace().collect::<Vec<_>>().join(" ");
-    Some(if name == "profile default" {
-        "default".to_owned()
-    } else {
-        name
-    })
+/// The profile the section `header` holds in a file of `kind`, as botocore reads it, or `None`
+/// for a section that holds none. In the config file that is `default`, or `profile` and one
+/// more word, split as Python's `shlex.split` splits it (`[profile  x]` and `[profile "x"]` are
+/// both `x`, and `[profile default]` is `default`); in the credentials file it is the header
+/// as it is, so `[profile default]` there is a profile named `profile default`.
+fn profile_named(kind: Kind, header: &str) -> Option<String> {
+    match kind {
+        Kind::Credentials => Some(header.to_owned()),
+        Kind::Config if header == "default" => Some(header.to_owned()),
+        // botocore passes over a profile whose name is empty.
+        Kind::Config if header.starts_with("profile") => match &shell_words(header)?[..] {
+            [_, name] if !name.is_empty() => Some(name.clone()),
+            _ => None,
+        },
+        Kind::Config => None,
+    }
 }
 
-/// Whether `text` has a section named `name`.
-fn has_section(text: &str, name: &str) -> bool {
-    text.lines()
-        .any(|line| section_name(line).as_deref() == Some(name))
+/// `text` split into words as Python's `shlex.split` splits it (POSIX mode, no comments):
+/// space, tab, and line breaks separate words, single quotes keep everything, double quotes
+/// keep everything but a backslash before `"` or `\`, and a backslash outside quotes keeps
+/// the next character. `None` for an unclosed quote or a trailing backslash, which
+/// `shlex.split` refuses.
+fn shell_words(text: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word: Option<String> = None;
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' | '\t' | '\r' | '\n' => words.extend(word.take()),
+            '\'' => {
+                let word = word.get_or_insert_with(String::new);
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        c => word.push(c),
+                    }
+                }
+            }
+            '"' => {
+                let word = word.get_or_insert_with(String::new);
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '\\' => {
+                            let next = chars.next()?;
+                            if !matches!(next, '"' | '\\') {
+                                word.push('\\');
+                            }
+                            word.push(next);
+                        }
+                        c => word.push(c),
+                    }
+                }
+            }
+            '\\' => word.get_or_insert_with(String::new).push(chars.next()?),
+            c => word.get_or_insert_with(String::new).push(c),
+        }
+    }
+    words.extend(word);
+    Some(words)
 }
 
-/// `text` with the section `name` holding exactly `body`, under `header`.
+/// Whether `text`, a file of `kind`, has a section for the profile `name`.
+fn has_section(text: &str, kind: Kind, name: &str) -> bool {
+    lines_and_headers(text)
+        .filter_map(|(_, header)| header)
+        .any(|header| profile_named(kind, header).as_deref() == Some(name))
+}
+
+/// `text`, a file of `kind`, with the section of the profile `name` holding exactly `body`,
+/// under `header`, cleared when dropped, as the text it is built from is.
 ///
-/// The first section with that name is replaced in place, and any later section with the
-/// same name is removed, so the AWS CLI cannot read a stale duplicate or refuse the file for
-/// holding one. Without such a section, it is appended after a blank line. Every other line
-/// is kept as it was, line endings included.
-fn set_section(text: &str, name: &str, header: &str, body: &[String]) -> String {
-    let mut section = format!("{header}\n");
+/// The first section of that profile is replaced in place, and any later section of it is
+/// removed, so the AWS CLI cannot read a stale duplicate or refuse the file for holding one.
+/// Without such a section, it is appended after a blank line. Every other line is kept as it
+/// was, line endings included. Each string is built at its final size, so no growth leaves a
+/// copy of a key in freed memory.
+fn set_section(
+    text: &str,
+    kind: Kind,
+    name: &str,
+    header: &str,
+    body: &[&str],
+) -> Zeroizing<String> {
+    let size = header.len() + 1 + body.iter().map(|line| line.len() + 1).sum::<usize>();
+    let mut section = Zeroizing::new(String::with_capacity(size));
+    section.push_str(header);
+    section.push('\n');
     for line in body {
         section.push_str(line);
         section.push('\n');
     }
-    let mut out = String::with_capacity(text.len() + section.len());
+    // Two bytes to spare for the line breaks before an appended section.
+    let mut out = Zeroizing::new(String::with_capacity(text.len() + 2 + section.len()));
     let mut skipping = false;
     let mut replaced = false;
-    for line in text.split_inclusive('\n') {
-        if let Some(found) = section_name(line) {
-            skipping = found == name;
+    for (line, found) in lines_and_headers(text) {
+        // The header that ends a section this replaced or removed follows an option of the
+        // new body, at column 0; indented, it would read as that option's continuation, so
+        // its indent is dropped. A header resets the option, so nothing after it changes.
+        let ended = skipping;
+        if let Some(found) = found {
+            skipping = profile_named(kind, found).as_deref() == Some(name);
             if skipping && !replaced {
                 out.push_str(&section);
                 replaced = true;
             }
         }
         if !skipping {
-            out.push_str(line);
+            out.push_str(if ended { line.trim_start() } else { line });
         }
     }
     if !replaced {
@@ -508,26 +641,28 @@ mod tests {
 
     use super::*;
 
-    fn lines(body: &[&str]) -> Vec<String> {
-        body.iter().map(|s| (*s).to_owned()).collect()
+    fn lines<'a>(body: &[&'a str]) -> Vec<&'a str> {
+        body.to_vec()
+    }
+
+    /// [`set_section`] of a credentials file, as a plain string.
+    fn set(text: &str, name: &str, header: &str, body: &[&str]) -> String {
+        set_section(text, Kind::Credentials, name, header, body).to_string()
     }
 
     #[test]
     fn a_new_section_is_appended_after_a_blank_line() {
+        assert_eq!(set("", "a", "[a]", &lines(&["x = 1"])), "[a]\nx = 1\n");
         assert_eq!(
-            set_section("", "a", "[a]", &lines(&["x = 1"])),
-            "[a]\nx = 1\n"
-        );
-        assert_eq!(
-            set_section("[b]\ny = 2\n", "a", "[a]", &lines(&["x = 1"])),
+            set("[b]\ny = 2\n", "a", "[a]", &lines(&["x = 1"])),
             "[b]\ny = 2\n\n[a]\nx = 1\n"
         );
         assert_eq!(
-            set_section("[b]\ny = 2", "a", "[a]", &lines(&["x = 1"])),
+            set("[b]\ny = 2", "a", "[a]", &lines(&["x = 1"])),
             "[b]\ny = 2\n\n[a]\nx = 1\n"
         );
         assert_eq!(
-            set_section("[b]\ny = 2\n\n", "a", "[a]", &lines(&["x = 1"])),
+            set("[b]\ny = 2\n\n", "a", "[a]", &lines(&["x = 1"])),
             "[b]\ny = 2\n\n[a]\nx = 1\n"
         );
     }
@@ -536,16 +671,16 @@ mod tests {
     fn an_existing_section_is_replaced_in_place_and_the_rest_kept_byte_for_byte() {
         let text = "# top comment\r\n[b]\r\ny = 2\r\n[a]\nold = 1\n; note\n[c]\nz = 3 \n";
         assert_eq!(
-            set_section(text, "a", "[a]", &lines(&["x = 1"])),
+            set(text, "a", "[a]", &lines(&["x = 1"])),
             "# top comment\r\n[b]\r\ny = 2\r\n[a]\nx = 1\n[c]\nz = 3 \n"
         );
     }
 
     #[test]
     fn a_later_duplicate_section_is_removed() {
-        let text = "[a]\nold = 1\n[b]\ny = 2\n  [a]  \nstale = 1\n[c]\n";
+        let text = "[a]\nold = 1\n[b]\ny = 2\n[a]  \nstale = 1\n[c]\n";
         assert_eq!(
-            set_section(text, "a", "[a]", &lines(&["x = 1"])),
+            set(text, "a", "[a]", &lines(&["x = 1"])),
             "[a]\nx = 1\n[b]\ny = 2\n[c]\n"
         );
     }
@@ -553,15 +688,15 @@ mod tests {
     #[test]
     fn a_similar_header_is_not_the_same_section() {
         let text = "[profile hippius-old]\nx = 1\n";
-        let out = set_section(
+        let out = set(
             text,
             "profile hippius",
             "[profile hippius]",
             &lines(&["y = 2"]),
         );
         assert!(out.starts_with("[profile hippius-old]\nx = 1\n"), "{out}");
-        assert!(has_section(&out, "profile hippius"));
-        assert!(!has_section(text, "profile hippius"));
+        assert!(has_section(&out, Kind::Credentials, "profile hippius"));
+        assert!(!has_section(text, Kind::Credentials, "profile hippius"));
     }
 
     #[test]
@@ -671,13 +806,14 @@ mod tests {
     /// The lines outside any section named `name`, joined, as the AWS CLI would read them.
     fn outside(text: &str, name: &str) -> String {
         let mut inside = false;
-        text.split_inclusive('\n')
-            .filter(|line| {
-                if let Some(found) = section_name(line) {
-                    inside = found == name;
+        lines_and_headers(text)
+            .filter(|(_, header)| {
+                if let Some(found) = header {
+                    inside = *found == name;
                 }
                 !inside
             })
+            .map(|(line, _)| line)
             .collect()
     }
 
@@ -688,7 +824,7 @@ mod tests {
     fn set_section_keeps_every_other_byte_for_every_small_file() {
         const LINES: [&str; 7] = ["[p]", "[ p ]", "[q]", "k = v", "", "# c", "[profile p]"];
         const ENDS: [&str; 3] = ["\n", "\r\n", ""];
-        let body = ["a = 1".to_owned()];
+        let body = ["a = 1"];
         let mut files = vec![String::new()];
         for _ in 0..4 {
             let longer: Vec<String> = files
@@ -706,7 +842,7 @@ mod tests {
         files.dedup();
         assert!(files.len() > 10_000, "{}", files.len());
         for text in &files {
-            let out = set_section(text, "p", "[p]", &body);
+            let out = set(text, "p", "[p]", &body);
             let before = outside(text, "p");
             let after = outside(&out, "p");
             assert!(
@@ -715,14 +851,107 @@ mod tests {
             );
             let added = &after[before.len()..];
             assert!(matches!(added, "" | "\n" | "\n\n"), "{text:?} -> {out:?}");
-            let headers = out
-                .lines()
-                .filter(|line| section_name(line).as_deref() == Some("p"))
+            let headers = lines_and_headers(&out)
+                .filter(|(_, header)| *header == Some("p"))
                 .count();
             assert_eq!(headers, 1, "{text:?} -> {out:?}");
             assert!(out.contains("[p]\na = 1\n"), "{text:?} -> {out:?}");
-            assert_eq!(set_section(&out, "p", "[p]", &body), out, "{text:?}");
+            assert_eq!(set(&out, "p", "[p]", &body), out, "{text:?}");
         }
+    }
+
+    /// `configure` waits for the lock of the config file, not only for the credentials
+    /// file's, and says so first: two runs that share only the config file cannot lose each
+    /// other's section.
+    #[test]
+    fn configure_waits_for_the_config_files_lock_and_says_so() {
+        let dir = temp_dir("config-lock");
+        let files = AwsFiles {
+            config: dir.join("config"),
+            credentials: dir.join("credentials"),
+        };
+        // The profile exists, so the run asks before it replaces it, under both locks.
+        write_private_file(&files.credentials, b"[p]\nold = 1\n");
+        let other = PrivateFile::ensure(&files.config, AWS_CONFIG).unwrap();
+        let held = other.lock().unwrap();
+        let (told, waiting) = std::sync::mpsc::channel();
+        let run = {
+            let files = AwsFiles {
+                config: files.config.clone(),
+                credentials: files.credentials.clone(),
+            };
+            std::thread::spawn(move || {
+                crate::config::on_lock_wait(move |note| told.send(note.to_owned()).unwrap());
+                let profile = AwsProfile::new("p").unwrap();
+                let key = AccessKeyId::new("hip_K").unwrap();
+                let secret = SecretKey::new("s", &Source::Argument).unwrap();
+                configure(&files, &profile, &key, &secret, |_| Ok(()))
+            })
+        };
+        let note = waiting
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("configure waits for the config file's lock");
+        assert_eq!(
+            note,
+            format!(
+                "waiting for another run of hipc to finish with the AWS config file {}",
+                crate::phrase::quote_path(&files.config)
+            )
+        );
+        assert_eq!(
+            fs::read_to_string(&files.credentials).unwrap(),
+            "[p]\nold = 1\n",
+            "nothing is written while it waits"
+        );
+        drop(held);
+        run.join().unwrap().unwrap();
+        assert!(
+            fs::read_to_string(&files.credentials)
+                .unwrap()
+                .contains("[p]")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Both variables can name one missing file through two spellings the directory check
+    /// does not tell apart; its one lock file is locked once, not twice, which would wait
+    /// for this process forever. Two files are locked together, and a free lock is taken
+    /// without a word.
+    #[test]
+    fn one_lock_file_named_twice_is_locked_once() {
+        let dir = temp_dir("one-lock-file");
+        // A lock file an older run left read-only still locks.
+        fs::write(dir.join(".other.lock"), "").unwrap();
+        fs::set_permissions(dir.join(".other.lock"), fs::Permissions::from_mode(0o400)).unwrap();
+        let held = PrivateFile::ensure(&dir.join("other"), AWS_CREDENTIALS)
+            .unwrap()
+            .lock()
+            .unwrap();
+        let (told, notes) = std::sync::mpsc::channel();
+        let run = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                crate::config::on_lock_wait(move |note| told.send(note.to_owned()).unwrap());
+                let a = PrivateFile::ensure(&dir.join("same"), AWS_CONFIG).unwrap();
+                let b = PrivateFile::ensure(&dir.join(".").join("same"), AWS_CREDENTIALS).unwrap();
+                let c = PrivateFile::ensure(&dir.join("other"), AWS_CREDENTIALS).unwrap();
+                let once = PrivateFile::lock_all(&[&a, &b]).unwrap().len();
+                // Then a lock another descriptor holds: this one waits, and says so.
+                let both = PrivateFile::lock_all(&[&c, &a, &b]).unwrap().len();
+                (once, both)
+            })
+        };
+        // The first note is the wait for `other`: the lock of `same` was taken once, at once.
+        let note = notes
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the wait for the held lock");
+        assert!(
+            note.ends_with(&crate::phrase::quote_path(&dir.join("other"))),
+            "{note}"
+        );
+        drop(held);
+        assert_eq!(run.join().unwrap(), (1, 2));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -771,7 +1000,8 @@ mod tests {
         fs::create_dir_all(&writable).unwrap();
         fs::set_permissions(&writable, fs::Permissions::from_mode(0o700)).unwrap();
         // The owner may read and enter but not write: the directory check passes, the
-        // create fails. The lock lives beside the credentials, which stay writable.
+        // create fails. The config file's lock file exists already, so its lock is taken.
+        fs::write(locked.join(".config.lock"), "").unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
         let files = AwsFiles {
             config: locked.join("config"),
@@ -1005,35 +1235,82 @@ mod tests {
 
     #[test]
     fn headers_are_matched_as_the_aws_cli_reads_them() {
+        let headers = |text| {
+            lines_and_headers(text)
+                .filter_map(|(_, header)| header)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(headers("  [hippius] ; comment\n"), ["hippius"]);
+        assert_eq!(headers("[a] # [b]\n[]\n[]]\n"), ["a] # [b", "]"]);
+        assert_eq!(headers("key = [x]\n[unclosed\n"), Vec::<&str>::new());
+        // A line indented under an option continues its value, past blank lines and
+        // comments; one at the option's indent, or under no option, is a header.
+        let text = "[a]\ns3 =\n  [b]\n\n# c\n    [c]\n[d]\n  [e]\nk = v\n[f]\n";
+        assert_eq!(headers(text), ["a", "d", "e", "f"]);
         assert_eq!(
-            section_name("[profile  hippius]").as_deref(),
-            Some("profile hippius")
+            headers("  k = v\n    [a]\n[b]\n  x\n    [c]\n"),
+            ["a", "b", "c"]
         );
-        assert_eq!(
-            section_name("  [hippius] ; comment").as_deref(),
-            Some("hippius")
-        );
-        assert_eq!(
-            section_name("[profile default]").as_deref(),
-            Some("default")
-        );
-        assert_eq!(section_name("[default]").as_deref(), Some("default"));
-        assert_eq!(section_name("key = [x]"), None);
-        assert_eq!(section_name("[unclosed"), None);
-        let text = "[profile  hippius] # note\nold = 1\n[profile default]\nd = 1\n";
-        assert_eq!(
-            set_section(
-                text,
-                "profile hippius",
-                "[profile hippius]",
-                &lines(&["n = 2"])
+        assert_eq!(headers("[a]\n = v\n  [b]\n"), ["a", "b"]);
+        assert_eq!(headers("[a]\n k: v\n  junk\n  [b]\n [c]\n"), ["a", "c"]);
+        for (kind, header, profile) in [
+            (Kind::Config, "default", Some("default")),
+            (Kind::Config, "profile default", Some("default")),
+            (Kind::Config, "profile  hippius", Some("hippius")),
+            (Kind::Config, "profile \"hip pius\"", Some("hip pius")),
+            (Kind::Config, "profile 'x'\\y\"\\\"\\n\"", Some("xy\"\\n")),
+            (Kind::Config, "profile ''", None),
+            (Kind::Config, "profilex y", Some("y")),
+            (Kind::Config, "profile", None),
+            (Kind::Config, "profile a b", None),
+            (Kind::Config, "profile \"a", None),
+            (Kind::Config, "profile 'a", None),
+            (Kind::Config, "profile a\\", None),
+            (Kind::Config, " profile a", None),
+            (Kind::Config, "hippius", None),
+            (Kind::Config, "sso-session x", None),
+            (
+                Kind::Credentials,
+                "profile default",
+                Some("profile default"),
             ),
+            (Kind::Credentials, " hippius ", Some(" hippius ")),
+            (Kind::Credentials, "default", Some("default")),
+        ] {
+            assert_eq!(
+                profile_named(kind, header).as_deref(),
+                profile,
+                "{header:?}"
+            );
+        }
+        let text = "[profile  hippius] # note\nold = 1\n[profile default]\nd = 1\n";
+        let set_config = |name, header, body: &[&str]| {
+            set_section(text, Kind::Config, name, header, body).to_string()
+        };
+        assert_eq!(
+            set_config("hippius", "[profile hippius]", &["n = 2"]),
             "[profile hippius]\nn = 2\n[profile default]\nd = 1\n"
         );
         assert_eq!(
-            set_section(text, "default", "[default]", &lines(&["d = 2"])),
+            set_config("default", "[default]", &["d = 2"]),
             "[profile  hippius] # note\nold = 1\n[default]\nd = 2\n"
         );
+        // In the credentials file, `[profile default]` is not `default`, and an indented
+        // header under an option is part of its value.
+        let text = "[profile default]\nd = 1\n[x]\nk = v\n  [default]\n";
+        assert!(!has_section(text, Kind::Credentials, "default"));
+        assert!(has_section(text, Kind::Credentials, "profile default"));
+        assert_eq!(
+            set(text, "default", "[default]", &["d = 2"]),
+            format!("{text}\n[default]\nd = 2\n")
+        );
+        // The indented header after a replaced section is moved to column 0, so it does not
+        // read as a continuation of the new body's last option.
+        let text = "[p]\n a = 1\n [work]\n k = W\n";
+        let out = set(text, "p", "[p]", &["x = 1"]);
+        assert_eq!(out, "[p]\nx = 1\n[work]\n k = W\n");
+        let headers: Vec<_> = lines_and_headers(&out).filter_map(|(_, h)| h).collect();
+        assert_eq!(headers, ["p", "work"]);
     }
 
     #[test]

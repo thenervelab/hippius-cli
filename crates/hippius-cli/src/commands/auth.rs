@@ -28,6 +28,19 @@ pub(crate) fn login(
     if access_key || access_key_file.is_some() {
         return login_with_access_key(ctx, access_key_file, new_account);
     }
+    let login = Login::new(ctx)?;
+    // A token bound to any origin but the default one is sent there from now on. Asked
+    // before the hidden prompt, the question says the token comes next: this answer is
+    // shown as it is typed, so a token pasted here would be on the screen.
+    let confirm_origin = |asked_next: bool| {
+        let consequence = if asked_next {
+            "the token is then sent there and nowhere else; answer here, and paste the token at \
+             the hidden prompt that follows"
+        } else {
+            "the token is then sent there and nowhere else"
+        };
+        ctx.confirm_origin(&login.target, "store the token for", consequence)
+    };
     let token = match token_file {
         Some(path) => {
             let input = Input {
@@ -37,9 +50,21 @@ pub(crate) fn login(
             };
             Token::new(&Zeroizing::new(input.read_secret()?), &input.source())?
         }
-        None => asked_token(ctx)?,
+        // A dry run sends nothing and needs no token (tenet 5), so nobody is asked for one: it
+        // says whether a stored token would be replaced as the access key's dry run does, by
+        // whether one is stored at all.
+        None if ctx.dry_run() => {
+            let placeholder = placeholder_token();
+            let replaces = login.config.has_token(&login.profile);
+            return Ok(Printed::Document(local_dry_run(
+                "store_token",
+                login.dry_run(&placeholder, replaces)?,
+            )));
+        }
+        // The origin is asked about before the prompt, so a person sees where the token goes
+        // before pasting it, and one who declines has pasted nothing.
+        None => asked_token(ctx, || confirm_origin(true))?,
     };
-    let login = Login::new(ctx)?;
     // A different token stored in the profile is replaced, and every later command then acts
     // as whoever owns the new one: a token piped in from a hostile source would move the
     // user's work into another account, so the replacement is confirmed.
@@ -50,12 +75,9 @@ pub(crate) fn login(
             login.dry_run(&token, replaces)?,
         )));
     }
-    // A token bound to any origin but the default one is sent there from now on.
-    ctx.confirm_origin(
-        &login.target,
-        "store the token for",
-        "the token is then sent there and nowhere else",
-    )?;
+    if token_file.is_some() {
+        confirm_origin(false)?;
+    }
     if replaces {
         login.confirm_replace(ctx, "a different one")?;
     }
@@ -70,6 +92,12 @@ pub(crate) fn login(
         ));
     }
     Ok(Printed::Document(doc))
+}
+
+/// The token a dry run stores in its copy of the config file when it has none to store, to
+/// give the origin as the real run would store it.
+fn placeholder_token() -> Token {
+    Token::new("dry-run", &Source::Default).expect("the placeholder is one word of visible ASCII")
 }
 
 /// Where a login stores its token: the config file as it was read, its profile, the
@@ -176,15 +204,17 @@ const ACCESS_KEY_PROMPT: &str =
     "type or paste the 12 words of the access key (they are not shown): ";
 
 /// The token a person pastes at the terminal, read without echo, for a login without
-/// `--token-file`. Asked only when a person can answer (tenet 5); otherwise the run is refused,
-/// as it was before the prompt existed, and the hint names `--token-file`.
-fn asked_token(ctx: &Context<'_>) -> Result<Token> {
+/// `--token-file`, once `ask_first`, the origin question, passes. Asked only when a person can
+/// answer (tenet 5); otherwise the run is refused before any question, as it was before the
+/// prompt existed, and the hint names `--token-file`.
+fn asked_token(ctx: &Context<'_>, ask_first: impl FnOnce() -> Result<()>) -> Result<Token> {
     if !ctx.can_prompt() {
         return Err(Error::usage(
             "`--token-file` is required when nobody at a terminal can be asked for the token",
             "pass `--token-file <path>`, or `--token-file -` to read the token from stdin",
         ));
     }
+    ask_first()?;
     let typed = hidden::read_line(|| output::note(TOKEN_PROMPT));
     // Enter was not echoed, so the next line starts here.
     output::note("\n");
@@ -385,8 +415,7 @@ fn open_session(
             "<the Ethereum signature of the challenge message>",
             "<the sr25519 signature of the challenge message>",
         );
-        let placeholder = Token::new("dry-run", &Source::Default)
-            .expect("the placeholder is one word of visible ASCII");
+        let placeholder = placeholder_token();
         // A dry run of requests, not a local `action`: the first request at the top, all three
         // in `requests`, and beside them the profile and origin the token would be stored for.
         let stored = login.dry_run(&placeholder, replaces)?;
