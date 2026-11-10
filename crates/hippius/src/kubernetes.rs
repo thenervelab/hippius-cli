@@ -473,7 +473,8 @@ fn digits(text: &str, width: usize) -> Option<u64> {
 }
 
 /// The seconds since 1970 of an RFC 3339 time as the API writes it,
-/// `YYYY-MM-DDTHH:MM:SS`, an optional fraction, and `Z` or an offset `+HH:MM` or `-HH:MM`;
+/// `YYYY-MM-DDTHH:MM:SS`, an optional fraction, and `Z` or an offset `+HH:MM` or `-HH:MM`, with
+/// `T` and `Z` in either case;
 /// `None` for any other text, a date or an offset that does not exist (`02-31`, `+24:00`), or
 /// a time before 1970.
 pub fn rfc3339_seconds(text: &str) -> Option<u64> {
@@ -483,8 +484,9 @@ pub fn rfc3339_seconds(text: &str) -> Option<u64> {
 /// [`rfc3339_seconds`] with the fraction of a second, in nanoseconds: digits past the ninth
 /// are dropped, so two times that differ only there compare equal.
 fn rfc3339(text: &str) -> Option<(u64, u32)> {
-    let (date, rest) = text.split_once('T')?;
-    let (time, zone) = rest.split_at(rest.find(['Z', '+', '-'])?);
+    // RFC 3339 section 5.6 allows a lowercase `t` and `z`.
+    let (date, rest) = text.split_once(['T', 't'])?;
+    let (time, zone) = rest.split_at(rest.find(['Z', 'z', '+', '-'])?);
     let date: Vec<&str> = date.split('-').collect();
     let [year, month, day] = date[..] else {
         return None;
@@ -506,7 +508,7 @@ fn rfc3339(text: &str) -> Option<(u64, u32)> {
         digits(day, 2)?,
         [digits(hour, 2)?, digits(minute, 2)?, digits(second, 2)?],
     )?;
-    let offset = if zone == "Z" {
+    let offset = if zone.eq_ignore_ascii_case("Z") {
         0
     } else {
         let (sign, hm) = zone.split_at(1);

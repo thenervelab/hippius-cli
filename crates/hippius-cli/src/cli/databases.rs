@@ -324,8 +324,17 @@ pub(crate) struct DatabaseRestore {
 /// A `--target-time`, checked here because the restore is a confirmed spend: a typo is
 /// refused before the question, not by the server after it. Only the RFC 3339 shape is
 /// checked (`YYYY-MM-DDTHH:MM:SS`, an optional fraction, then `Z` or `+HH:MM`); whether
-/// the time is in range and inside the backups is the server's to judge.
+/// the time is in range and inside the backups is the server's to judge. RFC 3339 also allows
+/// a lowercase `t` and `z`, which are sent uppercase, as the API writes them.
 fn target_time(value: &str) -> Result<String, String> {
+    let value: String = value
+        .chars()
+        .map(|c| match c {
+            't' => 'T',
+            'z' => 'Z',
+            c => c,
+        })
+        .collect();
     let shape: String = value
         .chars()
         .map(|c| if c.is_ascii_digit() { '0' } else { c })
@@ -342,7 +351,7 @@ fn target_time(value: &str) -> Result<String, String> {
                 None => Some(rest),
             });
     if matches!(zone, Some("Z" | "+00:00" | "-00:00")) {
-        Ok(value.to_owned())
+        Ok(value)
     } else {
         Err("a target time is RFC 3339, such as `2026-10-27T09:30:00Z`".to_owned())
     }
@@ -388,6 +397,10 @@ mod tests {
         ] {
             assert_eq!(target_time(good).as_deref(), Ok(good));
         }
+        assert_eq!(
+            target_time("2026-10-27t09:30:00.5z").as_deref(),
+            Ok("2026-10-27T09:30:00.5Z")
+        );
         for bad in [
             "",
             "2026-10-27",

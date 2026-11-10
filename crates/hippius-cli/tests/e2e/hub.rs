@@ -1021,7 +1021,13 @@ fn namespace_create_402_hints_at_the_balance_gate_and_409_is_conflict() {
     let error = Hipc::against(&Home::new(), &server)
         .run(&args)
         .fails(1, "payment_required");
-    assert!(error["hint"].as_str().unwrap().contains("$10"), "{error}");
+    // The server sets the minimum, so the hint names the balance read, not an amount.
+    assert_eq!(
+        error["hint"],
+        "a namespace needs a balance even on the Free plan, at a minimum the server sets: run \
+         `hipc billing balance` to see yours, top it up with `hipc billing top-up`, then run \
+         the command again"
+    );
     let limit = Server::start(vec![route(
         "POST",
         "/api/registry/provision/",

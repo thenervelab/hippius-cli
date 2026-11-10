@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use clap::{Args, Subcommand, ValueEnum};
 
 use crate::cli::{
-    CdnLists, CdnWaf, PURGE_ID, TierZones, credits, examples, normal_credits, number, waf, zone_id,
+    CdnLists, CdnWaf, PURGE_ID, TierZones, country_code, credits, examples, normal_credits, number,
+    waf, zone_id,
 };
 
 #[derive(Debug, Subcommand)]
@@ -135,8 +136,8 @@ pub(crate) struct RegionGb {
     pub(crate) gb: serde_json::Number,
 }
 
-/// `REGION=GB`: a two-letter region code (the API's codes are ISO country codes, such as
-/// `FR` and `AU`) and a number from 0 to [`MAX_ESTIMATE_GB`]. The range is compared as an
+/// `REGION=GB`: a two-letter region code, uppercased (the API's codes are ISO country codes,
+/// such as `FR` and `AU`), and a number from 0 to [`MAX_ESTIMATE_GB`]. The range is compared as an
 /// `f64`, so a value a few billionths over the top can pass and is left to the server.
 fn region_gb(value: &str) -> Result<RegionGb, String> {
     let refused = || {
@@ -145,15 +146,12 @@ fn region_gb(value: &str) -> Result<RegionGb, String> {
     };
     let (region, text) = value.split_once('=').ok_or_else(refused)?;
     let gb: serde_json::Number = text.parse().map_err(|_| refused())?;
-    let valid = region.len() == 2
-        && region.bytes().all(|b| b.is_ascii_alphabetic())
-        && !text.starts_with('-')
-        && gb.as_f64().is_some_and(|gb| gb <= MAX_ESTIMATE_GB);
+    // Uppercased, as every compute region is, so `fr` and `FR` are one region to the check
+    // that refuses a region given twice.
+    let region = country_code(region).ok_or_else(refused)?;
+    let valid = !text.starts_with('-') && gb.as_f64().is_some_and(|gb| gb <= MAX_ESTIMATE_GB);
     if valid {
-        Ok(RegionGb {
-            region: region.to_owned(),
-            gb,
-        })
+        Ok(RegionGb { region, gb })
     } else {
         Err(refused().to_owned())
     }
@@ -212,8 +210,8 @@ pub(crate) enum CdnZones {
 
 #[derive(Debug, Args)]
 pub(crate) struct ZoneCreate {
-    /// A label for the zone, at most 64 characters
-    #[arg(long)]
+    /// A label for the zone: one line of 1 to 64 characters
+    #[arg(long, value_parser = zone_name)]
     pub(crate) name: String,
     /// The account's S3 bucket the zone serves
     #[arg(long)]
@@ -239,8 +237,8 @@ pub(crate) struct ZoneUpdate {
     /// The zone id from hipc cdn zones list
     #[arg(value_parser = zone_id)]
     pub(crate) zone_id: String,
-    /// A new label, at most 64 characters
-    #[arg(long)]
+    /// A new label: one line of 1 to 64 characters
+    #[arg(long, value_parser = zone_name)]
     pub(crate) name: Option<String>,
     /// Move the zone to another of the account's buckets
     ///
@@ -600,6 +598,20 @@ impl StatsStep {
             Self::Hour => "1h",
             Self::Day => "1d",
         }
+    }
+}
+
+/// A zone's name: a label of at most 64 characters (swagger, `name` of `POST
+/// /api/cdn/zones/`), refused here rather than by a 400 after the question. A blank one or one
+/// with a control character names nothing a person can read.
+fn zone_name(value: &str) -> Result<String, String> {
+    let valid = !value.trim().is_empty()
+        && value.chars().count() <= 64
+        && !value.chars().any(char::is_control);
+    if valid {
+        Ok(value.to_owned())
+    } else {
+        Err("a zone name is one line of 1 to 64 characters".to_owned())
     }
 }
 

@@ -110,18 +110,36 @@ pub(crate) fn poll_until<W: Wait>(
             }
             Err(error) if error.is_retryable() && failures < MAX_POLL_FAILURES => {
                 failures += 1;
-                pause = after(&error, schedule.interval);
-                asked = error.retry_after_ms().is_some();
+                (pause, asked) = after(error.retry_after_ms(), schedule.interval);
             }
             Err(error) => return Err(wait.failed(error)),
         }
     }
 }
 
-/// The pause before the read after `error`, a retryable failure: the server's `Retry-After`
-/// when it asks for longer than `interval`, else `interval`.
-fn after(error: &Error, interval: Duration) -> Duration {
-    error
-        .retry_after_ms()
-        .map_or(interval, |ms| interval.max(Duration::from_millis(ms)))
+/// The pause before the read after a retryable failure whose `Retry-After` was
+/// `retry_after_ms`, and whether the server asked for it: its `Retry-After` when that is at
+/// least `interval`, else `interval`, the loop's own pause, which a deadline cuts short
+/// without skipping the last read (tenet 4).
+fn after(retry_after_ms: Option<u64>, interval: Duration) -> (Duration, bool) {
+    match retry_after_ms.map(Duration::from_millis) {
+        Some(asked) if asked >= interval => (asked, true),
+        _ => (interval, false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only a `Retry-After` at least the interval is the server's pause; a shorter one leaves
+    /// the loop's own, so a deadline inside it still gets the last read.
+    #[test]
+    fn a_short_retry_after_is_the_loops_own_pause() {
+        let interval = Duration::from_secs(5);
+        assert_eq!(after(None, interval), (interval, false));
+        assert_eq!(after(Some(1_000), interval), (interval, false));
+        assert_eq!(after(Some(5_000), interval), (interval, true));
+        assert_eq!(after(Some(9_000), interval), (Duration::from_secs(9), true));
+    }
 }

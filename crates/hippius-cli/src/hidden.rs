@@ -112,10 +112,10 @@ impl Drop for Quiet<'_> {
 }
 
 /// The line typed into `input`, read a byte at a time, as a terminal in canonical mode
-/// would edit it: Backspace (DEL or Ctrl-H) removes the last byte, Ctrl-U the whole line,
-/// Enter (a line feed or a carriage return) ends it, Ctrl-C, Ctrl-Z, and Ctrl-\ interrupt
-/// the read, and Ctrl-D ends the line, or the input when the line is empty, as does the end
-/// of input. A line longer than [`MAX_LINE`] ends the read.
+/// would edit it: Backspace (DEL or Ctrl-H) removes the last UTF-8 character, Ctrl-U the
+/// whole line, Enter (a line feed or a carriage return) ends it, Ctrl-C, Ctrl-Z, and Ctrl-\
+/// interrupt the read, and Ctrl-D ends the line, or the input when the line is empty, as does
+/// the end of input. A line longer than [`MAX_LINE`] ends the read.
 fn read_typed(input: &mut dyn Read) -> io::Result<Typed> {
     let mut line = Zeroizing::new(Vec::with_capacity(MAX_LINE));
     let mut byte = [0_u8; 1];
@@ -130,7 +130,9 @@ fn read_typed(input: &mut dyn Read) -> io::Result<Typed> {
             (0, _) | (_, b'\n' | b'\r' | 0x04) => return Ok(Typed::Line(line)),
             (_, 0x03 | 0x1a | 0x1c) => return Ok(Typed::Interrupted),
             (_, 0x7f | 0x08) => {
-                line.pop();
+                // Back to the start of the last character, as a terminal with `IUTF8` erases
+                // it: its continuation bytes are `10xxxxxx`.
+                while line.pop().is_some_and(|byte| byte & 0xC0 == 0x80) {}
             }
             (_, 0x15) => line.clear(),
             (_, _) if line.len() == MAX_LINE => return Ok(Typed::TooLong),
@@ -164,6 +166,9 @@ mod tests {
         assert_eq!(typed(b"t0kx\x08en\n"), line("t0ken"));
         assert_eq!(typed(b"\x7f\x7ft0ken\n"), line("t0ken"));
         assert_eq!(typed(b"wrong\x15t0ken\n"), line("t0ken"));
+        // A character of several bytes is erased whole.
+        assert_eq!(typed("t0ké\x7fen\n".as_bytes()), line("t0ken"));
+        assert_eq!(typed("t0k\u{1F600}\x08en\n".as_bytes()), line("t0ken"));
     }
 
     #[test]

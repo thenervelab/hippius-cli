@@ -265,12 +265,14 @@ fn pool_name(text: &str) -> Result<String, String> {
 /// The effects a Kubernetes taint takes.
 const TAINT_EFFECTS: [&str; 3] = ["NoSchedule", "PreferNoSchedule", "NoExecute"];
 
-/// A `--taint`: `KEY[=VALUE]:EFFECT`, a key before any `=` and an effect after the last `:`
-/// that Kubernetes knows. The server judges the key and value against the Kubernetes rules.
+/// A `--taint`: `KEY[=VALUE]:EFFECT`, a key before any `=` and an effect after the `:` that
+/// Kubernetes knows. Neither a key nor a value may hold `:` in Kubernetes, so `a:b:NoSchedule`
+/// is refused here; the server judges the rest of the key and value against the Kubernetes
+/// rules.
 fn taint(text: &str) -> Result<String, String> {
     let valid = text.rsplit_once(':').is_some_and(|(pair, effect)| {
         let key = pair.split_once('=').map_or(pair, |(key, _)| key);
-        !key.is_empty() && TAINT_EFFECTS.contains(&effect)
+        !key.is_empty() && !pair.contains(':') && TAINT_EFFECTS.contains(&effect)
     });
     if valid {
         Ok(text.to_owned())

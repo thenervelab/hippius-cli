@@ -955,6 +955,20 @@ fn node_pool_create_sends_exactly_the_labels_and_taints() {
         message(&error).ends_with("a label is `KEY=VALUE`, with a key before the `=`"),
         "{error}"
     );
+    // Neither a taint's key nor its value holds `:`, and its effect is one Kubernetes knows.
+    for taint in [
+        "a:b:NoSchedule",
+        "a=b:c:NoSchedule",
+        "=b:NoSchedule",
+        "a:Never",
+        "a",
+    ] {
+        let error = create(&["--taint", taint]).fails(2, "usage");
+        assert!(
+            message(&error).contains("a taint is `KEY[=VALUE]:EFFECT`"),
+            "{taint}: {error}"
+        );
+    }
     // A required flag left out.
     hipc(&server, &["node-pools", "create", "7", "--name", "gpu"]).fails(2, "usage");
     assert_eq!(server.requests().len(), before);

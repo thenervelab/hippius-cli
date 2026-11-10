@@ -550,7 +550,10 @@ fn command_line(words: &str, globals: &[(&str, Option<Given>)]) -> Option<String
     let mut command = "hipc".to_owned();
     for (flag, given) in globals {
         let Some(given) = given else { continue };
-        let plain = !given.value.starts_with('-')
+        // An empty value would print `--profile  words`, which a shell reads as `--profile
+        // words`.
+        let plain = !given.value.is_empty()
+            && !given.value.starts_with('-')
             && given
                 .value
                 .bytes()
@@ -652,6 +655,33 @@ mod tests {
         assert!(may_have_written(false, &partial()));
         assert!(!may_have_written(true, &partial()));
         assert!(!may_have_written(false, &refused()));
+    }
+
+    /// A global value that is not one plain word, an empty one included, gives no command:
+    /// `--profile ""` would print `--profile  words`, which a shell reads as `--profile words`.
+    #[test]
+    fn a_next_command_repeats_only_plain_global_values() {
+        let given = |value: &str| {
+            Some(Given {
+                value: value.to_owned(),
+                source: Source::Flag("--profile"),
+            })
+        };
+        assert_eq!(
+            command_line("auth status", &[("--profile", given("work"))]).as_deref(),
+            Some("hipc --profile work auth status")
+        );
+        for value in ["", "-work", "my work", "a;b"] {
+            assert_eq!(
+                command_line("auth status", &[("--profile", given(value))]),
+                None,
+                "{value:?}"
+            );
+        }
+        assert_eq!(
+            command_line("auth status", &[("--profile", None)]).as_deref(),
+            Some("hipc auth status")
+        );
     }
 
     const DELETE: Question<'static> = Question {

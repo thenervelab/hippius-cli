@@ -1310,15 +1310,20 @@ fn estimate_sends_only_the_keys_given_without_confirmation() {
     );
     let doc = hipc(&server, &["estimate", "--requests", "5", "--dry-run"]).ok();
     assert_eq!(draft(&doc)["body"], json!({"requests": 5}));
-    let error = hipc(
-        &server,
-        &["estimate", "--traffic", "FR=1", "--traffic", "FR=2"],
-    )
-    .fails(2, "usage");
-    assert_eq!(
-        error["message"],
-        "`--traffic` names the region `FR` more than once"
-    );
+    // A region is uppercased, so one written in two cases is one region given twice.
+    for second in ["FR=2", "fr=2"] {
+        let error = hipc(
+            &server,
+            &["estimate", "--traffic", "FR=1", "--traffic", second],
+        )
+        .fails(2, "usage");
+        assert_eq!(
+            error["message"],
+            "`--traffic` names the region `FR` more than once"
+        );
+    }
+    let doc = hipc(&server, &["estimate", "--traffic", "au=1", "--dry-run"]).ok();
+    assert_eq!(draft(&doc)["body"], json!({"gb": {"AU": 1}}));
     for bad in ["FR", "FR=", "FR=-1", "=1", "F1=2", "FR=ten", "FRA=1", "F=1"] {
         hipc(&server, &["estimate", "--traffic", bad]).fails(2, "usage");
     }

@@ -351,6 +351,8 @@ fn an_rfc3339_time_is_a_real_date_with_a_real_offset() {
         ),
         ("2026-11-03T13:59:00+03:59", 1_793_700_000, 0),
         ("2026-11-03T10:00:00-00:00", 1_793_700_000, 0),
+        // RFC 3339 allows `t` and `z` in lowercase.
+        ("2026-11-03t10:00:00.5z", 1_793_700_000, 500_000_000),
     ] {
         assert_eq!(rfc3339(text), Some((seconds, nanos)), "{text}");
     }

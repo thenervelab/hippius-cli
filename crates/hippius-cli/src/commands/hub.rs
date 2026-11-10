@@ -1114,9 +1114,11 @@ fn provision(
         Ok(body)
     })
     .map_err(|error| match error.code() {
+        // The minimum is the server's to set (tenet 11), so the hint names no amount.
         Code::PaymentRequired => error.with_hint(
-            "top up the balance to at least $10 in the console, which a namespace needs even \
-             on the Free plan, then run the command again",
+            "a namespace needs a balance even on the Free plan, at a minimum the server sets: \
+             run `hipc billing balance` to see yours, top it up with `hipc billing top-up`, then \
+             run the command again",
         ),
         _ => error,
     })
