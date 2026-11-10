@@ -949,7 +949,8 @@ fn api_long_about() -> String {
          conditional and writes over a version another client published since it was read; hipc \
          cdn waf rules update and hipc cdn waf rate-limits update send the version they read and \
          stop on a conflict. A 2xx answer larger than 32 MiB is not printed: it exits 1 internal. On an \
-         error status a body that large is dropped, and the status decides the error.",
+         error status a body that large is not read: the status decides the error, and its message \
+         says the body was not read.",
         api_about()
     )
 }

@@ -49,6 +49,55 @@ fn a_body_of_exactly_32_mib_is_read_and_one_byte_more_is_not() {
             .ends_with("is larger than 32 MiB"),
         "{error}"
     );
+
+    // A refusal that large keeps its status's code, and says why nothing of it is quoted.
+    let server = Server::start(vec![route(
+        "GET",
+        "/api/big/",
+        Reply::json(400, &body(CAP + 1)),
+    )]);
+    let run = Hipc::against(&Home::new(), &server).run(&["api", "GET", "/big/"]);
+    let error = run.fails(1, "validation");
+    assert!(
+        error["message"].as_str().unwrap().ends_with(
+            "the API answered 400, and its body is larger than 32 MiB, so it was not read"
+        ),
+        "{error}"
+    );
+}
+
+/// A field error under a secret field keeps its text, with the value the request sent in
+/// any secret field redacted where the server quotes it back.
+#[test]
+fn a_field_error_never_quotes_a_secret_the_request_sent() {
+    let sent = "Pa55-word-sent-9";
+    let server = Server::start(vec![route(
+        "POST",
+        "/api/x/",
+        Reply::json(
+            400,
+            &format!(r#"{{"password":["`{sent}` is too common."],"name":["Too short."]}}"#),
+        ),
+    )]);
+    let home = Home::new();
+    let body = home.file(
+        "body.json",
+        format!(r#"{{"user":{{"Password":"{sent}"}},"name":"n"}}"#).as_bytes(),
+    );
+    let run = Hipc::against(&home, &server).run(&[
+        "api",
+        "POST",
+        "/x/",
+        BODY,
+        body.to_str().unwrap(),
+        "--yes",
+    ]);
+    let error = run.fails(1, "validation");
+    assert!(!run.stderr().contains(sent), "{}", run.stderr());
+    assert_eq!(
+        error["details"],
+        json!({"password": ["`<redacted>` is too common."], "name": ["Too short."]})
+    );
 }
 
 #[test]

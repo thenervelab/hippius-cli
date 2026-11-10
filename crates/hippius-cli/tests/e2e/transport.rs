@@ -510,6 +510,32 @@ fn a_refused_write_whose_body_stalls_is_still_that_refusal() {
     assert_eq!(server.requests().len(), 1);
     assert_eq!(error["side_effects"], "none");
     assert_eq!(error["retryable"], false);
+    assert!(
+        error["message"].as_str().unwrap().ends_with(
+            ": the API answered 409, and its body did not arrive within the request timeout"
+        ),
+        "{error}"
+    );
+}
+
+/// A refusal whose body breaks off keeps its status's code, and says its body could not be
+/// read rather than that the server gave no reason.
+#[test]
+fn a_refusal_whose_body_breaks_says_it_could_not_be_read() {
+    let head = "HTTP/1.1 400 Bad Request\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n";
+    let server = Server::start(vec![route("GET", "/api/x/", Reply::raw(head.as_bytes()))]);
+    let error = Hipc::against(&Home::new(), &server)
+        .run(&["--request-timeout", "5", "api", "GET", "/x/"])
+        .fails(1, "validation");
+    assert_eq!(error["http_status"], 400);
+    assert_eq!(error["details"], serde_json::Value::Null);
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .ends_with(": the API answered 400, and its body could not be read"),
+        "{error}"
+    );
 }
 
 #[test]

@@ -492,8 +492,8 @@ impl fmt::Debug for Request {
             .field("about", &self.about)
             .field("listed_by", &self.listed_by)
             .field("accept", &self.accept)
-            .field("if_match", &self.if_match)
-            .field("idempotency_key", &self.idempotency_key)
+            .field("if_match", &self.if_match.is_some())
+            .field("idempotency_key", &self.idempotency_key.is_some())
             .field("access", &self.access)
             .finish()
     }
@@ -611,7 +611,7 @@ impl Response {
         let error = match parse_json(&self.body) {
             Some(details) if !details.is_null() => self
                 .failed(why)
-                .with_details(without_secret_fields(details)),
+                .with_details(without_secret_fields(details, &[])),
             _ => self.failed(why),
         };
         self.without_token(error)
@@ -621,7 +621,8 @@ impl Response {
     /// answers `valid: false`: `validation`, as ``cannot <action>: <why>``, with the status,
     /// the request id, and the body as `details`, cleaned as [`Response::refused`] cleans it.
     pub fn invalid(&self, why: &str) -> Error {
-        let details = parse_json(&self.body).map_or(Value::Null, without_secret_fields);
+        let details =
+            parse_json(&self.body).map_or(Value::Null, |body| without_secret_fields(body, &[]));
         let error = Error::new(Code::Validation, format!("cannot {}: {why}", self.action))
             .with_http(self.status, self.request_id.clone())
             .with_details(details);
@@ -1347,20 +1348,20 @@ impl Client {
         // The limit is one byte past the cap: ureq 3.5.0 refuses a read once its limit is used
         // up, before it sees the end of the body (`LimitReader::read` in `src/body/limit.rs`),
         // so a limit of the cap itself would refuse a body of exactly the cap.
-        let body = match response
+        let (body, body_unread) = match response
             .body_mut()
             .with_config()
             .limit(MAX_BODY_BYTES + 1)
             .read_to_vec()
         {
-            Ok(body) => body,
+            Ok(body) => (body, None),
             // The status arrived, so the request reached the server whatever broke the
             // body: a TLS alert or an unreachable network here must not read as "not sent".
             Err(error) if (200..300).contains(&status) => {
                 let error = transport_error_as(&error, Transport::MaybeSent, write, &attempt);
                 return Err(self.without_token(error.with_http(status, request_id)));
             }
-            Err(_) => Vec::new(),
+            Err(error) => (Vec::new(), Some(unread_body(&error))),
         };
         let mut token_spellings = self.sent_token_spellings();
         if (200..300).contains(&status) {
@@ -1374,6 +1375,7 @@ impl Client {
                 token_spellings: std::mem::take(&mut *token_spellings),
             });
         }
+        let sent_secrets = sent_secret_spellings(request.body.as_deref());
         let error = status_error(&StatusAnswer {
             attempt: &attempt,
             write,
@@ -1381,10 +1383,12 @@ impl Client {
                 && crate::account::not_done_on_503(resolved.target.api_path()),
             status,
             body: &body,
+            body_unread,
             retry_after: retry_after.as_deref(),
             request_id,
             location: location.as_deref(),
             token_spellings: &token_spellings,
+            sent_secrets: &sent_secrets,
         });
         Err(self.without_token(error))
     }
@@ -1790,12 +1794,18 @@ struct StatusAnswer<'a> {
     not_done_on_503: bool,
     status: u16,
     body: &'a [u8],
+    /// Why the body could not be read, as the end of a sentence about it; `body` is then
+    /// empty, and the status still decides the code.
+    body_unread: Option<String>,
     retry_after: Option<&'a str>,
     request_id: Option<String>,
     location: Option<&'a str>,
     /// The spellings of the token the request carried, redacted from the body before any of
     /// it is quoted, so a cut cannot split one and leave half of it in the message.
     token_spellings: &'a [String],
+    /// The spellings of each value the request sent in a secret field, redacted from the
+    /// field errors of a secret field ([`without_secret_fields`]), which may quote it.
+    sent_secrets: &'a [String],
 }
 
 /// The error for a non-2xx answer (`TENETS.md` tenet 4).
@@ -1804,7 +1814,7 @@ fn status_error(answer: &StatusAnswer<'_>) -> Error {
     // `error.details` in JSON mode, so the secret fields are removed from it.
     let details = parse_json(answer.body)
         .filter(|v| !v.is_null())
-        .map(without_secret_fields)
+        .map(|body| without_secret_fields(body, answer.sent_secrets))
         .map(|body| crate::json::redact_value_all(body, answer.token_spellings));
     let server_code = details
         .as_ref()
@@ -1846,7 +1856,10 @@ fn status_error(answer: &StatusAnswer<'_>) -> Error {
             format!("the API answered {status} with a redirect and no `Location`")
         }
         (_, _, Some(says)) => says.clone(),
-        (_, _, None) => format!("the API answered {status}"),
+        (_, _, None) => match &answer.body_unread {
+            Some(reason) => format!("the API answered {status}, and its body {reason}"),
+            None => format!("the API answered {status}"),
+        },
     };
     // An empty object or list explains nothing either, and a hint that points at it would
     // send the caller to nothing.
@@ -1908,6 +1921,45 @@ fn status_error(answer: &StatusAnswer<'_>) -> Error {
         return error.with_hint("check the API's answer in `details`, which `--json` prints");
     }
     answer.attempt.with_hint(error)
+}
+
+/// Why the body of a non-2xx answer could not be read, as the end of a sentence about it.
+fn unread_body(error: &ureq::Error) -> String {
+    match error {
+        ureq::Error::BodyExceedsLimit(_) => format!(
+            "is larger than {} MiB, so it was not read",
+            MAX_BODY_BYTES / (1024 * 1024)
+        ),
+        ureq::Error::Timeout(_) => "did not arrive within the request timeout".to_owned(),
+        _ => "could not be read".to_owned(),
+    }
+}
+
+/// The spellings of each value `body`, a request's JSON body, sends in a secret field
+/// ([`sent_secrets`]), for [`without_secret_fields`]; the parsed copy is cleared.
+fn sent_secret_spellings(body: Option<&[u8]>) -> zeroize::Zeroizing<Vec<String>> {
+    let Some(mut sent) = body.and_then(parse_json) else {
+        return zeroize::Zeroizing::new(Vec::new());
+    };
+    let spellings = crate::redactions(sent_secrets(&sent));
+    crate::clear_strings(&mut sent);
+    spellings
+}
+
+/// The values `body`, a request's JSON, holds as strings in a field named as a secret
+/// ([`is_error_body_secret`]), at any depth.
+fn sent_secrets(body: &Value) -> Vec<&str> {
+    match body {
+        Value::Object(fields) => fields
+            .iter()
+            .flat_map(|(key, value)| match value {
+                Value::String(text) if is_error_body_secret(key) => vec![text.as_str()],
+                other => sent_secrets(other),
+            })
+            .collect(),
+        Value::Array(items) => items.iter().flat_map(sent_secrets).collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// `text` with each of `spellings` redacted, before a cut could split one.
@@ -2101,8 +2153,10 @@ fn is_error_body_secret(key: &str) -> bool {
 /// `body` without any of [`ERROR_BODY_SECRET_FIELDS`], at any depth, but for Django REST
 /// framework's field errors: a secret field whose value is a list of strings is a validation
 /// error about the field, such as `{"secret_access_key": ["This field may not be blank."]}`,
-/// which says why the request was refused and holds no secret, so it stays.
-fn without_secret_fields(body: Value) -> Value {
+/// which says why the request was refused, so it stays. Such a message may quote the value
+/// sent in the field (`'hunter2' is too common`), so each of `sent_secrets` is redacted from
+/// it; only from it, since a short value would cut every other text of the body.
+fn without_secret_fields(body: Value, sent_secrets: &[String]) -> Value {
     match body {
         Value::Object(fields) => Value::Object(
             fields
@@ -2110,15 +2164,20 @@ fn without_secret_fields(body: Value) -> Value {
                 .filter(|(key, value)| !is_error_body_secret(key) || is_field_error(value))
                 .map(|(key, value)| {
                     let value = if is_error_body_secret(&key) {
-                        value
+                        crate::json::redact_value_all(value, sent_secrets)
                     } else {
-                        without_secret_fields(value)
+                        without_secret_fields(value, sent_secrets)
                     };
                     (key, value)
                 })
                 .collect(),
         ),
-        Value::Array(items) => Value::Array(items.into_iter().map(without_secret_fields).collect()),
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(|item| without_secret_fields(item, sent_secrets))
+                .collect(),
+        ),
         other => other,
     }
 }
@@ -3631,7 +3690,9 @@ mod tests {
                 retry_after: None,
                 request_id: None,
                 location: None,
+                body_unread: None,
                 token_spellings: &[],
+                sent_secrets: &[],
             });
             assert_eq!(error.code().as_str(), code);
             assert_eq!(error.code().exit_code(), 2);
@@ -3658,7 +3719,9 @@ mod tests {
                 retry_after: None,
                 request_id: None,
                 location: None,
+                body_unread: None,
                 token_spellings: &[],
+                sent_secrets: &[],
             });
             assert_eq!(error.code().as_str(), code);
             let hint = error.hint().unwrap();
@@ -3667,16 +3730,30 @@ mod tests {
         }
     }
 
-    /// A precondition shows in the dry run only on the request that carries it, and its
-    /// `Debug` names it, as a version is no secret.
+    /// A precondition shows in the dry run only on the request that carries it. `Debug`
+    /// says whether a request carries a precondition or an idempotency key, never its value,
+    /// as it shows nothing else the caller gave but the path.
     #[test]
     fn dry_run_shows_an_if_match_only_when_set() {
         let c = client(Selection::Own);
         let put = Request::new(Method::Put, "/cdn/zones/z1/waf/rules/").json(&json!({}));
         assert!(c.describe(&put).unwrap().get("if_match").is_none());
-        let put = put.if_match("7");
-        assert_eq!(c.describe(&put).unwrap()["if_match"], "7");
-        assert!(format!("{put:?}").contains(r#"if_match: Some("7")"#));
+        let debug = format!("{put:?}");
+        assert!(
+            debug.contains("if_match: false, idempotency_key: false"),
+            "{debug}"
+        );
+        let put = put.if_match("v-77").idempotency_key("key-88");
+        assert_eq!(c.describe(&put).unwrap()["if_match"], "v-77");
+        let debug = format!("{put:?}");
+        assert!(
+            debug.contains("if_match: true, idempotency_key: true"),
+            "{debug}"
+        );
+        assert!(
+            !debug.contains("v-77") && !debug.contains("key-88"),
+            "{debug}"
+        );
     }
 
     #[test]
@@ -3709,7 +3786,9 @@ mod tests {
             retry_after: Some("7"),
             request_id: Some("rid".into()),
             location: Some("https://elsewhere/"),
+            body_unread: None,
             token_spellings: &[],
+            sent_secrets: &[],
         })
     }
 
@@ -3918,7 +3997,9 @@ mod tests {
             retry_after: None,
             request_id: None,
             location: None,
+            body_unread: None,
             token_spellings: &[],
+            sent_secrets: &[],
         });
         assert_eq!(
             nowhere.to_string(),
