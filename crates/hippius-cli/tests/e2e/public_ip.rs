@@ -364,8 +364,8 @@ fn firewall_get_prints_the_rules_as_sent() {
 }
 
 #[test]
-fn firewall_update_sends_the_rules_unchanged_and_the_revision_only_when_given() {
-    let server = Server::start(vec![vm_route("PUT", "firewall/", Reply::json(200, RULES))]);
+fn firewall_update_sends_the_rules_unchanged_with_a_revision() {
+    let server = Server::start(firewall_routes());
     // The rules as `get` prints them, with a number no float holds. Only `rules` goes out,
     // each rule byte for byte.
     let rules = concat!(
@@ -373,33 +373,43 @@ fn firewall_update_sends_the_rules_unchanged_and_the_revision_only_when_given() 
         r#""source_cidrs":["203.0.113.0/24"],"description":"web","enabled":true},"#,
         r#"{"protocol":"icmp","ports":[]},{"protocol":"udp"}]"#
     );
-    let file = format!(r#"{{"rules":{rules},"max_rules":50,"revision":"r2"}}"#);
+    // The file's own `revision` is not sent: the one the read returns is, or the one given.
+    let file = format!(r#"{{"rules":{rules},"max_rules":50,"revision":"r0"}}"#);
     let doc = update(&server, &file, &["--yes", "--remove-others"]).ok();
     assert_eq!(doc["revision"], "r2");
     update(
         &server,
         &file,
-        &["--yes", "--remove-others", "--base-revision", "r2"],
+        &["--yes", "--remove-others", "--base-revision", "r9"],
     )
     .ok();
     let requests = server.requests();
-    let sent: Vec<&[u8]> = requests.iter().map(|r| r.body.as_slice()).collect();
+    let sent: Vec<(&str, &[u8])> = requests
+        .iter()
+        .map(|r| (r.method.as_str(), r.body.as_slice()))
+        .collect();
     assert_eq!(
         sent,
         [
-            format!(r#"{{"rules":{rules}}}"#).as_bytes(),
-            format!(r#"{{"rules":{rules},"base_revision":"r2"}}"#).as_bytes(),
+            ("GET", &b""[..]),
+            (
+                "PUT",
+                format!(r#"{{"rules":{rules},"base_revision":"r2"}}"#).as_bytes()
+            ),
+            (
+                "PUT",
+                format!(r#"{{"rules":{rules},"base_revision":"r9"}}"#).as_bytes()
+            ),
         ]
     );
     for request in requests {
-        assert_eq!(request.method, "PUT");
         assert_eq!(request.path(), format!("/api/compute/vms/{VM}/firewall/"));
     }
 }
 
 #[test]
 fn firewall_update_reads_the_rules_from_stdin() {
-    let server = Server::start(vec![vm_route("PUT", "firewall/", Reply::json(200, RULES))]);
+    let server = Server::start(firewall_routes());
     Hipc::against(&Home::new(), &server)
         .stdin(br#"{"rules":[{"protocol":"tcp","ports":["443"]}]}"#)
         .run(&[
@@ -414,8 +424,8 @@ fn firewall_update_reads_the_rules_from_stdin() {
         ])
         .ok();
     assert_eq!(
-        server.only_request().json(),
-        json!({"rules": [{"protocol": "tcp", "ports": ["443"]}]})
+        puts(&server),
+        [json!({"rules": [{"protocol": "tcp", "ports": ["443"]}], "base_revision": "r2"})]
     );
     let refused = Hipc::against(&Home::new(), &server)
         .stdin(br#"{"rules":[{"protocol":"tcp","ports":["443"]}]}"#)
@@ -436,12 +446,12 @@ fn firewall_update_reads_the_rules_from_stdin() {
         message.contains("with 1 rule from stdin, which accepts every IPv4 address"),
         "{message}"
     );
-    assert_eq!(server.requests().len(), 1);
+    assert_eq!(server.requests().len(), 2);
 }
 
 #[test]
 fn firewall_update_needs_yes_and_says_what_it_opens_or_removes() {
-    let server = Server::start(vec![vm_route("PUT", "firewall/", Reply::json(200, RULES))]);
+    let server = Server::start(firewall_routes());
     let message = |contents: &str| {
         let error =
             update(&server, contents, &["--remove-others"]).fails(2, "confirmation_required");
@@ -535,7 +545,10 @@ fn firewall_update_needs_yes_and_says_what_it_opens_or_removes() {
     assert!(server.requests().is_empty());
     // An empty list is allowed: it removes every rule.
     update(&server, r#"{"rules":[]}"#, &["--yes", "--remove-others"]).ok();
-    assert_eq!(server.only_request().json(), json!({ "rules": [] }));
+    assert_eq!(
+        puts(&server),
+        [json!({ "rules": [], "base_revision": "r2" })]
+    );
 }
 
 #[test]
@@ -587,11 +600,10 @@ fn a_changed_firewall_is_conflict_and_the_hint_names_firewall_get() {
         (403, "permission", "none"),
         (503, "unavailable", "partial"),
     ] {
-        let server = Server::start(vec![vm_route(
-            "PUT",
-            "firewall/",
-            Reply::json(status, r#"{"error":"x"}"#),
-        )]);
+        let server = Server::start(vec![
+            vm_route("GET", "firewall/", Reply::json(200, RULES)),
+            vm_route("PUT", "firewall/", Reply::json(status, r#"{"error":"x"}"#)),
+        ]);
         let error =
             update(&server, r#"{"rules":[]}"#, &["--yes", "--remove-others"]).fails(1, code);
         // Only a 409 names `firewall get`; a 503 may have changed the rules.
@@ -652,14 +664,16 @@ fn a_rules_file_that_is_not_a_rules_object_is_usage_without_a_request() {
 /// `rules` of the PUT body.
 #[test]
 fn a_bare_array_is_the_rule_list() {
-    let server = Server::start(vec![vm_route("PUT", "firewall/", Reply::json(200, RULES))]);
+    let server = Server::start(firewall_routes());
     let rule = r#"{"protocol":"tcp","ports":["443"],"source_cidrs":["203.0.113.0/24"]}"#;
     update(&server, &format!("[{rule}]"), &["--yes", "--remove-others"]).ok();
     update(&server, "[]", &["--yes", "--remove-others"]).ok();
-    let sent: Vec<Value> = server.requests().iter().map(Recorded::json).collect();
     assert_eq!(
-        sent,
-        [json!({ "rules": [parsed(rule)] }), json!({ "rules": [] }),]
+        puts(&server),
+        [
+            json!({ "rules": [parsed(rule)], "base_revision": "r2" }),
+            json!({ "rules": [], "base_revision": "r2" }),
+        ]
     );
 }
 
@@ -668,7 +682,7 @@ fn a_bare_array_is_the_rule_list() {
 /// `--yes` and under `--dry-run` alike.
 #[test]
 fn a_rule_key_swagger_does_not_list_is_usage_without_a_request() {
-    let server = Server::start(vec![vm_route("PUT", "firewall/", Reply::json(200, RULES))]);
+    let server = Server::start(firewall_routes());
     for (key, rule) in [
         (
             "sources",
@@ -704,12 +718,12 @@ fn a_rule_key_swagger_does_not_list_is_usage_without_a_request() {
         r#""description":"ssh","enabled":false}]"#
     );
     update(&server, full, &["--yes", "--remove-others"]).ok();
-    assert_eq!(server.requests().len(), 1);
+    assert_eq!(puts(&server).len(), 1);
 }
 
 #[test]
 fn more_than_fifty_rules_is_usage_without_a_request() {
-    let server = Server::start(vec![vm_route("PUT", "firewall/", Reply::json(200, RULES))]);
+    let server = Server::start(firewall_routes());
     let rule = r#"{"protocol":"tcp","ports":["22"],"source_cidrs":["203.0.113.0/24"]}"#;
     let list = |count: usize| format!(r#"{{"rules":[{}]}}"#, vec![rule; count].join(","));
     let error = update(&server, &list(51), &["--yes"]).fails(2, "usage");
@@ -828,14 +842,15 @@ fn a_malformed_rule_refuses_the_whole_list_without_a_request() {
 
 #[test]
 fn the_edges_of_ports_and_sources_are_accepted() {
-    let server = Server::start(vec![vm_route("PUT", "firewall/", Reply::json(200, RULES))]);
+    let server = Server::start(firewall_routes());
     let contents = concat!(
         r#"{"rules":[{"protocol":"tcp","ports":["1","65535","1-65535","443-443"],"#,
         r#""source_cidrs":["0.0.0.0/0","255.255.255.255/32","10.1.2.3/8"]}]}"#
     );
     update(&server, contents, &["--yes", "--remove-others"]).ok();
-    assert_eq!(server.requests().len(), 1);
+    assert_eq!(puts(&server).len(), 1);
 }
+
 /// `firewall update` with `rules` on stdin, against a VM whose firewall is `RULES` (one rule,
 /// `tcp` port `22` from any source), plus `extra` flags.
 fn update_stdin(server: &Server, rules: &str, extra: &[&str]) -> Run {
@@ -844,6 +859,16 @@ fn update_stdin(server: &Server, rules: &str, extra: &[&str]) -> Run {
     Hipc::against(&Home::new(), server)
         .stdin(rules.as_bytes())
         .run(&argv)
+}
+
+/// The bodies of the PUTs `server` received, in order.
+fn puts(server: &Server) -> Vec<Value> {
+    server
+        .requests()
+        .iter()
+        .filter(|request| request.method == "PUT")
+        .map(Recorded::json)
+        .collect()
 }
 
 /// The firewall routes, with `RULES` as the current list.
@@ -892,10 +917,10 @@ fn firewall_update_that_drops_a_rule_is_refused_without_remove_others() {
         );
         // Without `--yes` the guard still comes first: the read decides before the question.
         update_stdin(&server, rules, &[]).fails(2, "remove_others_required");
-        // `--remove-others` sends the list as given, and reads nothing.
+        // `--remove-others` sends the list as given, with the revision its read returned.
         let server = Server::start(firewall_routes());
         update_stdin(&server, rules, &["--yes", "--remove-others"]).ok();
-        assert_eq!(server.only_request().method, "PUT");
+        assert_eq!(puts(&server)[0]["base_revision"], "r2");
     }
 }
 
@@ -1028,8 +1053,9 @@ fn firewall_update_keeps_a_repeated_rule_only_with_as_many_copies() {
 }
 
 /// The guard's read makes the PUT conditional: without `--base-revision` the PUT carries
-/// the `revision` the read returned, so a rule another client adds in between is refused
-/// with 409 rather than deleted. A `--base-revision` given is sent as it is.
+/// the `revision` the read returned, `--remove-others` or not, so a rule another client adds
+/// in between is refused with 409 rather than deleted. A `--base-revision` given is sent as
+/// it is.
 #[test]
 fn firewall_update_sends_the_revision_it_read() {
     let rules = r#"{"rules":[{"protocol":"tcp","ports":["22"]}]}"#;
@@ -1044,10 +1070,18 @@ fn firewall_update_sends_the_revision_it_read() {
     let server = Server::start(firewall_routes());
     update_stdin(&server, rules, &["--yes", "--base-revision", "r1"]).ok();
     assert_eq!(server.requests()[1].json()["base_revision"], "r1");
-    // `--remove-others` reads nothing, so it has no revision to send.
+    // `--remove-others` compares nothing, but still reads the revision to send, after the
+    // question, so a rule another client added meanwhile is not deleted unseen.
     let server = Server::start(firewall_routes());
     update_stdin(&server, rules, &["--yes", "--remove-others"]).ok();
-    assert!(server.only_request().json().get("base_revision").is_none());
+    assert_eq!(server.requests()[0].method, "GET");
+    assert_eq!(puts(&server)[0]["base_revision"], "r2");
+    let server = Server::start(firewall_routes());
+    update_stdin(&server, rules, &["--remove-others"]).fails(2, "confirmation_required");
+    assert!(
+        server.requests().is_empty(),
+        "the read comes after the question"
+    );
 }
 
 #[test]
@@ -1086,19 +1120,30 @@ fn firewall_update_dry_run_names_the_read_that_finds_what_it_removes() {
         &["--dry-run", "--base-revision", "r1"],
     )
     .dry_ok();
-    let mut given = put;
+    let mut given = put.clone();
     given["body"]["base_revision"] = json!("r1");
     assert_eq!(doc, expected(&given));
-    // `--remove-others` reads nothing, so it sends one request with no revision.
+    // `--remove-others` still reads, for the revision alone.
     let doc = update_stdin(
         &server,
         r#"{"rules":[]}"#,
         &["--dry-run", "--remove-others"],
     )
     .dry_ok();
+    assert_eq!(doc, expected(&put));
+    // With both, nothing is read: the write is the one request.
+    let doc = update_stdin(
+        &server,
+        r#"{"rules":[]}"#,
+        &["--dry-run", "--remove-others", "--base-revision", "r1"],
+    )
+    .dry_ok();
     assert!(doc.get("reads_first").is_none(), "{doc}");
     assert_eq!(doc["requests"].as_array().map(Vec::len), Some(1), "{doc}");
-    assert_eq!(draft(&doc)["body"], json!({"rules": []}));
+    assert_eq!(
+        draft(&doc)["body"],
+        json!({"rules": [], "base_revision": "r1"})
+    );
     // An `enabled` that is not a boolean is refused in the file, before anything.
     let error = update_stdin(
         &server,
@@ -1191,17 +1236,35 @@ fn a_conflict_after_the_guards_read_says_to_run_the_command_again() {
     );
     assert_eq!(server.requests()[1].json()["base_revision"], "r2");
 }
-/// With `--remove-others` nothing is read and the PUT carries no revision, so a 409 there
-/// gets the get-and-edit hint, not the one that says the command reads the rules again.
+/// With `--remove-others` the PUT carries the revision its read returned, so a 409 there
+/// says to run the command again, which reads the revision again; with `--base-revision` too,
+/// the given one would be refused again, so the hint names `firewall get`.
 #[test]
-fn a_conflict_with_remove_others_names_firewall_get() {
-    let server = Server::start(vec![vm_route(
-        "PUT",
-        "firewall/",
-        Reply::json(409, r#"{"error":"firewall-changed"}"#),
-    )]);
+fn a_conflict_with_remove_others_says_where_the_revision_comes_from() {
+    let server = Server::start(vec![
+        vm_route("GET", "firewall/", Reply::json(200, RULES)),
+        vm_route(
+            "PUT",
+            "firewall/",
+            Reply::json(409, r#"{"error":"firewall-changed"}"#),
+        ),
+    ]);
     let rules = r#"{"rules":[{"protocol":"tcp","ports":["22"]}]}"#;
     let error = update_stdin(&server, rules, &["--yes", "--remove-others"]).fails(1, "conflict");
+    assert_eq!(
+        error["hint"],
+        format!(
+            "run `hipc compute firewall update {VM} --rules-file - --yes --remove-others` again, \
+             which reads the revision of the rules again"
+        )
+    );
+    assert_eq!(puts(&server)[0]["base_revision"], "r2");
+    let error = update_stdin(
+        &server,
+        rules,
+        &["--yes", "--remove-others", "--base-revision", "r1"],
+    )
+    .fails(1, "conflict");
     assert_eq!(
         error["hint"],
         format!(
@@ -1209,5 +1272,4 @@ fn a_conflict_with_remove_others_names_firewall_get() {
              `revision` as `--base-revision`"
         )
     );
-    assert!(server.only_request().json().get("base_revision").is_none());
 }

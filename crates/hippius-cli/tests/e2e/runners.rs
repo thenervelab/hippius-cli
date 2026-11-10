@@ -223,10 +223,9 @@ fn settings_update_sends_a_cut_unasked() {
         assert_eq!(put.method, "PUT", "{flags:?}");
     }
     assert_eq!(server.requests().len(), 18);
-    // `0` at once and a new default region spend no more, so neither asks.
+    // A new default region spends no more, so it does not ask.
     for flags in [
-        &["--max-concurrent", "0"][..],
-        &["--default-region", "de"],
+        &["--default-region", "de"][..],
         &["--default-region", "anywhere"],
     ] {
         let mut argv = vec!["settings", "update"];
@@ -234,7 +233,17 @@ fn settings_update_sends_a_cut_unasked() {
         hipc(&server, &argv).ok();
         assert_eq!(server.requests().pop().unwrap().method, "PUT", "{flags:?}");
     }
-    assert_eq!(server.requests().len(), 24);
+    assert_eq!(server.requests().len(), 22);
+    // `0` at once may mean no cap, so it asks as a raise does, unless the setting is `0`.
+    hipc(&server, &["settings", "update", "--max-concurrent", "0"])
+        .fails(2, "confirmation_required");
+    let zero = r#"{"enabled":true,"max_concurrent":0}"#;
+    let at_zero = Server::start(vec![
+        route("GET", "/api/runners/settings/", Reply::json(200, zero)),
+        route("PUT", "/api/runners/settings/", Reply::json(200, zero)),
+    ]);
+    hipc(&at_zero, &["settings", "update", "--max-concurrent", "0"]).ok();
+    assert_eq!(at_zero.requests().pop().unwrap().method, "PUT");
     // A setting the read does not hold as hipc compares it may be a raise, so it asks.
     let odd = r#"{"enabled":"yes","max_concurrent":"4","allowed_sizes":"small","default_region":null,"allow_public_repos":null}"#;
     let server = Server::start(vec![route(
@@ -252,8 +261,8 @@ fn settings_update_sends_a_cut_unasked() {
         argv.extend(flags);
         hipc(&server, &argv).fails(2, "confirmation_required");
     }
-    // Turning runners off, closing public repositories, `0` at once, or a region never asks,
-    // whatever the read holds.
+    // Turning runners off, closing public repositories, or a region never asks, whatever the
+    // read holds.
     let server = Server::start(vec![
         route("GET", "/api/runners/settings/", Reply::json(200, odd)),
         route("PUT", "/api/runners/settings/", Reply::json(200, on)),
@@ -267,8 +276,6 @@ fn settings_update_sends_a_cut_unasked() {
             "false",
             "--allow-public-repos",
             "false",
-            "--max-concurrent",
-            "0",
             "--default-region",
             "FR",
         ],
@@ -289,18 +296,20 @@ fn settings_update_sends_a_cut_unasked() {
 #[test]
 fn settings_update_refuses_bad_flags_before_any_request_or_token() {
     let server = Server::start(vec![]);
+    // The parser asks for one of the settings, as `hipc schema` lists them in a group.
     let error = Hipc::tokenless(&Home::new(), &server)
         .run(&runners(&["settings", "update", "--yes"]))
         .fails(2, "usage");
-    assert_eq!(
-        error["message"],
-        "`hipc compute runners settings update` was given nothing to change"
-    );
-    assert_eq!(
-        error["hint"],
-        "pass `--enabled`, `--max-concurrent`, `--allowed-size`, `--default-region`, or \
-         `--allow-public-repos`"
-    );
+    let message = error["message"].as_str().expect("a message");
+    for flag in [
+        "--enabled",
+        "--max-concurrent",
+        "--allowed-size",
+        "--default-region",
+        "--allow-public-repos",
+    ] {
+        assert!(message.contains(flag), "{flag}: {message}");
+    }
     let error = hipc(
         &server,
         &[

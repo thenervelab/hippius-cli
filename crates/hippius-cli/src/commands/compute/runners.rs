@@ -320,14 +320,6 @@ fn update(ctx: &Context<'_>, args: &RunnerSettingsUpdate) -> Result<Printed> {
     if let Some(public) = args.allow_public_repos {
         set("allow_public_repos", public.into(), format!("`{public}`"));
     }
-    if body.is_empty() {
-        // An empty PUT changes nothing and only returns the settings.
-        return Err(Error::usage(
-            "`hipc compute runners settings update` was given nothing to change",
-            "pass `--enabled`, `--max-concurrent`, `--allowed-size`, `--default-region`, or \
-             `--allow-public-repos`",
-        ));
-    }
     let mut action = format!("set the runner settings {}", phrase::join(&changes, "and"));
     // Who can spend the balance is part of the action, so an agent's refusal names it too.
     if args.allow_public_repos == Some(true) {
@@ -364,23 +356,23 @@ fn update(ctx: &Context<'_>, args: &RunnerSettingsUpdate) -> Result<Printed> {
 
 /// Whether the settings `args` sets may let runners spend more than the settings in force,
 /// `current`, do, so the update is confirmed (tenet 5), as every spend cap is. Turning runners
-/// on, a higher `max_concurrent`, a size the allowed list lacks, and opening public
-/// repositories may spend more; each value it cannot compare counts as one. A pure cut
-/// (turning runners off, a lower or equal `max_concurrent`, fewer sizes, closing public
-/// repositories), a repeat of the settings in force, a `max_concurrent` of `0`, and a new
-/// default region are sent unasked, by the owner's call: the region moves where a job runs,
-/// not how many run or on what size, and `0`, whose meaning the server does not document, is
-/// taken as no more at once than any other number.
+/// on, a higher `max_concurrent`, a `max_concurrent` of `0` where the setting is not `0`, a
+/// size the allowed list lacks, and opening public repositories may spend more; each value it
+/// cannot compare counts as one. The server does not document what `0` means, and it may mean
+/// no cap, so it is confirmed as a raise is, by the owner's call. A pure cut (turning runners
+/// off, a lower or equal non-zero `max_concurrent`, fewer sizes, closing public repositories),
+/// a repeat of the settings in force, and a new default region are sent unasked: the region
+/// moves where a job runs, not how many run or on what size.
 fn may_spend_more(args: &RunnerSettingsUpdate, current: &Value) -> bool {
     let turns_on = |new: Option<bool>, key: &str| {
         new == Some(true) && current.get(key) != Some(&Value::Bool(true))
     };
     let more_at_once = args.max_concurrent.is_some_and(|new| {
-        new != 0
-            && current
-                .get("max_concurrent")
-                .and_then(Value::as_u64)
-                .is_none_or(|old| u64::from(new) > old)
+        let old = current.get("max_concurrent").and_then(Value::as_u64);
+        match new {
+            0 => old != Some(0),
+            new => old.is_none_or(|old| u64::from(new) > old),
+        }
     });
     let allowed: Option<Vec<&str>> = current
         .get("allowed_sizes")

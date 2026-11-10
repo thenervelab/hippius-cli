@@ -67,7 +67,8 @@ pub(crate) struct FirewallUpdate {
     /// leaves out a rule the VM has now, or changes its protocol, ports, sources, or enabled
     /// flag in either direction (a missing enabled counts as true); its description may change.
     /// Without --base-revision the update carries the revision that read returned, so a change
-    /// made since is refused with conflict.
+    /// made since is refused with conflict. With --remove-others and no --base-revision, the
+    /// rules are still read, after the question, for that revision.
     #[arg(long)]
     pub(crate) remove_others: bool,
 }

@@ -20,8 +20,9 @@ use crate::context::Context;
 const REVISION_PLACEHOLDER: &str = "<the revision the read returns>";
 
 /// `PUT .../firewall/`: the file's `rules` array, unchanged, plus `base_revision`: the one
-/// given, or else the `revision` the guard's read returned (none with `--remove-others`,
-/// which reads nothing). The PUT replaces the whole list, so a file that does not parse,
+/// given, or else the `revision` the guard's read returned. With `--remove-others` that read
+/// compares nothing and comes after the question, for the revision alone, so a rule another
+/// client adds meanwhile is refused with 409 rather than deleted unseen. The PUT replaces the whole list, so a file that does not parse,
 /// or any rule that is malformed, refuses the whole update before anything is sent: a list
 /// cut short would close every port it no longer names. A rule the VM has now that the
 /// file leaves out is refused unless `--remove-others` is passed ([`replace_list`]).
@@ -87,11 +88,11 @@ pub(super) fn update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed
         // documents no other 409 on this PUT and no shape for the body, so the status alone
         // decides: matching a body field could drop the hint if the field is not the one
         // guessed. The GET before it documents no 409.
-        // With neither `--base-revision` nor `--remove-others`, the revision came from the
-        // guard's own read, so running the command again reads the rules again and checks
-        // the file against them. A `--base-revision` given would be sent again and refused
-        // again, and `--remove-others` reads nothing, so those get the get-and-edit hint.
-        let read_revision = args.base_revision.is_none() && !args.remove_others;
+        // Without `--base-revision`, the revision came from the command's own read, so
+        // running it again reads the rules again (and, without `--remove-others`, checks the
+        // file against them). A `--base-revision` given would be sent again and refused
+        // again, so it gets the get-and-edit hint.
+        let read_revision = args.base_revision.is_none();
         match (error.http_status(), read_revision) {
             (Some(409), false) => error.with_hint(format!(
                 "run `{}`, edit the rules it prints, and pass its `revision` as \
@@ -100,10 +101,12 @@ pub(super) fn update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed
             )),
             (Some(409), true) => {
                 let again = phrase::command(ctx.args());
-                error.with_hint(format!(
-                    "run `{again}` again, which reads the rules again and checks the file \
-                     against them"
-                ))
+                let checks = if args.remove_others {
+                    "reads the revision of the rules again"
+                } else {
+                    "reads the rules again and checks the file against them"
+                };
+                error.with_hint(format!("run `{again}` again, which {checks}"))
             }
             _ => error,
         }

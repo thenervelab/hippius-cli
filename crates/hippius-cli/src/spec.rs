@@ -225,9 +225,9 @@ const CDN_CAP_RAISED: &str = "`--monthly-cap` is higher than the cap's `monthly_
 
 /// When `compute runners settings update` asks: it reads the settings in force first.
 const RUNNER_SETTINGS_SPEND_MORE: &str = "against the settings it reads first, `--enabled` \
-     or `--allow-public-repos` is `true` where the setting is not, `--max-concurrent` is not `0` \
-     and is higher than `max_concurrent`, or an `--allowed-size` is not in `allowed_sizes`; a \
-     setting hipc cannot compare counts as higher";
+     or `--allow-public-repos` is `true` where the setting is not, `--max-concurrent` is higher \
+     than `max_concurrent` or is `0` where `max_concurrent` is not, or an `--allowed-size` is \
+     not in `allowed_sizes`; a setting hipc cannot compare counts as higher";
 
 /// When `billing auto-reload update` asks: it reads the setting in force first.
 const RELOAD_CHARGES_MORE: &str = "the update leaves auto-reload on, and the setting it reads \
@@ -1726,9 +1726,10 @@ mod tests {
                 (
                     "compute runners settings update".to_owned(),
                     "against the settings it reads first, `--enabled` or `--allow-public-repos` \
-                     is `true` where the setting is not, `--max-concurrent` is not `0` and is \
-                     higher than `max_concurrent`, or an `--allowed-size` is not in \
-                     `allowed_sizes`; a setting hipc cannot compare counts as higher"
+                     is `true` where the setting is not, `--max-concurrent` is higher than \
+                     `max_concurrent` or is `0` where `max_concurrent` is not, or an \
+                     `--allowed-size` is not in `allowed_sizes`; a setting hipc cannot compare \
+                     counts as higher"
                 ),
                 (
                     "compute runners limit update".to_owned(),
@@ -2226,8 +2227,8 @@ mod tests {
 
     /// A launch needs a key flag, a purge a target, `s3 configure` a key pair, a plan
     /// change one kind of change, and the billing profile, auto-reload, notification settings,
-    /// and project quota updates at least one field, which no single flag says, so the schema
-    /// lists each such set; no other command has one.
+    /// runner settings, and project quota updates at least one field, which no single flag
+    /// says, so the schema lists each such set; no other command has one.
     #[test]
     fn a_set_of_which_one_is_required_is_listed() {
         let doc = schema(&[]).unwrap();
@@ -2238,86 +2239,86 @@ mod tests {
             .filter(|c| c["required_groups"] != json!([]))
             .map(|c| (c["path"].to_string(), c["required_groups"].clone()))
             .collect();
-        let change = json!([{
-            "names": ["--plan", "--pay-from", "--storage-cap"],
-            "multiple": false,
-        }]);
+        // One group of `names`, of which `multiple` may be given together.
+        let group = |path: &[&str], names: &[&str], multiple: bool| {
+            (
+                json!(path).to_string(),
+                json!([{ "names": names, "multiple": multiple }]),
+            )
+        };
+        let change = ["--plan", "--pay-from", "--storage-cap"];
+        let notifications = [
+            "--email-enabled",
+            "--low-credit-alerts",
+            "--zero-balance-alerts",
+            "--file-status-updates",
+            "--marketing-emails",
+            "--provider-advice-emails",
+        ];
+        let quota = [
+            "--vms",
+            "--databases",
+            "--clusters",
+            "--vcpus",
+            "--memory",
+            "--disk",
+            "--public-ips",
+            "--runners",
+        ];
+        let profile = [
+            "--company-name",
+            "--address-line1",
+            "--address-line2",
+            "--city",
+            "--postal-code",
+            "--region",
+            "--country",
+            "--tax-id",
+            "--billing-email",
+        ];
+        let runners = [
+            "--enabled",
+            "--max-concurrent",
+            "--allowed-size",
+            "--default-region",
+            "--allow-public-repos",
+        ];
         assert_eq!(
             groups,
             [
-                (
-                    json!(["account", "notifications", "update"]).to_string(),
-                    json!([{
-                        "names": [
-                            "--email-enabled",
-                            "--low-credit-alerts",
-                            "--zero-balance-alerts",
-                            "--file-status-updates",
-                            "--marketing-emails",
-                            "--provider-advice-emails",
-                        ],
-                        "multiple": true,
-                    }])
+                group(
+                    &["account", "notifications", "update"],
+                    &notifications,
+                    true
                 ),
-                (
-                    json!(["account", "projects", "quota", "update"]).to_string(),
-                    json!([{
-                        "names": [
-                            "--vms",
-                            "--databases",
-                            "--clusters",
-                            "--vcpus",
-                            "--memory",
-                            "--disk",
-                            "--public-ips",
-                            "--runners",
-                        ],
-                        "multiple": true,
-                    }])
+                group(&["account", "projects", "quota", "update"], &quota, true),
+                group(
+                    &["billing", "auto-reload", "update"],
+                    &["--enabled", "--threshold", "--target", "--monthly-cap"],
+                    true
                 ),
-                (
-                    json!(["billing", "auto-reload", "update"]).to_string(),
-                    json!([{
-                        "names": ["--enabled", "--threshold", "--target", "--monthly-cap"],
-                        "multiple": true,
-                    }])
+                group(&["billing", "profile", "update"], &profile, true),
+                group(&["drive", "subscription", "change"], &change, false),
+                group(&["s3", "subscription", "change"], &change, false),
+                group(
+                    &["s3", "configure"],
+                    &["--from-token-file", "--access-key-id"],
+                    false
                 ),
-                (
-                    json!(["billing", "profile", "update"]).to_string(),
-                    json!([{
-                        "names": [
-                            "--company-name",
-                            "--address-line1",
-                            "--address-line2",
-                            "--city",
-                            "--postal-code",
-                            "--region",
-                            "--country",
-                            "--tax-id",
-                            "--billing-email",
-                        ],
-                        "multiple": true,
-                    }])
+                group(
+                    &["compute", "vms", "create"],
+                    &["--ssh-key-id", "--ssh-public-key-file"],
+                    true
                 ),
-                (
-                    json!(["drive", "subscription", "change"]).to_string(),
-                    change.clone()
+                group(
+                    &["compute", "runners", "settings", "update"],
+                    &runners,
+                    true
                 ),
-                (json!(["s3", "subscription", "change"]).to_string(), change),
-                (
-                    json!(["s3", "configure"]).to_string(),
-                    json!([{"names": ["--from-token-file", "--access-key-id"], "multiple": false}])
-                ),
-                (
-                    json!(["compute", "vms", "create"]).to_string(),
-                    json!([{
-                        "names": ["--ssh-key-id", "--ssh-public-key-file"],
-                        "multiple": true,
-                    }])
-                ),
-                (
-                    json!(["cdn", "purges", "create"]).to_string(),
-                    json!([{"names": ["--everything", "--path", "--prefix"], "multiple": false}])
+                group(
+                    &["cdn", "purges", "create"],
+                    &["--everything", "--path", "--prefix"],
+                    false
                 ),
             ]
         );

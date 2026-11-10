@@ -320,13 +320,109 @@ fn zones_update_sends_only_the_keys_passed() {
         draft(&doc)["body"],
         json!({"redirect_https": false, "spa_fallback": false, "origin": {"bucket": "other"}})
     );
-    let doc = hipc(
+    assert_eq!(server.requests().len(), 1);
+}
+
+/// A zone name is one line of 1 to 64 characters, checked before anything is sent.
+#[test]
+fn a_zone_name_outside_the_label_rules_is_usage() {
+    let server = Server::start(vec![]);
+    let long = "n".repeat(65);
+    for bad in ["", " ", "a\nb", long.as_str()] {
+        for args in [
+            vec![
+                "zones",
+                "create",
+                "--name",
+                bad,
+                "--bucket",
+                "web",
+                "--public",
+                "--dry-run",
+            ],
+            vec!["zones", "update", ZONE, "--name", bad, "--dry-run"],
+        ] {
+            let error = hipc(&server, &args).fails(2, "usage");
+            assert!(
+                error["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("a zone name is one line of 1 to 64 characters")),
+                "{bad:?}: {error}"
+            );
+        }
+    }
+    let longest = "n".repeat(64);
+    hipc(
         &server,
-        &["zones", "update", ZONE, "--prefix", "", "--dry-run"],
+        &["zones", "update", ZONE, "--name", &longest, "--dry-run"],
     )
     .ok();
-    assert_eq!(draft(&doc)["body"], json!({"origin": {"prefix": ""}}));
-    assert_eq!(server.requests().len(), 1);
+    assert!(server.requests().is_empty());
+}
+
+/// `--prefix` without `--bucket` reads the zone and sends the whole origin with the new
+/// prefix, which is right whether the PATCH merges `origin` or replaces it. The dry run lists
+/// the read, then the PATCH with placeholders.
+#[test]
+fn zones_update_of_the_prefix_alone_sends_the_whole_origin() {
+    let server = Server::start(vec![
+        zone_route("GET", "", Reply::json(200, ZONE_BODY)),
+        zone_route("PATCH", "", Reply::json(200, ZONE_BODY)),
+    ]);
+    let doc = hipc(
+        &server,
+        &[
+            "zones",
+            "update",
+            ZONE,
+            "--prefix",
+            "",
+            "--public",
+            "--dry-run",
+        ],
+    )
+    .ok();
+    let requests = doc["requests"].as_array().expect("the requests");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0]["method"], "GET");
+    assert_eq!(
+        requests[1]["body"],
+        json!({"origin": {
+            "kind": "<the zone's origin kind>",
+            "bucket": "<the zone's bucket>",
+            "prefix": "",
+        }})
+    );
+    assert!(server.requests().is_empty());
+    hipc(
+        &server,
+        &[
+            "zones", "update", ZONE, "--prefix", "www/", "--public", "--yes",
+        ],
+    )
+    .ok();
+    let sent = server.requests();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0].method, "GET");
+    assert_eq!(
+        sent[1].json(),
+        json!({"origin": {"kind": "s3", "bucket": "web", "prefix": "www/"}})
+    );
+    // A zone whose origin names no bucket is not sent a partial origin.
+    let bare = Server::start(vec![zone_route(
+        "GET",
+        "",
+        Reply::json(200, r#"{"id":"zab12cd34ef56","origin":{"kind":"s3"}}"#),
+    )]);
+    let error = hipc(
+        &bare,
+        &[
+            "zones", "update", ZONE, "--prefix", "www/", "--public", "--yes",
+        ],
+    )
+    .fails(1, "internal");
+    assert_eq!(error["hint"], "pass `--bucket` with `--prefix`");
+    assert_eq!(bare.only_request().method, "GET");
 }
 
 /// Swagger's example CORS policy for `cors` on `cdn_zones_create`.
@@ -487,7 +583,7 @@ fn zones_update_with_nothing_to_change_is_usage_and_always_needs_yes() {
 /// would publish, so the refusal an agent reads says what `--yes` would do.
 #[test]
 fn zones_update_names_each_change_in_the_question() {
-    let server = Server::start(vec![]);
+    let server = Server::start(vec![zone_route("GET", "", Reply::json(200, ZONE_BODY))]);
     let refused = |args: &[&str]| {
         let args = [&["zones", "update", ZONE][..], args].concat();
         hipc(&server, &args).fails(2, "confirmation_required")["message"]
@@ -527,12 +623,13 @@ fn zones_update_names_each_change_in_the_question() {
     assert_eq!(
         refused(&["--prefix", "", "--name", "n", "--public"]),
         format!(
-            "this would move the CDN zone `{ZONE}` to the prefix `\"\"`, which purges the whole \
-             zone and makes what it then serves public if the bucket is private, and set `name` \
-             to `n`, and `--yes` was not passed"
+            "this would move the CDN zone `{ZONE}` to the bucket `web` and the prefix `\"\"`, \
+             which purges the whole zone and makes what it then serves public if the bucket is \
+             private, and set `name` to `n`, and `--yes` was not passed"
         )
     );
-    assert!(server.requests().is_empty());
+    // Only the prefix alone reads the zone, for its bucket.
+    assert_eq!(server.only_request().method, "GET");
 }
 
 #[test]
@@ -859,10 +956,7 @@ fn zone_prefixes_and_spa_exclusions_are_checked_without_a_request() {
         Some(16)
     );
     let doc = hipc(&server, &update(&["--prefix", "a/b/"])).ok();
-    assert_eq!(
-        draft(&doc)["body"],
-        json!({ "origin": { "prefix": "a/b/" } })
-    );
+    assert_eq!(draft(&doc)["body"]["origin"]["prefix"], "a/b/");
     assert!(server.requests().is_empty());
 }
 
@@ -1664,6 +1758,7 @@ fn rules_update_whose_read_has_another_shape_is_internal_without_a_put() {
 fn a_zone_that_may_publish_a_bucket_needs_public() {
     let server = Server::start(vec![
         route("POST", "/api/cdn/zones/", Reply::json(201, ZONE_BODY)),
+        zone_route("GET", "", Reply::json(200, ZONE_BODY)),
         zone_route("PATCH", "", Reply::json(200, ZONE_BODY)),
     ]);
     let create = [
@@ -1711,6 +1806,7 @@ fn a_zone_that_may_publish_a_bucket_needs_public() {
         server.targets(),
         [
             "POST /api/cdn/zones/".to_owned(),
+            format!("GET /api/cdn/zones/{ZONE}/"),
             format!("PATCH /api/cdn/zones/{ZONE}/"),
             format!("PATCH /api/cdn/zones/{ZONE}/"),
         ]

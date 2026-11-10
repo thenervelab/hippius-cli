@@ -553,6 +553,11 @@ fn create_zone(ctx: &Context<'_>, args: &ZoneCreate) -> Result<Printed> {
 /// A new origin also needs `--public`, as a create does ([`create_zone`]): whether the
 /// bucket is private is known only from the answer. A change that keeps the origin
 /// publishes nothing new.
+///
+/// `--prefix` without `--bucket` reads the zone first and sends the whole origin, its `kind`
+/// and `bucket` with the new prefix: swagger does not say whether the PATCH merges a nested
+/// `origin` or replaces it, and the whole origin is right either way. The dry run lists the
+/// read, then the PATCH with the bucket as a placeholder.
 fn update_zone(ctx: &Context<'_>, args: &ZoneUpdate) -> Result<Printed> {
     check_settings(&args.settings)?;
     let cors = read_cors(&args.settings)?;
@@ -575,8 +580,75 @@ fn update_zone(ctx: &Context<'_>, args: &ZoneUpdate) -> Result<Printed> {
             "pass at least one field to change, such as `--name`",
         ));
     }
-    // The question names every change, so the refusal an agent reads says what would change
-    // and which bucket and prefix would be published.
+    let set = zone_changes(&mut body, cors);
+    let patch = |origin: Map<String, Value>| zone_patch(ctx, args, body.clone(), &set, origin);
+    let client = ctx.load_authed_client()?;
+    let gate = Gate::Confirm { consequence: None };
+    if args.bucket.is_some() || !origin.contains_key("prefix") {
+        return print_body(ctx, &client, &patch(origin)?, gate);
+    }
+    let read = Request::get(zone_path(&args.zone_id))
+        .listed_by(ZONES)
+        .about(format!("get the CDN zone `{}`", args.zone_id));
+    let with_origin = |kept: &Map<String, Value>| {
+        let mut whole = kept.clone();
+        whole.extend(origin.clone());
+        whole
+    };
+    let placeholder = Map::from_iter([
+        ("kind".to_owned(), Value::from("<the zone's origin kind>")),
+        ("bucket".to_owned(), Value::from("<the zone's bucket>")),
+    ]);
+    let draft = patch(with_origin(&placeholder))?;
+    let checked = match ctx.check_write(&client, &draft)? {
+        Write::DryRun(mut doc) => {
+            doc["requests"] = ctx.describe_each(&client, &[&read, &draft])?;
+            return Ok(Printed::Document(doc));
+        }
+        Write::Checked(checked) => checked,
+    };
+    let zone = ctx.send(&client, &read)?.document()?;
+    let kept = zone_origin(&zone, &args.zone_id)?;
+    let request = patch(with_origin(&kept))?;
+    ctx.confirm_write(checked, &request.action(), None)?;
+    ctx.send(&client, &request)?
+        .document()
+        .map(Printed::Document)
+}
+
+/// The `kind` and `bucket` of the `origin` of `zone`, a zone read, which a PATCH of the prefix
+/// alone sends with it.
+///
+/// # Errors
+///
+/// `internal` when the origin has no `bucket` string: the PATCH would then send a partial
+/// origin.
+fn zone_origin(zone: &Value, zone_id: &str) -> Result<Map<String, Value>> {
+    let origin = zone.get("origin");
+    let text = |key: &str| {
+        origin
+            .and_then(|origin| origin.get(key))
+            .filter(|v| v.is_string())
+    };
+    let Some(bucket) = text("bucket") else {
+        return Err(Error::internal(format!(
+            "the CDN zone `{zone_id}` has no `origin.bucket`, so its prefix cannot be changed \
+             alone"
+        ))
+        .with_hint("pass `--bucket` with `--prefix`"));
+    };
+    let mut kept = Map::new();
+    if let Some(kind) = text("kind") {
+        kept.insert("kind".to_owned(), kind.clone());
+    }
+    kept.insert("bucket".to_owned(), bucket.clone());
+    Ok(kept)
+}
+
+/// The changes of a zone update other than its origin, as its question names them, with the
+/// CORS policy put in `body`. The policy is named by its file, not by its keys: it replaces
+/// the whole policy, which is what `--yes` agrees to.
+fn zone_changes(body: &mut Map<String, Value>, cors: Option<Cors>) -> String {
     let set: Vec<String> = body
         .iter()
         .map(|(key, value)| format!("`{key}` to {}", shown(value)))
@@ -585,24 +657,32 @@ fn update_zone(ctx: &Context<'_>, args: &ZoneUpdate) -> Result<Printed> {
         [] => String::new(),
         set => format!("set {}", phrase::join(set, "and")),
     };
-    // The policy is named by its file, not by its keys: it replaces the whole policy, which
-    // is what `--yes` agrees to.
-    let set = match cors {
-        Some(Cors { policy, file }) => {
-            let cors = if policy.is_null() {
-                "remove its CORS policy".to_owned()
-            } else {
-                format!("replace its whole CORS policy with the one in {file}")
-            };
-            body.insert("cors".to_owned(), policy);
-            if set.is_empty() {
-                cors
-            } else {
-                format!("{set}, and {cors}")
-            }
-        }
-        None => set,
+    let Some(Cors { policy, file }) = cors else {
+        return set;
     };
+    let cors = if policy.is_null() {
+        "remove its CORS policy".to_owned()
+    } else {
+        format!("replace its whole CORS policy with the one in {file}")
+    };
+    body.insert("cors".to_owned(), policy);
+    if set.is_empty() {
+        cors
+    } else {
+        format!("{set}, and {cors}")
+    }
+}
+
+/// The PATCH of a zone update: `body`, with `origin` when it is not empty, and a question that
+/// names `set` and every key of the origin, so the refusal an agent reads says what would
+/// change and which bucket and prefix would be published.
+fn zone_patch(
+    ctx: &Context<'_>,
+    args: &ZoneUpdate,
+    mut body: Map<String, Value>,
+    set: &str,
+    origin: Map<String, Value>,
+) -> Result<Request> {
     let action = if origin.is_empty() {
         format!("update the CDN zone `{}`: {set}", args.zone_id)
     } else {
@@ -615,8 +695,10 @@ fn update_zone(ctx: &Context<'_>, args: &ZoneUpdate) -> Result<Printed> {
                 args.zone_id
             ),
         )?;
+        // The kind a read adds is the zone's own, not a change.
         let to: Vec<String> = origin
             .iter()
+            .filter(|(key, _)| *key != "kind")
             .map(|(key, value)| format!("the {key} {}", shown(value)))
             .collect();
         let and_set = if set.is_empty() {
@@ -632,12 +714,10 @@ fn update_zone(ctx: &Context<'_>, args: &ZoneUpdate) -> Result<Printed> {
             phrase::join(&to, "and")
         )
     };
-    let request = Request::new(Method::Patch, zone_path(&args.zone_id))
+    Ok(Request::new(Method::Patch, zone_path(&args.zone_id))
         .listed_by(ZONES)
         .json(&Value::Object(body))
-        .about(action);
-    let client = ctx.load_authed_client()?;
-    print_body(ctx, &client, &request, Gate::Confirm { consequence: None })
+        .about(action))
 }
 
 /// The CORS policy `--cors-file` holds, and the file as a question names it.

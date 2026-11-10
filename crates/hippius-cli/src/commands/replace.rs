@@ -7,8 +7,9 @@
 //! the new list leaves out an entry the list has now. The read names the target (tenet 5):
 //! it runs after the dry-run check, the account refusal, and the token check, and before
 //! the question. With `--remove-others` nothing is compared: a list whose write carries the
-//! version its read returns as `If-Match` (a CDN zone's WAF rules and rate limits) is still
-//! read, after the question, for that version alone; any other list is not read.
+//! version its read returns, as `If-Match` (a CDN zone's WAF rules and rate limits) or in its
+//! body (a VM's firewall `base_revision`), is still read, after the question, for that version
+//! alone; any other list is not read.
 //!
 //! Each list says what one entry is through its key ([`Entry::new`]): two entries with
 //! equal keys are the same entry. The lists are compared as multisets: each entry of the
@@ -65,13 +66,15 @@ pub(crate) struct Replace {
     /// The new list's entries.
     pub(crate) entries: Vec<Entry>,
     /// `--remove-others`: the write may remove entries, so nothing is compared, and the
-    /// list is read only for the version in [`Replace::draft_if_match`].
+    /// list is read only for the version in [`Replace::draft_if_match`] or
+    /// [`Replace::draft_body`].
     pub(crate) remove_others: bool,
     /// The read of the current list, with its action.
     pub(crate) read: Request,
     /// The body a dry run shows for `write` when the read fills part of it, with a
     /// placeholder there, as [`Found::body`] fills it in a real run; `None` when the read
-    /// leaves the write as it is.
+    /// leaves the write as it is. `Some` also makes a `--remove-others` write read the list,
+    /// after the question, as [`Replace::draft_if_match`] does.
     pub(crate) draft_body: Option<Value>,
     /// The `If-Match` a dry run shows for `write` when the read gives it, a placeholder, as
     /// [`Found::if_match`] gives it in a real run; `None` when the read gives none. `Some`
@@ -116,8 +119,8 @@ impl Found {
 ///
 /// Unless `remove_others`, it first sends `replace.read`, finds the current entries in its
 /// answer with `current`, and refuses the write when the new list leaves out any of them, all
-/// before the question. With `remove_others` and a [`Replace::draft_if_match`], it sends the
-/// read after the question, for the version alone: the flag lets the write remove entries,
+/// before the question. With `remove_others` and a [`Replace::draft_if_match`] or a
+/// [`Replace::draft_body`], it sends the read after the question, for the version alone: the flag lets the write remove entries,
 /// not overwrite a list another client published since. With `remove_others` and no version
 /// to send, nothing is read. `current` fails closed: an answer it cannot read is its error
 /// ([`crate::commands::unreadable`]), never an empty list, so a shape `hipc` does not expect
@@ -138,7 +141,8 @@ pub(crate) fn replace_list(
     replace: &Replace,
     current: impl FnOnce(Value) -> Result<Found>,
 ) -> Result<Printed> {
-    let reads = !replace.remove_others || replace.draft_if_match.is_some();
+    let reads =
+        !replace.remove_others || replace.draft_if_match.is_some() || replace.draft_body.is_some();
     let draft = if reads {
         filled(
             &replace.write,

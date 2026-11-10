@@ -259,6 +259,8 @@ const STOP_AT_A_READ: &[&str] = &[
     "cdn lists items update",
     "cdn rules update",
     "compute firewall update",
+    // The zone whose origin a prefix alone is sent with.
+    "cdn zones update",
     // The transfer, the project, or the accounts the question names.
     "account project-transfers accept",
     "account project-transfers cancel",
@@ -391,9 +393,13 @@ fn assert_one_dry_run_shape(doc: &Value, example: &str, path: &str, confirmation
     let reads_the_profile = path == "billing profile update" && example.contains("--billing-email");
     // A launch that opens ports sets the firewall after it.
     let opens_ports = path == "compute vms create" && example.contains("--open-");
+    // A zone update of the prefix alone reads the zone, for the rest of its origin.
+    let reads_the_zone =
+        path == "cdn zones update" && example.contains("--prefix") && !example.contains("--bucket");
     let several = MORE_THAN_ONE_REQUEST.contains(&path)
         || reads_the_profile
         || opens_ports
+        || reads_the_zone
         || doc.get("reads_first").is_some()
         || doc.get("may_cancel_first").is_some();
     if several {

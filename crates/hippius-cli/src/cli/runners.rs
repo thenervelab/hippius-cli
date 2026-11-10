@@ -135,11 +135,13 @@ pub(crate) enum RunnerSettings {
     /// enabled: needs --yes when the change may spend more
     ///
     /// While runners are enabled, every job a linked repository starts runs on a VM billed to the
-    /// balance. It reads the settings first: turning runners on, a higher --max-concurrent, an
-    /// --allowed-size the list lacks, and opening public repositories may spend more, so they
-    /// are confirmed, and so is a setting it cannot compare. A pure cut, such as --enabled
-    /// false, a lower --max-concurrent, or fewer sizes, needs no --yes, and neither does
-    /// --max-concurrent 0 or --default-region, which moves where jobs run, not how many.
+    /// balance. It reads the settings first: turning runners on, a higher --max-concurrent,
+    /// --max-concurrent 0, an --allowed-size the list lacks, and opening public repositories may
+    /// spend more, so they are confirmed, and so is a setting it cannot compare. A pure cut, such
+    /// as --enabled false, a lower --max-concurrent, or fewer sizes, needs no --yes, and neither
+    /// does --default-region, which moves where jobs run, not how many. The read and the write
+    /// are separate requests, since the route takes no version, so a change someone else makes
+    /// between them is not seen.
     #[command(after_help = examples(&[
         "hipc compute runners settings update --enabled true --yes",
         "hipc compute runners settings update --max-concurrent 4 --allowed-size small --yes",
@@ -148,7 +150,21 @@ pub(crate) enum RunnerSettings {
     Update(RunnerSettingsUpdate),
 }
 
+/// `hipc compute runners settings update`: the settings to change. One at least is required,
+/// so `hipc schema` lists the group, as it does for the other updates of a few fields.
 #[derive(Debug, Args)]
+#[command(group(
+    clap::ArgGroup::new("change")
+        .required(true)
+        .multiple(true)
+        .args([
+            "enabled",
+            "max_concurrent",
+            "allowed_sizes",
+            "default_region",
+            "allow_public_repos",
+        ])
+))]
 pub(crate) struct RunnerSettingsUpdate {
     /// Turn runners on or off: true or false
     #[arg(long, value_name = "BOOL")]
@@ -156,7 +172,8 @@ pub(crate) struct RunnerSettingsUpdate {
     /// The most runners at once
     ///
     /// The server caps it at the account's runner quota. What 0 means is not documented by the
-    /// server; it is sent without --yes, as a cut is.
+    /// server, and it may mean no cap, so 0 needs --yes, as a raise does, unless the setting is
+    /// already 0.
     #[arg(long, value_name = "N")]
     pub(crate) max_concurrent: Option<u32>,
     /// A size jobs may use: small, medium, or large; repeat it for several; the list given replaces
