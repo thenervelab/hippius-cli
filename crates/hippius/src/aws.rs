@@ -17,7 +17,7 @@ use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 use crate::phrase::quote_path;
-use crate::private_file::{Guarded, NamedBy, PrivateFile};
+use crate::private_file::{Guarded, NamedBy, PrivateFile, utf8_text};
 use crate::source::Source;
 
 /// The Hippius S3 endpoint.
@@ -480,16 +480,12 @@ fn read(file: &PrivateFile) -> Result<Zeroizing<String>> {
         return Ok(Zeroizing::default());
     };
     let path = file.path();
-    String::from_utf8(bytes)
-        .map(Zeroizing::new)
-        .map_err(|refused| {
-            // The bytes the error holds are the file's, keys included.
-            drop(Zeroizing::new(refused.into_bytes()));
-            Error::usage(
-                format!("the AWS file {} is not UTF-8 text", quote_path(path)),
-                format!("save {} as UTF-8 text", quote_path(path)),
-            )
-        })
+    utf8_text(bytes).ok_or_else(|| {
+        Error::usage(
+            format!("the AWS file {} is not UTF-8 text", quote_path(path)),
+            format!("save {} as UTF-8 text", quote_path(path)),
+        )
+    })
 }
 
 /// Which AWS file a text is: botocore names a profile's section differently in each.

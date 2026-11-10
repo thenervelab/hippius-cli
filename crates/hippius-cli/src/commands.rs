@@ -148,7 +148,10 @@ impl Input<'_> {
 
     /// [`Input::read_text`], but a symlink is followed, for a file a dotfile manager links,
     /// such as `~/.ssh/id_ed25519.pub`: its target is held to the checks of
-    /// [`Input::read`], a regular file and not the config or an AWS file.
+    /// [`Input::read`], a regular file and not the config or an AWS file. The path is resolved
+    /// before the target is opened, so a directory on it swapped for a symlink in between is
+    /// followed; what holds is the check on the opened descriptor, which refuses the config and
+    /// AWS files by device and inode whatever path reached them.
     pub(crate) fn read_text_following_links(&self, limit: u64) -> Result<String> {
         let bytes = if self.path == Path::new("-") {
             self.read(limit)?

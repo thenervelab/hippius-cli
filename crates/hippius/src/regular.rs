@@ -8,10 +8,20 @@
 
 use std::fs::File;
 use std::io;
+use std::os::fd::AsFd;
 use std::path::Path;
 
-use rustix::fs::{Mode, OFlags};
+use rustix::fs::{CWD, Mode, OFlags};
 use rustix::io::Errno;
+
+/// The flags of every read of a file a caller names: read only, never through a symlink as
+/// the last component, and closed on exec. `O_NONBLOCK`: opening a FIFO returns at once
+/// instead of waiting for a writer, so the check on the descriptor refuses it. A regular file
+/// ignores the flag.
+const READ_FLAGS: OFlags = OFlags::RDONLY
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::NONBLOCK)
+    .union(OFlags::CLOEXEC);
 
 /// Why [`open_regular`] refused a path.
 #[derive(Debug)]
@@ -34,10 +44,17 @@ pub enum OpenRegularError {
 /// anything but a regular file, and [`OpenRegularError::Io`] when the open or the check
 /// fails, a missing file included.
 pub fn open_regular(path: &Path) -> Result<File, OpenRegularError> {
-    // `O_NONBLOCK`: opening a FIFO returns at once instead of waiting for a writer, so the
-    // check below refuses it. A regular file ignores the flag.
-    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
-    let file = match rustix::fs::open(path, flags, Mode::empty()) {
+    open_regular_at(CWD, path)
+}
+
+/// [`open_regular`] of `name` in the directory `dir` holds open, so a private file is opened
+/// in the directory that was checked, not in whatever its path names by then.
+///
+/// # Errors
+///
+/// As [`open_regular`]'s.
+pub(crate) fn open_regular_at(dir: impl AsFd, name: &Path) -> Result<File, OpenRegularError> {
+    let file = match rustix::fs::openat(dir, name, READ_FLAGS, Mode::empty()) {
         Ok(fd) => File::from(fd),
         Err(Errno::LOOP) => return Err(OpenRegularError::Symlink),
         Err(e) => return Err(OpenRegularError::Io(e.into())),

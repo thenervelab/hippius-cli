@@ -41,7 +41,7 @@ use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 use crate::phrase::{quote, quote_path};
-use crate::private_file::{Guarded, NamedBy, PrivateFile};
+use crate::private_file::{Guarded, NamedBy, PrivateFile, utf8_text};
 use crate::selector::{BillingId, ProjectId, Selection};
 use crate::source::{Given, Source};
 use crate::url::Origin;
@@ -497,7 +497,7 @@ impl ConfigFile {
     }
 
     /// The config in `bytes`, read from `path`; `None` is a missing file, an empty config.
-    fn parse(path: PathBuf, bytes: Option<Vec<u8>>) -> Result<Self> {
+    fn parse(path: PathBuf, bytes: Option<Zeroizing<Vec<u8>>>) -> Result<Self> {
         let Some(bytes) = bytes else {
             return Ok(Self {
                 path,
@@ -506,14 +506,12 @@ impl ConfigFile {
         };
         // Cleared when dropped: the text holds every stored token. The parsed document clears
         // its own copies ([`Profile`]'s `Drop`).
-        let text = Zeroizing::new(String::from_utf8(bytes).map_err(|refused| {
-            // The bytes the error holds are the file's, tokens included.
-            zeroize::Zeroize::zeroize(&mut refused.into_bytes());
+        let text = utf8_text(bytes).ok_or_else(|| {
             Error::usage(
                 format!("the config file {} is not UTF-8 text", quote_path(&path)),
                 format!("save {} as UTF-8 text", quote_path(&path)),
             )
-        })?);
+        })?;
         let document: Document = toml::from_str(&text).map_err(|e: toml::de::Error| {
             let line = e
                 .span()
@@ -1723,7 +1721,9 @@ mod tests {
                 "line 1 has a value that is not a string",
             ),
         ] {
-            let error = ConfigFile::parse(PathBuf::from("c.toml"), Some(text.into())).unwrap_err();
+            let error =
+                ConfigFile::parse(PathBuf::from("c.toml"), Some(Zeroizing::new(text.into())))
+                    .unwrap_err();
             assert_eq!(
                 error.to_string(),
                 format!("the config file `c.toml` is not valid: {problem}"),
@@ -1741,7 +1741,8 @@ mod tests {
         let text = "tok_s3cr3t = 1\n\n[profiles.default]\ntoken = \"x\"\napi_version = 2\n\n\
                     [profiles.default.hub_subscribe]\nat = 1\nkey = \"k\"\nseen = \"s3cr3t\"\n\n\
                     [profiles.plain]\naccount = \"a\"\n\n[profiles.\"we ird\".extra]\nnested = true\n";
-        let config = ConfigFile::parse(PathBuf::from("c.toml"), Some(text.into())).unwrap();
+        let config =
+            ConfigFile::parse(PathBuf::from("c.toml"), Some(Zeroizing::new(text.into()))).unwrap();
         assert_eq!(
             take_unknown_keys_warning().as_deref(),
             Some(
@@ -1755,7 +1756,11 @@ mod tests {
         let saved = toml::to_string(&config.document).unwrap();
         let again: toml::Table = toml::from_str(&saved).unwrap();
         assert_eq!(again, toml::from_str::<toml::Table>(text).unwrap());
-        ConfigFile::parse(PathBuf::from("c.toml"), Some("[profiles.default]\n".into())).unwrap();
+        ConfigFile::parse(
+            PathBuf::from("c.toml"),
+            Some(Zeroizing::new("[profiles.default]\n".into())),
+        )
+        .unwrap();
         assert_eq!(take_unknown_keys_warning(), None, "a file of known keys");
     }
 
@@ -1765,7 +1770,8 @@ mod tests {
     fn a_stored_token_is_compared_trimmed() {
         let text = "[profiles.padded]\ntoken = \"  tok_same_0123456789 \"\n\
                     [profiles.blank]\ntoken = \"   \"\n";
-        let config = ConfigFile::parse(PathBuf::from("c.toml"), Some(text.into())).unwrap();
+        let config =
+            ConfigFile::parse(PathBuf::from("c.toml"), Some(Zeroizing::new(text.into()))).unwrap();
         let same = Token::new("tok_same_0123456789", &Source::Argument).unwrap();
         let other = Token::new("tok_other_0123456789", &Source::Argument).unwrap();
         assert!(!config.stores_other_token("padded", &same));

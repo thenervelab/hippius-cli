@@ -28,7 +28,7 @@ use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::encode::hex;
 use crate::error::{Error, Result};
-use crate::private_file::{Guarded, NamedBy, PrivateFile};
+use crate::private_file::{Guarded, NamedBy, PrivateFile, utf8_text};
 use crate::source::Source;
 
 /// The signing context of a Substrate sr25519 signature (`sp_core::sr25519`), which the API
@@ -216,16 +216,12 @@ pub fn read_hotkey_file(path: &Path, flag: &'static str) -> Result<Zeroizing<Str
     } else {
         crate::phrase::quote_path(path)
     };
-    String::from_utf8(bytes)
-        .map(Zeroizing::new)
-        .map_err(|error| {
-            // The bytes the conversion hands back are cleared too.
-            drop(Zeroizing::new(error.into_bytes()));
-            Error::usage(
-                format!("{what} {named} is not UTF-8 text"),
-                format!("pass `{flag}` a file that holds only the hotkey's words"),
-            )
-        })
+    utf8_text(bytes).ok_or_else(|| {
+        Error::usage(
+            format!("{what} {named} is not UTF-8 text"),
+            format!("pass `{flag}` a file that holds only the hotkey's words"),
+        )
+    })
 }
 
 /// The fewest words in a row on the English BIP-39 list that [`holds_phrase`] takes for a

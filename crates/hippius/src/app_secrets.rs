@@ -26,10 +26,11 @@ use std::path::Path;
 use serde_json::{Map, Value};
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::dns::{ObjectFile, clear_owned, load_object};
 use crate::error::{Error, Result};
 use crate::phrase::quote_path;
 use crate::private_file::{Guarded, NamedBy};
+use crate::private_object::load_private_object;
+use crate::secret::clear_owned;
 
 /// The secrets of an app, loaded from their file. Its `Debug` counts the secrets and shows
 /// neither a name nor a value.
@@ -69,11 +70,8 @@ impl AppSecrets {
                 file_hint(flag),
             )
         };
-        let mut file = match load_object(path, guarded, &file_hint(flag))? {
-            ObjectFile::Object(file) => file,
-            ObjectFile::Repeated => return Err(refuse("names a secret twice")),
-            ObjectFile::NotAnObject => return Err(refuse("is not a JSON object")),
-        };
+        let mut file = load_private_object(path, guarded, &file_hint(flag))?
+            .map_err(|problem| refuse(&problem.describe("a secret")))?;
         let mut secrets = Vec::with_capacity(file.len());
         let mut not_text = None;
         for (name, value) in std::mem::take(&mut *file) {

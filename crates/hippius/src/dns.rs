@@ -24,14 +24,15 @@
 use std::fmt;
 use std::path::Path;
 
-use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
 use serde_json::{Map, Value};
 use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 use crate::phrase::quote_path;
-use crate::private_file::{Guarded, NamedBy, PrivateFile};
+use crate::private_file::{Guarded, NamedBy};
+use crate::private_object::load_private_object;
 use crate::redact::redactions;
+use crate::secret::clear_owned;
 
 /// The DNS providers swagger lists for the setup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,11 +101,8 @@ impl DnsCredentials {
                 file_hint(flag, provider),
             )
         };
-        let mut file = match load_object(path, guarded, &file_hint(flag, provider))? {
-            ObjectFile::Object(file) => file,
-            ObjectFile::Repeated => return Err(refuse("names a field twice")),
-            ObjectFile::NotAnObject => return Err(refuse("is not a JSON object")),
-        };
+        let mut file = load_private_object(path, guarded, &file_hint(flag, provider))?
+            .map_err(|problem| refuse(&problem.describe("a field")))?;
         let (required, optional) = provider.fields();
         let mut fields = Vec::new();
         for &name in required.iter().chain(optional) {
@@ -125,7 +123,7 @@ impl DnsCredentials {
             }
         }
         // What is left was not asked for. Its name is not quoted: a misplaced secret can sit
-        // in a field name as well as in a value. It is cleared on the way out ([`Fields`]).
+        // in a field name as well as in a value. It is cleared on the way out (`private_object::Fields`).
         if !file.is_empty() {
             return Err(refuse(&format!(
                 "has a field that `--provider {}` does not take",
@@ -186,136 +184,6 @@ const SECRET_FIELDS: [&str; 4] = [
     "session_token",
 ];
 
-/// A private JSON file a flag names, as [`load_object`] read it.
-pub(crate) enum ObjectFile {
-    /// The object names a field twice: which copy counts would depend on the parser.
-    Repeated,
-    /// The file is not one JSON object.
-    NotAnObject,
-    Object(Fields),
-}
-
-/// Reads the private file at `path` ([`PrivateFile::load`], held to its checks) as one JSON
-/// object, for the DNS credentials, App Engine secrets, and cluster key files. The bytes read
-/// are cleared on the way out, whatever the outcome; each caller words its own refusals of
-/// what the file holds.
-///
-/// # Errors
-///
-/// The refusals of [`PrivateFile::load`], and `usage` with `hint` when nothing is at the path.
-/// That message does not repeat the path: a secret passed in place of the file that holds it
-/// names no file, and quoting it would copy the secret into a log (tenet 9).
-pub(crate) fn load_object(path: &Path, guarded: Guarded, hint: &str) -> Result<ObjectFile> {
-    let Some(bytes) = PrivateFile::load(path, guarded)? else {
-        return Err(Error::usage(
-            format!(
-                "{} {} names does not exist; the path is not repeated here, in case it is a \
-                 secret passed in place of the file",
-                guarded.what,
-                guarded.named_by.name()
-            ),
-            hint,
-        ));
-    };
-    let bytes = Zeroizing::new(bytes);
-    Ok(match serde_json::from_slice::<UniqueObject>(&bytes) {
-        Ok(UniqueObject::Object(fields)) => ObjectFile::Object(fields),
-        Ok(UniqueObject::Repeated) => ObjectFile::Repeated,
-        Err(_) => ObjectFile::NotAnObject,
-    })
-}
-
-/// The file as a JSON object, or the fact that it names a field twice. Any other JSON value is
-/// a deserialization error. What was read is cleared when either is dropped or the read
-/// fails: a field named twice and its earlier value included.
-pub(crate) enum UniqueObject {
-    Object(Fields),
-    Repeated,
-}
-
-/// The fields of a private file's JSON object, every name and string in them cleared when
-/// dropped ([`clear_owned`]), so a refusal that returns before a field is taken out leaves no
-/// copy of it in freed memory.
-pub(crate) struct Fields(Map<String, Value>);
-
-impl std::ops::Deref for Fields {
-    type Target = Map<String, Value>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for Fields {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl Drop for Fields {
-    fn drop(&mut self) {
-        clear_owned(Value::Object(std::mem::take(&mut self.0)));
-    }
-}
-
-/// Drops `value` with every string in it and every field name cleared, at any depth, for a
-/// value read from a private file that is not kept. A number is not cleared: `serde_json`
-/// gives no way to reach its digits.
-pub(crate) fn clear_owned(value: Value) {
-    match value {
-        Value::String(text) => drop(Zeroizing::new(text)),
-        Value::Array(items) => items.into_iter().for_each(clear_owned),
-        Value::Object(fields) => {
-            for (name, value) in fields {
-                drop(Zeroizing::new(name));
-                clear_owned(value);
-            }
-        }
-        _ => {}
-    }
-}
-
-impl<'de> Deserialize<'de> for UniqueObject {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        struct Object;
-        impl<'de> Visitor<'de> for Object {
-            type Value = UniqueObject;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a JSON object")
-            }
-
-            fn visit_map<A: MapAccess<'de>>(
-                self,
-                mut map: A,
-            ) -> std::result::Result<UniqueObject, A::Error> {
-                // Cleared when dropped, so a syntax error later in the file, which returns
-                // here, leaves nothing read before it behind.
-                let mut fields = Fields(Map::new());
-                let mut repeated = false;
-                while let Some((name, value)) = map.next_entry::<String, Value>()? {
-                    // The whole object is still read, so a syntax error later in the file
-                    // is reported as one. A second copy is not kept: it is cleared now, and
-                    // the first when `fields` is dropped.
-                    if fields.contains_key(&name) {
-                        repeated = true;
-                        drop(Zeroizing::new(name));
-                        clear_owned(value);
-                    } else {
-                        fields.insert(name, value);
-                    }
-                }
-                Ok(if repeated {
-                    UniqueObject::Repeated
-                } else {
-                    UniqueObject::Object(fields)
-                })
-            }
-        }
-        deserializer.deserialize_map(Object)
-    }
-}
-
 /// A string field taken out of the file.
 enum Taken {
     Text(Zeroizing<String>),
@@ -356,13 +224,6 @@ fn file_hint(flag: &str, provider: DnsProvider) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Every string, at any depth, and every name is dropped through `Zeroizing`; numbers and
-    /// the rest are dropped as they are.
-    #[test]
-    fn a_value_of_any_shape_is_dropped_cleared() {
-        clear_owned(serde_json::json!({"a": [1, "s", {"k": "v"}, null, true], "b": 2.5}));
-    }
 
     #[test]
     fn debug_names_the_provider_and_no_value() {

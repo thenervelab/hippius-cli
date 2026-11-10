@@ -59,12 +59,13 @@ use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use crate::client::Response;
-use crate::dns::{ObjectFile, load_object};
 use crate::encode::hex;
 use crate::error::{Code, Error, Result};
 use crate::ids::random_uuid;
 use crate::phrase::{named, quote, quote_path};
 use crate::private_file::{Guarded, NamedBy};
+use crate::private_object::load_private_object;
+use crate::secret::clear_owned;
 use crate::time::{clock_hint, http_date, rfc3339};
 
 /// The `kind` of the key file.
@@ -111,7 +112,7 @@ impl ClusterKey {
             holds: "the cluster's private keys",
             named_by: NamedBy::Flag(flag),
         };
-        let loaded = load_object(path, guarded, &key_file_hint(flag))?;
+        let loaded = load_private_object(path, guarded, &key_file_hint(flag))?;
         let not_a_key_file = |problem: &str| {
             Error::usage(
                 format!(
@@ -124,11 +125,7 @@ impl ClusterKey {
         };
         // A field given twice is refused, as the other private files refuse it: which copy
         // counts would depend on the parser.
-        let mut fields = match loaded {
-            ObjectFile::Object(fields) => fields,
-            ObjectFile::Repeated => return Err(not_a_key_file("names a field twice")),
-            ObjectFile::NotAnObject => return Err(not_a_key_file("is not a JSON object")),
-        };
+        let mut fields = loaded.map_err(|problem| not_a_key_file(&problem.describe("a field")))?;
         // Taken out of the map first, so that each refusal below drops them cleared.
         let sign_secret = secret_text(&mut fields, "sign_secret_key");
         let box_secret = secret_text(&mut fields, "box_secret_key");
@@ -425,7 +422,7 @@ fn secret_text(fields: &mut Map<String, Value>, field: &str) -> Option<Zeroizing
     match fields.shift_remove(field)? {
         Value::String(text) => Some(Zeroizing::new(text)),
         other => {
-            crate::dns::clear_owned(other);
+            clear_owned(other);
             None
         }
     }

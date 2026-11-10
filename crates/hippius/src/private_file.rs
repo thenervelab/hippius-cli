@@ -15,6 +15,7 @@ use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 use crate::phrase::{io_reason, quote_path};
+use crate::regular::{OpenRegularError, open_regular_at};
 
 thread_local! {
     /// What [`on_lock_wait`] set on this thread.
@@ -52,6 +53,15 @@ fn create_private_dirs(dir: &Path) -> std::io::Result<()> {
     }
     let fd = rustix::fs::open(dir, DIRECTORY_FLAGS, Mode::empty())?;
     Ok(rustix::fs::fchmod(&fd, Mode::RWXU)?)
+}
+
+/// `bytes`, read from a private file, as UTF-8 text, or `None` when they are not: either way
+/// no copy of them is left uncleared, the one the failed conversion hands back included.
+pub(crate) fn utf8_text(mut bytes: Zeroizing<Vec<u8>>) -> Option<Zeroizing<String>> {
+    String::from_utf8(std::mem::take(&mut *bytes))
+        .map_err(|refused| drop(Zeroizing::new(refused.into_bytes())))
+        .ok()
+        .map(Zeroizing::new)
 }
 
 /// The directory a config path lives in.
@@ -175,7 +185,7 @@ impl PrivateFile {
     /// message names the file. Both are checked before the bytes are returned. A missing
     /// file is not refused for its directory: there is nothing to trust yet, and the write
     /// that would create it goes through [`PrivateFile::ensure`], which checks it.
-    pub(crate) fn load(path: &Path, guarded: Guarded) -> Result<Option<Vec<u8>>> {
+    pub(crate) fn load(path: &Path, guarded: Guarded) -> Result<Option<Zeroizing<Vec<u8>>>> {
         let name = file_name(path, guarded)?;
         let file = match rustix::fs::open(directory(path), DIRECTORY_FLAGS, Mode::empty()) {
             Err(Errno::NOENT) => return Ok(None),
@@ -184,10 +194,8 @@ impl PrivateFile {
         let Some(bytes) = file.read()? else {
             return Ok(None);
         };
-        // A refused directory drops the bytes cleared.
-        let mut bytes = Zeroizing::new(bytes);
         file.check_directory()?;
-        Ok(Some(std::mem::take(&mut *bytes)))
+        Ok(Some(bytes))
     }
 
     /// The file's full path.
@@ -428,20 +436,19 @@ impl PrivateFile {
     /// Opens the file without following a symlink, checks it on the open descriptor, and
     /// reads it, or `None` when it does not exist. [`PrivateFile::ensure`] has checked the
     /// directory already; [`PrivateFile::load`] checks it after this.
-    pub(crate) fn read(&self) -> Result<Option<Vec<u8>>> {
+    pub(crate) fn read(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {
         let Guarded {
             what,
             holds,
             named_by,
         } = self.guarded;
         let path = &self.path;
-        // `O_NONBLOCK`: opening a FIFO planted at the name returns at once instead of
-        // waiting for a writer, so the check below refuses it. A regular file ignores it.
-        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
-        let fd = match rustix::fs::openat(&self.dir, &self.name, flags, Mode::empty()) {
-            Ok(fd) => fd,
-            Err(Errno::NOENT) => return Ok(None),
-            Err(Errno::LOOP) => {
+        let file = match open_regular_at(&self.dir, Path::new(&self.name)) {
+            Ok(file) => file,
+            Err(OpenRegularError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(OpenRegularError::Symlink) => {
                 return Err(Error::usage(
                     format!(
                         "{what} {} is a symlink, and a symlink is never followed",
@@ -450,26 +457,25 @@ impl PrivateFile {
                     format!("{} the file the symlink points to", named_by.point_at()),
                 ));
             }
-            Err(e) => {
+            Err(OpenRegularError::NotRegular) => {
+                return Err(Error::usage(
+                    format!("{what} {} is not a regular file", quote_path(path)),
+                    format!("{} a regular file", named_by.point_at()),
+                ));
+            }
+            Err(OpenRegularError::Io(e)) => {
                 // The open is refused before the owner check below can run, so the owner is
                 // read from the directory entry here.
                 let owner = rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)
                     .ok()
                     .map(|stat| stat.st_uid);
                 let user = rustix::process::geteuid().as_raw();
-                return Err(open_error(path, &e.into(), owner, user, self.guarded));
+                return Err(open_error(path, &e, owner, user, self.guarded));
             }
         };
-        let file = fs::File::from(fd);
         let metadata = file
             .metadata()
             .map_err(|e| file_error("read", path, &e, Denied::Chmod("600", path)))?;
-        if !metadata.is_file() {
-            return Err(Error::usage(
-                format!("{what} {} is not a regular file", quote_path(path)),
-                format!("{} a regular file", named_by.point_at()),
-            ));
-        }
         if metadata.uid() != rustix::process::geteuid().as_raw() {
             return Err(another_users_file(path, self.guarded));
         }
@@ -489,9 +495,7 @@ impl PrivateFile {
         // growing the buffer: a growth would free a copy of the bytes that nothing clears.
         // That relies on std's `read_to_end` filling spare capacity before it reallocates,
         // which it does today but its docs do not promise, and on the file not growing
-        // between the `fstat` and the read. Cleared on every refusal below; on success the
-        // caller owns the bytes, and every caller clears them in turn: the config and AWS
-        // readers, and the DNS credentials, app secrets, and cluster key files.
+        // between the `fstat` and the read. Cleared when dropped, whoever drops them.
         let capacity = usize::try_from(metadata.len())
             .map_or(MAX_FILE_BYTES, |len| len.min(MAX_FILE_BYTES))
             + 1;
@@ -509,7 +513,7 @@ impl PrivateFile {
                 ),
             ));
         }
-        Ok(Some(std::mem::take(&mut *bytes)))
+        Ok(Some(bytes))
     }
 
     /// Whether the file at the name has another hard link now, never through a symlink:

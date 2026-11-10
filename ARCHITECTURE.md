@@ -32,6 +32,7 @@ crates/hippius       the library: never prints, never reads argv
   config.rs          the config file and the settings of one run (tenet 8)
   json.rs            the list shapes of the API and the list envelope
   private_file.rs    files only the caller may read: config, AWS files, secret files
+  private_object.rs  a private file that holds one JSON object of secrets
   aws.rs             the AWS CLI profile that `hipc s3 configure` writes
   kubernetes.rs      the cluster key: signatures and the sealed kubeconfig
   wallet.rs          BIP-39 phrases and the keys they derive
@@ -40,6 +41,7 @@ crates/hippius       the library: never prints, never reads argv
   leaf modules, which import no module above them:
   error.rs           `Error` and `Code`: the JSON error object and the exit codes (tenet 4)
   redact.rs          the spellings of a secret, and their redaction from text and JSON (tenet 9)
+  secret.rs          JSON values that hold secrets, cleared when dropped
   method.rs          the HTTP method, and whether a request may change state
   selector.rs        the account, project and billing account a run selects
   url.rs             API origins, and URLs with their query values withheld
