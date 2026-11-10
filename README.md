@@ -23,7 +23,7 @@ hipc version
 
 ## Log in
 
-Sign in at https://console.hippius.com with Google, GitHub, or Apple and copy your API token from [Settings](https://console.hippius.com/dashboard/settings). If you sign in with a 12-word access key, Settings shows no token: run `hipc auth login --access-key` instead, and type the 12 words at its prompt, which does not show them; `hipc` stores only the token the sign-in answers. Then:
+Sign in at https://console.hippius.com with Google, GitHub, or Apple and create an API token in [Settings](https://console.hippius.com/dashboard/settings). If you sign in with a 12-word access key, get your token from the access-key sign-in described at https://docs.hippius.com/use/wallet-login. `hipc` signs in with that token only; it never asks for your 12 words. Then:
 
 ```sh
 hipc auth login                     # paste the token at the prompt; it is not shown

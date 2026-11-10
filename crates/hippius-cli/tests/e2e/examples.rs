@@ -135,12 +135,8 @@ fn run_against(server: &Server, args: &[&str]) -> Run {
     home.file("policy.json", br#"{"Version":"2012-10-17","Statement":[]}"#);
     home.file("invite.txt", b"inv_example\n");
     home.file(
-        "access-key.txt",
-        format!("{}\n", crate::common::PHRASES[1]).as_bytes(),
-    );
-    home.file(
         "hotkey.txt",
-        format!("{}\n", crate::common::PHRASES[0]).as_bytes(),
+        format!("{}\n", crate::common::SEED_PHRASES[0]).as_bytes(),
     );
     home.file(
         "id_ed25519.pub",
@@ -342,9 +338,7 @@ fn every_confirmed_command_refuses_without_yes_and_sends_no_write() {
 /// The commands whose real run always sends more than one request, which a dry run lists
 /// (`TENETS.md` tenet 5). A list replace is told by its `reads_first`, and Hub
 /// `--replace` by its `may_cancel_first`.
-const MORE_THAN_ONE_REQUEST: [&str; 25] = [
-    // With `--access-key-file`; with `--token-file` it is a local `action`.
-    "auth login",
+const MORE_THAN_ONE_REQUEST: [&str; 24] = [
     "auth status",
     "billing subscriptions",
     "billing auto-reload update",

@@ -13,9 +13,7 @@ use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use rustix::termios::{LocalModes, tcgetattr};
 
-use serde_json::json;
-
-use crate::common::{self, ACCOUNTS, Home, PHRASES, Reply, Server, TOKEN, route};
+use crate::common::{self, Home, Server, TOKEN};
 
 /// The extra flags and the variables of one run.
 type Case<'a> = (&'a [&'a str], &'a [(&'a str, &'a str)]);
@@ -365,207 +363,40 @@ fn ctrl_z_and_a_line_too_long_store_nothing() {
     assert!(!home.config().exists());
 }
 
-const ACCESS_KEY_PROMPT: &str =
-    "type or paste the 12 words of the access key (they are not shown): ";
+/// The token a login replaces a stored one with in the tests of two questions: not [`TOKEN`].
+const OTHER_TOKEN: &[u8] = b"tok_another_one_0123456789abcdefghijklmn\n";
 
-/// A mock login for `PHRASES[0]`: the challenge, the verify, and the token check.
-fn access_key_server() -> Server {
-    let challenge = json!({
-        "challenge": "8f2c",
-        "message": "Sign this message to log in to Hippius: nonce 8f2c",
-    });
-    let verified = json!({
-        "token": "tok_issued_by_the_login_0123456789abcdef",
-        "substrate_address": "5DfhGyQdFobKM8NsWvEeAKk5EQQgYe9AydgJ7rMB6E1EqRzV",
-        "is_new": false,
-    });
-    Server::start(vec![
-        route(
-            "POST",
-            "/api/auth/mnemonic/",
-            Reply::json(200, &challenge.to_string()),
-        ),
-        route(
-            "POST",
-            "/api/auth/verify/",
-            Reply::json(200, &verified.to_string()),
-        ),
-        route("GET", "/api/accounts/", Reply::json(200, ACCOUNTS)),
-    ])
-}
-
-/// `--access-key` asks for the 12 words with echo off, logs in with them, and stores only the
-/// token: neither the screen nor the config file holds a word of the phrase.
-#[test]
-fn an_access_key_typed_at_the_prompt_logs_in_and_is_not_shown() {
-    let home = Home::new();
-    let server = access_key_server();
-    let typed = format!("{}\r", PHRASES[0]);
-    let login = run_at_a_terminal(
-        &home,
-        &["--output", "text", "--yes"],
-        &["--access-key"],
-        &[("HIPPIUS_API_URL", server.url())],
-        &[(Some(ACCESS_KEY_PROMPT), typed.as_bytes())],
-    );
-    assert_eq!(login.code, Some(0), "{:?}", login.shown);
-    assert!(
-        login.shown.starts_with(ACCESS_KEY_PROMPT),
-        "{:?}",
-        login.shown
-    );
-    for word in PHRASES[0].split_whitespace() {
-        assert!(!login.shown.contains(word), "{word}: {:?}", login.shown);
-    }
-    assert!(login.echo_after);
-    let config = home.config_text();
-    assert!(
-        config.contains("token = \"tok_issued_by_the_login_0123456789abcdef\""),
-        "{config}"
-    );
-    assert!(!config.contains("bottom"), "{config}");
-    assert_eq!(server.requests().len(), 3);
-}
-
-/// Ctrl-C or an empty line at the access key prompt sends and stores nothing, and the
-/// terminal echoes again.
-#[test]
-fn an_interrupted_or_empty_access_key_prompt_sends_nothing() {
-    for (typed, error) in [
-        (
-            &b"bottom dri\x03"[..],
-            "error: the access key prompt was interrupted\n",
-        ),
-        (b"\n", "error: no access key was typed at the prompt\n"),
-    ] {
-        let home = Home::new();
-        let server = access_key_server();
-        let login = run_at_a_terminal(
-            &home,
-            &["--output", "text", "--yes"],
-            &["--access-key"],
-            &[("HIPPIUS_API_URL", server.url())],
-            &[(Some(ACCESS_KEY_PROMPT), typed)],
-        );
-        assert_eq!(login.code, Some(2), "{:?}", login.shown);
-        assert!(login.shown.contains(error), "{:?}", login.shown);
-        assert!(
-            login.shown.contains(
-                "auth login --access-key` and type the 12 words at the prompt, or pass \
-                 `--access-key-file <path>`"
-            ),
-            "{:?}",
-            login.shown
-        );
-        assert!(!login.shown.contains("bottom dri"), "{:?}", login.shown);
-        assert!(login.echo_after);
-        assert!(server.requests().is_empty());
-        assert!(!home.config().exists());
-    }
-}
-
-/// A word the list does not hold is refused by its position, never quoted, at the prompt as
-/// from a file.
-#[test]
-fn a_mistyped_access_key_is_refused_by_position() {
-    let home = Home::new();
-    let server = access_key_server();
-    let typed = PHRASES[0].replacen("drive", "drivx", 1) + "\n";
-    let login = run_at_a_terminal(
-        &home,
-        &["--output", "text", "--yes"],
-        &["--access-key"],
-        &[("HIPPIUS_API_URL", server.url())],
-        &[(Some(ACCESS_KEY_PROMPT), typed.as_bytes())],
-    );
-    assert_eq!(login.code, Some(2), "{:?}", login.shown);
-    assert!(
-        login.shown.contains(
-            "error: word 2 of the access key phrase is not on the English BIP-39 word list\n\
-             hint: type only the access key's words at the prompt\n"
-        ),
-        "{:?}",
-        login.shown
-    );
-    assert!(!login.shown.contains("drivx"), "{:?}", login.shown);
-    assert!(server.requests().is_empty());
-}
-
-/// Under `CI` nobody is asked for the access key, even at a terminal, and the hint names
-/// `--access-key-file`.
-#[test]
-fn ci_refuses_the_access_key_prompt_without_asking() {
-    let home = Home::new();
-    let server = access_key_server();
-    let login = run_at_a_terminal(
-        &home,
-        &["--output", "text", "--yes"],
-        &["--access-key"],
-        &[("HIPPIUS_API_URL", server.url()), ("CI", "1")],
-        &[],
-    );
-    assert_eq!(login.code, Some(2), "{:?}", login.shown);
-    assert!(
-        !login.shown.contains(ACCESS_KEY_PROMPT),
-        "{:?}",
-        login.shown
-    );
-    assert!(
-        login.shown.contains(
-            "hint: pass `--access-key-file <path>`, or `--access-key-file -` to read the 12 \
-             words from stdin\n"
-        ),
-        "{:?}",
-        login.shown
-    );
-    assert!(server.requests().is_empty());
-}
+/// The question about replacing a stored token with the one a `--token-file` login read.
+const REPLACE_QUESTION: &str = "replace the token stored in the profile `default` with a \
+                                different one; every later command with this profile acts as \
+                                the new token's owner; continue? [y/N] ";
 
 /// A stored token is replaced only after its own question: a person who confirms the origin
-/// and declines the replacement keeps the stored token, nothing is sent, and the 12 words were
-/// never asked for: both questions come before the prompt for them.
+/// and declines the replacement keeps the stored token, and nothing is sent.
 #[test]
 fn declining_the_replacement_keeps_the_stored_token_and_sends_nothing() {
     let home = Home::new();
-    let server = access_key_server();
+    let server = Server::start(vec![]);
     home.write_config(&format!(
         "[profiles.default]\ntoken = \"{TOKEN}\"\ntoken_origin = \"{}\"\n",
         server.url()
     ));
+    let file = home.file("other-token.txt", OTHER_TOKEN);
     let login = run_at_a_terminal(
         &home,
-        &["--output", "text"],
-        &["--access-key"],
+        TEXT,
+        &["--token-file", file.to_str().unwrap()],
         &[("HIPPIUS_API_URL", server.url())],
         &[
             (Some("continue? [y/N] "), b"y\r"),
-            (
-                Some(
-                    "replace the token stored in the profile `default` with the token the \
-                     access key's login answers; every later command with this profile acts as \
-                     the new token's owner; continue? [y/N] ",
-                ),
-                b"n\r",
-            ),
+            (Some(REPLACE_QUESTION), b"n\r"),
         ],
     );
-    assert_ne!(login.code, Some(0), "{:?}", login.shown);
+    assert_eq!(login.code, Some(2), "{:?}", login.shown);
     assert!(login.shown.contains("error:"), "{:?}", login.shown);
-    assert!(
-        !login.shown.contains(ACCESS_KEY_PROMPT),
-        "{:?}",
-        login.shown
-    );
     assert!(server.requests().is_empty());
     assert!(home.config_text().contains(TOKEN));
 }
-
-/// The question about replacing a stored token, after the origin question of an access-key
-/// login.
-const REPLACE_QUESTION: &str = "replace the token stored in the profile `default` with the \
-                                token the access key's login answers; every later command \
-                                with this profile acts as the new token's owner; continue? \
-                                [y/N] ";
 
 /// What was typed before a question appeared does not answer it: a paste of two `y` lines at
 /// the origin question answers that one, and the second line is discarded rather than read
@@ -573,15 +404,16 @@ const REPLACE_QUESTION: &str = "replace the token stored in the profile `default
 #[test]
 fn a_second_line_pasted_at_one_question_does_not_answer_the_next() {
     let home = Home::new();
-    let server = access_key_server();
+    let server = Server::start(vec![]);
     home.write_config(&format!(
         "[profiles.default]\ntoken = \"{TOKEN}\"\ntoken_origin = \"{}\"\n",
         server.url()
     ));
+    let file = home.file("other-token.txt", OTHER_TOKEN);
     let login = run_at_a_terminal(
         &home,
         TEXT,
-        &["--access-key"],
+        &["--token-file", file.to_str().unwrap()],
         &[("HIPPIUS_API_URL", server.url())],
         &[
             (Some("continue? [y/N] "), b"y\ry\r"),
@@ -591,11 +423,6 @@ fn a_second_line_pasted_at_one_question_does_not_answer_the_next() {
     assert_eq!(login.code, Some(2), "{:?}", login.shown);
     assert!(
         login.shown.contains("was not answered yes"),
-        "{:?}",
-        login.shown
-    );
-    assert!(
-        !login.shown.contains(ACCESS_KEY_PROMPT),
         "{:?}",
         login.shown
     );

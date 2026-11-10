@@ -6,10 +6,7 @@ This page is written to be pasted into an agent's context. It says how to learn 
 
 ## Setup, once, by a person
 
-An agent does not sign in: the person it works for does, once, on the machine the agent runs on, and gives `hipc` an API token. Where the token comes from depends on how they sign in to https://console.hippius.com:
-
-- With Google, GitHub, or Apple: copy it from https://console.hippius.com/dashboard/settings.
-- With a 12-word access key: that page shows no token. The user runs `hipc auth login --access-key` and types the 12 words at its hidden prompt; `hipc` signs the API's login challenge with them and stores only the token it answers (words the API has not seen create an empty account, and the login then stores nothing unless it was run with `--new-account`). The 12 words never go into the chat or a CI secret.
+An agent does not sign in: the person it works for does, once, on the machine the agent runs on, and gives `hipc` an API token: created at https://console.hippius.com/dashboard/settings after a Google, GitHub, or Apple sign-in, or, for an account that signs in with a 12-word access key, from the access-key sign-in described at https://docs.hippius.com/use/wallet-login. A token is the only way `hipc` signs in: it never takes an account's 12-word access key, which stays in the console and never goes into the chat or a CI secret.
 
 ```sh
 brew install thenervelab/tap/hipc
@@ -27,11 +24,11 @@ hipc auth status
 
 When a command exits 1 `auth` because no token is configured, ask the user to run the login the hint names (`hipc auth login`, with `--profile` when the run used another profile) in their own terminal, where the prompt does not show the token, with the same `HIPPIUS_CONFIG` if the run set one; go on once they have. Do not give up on the account, and do not ask for the token in the chat.
 
-An account that signs in with a 12-word access key has no token in the console settings. The user logs it in with `hipc auth login --access-key` in their own terminal, where the prompt does not show the 12 words, or with `--access-key-file <path>` (a file of mode `0600`, or `-` for stdin) on a machine they trust. `hipc` signs the API's login challenge with the key and stores only the token it answers; the 12 words are never stored, sent, or printed. A phrase the API has not seen opens a new, empty account, and so does one mistyped word. When the verify answers `is_new`, the login exits 2 `usage` with `side_effects` `partial` and stores no token: the server has already opened the account, nothing is stored locally, and a later login with the same words finds that account and logs in. The refusal guards one run only, so do not simply run the same login again: ask the user to check the words, and pass `--new-account` only when the user means to create an account (`is_new` is then true, unless an earlier refused login already opened it). A new account has no email and no free Drive plan, and S3 needs no subscription. Such an account signs its own hAlpha buys, which this version of `hipc` cannot do yet: `hipc billing top-up --method halpha` refuses it with `conflict`. A card or Bitcoin checkout works now (`hipc billing top-up --amount 50 --method card --yes`), and is paid by a person at its `checkout_url`.
+An account that signs its own hAlpha buys (`custodial` false in the quote) makes them in the console: `hipc billing top-up --method halpha` refuses it with `conflict`, and the hint names the console. A card or Bitcoin checkout works from `hipc` (`hipc billing top-up --amount 50 --method card --yes`), and is paid by a person at its `checkout_url`.
 
-For CI, sign in once on a machine you trust and store only the token, as the runner's `HIPPIUS_TOKEN` secret. Never put the 12 words on a runner: they control the whole account and its balance. `hipc auth logout` removes the stored token from the profile but does not revoke it on the server.
+For CI, store only the token, as the runner's `HIPPIUS_TOKEN` secret. Never put a 12-word access key on a runner: it controls the whole account and its balance. `hipc auth logout` removes the stored token from the profile but does not revoke it on the server.
 
-Never ask the user to paste the token, the 12-word access key, a Drive unlock password, a recovery seed, or a one-time database password into the chat. The token goes to `hipc auth login` on their machine, and nothing else is an input to `hipc`.
+Never ask the user to paste the token, the 12-word access key, a Drive unlock password, a recovery seed, or a one-time database password into the chat. The token goes to `hipc auth login` on their machine, and nothing else is an input to `hipc`, except a Bittensor hotkey's words, which go only in the file `--hotkey-file` names, on their machine.
 
 ## Discovery
 
@@ -67,7 +64,7 @@ The grammar is service, resource, verb, as in `hipc compute vms list`, with `lis
 
 ## Errors and exit codes
 
-Exit `0` is success, a dry run included. Exit `1` is an API or runtime failure. Exit `2` means the invocation must change, and nothing that changes state was sent, with one exception: an access-key login refused because the API opened a new account says so with `side_effects` `partial`.
+Exit `0` is success, a dry run included. Exit `1` is an API or runtime failure. Exit `2` means the invocation must change, and nothing that changes state was sent.
 
 A failure prints one JSON object on the last line of stderr (any `--debug` lines come first). A failed command that printed a document on stdout printed what was done: keep it, whatever the error code, since the id, or a one-time secret, is in it. That happens after `partial_failure`, after a VM or app launch whose wait ended before `running` or whose answer `hipc` cannot use, after a database create or restore whose credentials could not all be written to `--credentials-dir`, after a secret that could not be written to `--secret-file`, and after a database create or restore whose answer is not JSON (`unparsed_answer`). Otherwise stdout is empty, which does not mean nothing was done: read `side_effects`.
 

@@ -54,9 +54,8 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 crate = "webpki-roots"
 allow = ["CDLA-Permissive-2.0"]
 
-# CC0-1.0, a public-domain dedication, for the rust-bitcoin crates only: libsecp256k1's
-# binding, which signs the Ethereum half of an access-key login, the BIP-39 phrase parser, and
-# their helpers.
+# CC0-1.0, a public-domain dedication, for the rust-bitcoin crates only: the BIP-39 phrase
+# parser that reads a gamma hotkey, and its helpers.
 [[licenses.exceptions]]
 crate = "bip39"
 allow = ["CC0-1.0"]
@@ -67,12 +66,4 @@ allow = ["CC0-1.0"]
 
 [[licenses.exceptions]]
 crate = "hex-conservative"
-allow = ["CC0-1.0"]
-
-[[licenses.exceptions]]
-crate = "secp256k1"
-allow = ["CC0-1.0"]
-
-[[licenses.exceptions]]
-crate = "secp256k1-sys"
 allow = ["CC0-1.0"]

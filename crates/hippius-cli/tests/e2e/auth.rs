@@ -135,6 +135,130 @@ fn login_without_a_token_file_is_usage_even_when_hippius_token_is_set() {
     assert!(!home.config().exists());
 }
 
+/// With `HIPPIUS_TOKEN` set, a login warns that later commands keep sending it, not the token
+/// just stored, and names no `hipc auth status` to check it, since that would check the
+/// variable.
+#[test]
+fn a_login_under_hippius_token_warns_that_the_variable_still_wins() {
+    let home = Home::new();
+    let token_file = home.file("token", b"tok_stored_by_the_login_0123456789abcdef\n");
+    let run = Hipc::without_api_url(&home)
+        .env("HIPPIUS_TOKEN", TOKEN)
+        .run(&[
+            "--output",
+            "text",
+            "auth",
+            "login",
+            "--token-file",
+            token_file.to_str().unwrap(),
+        ]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(
+        run.stderr(),
+        "warning: `HIPPIUS_TOKEN` is set, so later commands send it, not the token just stored; \
+         unset it to act as the stored token's owner\n"
+    );
+    assert!(
+        home.config_text()
+            .contains("tok_stored_by_the_login_0123456789abcdef")
+    );
+    // Without the variable there is no warning, and text mode names the check instead.
+    let run = Hipc::without_api_url(&home).run(&[
+        "--output",
+        "text",
+        "auth",
+        "login",
+        "--token-file",
+        token_file.to_str().unwrap(),
+    ]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert!(!run.stderr().contains("HIPPIUS_TOKEN"), "{}", run.stderr());
+    assert!(
+        run.stderr().contains("run `hipc auth status` to check it"),
+        "{}",
+        run.stderr()
+    );
+}
+
+/// The access-key login is gone: each of its flags is a plain usage error from the argument
+/// parser, which names the flag and sends and stores nothing.
+#[test]
+fn the_removed_access_key_flags_are_usage_errors() {
+    let home = Home::new();
+    let server = Server::start(vec![]);
+    let key_file = home.file("key.txt", b"x\n");
+    let key_file = key_file.to_str().unwrap();
+    for (args, flag) in [
+        (vec!["auth", "login", "--access-key"], "--access-key"),
+        (
+            vec!["auth", "login", "--access-key-file", key_file],
+            "--access-key-file",
+        ),
+        (vec!["auth", "login", "--new-account"], "--new-account"),
+    ] {
+        let error = Hipc::new(&home)
+            .env("HIPPIUS_API_URL", server.url())
+            .run(&args)
+            .fails(2, "usage");
+        let message = error["message"].as_str().unwrap();
+        assert!(message.contains(&format!("`{flag}`")), "{message}");
+    }
+    assert!(server.requests().is_empty());
+    assert!(!home.config().exists());
+}
+
+/// A seed phrase typed on the command line by mistake, as stray words after the removed
+/// `--access-key` or as the value of a file flag, is refused without being repeated in any
+/// output, and nothing is sent.
+#[test]
+fn a_seed_phrase_on_the_command_line_is_refused_without_being_repeated() {
+    let home = Home::new();
+    let server = Server::start(vec![]);
+    let phrase = crate::common::SEED_PHRASES[0];
+    let words: Vec<&str> = phrase.split_whitespace().collect();
+    let mut stray = vec!["auth", "login", "--access-key"];
+    stray.extend_from_slice(&words);
+    let mut as_one = vec!["--output", "text", "auth", "login", "--access-key"];
+    as_one.push(phrase);
+    let upper = phrase.to_uppercase();
+    for args in [
+        stray,
+        as_one,
+        vec!["auth", "login", "--access-key-file", phrase, "--yes"],
+        vec!["auth", "login", "--token-file", &upper, "--yes"],
+        vec![
+            "billing",
+            "gamma",
+            "hotkeys",
+            "create",
+            "--hotkey-file",
+            phrase,
+            "--yes",
+        ],
+    ] {
+        let run = Hipc::new(&home)
+            .env("HIPPIUS_API_URL", server.url())
+            .run(&args);
+        assert_eq!(run.code(), Some(2), "{args:?}");
+        let out = format!("{}{}", run.stdout(), run.stderr());
+        // clap refuses the first three, and the run refuses argv that holds the words; a
+        // flag clap accepts reads the file, and names no path that does not exist.
+        assert!(
+            out.contains("the command line holds what looks like a seed phrase")
+                || out.contains("does not exist; the path is not repeated here"),
+            "{args:?}: {out}"
+        );
+        let shown: Vec<String> = out
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .map(str::to_lowercase)
+            .collect();
+        for word in &words {
+            assert!(!shown.iter().any(|w| w == word), "{word} in {out}");
+        }
+    }
+    assert!(server.requests().is_empty());
+}
+
 #[test]
 fn login_dry_run_writes_nothing() {
     let home = Home::new();
