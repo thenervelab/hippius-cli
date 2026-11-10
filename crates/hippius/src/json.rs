@@ -267,18 +267,25 @@ fn not_a_list() -> Error {
 /// (`Client::send`). Removed at every level, not only the top, so a response that nests
 /// the object, or lists several, cannot print it if its shape changes.
 pub fn without_field(value: Value, name: &str) -> Value {
+    without_fields(value, &|key| key == name)
+}
+
+/// `value` with every field whose name `withheld` picks removed, at any depth of objects and
+/// arrays, as [`without_field`] removes one name: for a secret that more than one spelling
+/// may name.
+pub fn without_fields(value: Value, withheld: &dyn Fn(&str) -> bool) -> Value {
     match value {
         Value::Object(fields) => Value::Object(
             fields
                 .into_iter()
-                .filter(|(key, _)| key != name)
-                .map(|(key, value)| (key, without_field(value, name)))
+                .filter(|(key, _)| !withheld(key))
+                .map(|(key, value)| (key, without_fields(value, withheld)))
                 .collect(),
         ),
         Value::Array(items) => Value::Array(
             items
                 .into_iter()
-                .map(|item| without_field(item, name))
+                .map(|item| without_fields(item, withheld))
                 .collect(),
         ),
         other => other,

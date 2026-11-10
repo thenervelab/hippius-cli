@@ -1053,10 +1053,12 @@ impl Client {
                         flags
                     }
                 }
-                RouteRule::Refused { message, hint } => return Err(Error::usage(message, hint)),
+                RouteRule::Refused { message, hint } => {
+                    return Err(Error::usage(for_method(message, request.method), hint));
+                }
                 RouteRule::RefusedWhenSet { key, message, hint } => {
                     if sets_key(request.body.as_deref(), key) {
-                        return Err(Error::usage(message, hint));
+                        return Err(Error::usage(for_method(message, request.method), hint));
                     }
                     &[]
                 }
@@ -2063,13 +2065,32 @@ fn wait_for(retry_after_ms: Option<u64>) -> Option<String> {
     })
 }
 
+/// `message`, a refusal that names the method of its row, such as
+/// ``... does not send `POST /api/...` ``, with that method replaced by `method`: a write
+/// borrows the refusal of another write method on its route (`account::route_rules`), and
+/// the message names what was asked.
+fn for_method(message: &str, method: Method) -> String {
+    ["POST", "PUT", "PATCH", "DELETE"]
+        .iter()
+        .find_map(|listed| {
+            let named = format!("`{listed} /");
+            message
+                .contains(&named)
+                .then(|| message.replacen(&named, &format!("`{method} /"), 1))
+        })
+        .unwrap_or_else(|| message.to_owned())
+}
+
 /// The fields that hold a secret in a Hippius answer, dropped from an error body (tenet 9).
 /// A bare `token` is deliberately kept: the API keys its validation errors by field name
 /// (`{"token": ["Invalid invite."]}`), and dropping it would hide why an invite was refused.
 /// A route whose answer holds a real `token` is in the secret table, so its error body is
 /// printed only to a caller who passed `--reveal`. The API token itself is redacted by value
 /// from every answer the client quotes ([`Client::send`], [`Response::refused`]).
-const ERROR_BODY_SECRET_FIELDS: [&str; 11] = [
+///
+/// A field matches in any letter case and with or without `_` or `-` between its words
+/// ([`is_error_body_secret`]), so `secretKey`, `Secret-Key`, and `secret_key` are one name.
+const ERROR_BODY_SECRET_FIELDS: [&str; 21] = [
     "secret",
     "robot_secret",
     "credentials",
@@ -2081,13 +2102,66 @@ const ERROR_BODY_SECRET_FIELDS: [&str; 11] = [
     "netbird_setup_key",
     "client_secret",
     "encrypted_secret",
+    "password",
+    "secret_key",
+    "secret_access_key",
+    "private_key",
+    "access_key",
+    "api_key",
+    "api_token",
+    "session_token",
+    "passphrase",
+    "aws_secret_access_key",
 ];
 
-/// `body` without any of [`ERROR_BODY_SECRET_FIELDS`], at any depth.
-fn without_secret_fields(body: Value) -> Value {
+/// Whether `key` is one of [`ERROR_BODY_SECRET_FIELDS`], compared in lowercase without `_`
+/// and `-`.
+fn is_error_body_secret(key: &str) -> bool {
+    let folded = |name: &str| -> String {
+        name.chars()
+            .filter(|c| !matches!(c, '_' | '-'))
+            .map(|c| c.to_ascii_lowercase())
+            .collect()
+    };
+    let key = folded(key);
     ERROR_BODY_SECRET_FIELDS
         .iter()
-        .fold(body, |body, name| crate::json::without_field(body, name))
+        .any(|name| folded(name) == key)
+}
+
+/// `body` without any of [`ERROR_BODY_SECRET_FIELDS`], at any depth, but for Django REST
+/// framework's field errors: a secret field whose value is a list of strings is a validation
+/// error about the field, such as `{"secret_access_key": ["This field may not be blank."]}`,
+/// which says why the request was refused and holds no secret, so it stays.
+fn without_secret_fields(body: Value) -> Value {
+    match body {
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .filter(|(key, value)| !is_error_body_secret(key) || is_field_error(value))
+                .map(|(key, value)| {
+                    let value = if is_error_body_secret(&key) {
+                        value
+                    } else {
+                        without_secret_fields(value)
+                    };
+                    (key, value)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.into_iter().map(without_secret_fields).collect()),
+        other => other,
+    }
+}
+
+/// Whether `value` is a field's validation errors: a non-empty list of short strings.
+fn is_field_error(value: &Value) -> bool {
+    value.as_array().is_some_and(|items| {
+        !items.is_empty()
+            && items
+                .iter()
+                .all(|item| item.as_str().is_some_and(|text| text.len() <= 200))
+    })
 }
 
 /// The most field errors an error message quotes. Arbitrary: enough for the usual one or
@@ -2114,6 +2188,10 @@ fn server_says(details: &Value) -> Option<String> {
         .iter()
         .find_map(|key| details.get(*key).and_then(Value::as_str))
     {
+        return Some(says(text));
+    }
+    // A body that is one JSON string, such as `"Rate limit hit"`, is the text itself.
+    if let Some(text) = details.as_str().filter(|text| !text.trim().is_empty()) {
         return Some(says(text));
     }
     let fields: Vec<String> = match details {
@@ -3747,7 +3825,9 @@ mod tests {
             (r#"{"rules":[{"port":["bad"]}]}"#, "the API answered 400"),
             (r#"{"name":[]}"#, "the API answered 400"),
             ("[1]", "the API answered 400"),
-            (r#""text""#, "the API answered 400"),
+            // A body that is one JSON string is the text itself; a blank one says nothing.
+            (r#""Rate limit hit""#, "the API says `Rate limit hit`"),
+            (r#""  ""#, "the API answered 400"),
         ];
         for (body, why) in cases {
             assert_eq!(
@@ -3794,6 +3874,30 @@ mod tests {
         assert_eq!(
             json["error"]["details"],
             serde_json::json!({"detail": [{}], "token": ["Invalid invite."], "ok": 1})
+        );
+        // Every other spelling of a secret field, in any case and with `_`, `-`, or nothing
+        // between its words, is dropped too; a field that only holds such a word is kept, and
+        // so is a secret field's list of validation errors, which says why and holds none.
+        let error = answer(
+            false,
+            400,
+            concat!(
+                r#"{"Password":"s3cr3t","secretKey":"s3cr3t","SECRET-ACCESS-KEY":"s3cr3t","#,
+                r#""private_key":"s3cr3t","accessKey":"s3cr3t","api_key":"s3cr3t","#,
+                r#""nested":[{"Client-Secret":"s3cr3t"}],"access_key_id":"AKIA","#,
+                r#""password_set":true,"secret_access_key":["This field may not be blank."]}"#
+            ),
+        );
+        let json = error.to_json();
+        assert!(!json.to_string().contains("s3cr3t"), "{json}");
+        assert_eq!(
+            json["error"]["details"],
+            serde_json::json!({
+                "nested": [{}],
+                "access_key_id": "AKIA",
+                "password_set": true,
+                "secret_access_key": ["This field may not be blank."]
+            })
         );
     }
 

@@ -289,7 +289,8 @@ impl Input<'_> {
     /// stdin is read from the descriptor itself, not through the standard library's stdin
     /// buffer, which would keep a copy for the life of the process. Every read goes into a
     /// buffer that has its full size before the read, so a read never moves the secret and
-    /// leaves a copy behind.
+    /// leaves a copy behind. A path that cannot be looked up is refused without being quoted
+    /// ([`Input::unquoted_if_missing`]).
     pub(crate) fn read_secret(&self) -> Result<Zeroizing<String>> {
         let mut bytes = self.read_cleared(MAX_SECRET_FILE_BYTES)?;
         if std::str::from_utf8(&bytes).is_err() {
@@ -300,8 +301,35 @@ impl Input<'_> {
         ))
     }
 
+    /// Refuses a path that names no file, such as one that does not exist, without quoting
+    /// it: a secret passed in place of the file that holds it is no file, and a message that
+    /// quoted the path would copy the secret into a log or a transcript. stdin (`-`) passes.
+    fn unquoted_if_missing(&self) -> Result<()> {
+        if self.path == Path::new("-") {
+            return Ok(());
+        }
+        match std::fs::symlink_metadata(self.path) {
+            Ok(_) => Ok(()),
+            Err(error) => Err(Error::usage(
+                format!(
+                    "cannot read the {} from the file `{}` names: {}; the path is not repeated \
+                     here, in case it is the {} itself",
+                    self.what,
+                    self.flag,
+                    phrase::io_reason(&error),
+                    self.what
+                ),
+                format!(
+                    "pass `{}` the path of a file that holds the {}",
+                    self.flag, self.what
+                ),
+            )),
+        }
+    }
+
     /// [`Input::read_secret`] as bytes, at most `limit`, for a document that holds a secret.
     pub(crate) fn read_cleared(&self, limit: u64) -> Result<Zeroizing<Vec<u8>>> {
+        self.unquoted_if_missing()?;
         // The capacity holds the most `take` lets through, so the read never grows the buffer.
         // Cleared when dropped, so a refusal clears what was read.
         let mut bytes = Zeroizing::new(Vec::with_capacity(

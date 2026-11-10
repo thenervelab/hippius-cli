@@ -36,7 +36,7 @@ pub use crate::dns::{DnsCredentials, DnsProvider};
 pub use crate::error::{CHECK_FIRST_HINT, Code, Error, ISSUES_URL, Result, SideEffects};
 pub use crate::json::{
     CursorPage, Page, cursor_page, envelope, envelope_beside, number_holds, page, page_beside,
-    redact_value, without_field,
+    redact_value, without_field, without_fields,
 };
 pub use crate::kubernetes::{ClusterKey, MatchedKey, rfc3339_seconds};
 pub use crate::project::{BillingId, DEFAULT, ProjectId};

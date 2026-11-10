@@ -307,6 +307,32 @@ fn a_membership_sends_the_header_on_compute_but_never_on_ssh_keys() {
     assert_eq!(requests[3].header("x-hippius-account"), None);
 }
 
+/// A server answer that happens to hold `dry_run: true` and `requests` is printed as it
+/// came: only a run given `--dry-run` gets the `confirmation` fields and the dry-run layout.
+#[test]
+fn an_answer_shaped_like_a_dry_run_is_printed_as_it_came() {
+    let answer = r#"{"dry_run":true,"requests":[{"method":"GET"}],"status":"running"}"#;
+    let server = Server::start(vec![vm_route("GET", "", Reply::json(200, answer))]);
+    let doc = hipc(&server, &["vms", "get", VM]).ok();
+    assert_eq!(doc, serde_json::from_str::<Value>(answer).unwrap());
+    let mut argv = vec!["--output", "text", "compute", "vms", "get", VM];
+    let text = Hipc::against(&Home::new(), &server).run(&argv);
+    assert_eq!(text.code(), Some(0), "{}", text.stderr());
+    assert!(
+        text.stdout().starts_with("dry_run   true\nrequests  "),
+        "{}",
+        text.stdout()
+    );
+    // The same command given `--dry-run` is a dry run.
+    argv.insert(0, "--dry-run");
+    let text = Hipc::against(&Home::new(), &server).run(&argv);
+    assert!(
+        text.stdout().contains("confirmation       false\n"),
+        "{}",
+        text.stdout()
+    );
+}
+
 #[test]
 fn get_is_the_vm_and_a_missing_one_is_not_found() {
     let server = Server::start(vec![vm_route("GET", "", Reply::json(200, &vm("running")))]);
