@@ -426,12 +426,10 @@ fn resolved(dir: &Path) -> Option<PathBuf> {
     loop {
         if let Ok(mut path) = fs::canonicalize(at) {
             for part in missing.into_iter().rev() {
-                match part {
-                    Component::ParentDir => {
-                        path.pop();
-                    }
-                    Component::Normal(name) => path.push(name),
-                    Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
+                if part == Component::ParentDir {
+                    path.pop();
+                } else {
+                    path.push(part);
                 }
             }
             return Some(path);

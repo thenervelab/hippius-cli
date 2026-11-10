@@ -431,6 +431,7 @@ fn no_random_bytes(error: getrandom::Error) -> Error {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
     use std::path::PathBuf;
 
     use super::*;
@@ -457,6 +458,29 @@ mod tests {
             .step_by(2)
             .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
             .collect()
+    }
+
+    /// A hotkey file path that holds a phrase is never quoted: a missing one is refused as a
+    /// phrase on the command line, and one that exists is named by its flag.
+    #[test]
+    fn a_hotkey_path_that_holds_a_phrase_is_not_quoted() {
+        let dir = std::env::temp_dir().join(format!("hipc-hotkey-{}", std::process::id()));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(&dir)
+            .unwrap();
+        let named = dir.join(format!("x {DEV_PHRASE}"));
+        let missing = read_hotkey_file(&named, "--hotkey-file").unwrap_err();
+        assert_eq!(missing.message(), phrase_in_argv().message());
+        std::fs::write(&named, b"\xff\xfe").unwrap();
+        std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let error = read_hotkey_file(&named, "--hotkey-file").unwrap_err();
+        assert_eq!(
+            error.message(),
+            "the hotkey file `--hotkey-file` names is not UTF-8 text"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The SS58 address is the one Substrate tools and Hippius wallets derive from this
