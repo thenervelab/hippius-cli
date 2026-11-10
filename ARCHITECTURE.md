@@ -179,6 +179,17 @@ and `--debug` lines go to stderr through `context`.
   module per area). Each test runs the built `hipc` against a local server on `127.0.0.1`
   (`common.rs`), with a fake token, and checks the requests it sent. No test reaches the live
   API.
+- **Waits**: every command that waits on the server (the VM and App Engine launch waits,
+  the hAlpha follow) pauses through one function, `paced` in `commands/poll.rs`. A debug
+  build reads `HIPC_TEST_POLL_INTERVAL_MS` there, a whole number of milliseconds above
+  zero, and uses it in place of the real 2 or 3 seconds; any other value is ignored. A
+  zero pause (the hAlpha follow's first read) stays zero, and a server's `Retry-After` is
+  still honoured. The e2e harness (`common::command`) sets it to 50 for every run, so a
+  waited launch costs no real time; a test that counts the reads a deadline leaves room
+  for removes it (`halpha::top_up_at_the_real_interval`). The code that reads the variable
+  is compiled only with debug assertions, so a release build ignores it; the release-build
+  action fails a release binary that holds the name, and `tests/scripts` checks that step
+  against the debug binary and checks that the release profile keeps debug assertions off.
 - **Scripts**: `crates/hippius-cli/tests/scripts/` runs the shell scripts in `scripts/` and
   the release workflow's guards against local files and a local server.
 - **Coverage** is a gate: 100% of lines under `src/` and `build.rs`, and a ratchet on
