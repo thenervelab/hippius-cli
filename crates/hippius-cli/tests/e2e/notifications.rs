@@ -213,8 +213,8 @@ fn notifications_update_reports_a_rejected_write() {
 }
 
 /// The settings read is a group's `get` now; the bare group, which was the read, is a usage
-/// error whose hint is the caller's line moved to `get`, in JSON mode and in text mode, where
-/// the group's help follows.
+/// error whose hint is the group's help, in JSON mode and in text mode, where that help
+/// follows.
 #[test]
 fn notifications_alone_is_a_usage_error() {
     let server = Server::start(vec![]);
@@ -223,24 +223,20 @@ fn notifications_alone_is_a_usage_error() {
         error["message"],
         "a subcommand is required; `hipc account notifications` holds `get` and `update`"
     );
-    assert_eq!(
-        error["hint"],
-        "run `hipc account notifications get` in place of `hipc account notifications`"
-    );
+    assert_eq!(error["hint"], "run `hipc account notifications --help`");
     let run = hipc(&server, &["--output", "text", "notifications"]);
     assert_eq!(run.code(), Some(2));
     assert!(
         run.stderr().starts_with(
             "error: a subcommand is required; `hipc account notifications` holds `get` and \
-             `update`\nhint: run `hipc account --output text \
-             notifications get` in place of `hipc account --output text notifications`\n\n"
+             `update`\nhint: run `hipc account notifications --help`\n\n"
         ),
         "{}",
         run.stderr()
     );
     assert_eq!(run.stdout(), "");
-    // Only the bare group is moved: another group alone keeps the hint to its help, and so
-    // does `update` without a setting, a shelf verb under the group.
+    // Another group alone gets the hint to its help, and so does `update` without a
+    // setting.
     let error = hipc(&server, &["marketing-consent"]).fails(2, "usage");
     assert_eq!(error["hint"], "run `hipc account marketing-consent --help`");
     let error = hipc(&server, &["notifications", "update"]).fails(2, "usage");
@@ -253,8 +249,7 @@ fn notifications_alone_is_a_usage_error() {
 
 /// A flag of `update` given to the group without the subcommand is clap's unknown argument,
 /// named in the message, and the hint sends the caller to the group's help, which lists
-/// `update`: `get`, which has the old read's flags, takes no such flag, so the moved line
-/// would fail again. With or without `=`.
+/// `update`. With or without `=`.
 #[test]
 fn an_update_flag_without_update_is_a_usage_error() {
     let server = Server::start(vec![]);

@@ -30,6 +30,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - The help of `hipc cdn rules update`, `hipc account members update --grant`, and `hipc cdn lists items update` says that the route takes no version, so a change someone else makes between the read and the write is lost; for a member, a grant revoked in that window comes back if a `--grant` names it.
 - The `hipc compute app-engine apps create` question says that stored backups are billed per GB-hour at the price `hipc compute backups options` shows, and names where the OS disk tier's price is shown, as the `hipc compute vms create` question does. The `hipc compute backups policy update --failover auto` question says, as the launch questions do, that what was written after the latest backup is lost; one clause now serves all three. An App Engine launch that sent secrets keeps a kebab `code` in a refusal's `details` and message, as it keeps `error`.
 
+### Removed
+
+- The hints for flags renamed and commands moved before 1.0 are gone. An old flag (`hipc api --input`) or an old command path (`hipc hub namespace provision`, `hipc network groups` alone) is now a plain `usage` error whose hint is the help of the command it reached, as any unknown word is.
+
 ### Fixed
 
 - A list's envelope, a dry run, and every document `hipc` takes a field out of keep the server's other fields in the order it sent them. With `serde_json`'s `preserve_order`, `Map::remove` moved the last field into the gap; a lint now refuses it.

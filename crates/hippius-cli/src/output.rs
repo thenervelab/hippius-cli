@@ -346,9 +346,8 @@ pub(crate) fn clap_error(mode: Mode, error: &clap::Error, args: &[OsString]) -> 
     } else {
         usage_message(error)
     };
-    let hint = renamed_hint(error, &path, args)
-        .or_else(|| moved_hint(error, &path, &command, args))
-        .or_else(|| unknown.and_then(|word| nearest_hint(&path, &command, word)))
+    let hint = unknown
+        .and_then(|word| nearest_hint(&path, &command, word))
         .unwrap_or_else(|| format!("run `{path} --help`"));
     let code = failure(mode, &Error::usage(message, hint));
     if missing_subcommand && matches!(mode, Mode::Text) {
@@ -358,229 +357,6 @@ pub(crate) fn clap_error(mode: Mode, error: &clap::Error, args: &[OsString]) -> 
     code
 }
 
-/// The flags renamed before 1.0, by the command that took them: the old name and the new.
-/// They kept no alias, so a caller still typing an old name is told the new one rather than
-/// sent to the help. These hints, and those of [`MOVED`], are removed in 0.16.0.
-const RENAMED: [(&str, &str, &str); 14] = [
-    (
-        "hipc cdn estimate",
-        "--custom-domains",
-        "--custom-hostnames",
-    ),
-    ("hipc cdn estimate", "--gb", "--traffic"),
-    (
-        "hipc s3 configure",
-        "--from-token-json",
-        "--from-token-file",
-    ),
-    ("hipc cdn waf events", "--rule", "--rule-id"),
-    ("hipc api", "--input", "--body-file"),
-    ("hipc drive subscription change", "--funding", "--pay-from"),
-    ("hipc s3 subscription change", "--funding", "--pay-from"),
-    ("hipc cdn purges create", "--all", "--everything"),
-    (
-        "hipc drive subscription change",
-        "--storage-cap-bytes",
-        "--storage-cap",
-    ),
-    (
-        "hipc s3 subscription change",
-        "--storage-cap-bytes",
-        "--storage-cap",
-    ),
-    ("hipc hub keys create", "--expires-days", "--expires-in"),
-    (
-        "hipc account billing-accounts costs",
-        "--group",
-        "--group-by",
-    ),
-    ("hipc compute backups restore", "--point", "--run-id"),
-    // The plan was a positional argument; any extra word is taken as the old form.
-    ("hipc hub subscription subscribe", "", "--plan"),
-];
-
-/// The commands renamed before 1.0: the path a caller types up to the old word, the old
-/// word, and the new path. They kept no alias either. An empty old word marks a leaf that
-/// became a group holding the new leaf (a list is `<noun> list`, tenet 2; a settings read
-/// beside its update is `get`): any word after it but a shelf verb, or none, is the old form.
-/// Removed in 0.16.0, with [`RENAMED`].
-const MOVED: [(&str, &str, &str); 9] = [
-    (
-        "hipc hub namespace",
-        "provision",
-        "hipc hub namespace create",
-    ),
-    (
-        "hipc hub namespace",
-        "check",
-        "hipc hub namespace availability",
-    ),
-    ("hipc network groups", "", "hipc network groups list"),
-    ("hipc network policies", "", "hipc network policies list"),
-    (
-        "hipc network vpcs resources",
-        "",
-        "hipc network vpcs resources list",
-    ),
-    (
-        "hipc network vpcs routers",
-        "",
-        "hipc network vpcs routers list",
-    ),
-    (
-        "hipc compute kubernetes backups",
-        "",
-        "hipc compute kubernetes backups list",
-    ),
-    (
-        "hipc account notifications",
-        "",
-        "hipc account notifications get",
-    ),
-    (
-        "hipc hub namespace robot",
-        "",
-        "hipc hub namespace robot get",
-    ),
-];
-
-/// The hint for a command line that names a command by its old path: an unknown subcommand
-/// that is the old word, or, under a leaf that became a group, an unknown subcommand that is
-/// not a shelf verb, an unknown flag (the old leaf's id or `--reveal`), or nothing at all. It
-/// gives the caller's own line with the path moved, so it runs as typed. A shelf verb there
-/// (`backups delete 7`) is a command that does not exist yet, not the old leaf's id. So is an
-/// unknown flag the new leaf does not take (`notifications --low-credit-alerts`, a flag of
-/// `update`; `network groups --limit 5`): the moved line would fail again, so the hint is the
-/// group's help.
-///
-/// The old leaf given the id `list` parses as the new leaf without its id. That reading is
-/// rare and forgetting the id is not, so a missing id there is answered for the new command
-/// alone, with the id it needs.
-fn moved_hint(
-    error: &clap::Error,
-    path: &str,
-    group: &clap::Command,
-    args: &[OsString],
-) -> Option<String> {
-    if error.kind() == ErrorKind::MissingRequiredArgument
-        && let Some(ContextValue::Strings(missing)) = error.get(ContextKind::InvalidArg)
-        && let Some((_, _, new)) = MOVED
-            .iter()
-            .find(|(_, old, new)| old.is_empty() && *new == path)
-    {
-        return Some(format!("run `{new} {}`", missing.join(" ")));
-    }
-    let typed = unknown_subcommand(error);
-    let unknown_flag = match error.get(ContextKind::InvalidArg) {
-        Some(ContextValue::String(arg)) if error.kind() == ErrorKind::UnknownArgument => {
-            Some(arg.as_str())
-        }
-        _ => None,
-    };
-    // The old leaf's id is a word only where the new leaf takes one.
-    let takes_id =
-        new_leaf(group, path).is_some_and(|leaf| leaf.get_positionals().next().is_some());
-    let leaf_form = typed.is_some_and(|word| takes_id && !crate::spec::VERBS.contains(&word))
-        || unknown_flag.is_some_and(|flag| leaf_takes(new_leaf(group, path), flag))
-        || is_missing_subcommand(error);
-    let (parent, old, new) = MOVED.iter().find(|(parent, old, _)| {
-        *parent == path
-            && if old.is_empty() {
-                leaf_form
-            } else {
-                typed == Some(*old)
-            }
-    })?;
-    let words: Vec<String> = args
-        .iter()
-        .skip(1)
-        .map(|word| word.to_string_lossy().into_owned())
-        .collect();
-    // The parent's words, found in order as `typed_command` found them, all before any `--`;
-    // its last word is where the path moves.
-    let mut at = 0;
-    for name in parent.split(' ').skip(1) {
-        at += words[at..].iter().position(|word| word == name)? + 1;
-    }
-    let new_word = new.rsplit(' ').next()?.to_owned();
-    let mut moved = words.clone();
-    if old.is_empty() {
-        moved.insert(at, new_word);
-    } else {
-        let offset = words[at..].iter().position(|word| word == old)?;
-        moved[at + offset] = new_word;
-    }
-    Some(format!(
-        "run `{}` in place of `{}`",
-        phrase::command(&moved),
-        phrase::command(&words)
-    ))
-}
-
-/// The new leaf under `group` of the [`MOVED`] row whose old leaf `path` was, if any.
-fn new_leaf<'a>(group: &'a clap::Command, path: &str) -> Option<&'a clap::Command> {
-    let (_, _, new) = MOVED
-        .iter()
-        .find(|(parent, old, _)| *parent == path && old.is_empty())?;
-    group.find_subcommand(new.rsplit(' ').next()?)
-}
-
-/// Whether `leaf`, the new leaf of a [`MOVED`] row, takes the long flag `flag`. The new leaf
-/// has the old leaf's flags, so only one of them is the old form. No new leaf has a short
-/// flag, so an unknown short one is never the old form.
-fn leaf_takes(leaf: Option<&clap::Command>, flag: &str) -> bool {
-    let long = flag.strip_prefix("--");
-    leaf.is_some_and(|leaf| {
-        leaf.get_arguments()
-            .any(|arg| long.is_some() && arg.get_long() == long)
-    })
-}
-
-/// The hint for an unknown argument that is a renamed flag of the typed command, or the old
-/// positional plan of the Hub subscribe. Only the words before `--` count: one after it is
-/// not a flag. A command line that already has the new flag gets no rename hint, since the
-/// unknown word is then something else.
-fn renamed_hint(error: &clap::Error, path: &str, args: &[OsString]) -> Option<String> {
-    let arg = match error.get(ContextKind::InvalidArg) {
-        Some(ContextValue::String(arg)) if error.kind() == ErrorKind::UnknownArgument => arg,
-        _ => return None,
-    };
-    // clap names a flag given as `--flag=value` without its value.
-    let old = if arg.starts_with('-') {
-        arg.as_str()
-    } else {
-        ""
-    };
-    let (_, _, new) = RENAMED
-        .iter()
-        .find(|(command, from, _)| *command == path && *from == old)?;
-    let words: Vec<&str> = args
-        .iter()
-        .skip(1)
-        .filter_map(|word| word.to_str())
-        .take_while(|word| *word != "--")
-        .collect();
-    let is = |word: &str, flag: &str| {
-        word == flag
-            || word
-                .strip_prefix(flag)
-                .is_some_and(|rest| rest.starts_with('='))
-    };
-    let typed_old = words.iter().any(|word| is(word, arg));
-    let typed_new = words.iter().any(|word| is(word, new));
-    if !typed_old || typed_new {
-        return None;
-    }
-    Some(if old.is_empty() {
-        format!("pass the plan as `{new} <PLAN>`")
-    } else {
-        format!("pass `{new}` in place of `{old}`")
-    })
-}
-
-/// clap says a subcommand is missing in two ways: `hipc` and `hipc compute` alone show help
-/// (`arg_required_else_help`), and a command line with only flags (`hipc --json`) is
-/// `MissingSubcommand`.
 /// The word of an unknown subcommand, as typed, when that is what clap refused.
 fn unknown_subcommand(error: &clap::Error) -> Option<&str> {
     match error.get(ContextKind::InvalidSubcommand) {
@@ -604,6 +380,9 @@ fn nearest_hint(path: &str, group: &clap::Command, word: &str) -> Option<String>
     Some(format!("run {}", hippius::phrase::join(&near, "or")))
 }
 
+/// clap says a subcommand is missing in two ways: `hipc` and `hipc compute` alone show help
+/// (`arg_required_else_help`), and a command line with only flags (`hipc --json`) is
+/// `MissingSubcommand`.
 fn is_missing_subcommand(error: &clap::Error) -> bool {
     matches!(
         error.kind(),
@@ -1154,7 +933,7 @@ mod text {
 
 #[cfg(test)]
 mod tests {
-    use clap::{CommandFactory as _, Parser as _};
+    use clap::Parser as _;
     use serde_json::json;
 
     use super::*;
@@ -1370,71 +1149,6 @@ mod tests {
 
     fn clap_error(argv: &[&str]) -> clap::Error {
         Cli::try_parse_from(argv).unwrap_err()
-    }
-
-    /// Every row of the rename table names a command that exists, a new flag it takes, and
-    /// an old flag it no longer takes, so the table cannot point at a name that moved again.
-    #[test]
-    fn every_renamed_flag_row_names_a_live_command_and_flag() {
-        let root = Cli::command();
-        for (path, old, new) in RENAMED {
-            let mut command = &root;
-            for word in path.split(' ').skip(1) {
-                command = command
-                    .find_subcommand(word)
-                    .unwrap_or_else(|| panic!("{path}: no `{word}`"));
-            }
-            let takes = |flag: &str| {
-                command
-                    .get_arguments()
-                    .any(|arg| arg.get_long() == flag.strip_prefix("--"))
-            };
-            assert!(takes(new), "{path} has no {new}");
-            assert!(old.is_empty() || !takes(old), "{path} still takes {old}");
-        }
-    }
-
-    /// Every row of the moved-command table names a new path that exists and an old one
-    /// that does not, so the hint cannot send a caller to a command that moved again.
-    #[test]
-    fn every_moved_command_row_names_a_live_path_and_a_gone_one() {
-        let root = Cli::command();
-        let find = |path: &str| {
-            path.split(' ')
-                .skip(1)
-                .try_fold(&root, |command, word| command.find_subcommand(word))
-        };
-        for (parent, old, new) in MOVED {
-            let new_leaf = find(new).unwrap_or_else(|| panic!("no {new}"));
-            assert!(!new_leaf.has_subcommands(), "{new} is not a leaf");
-            // `leaf_takes` reads long flags only.
-            assert!(
-                new_leaf
-                    .get_arguments()
-                    .all(|arg| arg.get_short().is_none()),
-                "{new} has a short flag"
-            );
-            let parent_command = find(parent).unwrap_or_else(|| panic!("no {parent}"));
-            if old.is_empty() {
-                // The old leaf is now the group that holds the new one as a leaf child, and
-                // the bare old line no longer runs.
-                assert!(
-                    parent_command.is_subcommand_required_set(),
-                    "{parent} runs bare"
-                );
-                let leaf = new.rsplit(' ').next().unwrap_or_default();
-                assert_eq!(format!("{parent} {leaf}"), new);
-                assert!(
-                    parent_command.find_subcommand(leaf).is_some(),
-                    "{parent} has no {leaf}"
-                );
-            } else {
-                assert!(
-                    parent_command.find_subcommand(old).is_none(),
-                    "{parent} still has {old}"
-                );
-            }
-        }
     }
 
     #[test]
