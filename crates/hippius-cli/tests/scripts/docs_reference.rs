@@ -5,6 +5,7 @@
 use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt as _;
 use std::process::{Command, Output};
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
@@ -25,16 +26,20 @@ fn render(args: &[&str]) -> Output {
         .expect("run the reference generator")
 }
 
-/// The page the script renders for the built binary.
-fn rendered() -> String {
-    let out = render(&[HIP]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
-    String::from_utf8(out.stdout).expect("the page is UTF-8")
+/// The page the script renders for the built binary. Rendered once per test process: the
+/// script runs `hipc --help` once per command, several hundred runs, and four tests read it.
+fn rendered() -> &'static str {
+    static PAGE: OnceLock<String> = OnceLock::new();
+    PAGE.get_or_init(|| {
+        let out = render(&[HIP]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+        String::from_utf8(out.stdout).expect("the page is UTF-8")
+    })
 }
 
 /// Every command path `hipc schema` lists, as `hipc` followed by its words.
@@ -97,7 +102,7 @@ fn the_committed_page_is_the_script_output_for_this_binary() {
     let committed = std::fs::read_to_string(PAGE).expect("docs/commands.md exists");
     let rendered = rendered();
     if committed != rendered {
-        let (number, ours, theirs) = first_difference(&committed, &rendered);
+        let (number, ours, theirs) = first_difference(&committed, rendered);
         panic!(
             "docs/commands.md is not the help of the built binary; first difference at line \
              {number}:\n  committed: {ours}\n  rendered:  {theirs}\nrun \
@@ -122,7 +127,7 @@ fn the_first_difference_names_the_line_and_the_end_of_a_shorter_page() {
 #[test]
 fn every_schema_command_has_a_heading_and_a_contents_entry() {
     let page = rendered();
-    let headings: BTreeSet<&str> = headings(&page).into_iter().collect();
+    let headings: BTreeSet<&str> = headings(page).into_iter().collect();
     assert!(headings.contains("hipc"), "{headings:?}");
     for title in schema_titles() {
         assert!(
@@ -142,7 +147,7 @@ fn the_global_options_are_printed_once_and_every_page_keeps_its_examples() {
     // One fenced block per heading, each ending with the page's examples, which every
     // help page has; cutting the global options must not take them along.
     let fences = page.matches("\n```text\n").count();
-    assert_eq!(fences, headings(&page).len());
+    assert_eq!(fences, headings(page).len());
     assert_eq!(page.matches("\nExamples:\n").count(), fences);
     // A heading at depth one is a top-level command or group; deeper pages are `###`.
     assert!(page.contains("\n## hipc version\n"));

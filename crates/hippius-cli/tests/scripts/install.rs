@@ -5,6 +5,7 @@
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::OnceLock;
 
 use crate::support::{Answer, TempDir, missing_tool, no_server, script, serve, sha256, tool};
 
@@ -99,42 +100,54 @@ impl Machine {
             .expect("run the installer")
     }
 
-    /// A release tarball holding this test run's `hipc`, and its SHA-256.
-    fn tarball(&self) -> (Vec<u8>, String) {
-        self.tarball_of(Path::new(env!("CARGO_BIN_EXE_hipc")))
-    }
-
-    /// A gzipped tarball laid out as the release workflow packs it, and its SHA-256: the
-    /// file `hipc`, named `hipc`, and the two license files, all at the top. Every test that
-    /// installs checks that only `hipc` lands in the install directory.
+    /// A tarball packed as [`pack`] does, holding `hipc`, and its SHA-256.
     fn tarball_of(&self, hipc: &Path) -> (Vec<u8>, String) {
-        let stage = self.home.path().join("stage");
-        std::fs::create_dir(&stage).expect("create the staging directory");
-        std::fs::copy(hipc, stage.join("hipc")).expect("copy hipc");
-        for license in LICENSES {
-            std::fs::write(stage.join(license), "license text").expect("write a license file");
-        }
-        let path = self.home.path().join("hipc.tar.gz");
-        let out = Command::new(tool("tar"))
-            .arg("-czf")
-            .arg(&path)
-            .arg("-C")
-            .arg(&stage)
-            .arg("hipc")
-            .args(LICENSES)
-            .output()
-            .expect("run tar");
-        assert!(
-            out.status.success(),
-            "tar failed: {:?}: {}",
-            out.status,
-            text(&out.stderr)
-        );
-        // The staged copy of hipc is as large as the binary; only the tarball is needed.
-        std::fs::remove_dir_all(&stage).expect("remove the staging directory");
-        let bytes = std::fs::read(&path).expect("read the tarball");
-        (bytes, sha256(&path))
+        pack(self.home.path(), hipc)
     }
+}
+
+/// A release tarball holding this test run's `hipc`, and its SHA-256. Packed once per test
+/// process: the debug binary is tens of MB, and most tests install it.
+fn hipc_tarball() -> (Vec<u8>, String) {
+    static TARBALL: OnceLock<(Vec<u8>, String)> = OnceLock::new();
+    TARBALL
+        .get_or_init(|| {
+            let dir = TempDir::new();
+            pack(dir.path(), Path::new(env!("CARGO_BIN_EXE_hipc")))
+        })
+        .clone()
+}
+
+/// A gzipped tarball laid out as the release workflow packs it, and its SHA-256: the file
+/// `hipc`, named `hipc`, and the two license files, all at the top. Every test that installs
+/// checks that only `hipc` lands in the install directory. The work is done in `dir`.
+fn pack(dir: &Path, hipc: &Path) -> (Vec<u8>, String) {
+    let stage = dir.join("stage");
+    std::fs::create_dir(&stage).expect("create the staging directory");
+    std::fs::copy(hipc, stage.join("hipc")).expect("copy hipc");
+    for license in LICENSES {
+        std::fs::write(stage.join(license), "license text").expect("write a license file");
+    }
+    let path = dir.join("hipc.tar.gz");
+    let out = Command::new(tool("tar"))
+        .arg("-czf")
+        .arg(&path)
+        .arg("-C")
+        .arg(&stage)
+        .arg("hipc")
+        .args(LICENSES)
+        .output()
+        .expect("run tar");
+    assert!(
+        out.status.success(),
+        "tar failed: {:?}: {}",
+        out.status,
+        text(&out.stderr)
+    );
+    // The staged copy of hipc is as large as the binary; only the tarball is needed.
+    std::fs::remove_dir_all(&stage).expect("remove the staging directory");
+    let bytes = std::fs::read(&path).expect("read the tarball");
+    (bytes, sha256(&path))
 }
 
 /// The routes of release `tag` for `target`: its tarball and `sums` as its SHA256SUMS.
@@ -194,7 +207,7 @@ fn the_latest_release_installs_to_local_bin_and_prints_the_path_line() {
     // Another hipc on PATH, as `cargo install` leaves one; it keeps running after this.
     machine.fake("hipc", "echo hipc 0.0.1");
     let target = "x86_64-unknown-linux-musl";
-    let (tarball, sum) = machine.tarball();
+    let (tarball, sum) = hipc_tarball();
     let mut routes = latest();
     routes.extend(release(LATEST, target, &tarball, &sums(&sum, target)));
 
@@ -246,7 +259,7 @@ fn the_latest_release_installs_to_local_bin_and_prints_the_path_line() {
 fn a_pinned_version_installs_that_release_without_asking_for_the_latest() {
     let machine = Machine::new("Linux", "aarch64", &["curl", "sha256sum"]);
     let target = "aarch64-unknown-linux-musl";
-    let (tarball, sum) = machine.tarball();
+    let (tarball, sum) = hipc_tarball();
     // No releases/latest route: asking for it would fail the run with a 404.
     let base = serve(release("v0.12.0", target, &tarball, &sums(&sum, target)));
     let dir = machine.home.path().join("custom bin");
@@ -300,7 +313,7 @@ fn a_pinned_version_installs_that_release_without_asking_for_the_latest() {
 fn a_home_with_a_trailing_slash_gives_a_clean_install_path() {
     let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
     let target = "x86_64-unknown-linux-musl";
-    let (tarball, sum) = machine.tarball();
+    let (tarball, sum) = hipc_tarball();
     let base = serve(release("v1.0.0", target, &tarball, &sums(&sum, target)));
 
     let out = machine
@@ -372,7 +385,7 @@ fn a_directory_named_hip_in_the_install_dir_is_refused() {
         let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
         let dir = machine.install_dir();
         let target = "x86_64-unknown-linux-musl";
-        let (tarball, sum) = machine.tarball();
+        let (tarball, sum) = hipc_tarball();
         let base = if early {
             std::fs::create_dir_all(dir.join("hipc")).expect("create a directory named hipc");
             no_server().to_owned()
@@ -416,7 +429,7 @@ fn a_signal_cleans_up_and_exits_with_its_number() {
         // tar runs from main itself, so its parent is the installer.
         machine.replace("tar", &format!("kill -{signal} $PPID"));
         let target = "x86_64-unknown-linux-musl";
-        let (tarball, sum) = machine.tarball();
+        let (tarball, sum) = hipc_tarball();
         let base = serve(release("v1.0.0", target, &tarball, &sums(&sum, target)));
         let out = machine.install(&base, &["1.0.0"]);
 
@@ -433,7 +446,7 @@ fn a_signal_cleans_up_and_exits_with_its_number() {
 fn a_tarball_that_does_not_match_sha256sums_installs_nothing() {
     let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
     let target = "x86_64-unknown-linux-musl";
-    let (tarball, _) = machine.tarball();
+    let (tarball, _) = hipc_tarball();
     let dir = machine.install_dir();
     std::fs::create_dir_all(&dir).expect("create the install directory");
     std::fs::write(dir.join("hipc"), "old").expect("write an old hipc");
@@ -566,7 +579,7 @@ fn a_download_that_fails_for_another_reason_than_a_404_does_not_blame_the_releas
 fn a_release_without_sha256sums_says_so() {
     let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
     let target = "x86_64-unknown-linux-musl";
-    let (tarball, _) = machine.tarball();
+    let (tarball, _) = hipc_tarball();
     let base = serve(vec![(
         format!("/download/v1.0.0/hipc-{target}.tar.gz"),
         Answer::File(tarball),
@@ -629,7 +642,7 @@ fn macos_installs_the_arm_build_on_apple_silicon_also_under_rosetta() {
     ] {
         let machine = Machine::new("Darwin", arch, &["curl", "sha256sum"]);
         machine.fake("sysctl", &format!("echo {translated}"));
-        let (tarball, sum) = machine.tarball();
+        let (tarball, sum) = hipc_tarball();
         let base = serve(release("v1.0.0", target, &tarball, &sums(&sum, target)));
 
         let out = machine.install(&base, &["1.0.0"]);
@@ -656,7 +669,7 @@ fn signed(version: &str, status: u8, bundle: Option<&str>) -> (Machine, Output) 
     );
     machine.fake("cosign", &body);
     let target = "x86_64-unknown-linux-musl";
-    let (tarball, sum) = machine.tarball();
+    let (tarball, sum) = hipc_tarball();
     let mut routes = release("v1.0.0", target, &tarball, &sums(&sum, target));
     if let Some(bundle) = bundle {
         let path = "/download/v1.0.0/SHA256SUMS.sigstore.json".to_owned();
@@ -719,7 +732,7 @@ fn a_cosign_banner_without_a_version_is_left_to_verify_blob() {
 fn a_required_signature_fails_the_install_without_cosign() {
     let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
     let target = "x86_64-unknown-linux-musl";
-    let (tarball, sum) = machine.tarball();
+    let (tarball, sum) = hipc_tarball();
     let base = serve(release("v1.0.0", target, &tarball, &sums(&sum, target)));
 
     let out = machine
@@ -825,7 +838,7 @@ fn wget_and_shasum_stand_in_for_curl_and_sha256sum() {
     }
     let machine = Machine::new("Linux", "x86_64", &["wget", "shasum"]);
     let target = "x86_64-unknown-linux-musl";
-    let (tarball, sum) = machine.tarball();
+    let (tarball, sum) = hipc_tarball();
     let mut routes = latest();
     routes.extend(release(LATEST, target, &tarball, &sums(&sum, target)));
 
@@ -1150,7 +1163,7 @@ fn a_wget_without_the_needed_switches_is_refused() {
 fn an_old_install_dir_is_used_when_the_new_one_is_unset() {
     let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
     let target = "x86_64-unknown-linux-musl";
-    let (tarball, sum) = machine.tarball();
+    let (tarball, sum) = hipc_tarball();
     let base = serve(release("v1.0.0", target, &tarball, &sums(&sum, target)));
     let dir = machine.home.path().join("old bin");
     std::fs::create_dir(&dir).expect("create the old install directory");
@@ -1178,7 +1191,7 @@ fn an_old_install_dir_is_used_when_the_new_one_is_unset() {
 fn an_old_install_dir_without_a_hip_is_ignored() {
     let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
     let target = "x86_64-unknown-linux-musl";
-    let (tarball, sum) = machine.tarball();
+    let (tarball, sum) = hipc_tarball();
     let base = serve(release("v1.0.0", target, &tarball, &sums(&sum, target)));
     let other = machine.home.path().join("another tool");
     std::fs::create_dir(&other).expect("create another tool's directory");
@@ -1231,7 +1244,7 @@ fn a_relative_old_install_dir_is_refused_by_its_own_name() {
 fn a_new_install_dir_wins_over_the_old_one() {
     let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
     let target = "x86_64-unknown-linux-musl";
-    let (tarball, sum) = machine.tarball();
+    let (tarball, sum) = hipc_tarball();
     let base = serve(release("v1.0.0", target, &tarball, &sums(&sum, target)));
     let old_dir = machine.home.path().join("old bin");
     let new_dir = machine.home.path().join("new bin");
@@ -1267,7 +1280,7 @@ fn old_hip_note(path: &Path) -> String {
 fn an_old_hip_binary_gets_a_note_to_remove_it() {
     let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
     let target = "x86_64-unknown-linux-musl";
-    let (tarball, sum) = machine.tarball();
+    let (tarball, sum) = hipc_tarball();
     let base = serve(release("v1.0.0", target, &tarball, &sums(&sum, target)));
 
     let out = machine.install(&base, &["1.0.0"]);
@@ -1308,7 +1321,7 @@ fn an_old_hip_binary_gets_a_note_to_remove_it() {
 fn a_dangling_hip_symlink_gets_the_note_too() {
     let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
     let target = "x86_64-unknown-linux-musl";
-    let (tarball, sum) = machine.tarball();
+    let (tarball, sum) = hipc_tarball();
     let base = serve(release("v1.0.0", target, &tarball, &sums(&sum, target)));
     let dir = machine.install_dir();
     std::fs::create_dir_all(&dir).expect("create the install directory");
