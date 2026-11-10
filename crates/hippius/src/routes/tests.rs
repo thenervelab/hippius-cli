@@ -166,7 +166,7 @@ fn a_template_counts_only_whole_segment_placeholders() {
     assert_eq!(placeholders("/api/{id}x/"), usize::MAX);
     assert_eq!(placeholders("/api/{id}"), usize::MAX);
     assert!(starts_with_base("/api/a/"));
-    for template in ["/api/", "/apix/", "/api/a", "/ap/a/", "api/a/"] {
+    for template in ["/api/", "/apix/", "/api/a", "/ap/a/", "api/a/", "/xpi/a/"] {
         assert!(!starts_with_base(template), "{template}");
     }
 }

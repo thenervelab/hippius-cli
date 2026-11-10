@@ -2580,14 +2580,12 @@ mod tests {
         for path in command_paths(&root) {
             let parts: Vec<&str> = path.iter().map(String::as_str).collect();
             let listed = routes::routes(&parts);
-            for endpoint in &listed {
-                assert!(
-                    rows.contains(&(endpoint.method(), endpoint.template())),
-                    "{path:?}: {} {} is not a row",
-                    endpoint.method(),
-                    endpoint.template()
-                );
-            }
+            let unlisted: Vec<(hippius::Method, &str)> = listed
+                .iter()
+                .map(|endpoint| (endpoint.method(), endpoint.template()))
+                .filter(|route| !rows.contains(route))
+                .collect();
+            assert!(unlisted.is_empty(), "{path:?}: {unlisted:?} are not rows");
             if parts == ["api"] {
                 assert!(listed.is_empty());
                 continue;
@@ -2595,6 +2593,33 @@ mod tests {
             let pages = listed.iter().any(|endpoint| endpoint.paged());
             assert_eq!(row(&path).pagination, pages, "{path:?}");
         }
+    }
+
+    /// A path under a group that names none of its commands lists no route, in every group
+    /// the route lookup splits by.
+    #[test]
+    fn a_path_that_names_no_command_lists_no_route() {
+        let groups: [&[&str]; 14] = [
+            &["auth"],
+            &["account"],
+            &["billing"],
+            &["drive"],
+            &["s3"],
+            &["hub"],
+            &["compute"],
+            &["compute", "app-engine"],
+            &["compute", "databases"],
+            &["compute", "kubernetes"],
+            &["compute", "runners"],
+            &["cdn"],
+            &["network"],
+            &["support"],
+        ];
+        for group in groups {
+            let path = [group, &["no-such-command"]].concat();
+            assert!(routes::routes(&path).is_empty(), "{path:?}");
+        }
+        assert!(routes::routes(&["no-such-group"]).is_empty());
     }
 
     #[test]

@@ -10,9 +10,9 @@
 //! The policy of a row (its account class, how it takes a project and a billing account,
 //! whether its answer reveals a secret, whether a read provisions, whether it cannot be
 //! undone, what `hipc api` holds it back for) restates what the tables in `account.rs` and
-//! `project.rs` decide for its path. Those tables still decide; a test holds every row
-//! against them, so a row that disagrees, or a route that has no row, fails the build's
-//! tests rather than change a header.
+//! `project.rs` decide for its path. Those tables still decide, and they also serve `hipc
+//! api`, which can send a path no row has; a test holds every row against them, so a row
+//! that disagrees fails the tests rather than change a header.
 //!
 //! The type carries the number of placeholders, so a request built from a route fills each
 //! one, checked when it compiles: `Route<1>` takes one value.
