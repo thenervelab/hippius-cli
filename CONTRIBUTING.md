@@ -8,6 +8,9 @@ request.
 
 - [TENETS.md](TENETS.md) is the contract: output, errors, exit codes, confirmation, secrets.
   A change that breaks it is a breaking change.
+- [ARCHITECTURE.md](ARCHITECTURE.md) maps the code and holds the rules it keeps: the layers,
+  where routes live, how to add a command or a route, the error and output layers, the test
+  layout, and the lint, format, and comment policy.
 - `crates/hippius` is the library: HTTP, the config and AWS files, errors, the account,
   project, and billing header rules, and the list shapes. It never prints.
 - `crates/hippius-cli` is the `hipc` binary: argv, the output mode, every byte of output, and
@@ -140,6 +143,8 @@ next, are listed in [docs/README.md](docs/README.md): the README, `docs/getting-
 - No new dependency without a reason in the pull request. Prefer the standard library.
 - No `unsafe` code; the crates forbid it.
 - A code comment says why, not what: an invariant, a source, a rejected alternative.
+- The lint, format, and comment rules, and where they depart from the house Rust style, are in
+  [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Commits and pull requests
 
