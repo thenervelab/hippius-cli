@@ -1591,6 +1591,7 @@ mod tests {
         let leftovers: Vec<_> = fs::read_dir(&dir).unwrap().collect();
         assert_eq!(leftovers.len(), 1, "only the directory remains");
         // The create fails: the directory is read-only, which a `chmod` fixes.
+        skip_if_root!();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
         let other = ConfigFile {
             path: dir.join("other.toml"),
@@ -1867,6 +1868,7 @@ mod tests {
 
     #[test]
     fn a_lock_that_cannot_be_created_is_usage_and_nothing_is_written() {
+        skip_if_root!();
         let dir = temp_dir("no-lock");
         // The owner may read and enter but not write: the directory check passes, and the
         // lock file cannot be created.
@@ -1894,6 +1896,7 @@ mod tests {
     /// `usage`, as an unreadable `--token-file` is.
     #[test]
     fn a_config_file_without_read_permission_is_usage() {
+        skip_if_root!();
         let dir = temp_dir("unreadable");
         let path = dir.join("config.toml");
         fs::write(&path, "").unwrap();
@@ -1915,6 +1918,7 @@ mod tests {
     /// `chmod` of a file `hipc` owns fixes it.
     #[test]
     fn a_config_directory_that_cannot_be_created_is_usage() {
+        skip_if_root!();
         let dir = temp_dir("no-mkdir");
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
         let error = store_token(&dir.join("hipc").join("config.toml"));

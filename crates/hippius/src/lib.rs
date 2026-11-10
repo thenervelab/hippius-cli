@@ -4,6 +4,17 @@
 //! config file, the account-header rules, and the HTTP client. It never prints. The `hipc`
 //! binary owns argv, the output mode, and every byte written to stdout or stderr.
 
+/// Ends a test that makes a file or directory unreadable or unwritable on purpose when the
+/// suite runs as root, whom permission bits do not stop, instead of failing there.
+#[cfg(test)]
+macro_rules! skip_if_root {
+    () => {
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+    };
+}
+
 mod account;
 mod app_secrets;
 mod aws;

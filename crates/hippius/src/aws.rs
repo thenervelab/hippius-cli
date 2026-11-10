@@ -989,6 +989,7 @@ mod tests {
 
     #[test]
     fn a_file_that_cannot_be_created_is_usage() {
+        skip_if_root!();
         let dir = temp_dir("read-only-dir");
         let (locked, writable) = (dir.join("ro"), dir.join("rw"));
         fs::create_dir_all(&locked).unwrap();
