@@ -10,6 +10,10 @@ allow-print-in-tests = true
 too-many-arguments-threshold = 5
 too-many-lines-threshold = 100
 
+# Both crates are unpublished and the library's one caller is in this workspace, so clippy
+# may suggest changing a `pub` signature (`needless_pass_by_value`, `unnecessary_wraps`).
+avoid-breaking-exported-api = false
+
 # Product and protocol names that doc_markdown should not ask to backtick. ".." keeps
 # clippy's defaults (GitHub, WebAssembly, ...).
 doc-valid-idents = ["..", "Hippius", "hipc", "hippius"]

@@ -95,6 +95,11 @@ hmac = { version = "0.13.0", default-features = false, features = ["zeroize"] }
 # BLAKE2b-512, the checksum of an SS58 address. crypto_box builds its own 0.10.
 blake2 = { version = "0.11.0", default-features = false }
 
+# The repo follows the house Rust style, rust-style; ARCHITECTURE.md says where hipc departs
+# from it.
+[workspace.metadata.house-check]
+baseline = true
+
 [workspace.lints.rust]
 # The crates have no unsafe code and must not grow any.
 unsafe_code = "forbid"
@@ -115,8 +120,8 @@ unused_extern_crates = "warn"
 unused_import_braces = "warn"
 # The edition 2024 default, stated so it holds whatever the edition.
 static_mut_refs = "deny"
-# Declare every custom cfg, so a typo in a cfg name warns.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(fuzzing)', 'cfg(coverage_nightly)'] }
+# Declare every custom cfg here, so a typo in a cfg name warns. The code uses none today.
+unexpected_cfgs = { level = "warn", check-cfg = [] }
 
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
@@ -154,19 +159,21 @@ partial_pub_fields = "warn"
 # Ignoring a #[must_use] value needs `drop(..)` or a binding that says why.
 let_underscore_must_use = "warn"
 
-# Unsafe. Every block has a `// SAFETY:` comment; every unsafe fn a `# Safety`
-# section; one unsafe operation per block so each gets its own argument.
+# Unsafe and async, kept from the house lint template so they hold if either arrives; today
+# `unsafe_code` is forbidden and nothing is async. Every unsafe block would need a
+# `// SAFETY:` comment, every unsafe fn a `# Safety` section, and one unsafe operation per
+# block.
 undocumented_unsafe_blocks = "deny"
 missing_safety_doc = "deny"
 multiple_unsafe_ops_per_block = "warn"
-
-# Concurrency and async
 await_holding_lock = "deny"
 large_futures = "deny"
+# A forgotten value skips its `Drop`, which is where secrets are cleared.
 mem_forget = "deny"
 
-# Pedantic relaxations: noisy without catching bugs.
-module_name_repetitions = "allow"
+# Pedantic relaxations: noisy without catching bugs. The house template also allows
+# `module_name_repetitions`; it is a restriction lint now, off unless named, so it is not
+# listed.
 similar_names = "allow"
 must_use_candidate = "allow"
 # Pushing a format! onto a String is clear; the lint's rewrite (write! plus an ignored

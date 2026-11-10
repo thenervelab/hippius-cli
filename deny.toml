@@ -34,11 +34,34 @@ unused-allowed-license = "allow"
 ignore = true
 
 [bans]
-# Warn, not deny: a dependency graph can carry duplicates the application cannot remove.
-multiple-versions = "warn"
+# Deny, unlike the house template's warn: the duplicates hipc carries are few and known, so
+# each is skipped below with its reason, and a new one fails instead of passing unseen.
+multiple-versions = "deny"
+skip = [
+  # The digest family. sha2 0.11, blake2 0.11 and pbkdf2 0.13 are on digest 0.11;
+  # ed25519-dalek 2, crypto_box 0.9 and schnorrkel 0.11 still build digest 0.10 and its
+  # helpers (Cargo.toml, the sha2 entry). They go when those crates move.
+  { crate = "digest@0.10", reason = "ed25519-dalek 2, crypto_box 0.9 and schnorrkel 0.11 are on digest 0.10" },
+  { crate = "block-buffer@0.10", reason = "digest 0.10" },
+  { crate = "crypto-common@0.1", reason = "digest 0.10" },
+  { crate = "sha2@0.10", reason = "ed25519-dalek 2 and schnorrkel 0.11" },
+  { crate = "blake2@0.10", reason = "crypto_box 0.9" },
+  { crate = "cpufeatures@0.2", reason = "curve25519-dalek 4, sha2 0.10, poly1305 0.8 and keccak 0.1" },
+  { crate = "keccak@0.1", reason = "merlin 3, under schnorrkel 0.11; sha3 0.12 brings keccak 0.2" },
+  # Proc-macro crates, built for the host only: clap, serde and thiserror derive with syn 3,
+  # the dalek, zerocopy and zeroize derives with syn 2.
+  { crate = "syn@2", reason = "curve25519-dalek-derive, zerocopy-derive and zeroize_derive" },
+]
 # `*` version requirements are never allowed; workspace path dependencies are exempt.
 wildcards = "deny"
 allow-wildcard-paths = true
+# TLS is rustls with bundled roots (Cargo.toml, the ureq entry): no system OpenSSL, so a
+# release binary runs on a host without it.
+deny = [
+  { crate = "openssl-sys", reason = "TLS is rustls only" },
+  { crate = "openssl", reason = "TLS is rustls only" },
+  { crate = "native-tls", reason = "TLS is rustls only" },
+]
 # No anyhow/eyre ban here: `bans.deny` matches the whole graph, transitive dependencies
 # included, while only the library crate must not use them; code review checks the library
 # crate's manifest and sources for them.
