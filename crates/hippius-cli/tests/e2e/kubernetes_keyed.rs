@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::common::{
     self, CLUSTER_KEY, CLUSTER_SECRETS, Hipc, Home, MEMBER, OTHER_KEY, Recorded, Reply, Route, Run,
-    Server, route, route_each, route_of,
+    Server, route, route_each_of, route_of,
 };
 
 /// The list of test secrets holds every secret key of both key files, so the leak checks
@@ -1077,14 +1077,14 @@ fn changing_routes(pools: [Value; 2], operations: [Value; 2]) -> Vec<Route> {
             [&42],
             answer(200, &cluster(Some(GUEST))),
         ),
-        route_each(
-            "GET",
-            "/api/kubernetes/clusters/42/node-pools/",
+        route_each_of(
+            &kubernetes::NODE_POOLS,
+            [&42],
             vec![answer(200, &pools_first), answer(200, &pools_then)],
         ),
-        route_each(
-            "GET",
-            "/api/kubernetes/clusters/42/operations/",
+        route_each_of(
+            &kubernetes::OPERATIONS,
+            [&42],
             vec![
                 answer(200, &operations_first),
                 answer(200, &operations_then),
@@ -1611,9 +1611,9 @@ fn a_signature_is_dated_by_the_server_clock_when_it_agrees_with_the_local_one() 
                 answer(200, &cluster(Some(GUEST))).header("Date", "Thu, 01 Jan 1970 00:00:09 GMT"),
             ),
             route_of(&kubernetes::NODE_POOLS, [&42], answer(200, &pools())),
-            route_each(
-                "GET",
-                "/api/kubernetes/clusters/42/operations/",
+            route_each_of(
+                &kubernetes::OPERATIONS,
+                [&42],
                 vec![dated(&imf_fixdate(now - 200)), dated(then)],
             ),
             route_of(

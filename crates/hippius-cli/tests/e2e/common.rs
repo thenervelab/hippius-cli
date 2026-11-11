@@ -314,6 +314,16 @@ pub(crate) fn route_of<const N: usize>(
     self::route(route.method().as_str(), &route.path(values), reply)
 }
 
+/// [`route_each`] for a route of `hipc`'s own table, with `values` in its placeholders, as
+/// [`route_of`] is for [`route`].
+pub(crate) fn route_each_of<const N: usize>(
+    route: &hippius::routes::Route<N>,
+    values: [&dyn std::fmt::Display; N],
+    replies: Vec<Reply>,
+) -> Route {
+    route_each(route.method().as_str(), &route.path(values), replies)
+}
+
 /// A route that answers its requests with `replies` in order, and every request after them
 /// with the last: for a test where the server's answer changes between two reads.
 pub(crate) fn route_each(method: &'static str, path: &str, replies: Vec<Reply>) -> Route {

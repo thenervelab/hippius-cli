@@ -159,8 +159,10 @@ the two apart:
 ### Still spelled outside the table
 
 Every command builds its requests from `hippius::routes` with `Request::to`, and the
-end-to-end tests serve the same constants (`common::route_of`). Two kinds of request are
-still built from a written target, with `Request::new`:
+end-to-end tests serve the same constants (`common::route_of`, and `common::route_each_of` for
+a route that answers several times). Two kinds of request are still built from a written
+target, with `Request::new`, and `commands::tests::only_hipc_api_builds_a_request_from_a_written_target`
+fails on any other:
 
 - `hipc api` (`commands/api.rs`), which sends the route it is given.
 - A dry-run placeholder that `Route::path` would percent-encode, and the client then
@@ -171,8 +173,7 @@ still built from a written target, with `Request::new`:
 
 Help prose that names a route, and the end-to-end tests' own literal paths, stay as
 written: a test that spells the path checks the constant independently. So do the tests
-that serve a route with a query string or with several replies (`route_each`), which
-`route_of` does not cover.
+that serve a route with a query string, which `route_of` does not cover.
 
 ## How to add a command (today)
 

@@ -155,9 +155,9 @@ fn models_list_all_follows_the_total() {
 }
 
 fn route_each_page() -> crate::common::Route {
-    crate::common::route_each(
-        "GET",
-        "/api/models/",
+    crate::common::route_each_of(
+        &hub::MODELS,
+        [],
         vec![
             Reply::json(200, &models_page(1, 2, 5, 2)),
             Reply::json(200, &models_page(2, 2, 5, 2)),
@@ -298,9 +298,9 @@ fn models_list_refuses_a_page_size_of_0_and_a_page_it_did_not_ask_for() {
 #[test]
 fn models_get_pages_its_versions_by_total() {
     let pages = || {
-        crate::common::route_each(
-            "GET",
-            "/api/models/acme/llama/",
+        crate::common::route_each_of(
+            &hub::MODEL,
+            [&"acme/llama"],
             vec![
                 Reply::json(200, &versions_page(1, 2, 3, 2)),
                 Reply::json(200, &versions_page(2, 2, 3, 1)),

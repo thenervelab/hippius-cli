@@ -7,7 +7,7 @@ use std::io::Write as _;
 use std::process::{Output, Stdio};
 
 use crate::common::terminal::{Screen, pty};
-use crate::common::{self, Home, Reply, Server, TOKEN, no_server, route, route_each};
+use crate::common::{self, Home, Reply, Server, TOKEN, no_server, route, route_each_of};
 
 /// Runs `hipc --output text auth logout` at a terminal, as `at_a_terminal` does.
 fn logout_at_a_terminal(typed: &[u8], stderr_on_terminal: bool) -> (Output, String) {
@@ -1015,9 +1015,9 @@ fn a_halpha_buy_started_while_the_question_waited_blocks_this_one() {
             "/api/billing/native/quote/",
             Reply::json(200, &quote.to_string()),
         ),
-        route_each(
-            "GET",
-            "/api/billing/native/purchases/",
+        route_each_of(
+            &hippius::routes::billing::NATIVE_PURCHASES,
+            [],
             vec![Reply::json(200, empty), Reply::json(200, started)],
         ),
     ]);
