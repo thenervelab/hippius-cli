@@ -134,7 +134,8 @@ fn the_mode_of_a_missing_file_does_not_end_the_run() {
 
 /// The invoice download runs with the real token only when its dry run lists reads alone, so
 /// the dry run's methods are read from the document, with the output file moved to a path
-/// that does not exist.
+/// that does not exist. That dry run itself runs with the fake token against the dead origin,
+/// as every offline call does: a `hipc` that ignored `--dry-run` would send nothing real.
 #[test]
 fn a_local_write_with_the_token_is_held_to_its_dry_run() {
     let temp = TempDir::new();
@@ -143,7 +144,8 @@ fn a_local_write_with_the_token_is_held_to_its_dry_run() {
     script(
         dir,
         "hipc",
-        "printf '%s\\n' \"$*\" >\"$WORK/argv\"\nprintf '%s' \"$DRY\"",
+        "printf '%s %s %s\\n' \"$HIPPIUS_TOKEN\" \"$HIPPIUS_TOKEN_ORIGIN\" \"$*\" >\"$WORK/argv\"\n\
+         printf '%s' \"$DRY\"",
     );
     let fake = dir.join("hipc");
     let work = dir.to_str().expect("a UTF-8 temp path");
@@ -155,6 +157,9 @@ fn a_local_write_with_the_token_is_held_to_its_dry_run() {
                 ("HIPC", fake.to_str().expect("a UTF-8 path")),
                 ("WORK", work),
                 ("DRY", dry),
+                ("FAKE_TOKEN", "fake-token"),
+                ("DEAD_ORIGIN", "http://127.0.0.1:9"),
+                ("HIPPIUS_TOKEN", "the-real-token"),
             ],
         );
         assert_eq!(out.status.code(), Some(0), "{out:?}");
@@ -173,8 +178,52 @@ fn a_local_write_with_the_token_is_held_to_its_dry_run() {
     assert_eq!(
         argv,
         format!(
-            "--output json --dry-run billing invoices get 7 --output-file \
-             {work}/dry-run-never-written\n"
+            "fake-token http://127.0.0.1:9 --api-url http://127.0.0.1:9 --output json --dry-run \
+             billing invoices get 7 --output-file {work}/dry-run-never-written\n"
         )
     );
+}
+
+/// A `--debug` URL check passes only on the whole line of the one route the schema gives: an
+/// empty lookup, or one that gives two routes, fails rather than matching every `GET` line, and
+/// a line for a longer path does not pass for its prefix.
+#[test]
+fn a_debug_url_check_needs_one_route_and_the_whole_line() {
+    let temp = TempDir::new();
+    let dir = temp.path();
+    std::fs::write(
+        dir.join("1.err"),
+        "debug: GET https://api.hippius.com/api/compute/vms/abc/\n\
+         debug: GET https://api.hippius.com/api/billing/usage/?month=<redacted>\n",
+    )
+    .expect("write the stderr");
+    let stubs = "result() { echo \"$1 $2\"; }\nredacted() { echo redacted; }\n";
+    let check = |args: &str| {
+        let out = run_strict(
+            &format!("{stubs}{}", function("debug_line")),
+            &format!("n=1\ndebug_line {args}"),
+            &[
+                ("OUT", dir.to_str().expect("a UTF-8 temp path")),
+                ("ORIGIN", "https://api.hippius.com"),
+            ],
+        );
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert_eq!(check("vms GET /api/compute/vms/abc/"), "PASS vms\n");
+    assert_eq!(
+        check("usage GET /api/billing/usage/ '?month=<redacted>'"),
+        "PASS usage\n"
+    );
+    for args in [
+        "vms GET /api/compute/vms/",
+        "vms GET ''",
+        "vms GET $'/api/compute/vms/abc/\\n/api/compute/vms/'",
+        "usage GET /api/billing/usage/",
+    ] {
+        assert_eq!(
+            check(args),
+            format!("FAIL {}\n", args.split(' ').next().unwrap_or_default())
+        );
+    }
 }
