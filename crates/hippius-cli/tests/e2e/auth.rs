@@ -74,10 +74,34 @@ fn login_refuses_bad_token_sources_and_writes_nothing() {
     let binary = home.file("binary", &[0xff, 0xfe, b'a']);
     let huge = home.file("huge", &vec![b'a'; 64 * 1024 + 1]);
     let missing = home.path().join("missing");
-    for path in [&empty, &binary, &huge, &missing] {
-        Hipc::new(&home)
+    let named = |path: &std::path::Path| format!("`{}`", path.display());
+    for (path, message) in [
+        (
+            &empty,
+            format!("the token from {} holds only whitespace", named(&empty)),
+        ),
+        (
+            &binary,
+            format!("the token from {} is not UTF-8 text", named(&binary)),
+        ),
+        (
+            &huge,
+            format!(
+                "{} is larger than 65536 bytes, the most hipc reads for the token",
+                named(&huge)
+            ),
+        ),
+        (
+            &missing,
+            "cannot read the token from the file `--token-file` names: it does not exist; the \
+             path is not repeated here, in case it is the token itself"
+                .to_owned(),
+        ),
+    ] {
+        let error = Hipc::new(&home)
             .run(&["auth", "login", "--token-file", path.to_str().unwrap()])
             .fails(2, "usage");
+        assert_eq!(error["message"], message, "{}", path.display());
     }
     assert!(!home.config().exists());
 }
@@ -440,7 +464,7 @@ fn status_reads_the_user_from_a_page_of_one() {
     assert_eq!(doc["user"]["email"], "ana@example.com");
 }
 
-/// A failed user read keeps the token check: exit 0, `ok` true, `user` null, and
+/// A failed user read keeps the token check: exit 0, no `ok` field, `user` null, and
 /// `user_error` with the failure's code and message; text mode warns on stderr. An
 /// answer `hipc` does not read is such a failure, never a user.
 #[test]
@@ -829,7 +853,8 @@ fn a_withheld_token_variable_refuses_every_command_before_sending() {
 /// `HIPPIUS_TOKEN` is bound to the default origin, or to the one `HIPPIUS_TOKEN_ORIGIN`
 /// names: `--api-url` or `HIPPIUS_API_URL` alone cannot send it elsewhere, nor can a
 /// `HIPPIUS_TOKEN_ORIGIN` that names another origin, and the stored token does not stand in.
-/// A spelling of the same origin (case, a trailing `/`, the default port) is that origin.
+/// A spelling of the same origin (case, a trailing `/`) is that origin; the default port,
+/// which the test server's port rules out here, is `client::tests`' case.
 #[test]
 fn the_token_variable_is_sent_only_to_the_origin_it_is_bound_to() {
     let other = Server::start(status_routes());
@@ -1275,7 +1300,10 @@ fn a_token_in_the_wrong_place_is_never_repeated() {
         assert_eq!(run.code(), Some(2), "{args:?}: {}", run.stderr());
         let out = format!("{}{}", run.stdout(), run.stderr());
         assert!(out.contains(says), "{args:?}: {out}");
-        assert!(!out.contains("0123456789"), "{args:?}: {out}");
+        // Each token, and the start of each, which a cut-off quote would still show.
+        for leaked in [pasted, stored, "tok_pasted", "tok_stored", "0123456789"] {
+            assert!(!out.contains(leaked), "{args:?}: {leaked} in {out}");
+        }
     }
     // A flag clap does not know is still quoted, as is a word after another command.
     let run = Hipc::new(&home).run(&["auth", "login", "--tokn-file", "x"]);

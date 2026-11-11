@@ -1,4 +1,5 @@
-//! `hipc cdn`: zones, the spend cap, hostnames, purges, rules, and stats.
+//! `hipc cdn`: prices, regions, the estimate, zones, the spend cap, hostnames, purges, rules,
+//! and stats.
 
 use hippius::routes::cdn;
 use serde_json::{Value, json};

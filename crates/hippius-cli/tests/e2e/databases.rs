@@ -1471,10 +1471,10 @@ fn a_directory_that_cannot_be_opened_keeps_the_answer_on_stdout() {
     no_tls_file(&dir);
 }
 
-/// A directory another user can write lets them swap `ca.crt` (which `sslmode=verify-ca`
-/// trusts) or delete `client.key`, so one that is world-writable, or group-writable by a group
-/// other than the user's private group, is usage before anything is sent. A sticky one, such as `/tmp`,
-/// passes: no one else may rename or delete a file in it.
+/// A directory another user can write lets them swap `ca.crt` (which `sslmode=verify-ca` trusts) or
+/// delete `client.key`, so one that is world-writable, or group-writable by a group other than the
+/// user's private group, is usage before anything is sent. A sticky one, such as `/tmp`, passes: no
+/// one else may rename or delete a file in it.
 #[test]
 fn a_credentials_dir_others_can_write_is_usage_with_zero_requests() {
     let server = Server::start(vec![route_of(

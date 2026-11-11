@@ -160,6 +160,10 @@ fn create_dry_run_shows_only_the_flags_passed_and_sends_nothing() {
     let server = Server::start(vec![]);
     let dry = hipc(&server, &["create", VM, "--port", "8080", "--dry-run"]).ok();
     assert_eq!(draft(&dry)["method"], "POST");
+    assert_eq!(
+        draft(&dry)["url"],
+        format!("{}/api/compute/vms/{VM}/expose/", server.url())
+    );
     assert_eq!(draft(&dry)["body"], json!({ "port": 8080 }));
     let dry = hipc(
         &server,
@@ -373,6 +377,11 @@ fn delete_needs_yes_and_names_the_exposure_on_204() {
     assert!(server.requests().is_empty());
     let dry = hipc(&server, &["delete", VM, "7", "--dry-run"]).ok();
     assert_eq!(draft(&dry)["method"], "DELETE");
+    assert_eq!(
+        draft(&dry)["url"],
+        format!("{}/api/compute/vms/{VM}/expose/7/", server.url())
+    );
+    assert_eq!(draft(&dry)["body"], json!(null));
     assert!(server.requests().is_empty());
     let doc = hipc(&server, &["delete", VM, "7", "--yes"]).ok();
     assert_eq!(doc, json!({ "vm_id": VM, "id": 7, "deleted": true }));
@@ -405,6 +414,7 @@ fn delete_errors_map_to_their_codes() {
             Reply::json(status, r#"{"error":"x"}"#),
         )]);
         let error = hipc(&server, &["delete", VM, "7", "--yes"]).fails(1, code);
+        assert_eq!(error["http_status"], status);
         assert_eq!(error["retryable"], false, "{status}");
         assert_eq!(error["side_effects"], effects, "{status}");
     }

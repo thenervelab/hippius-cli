@@ -985,8 +985,6 @@ fn unknown_flag_with_output_text_is_an_error_line_and_a_hint_line() {
     }
 }
 
-/// A command line that stops before its subcommand is a usage error with a hint in both
-/// modes; text mode prints that command's help after it, for the person who typed it.
 /// A numeric id that does not parse names its shape and where the id comes from, instead
 /// of Rust's "invalid digit found in string".
 #[test]
@@ -1079,6 +1077,8 @@ fn a_numeric_id_that_is_not_a_number_names_where_ids_come_from() {
     }
 }
 
+/// A command line that stops before its subcommand is a usage error with a hint in both
+/// modes; text mode prints that command's help after it, for the person who typed it.
 #[test]
 fn a_missing_subcommand_is_a_usage_error_with_help_after_it_in_text_mode() {
     let out = hipc(&["--output", "text", "compute"]);

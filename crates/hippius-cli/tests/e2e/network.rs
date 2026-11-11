@@ -376,9 +376,9 @@ fn update_with_yes_sends_the_name_trimmed() {
 /// it is `internal`, `partial`, and nothing on stdout. A 2xx without a top-level `name`,
 /// a nested peer included, with a `name` that is not a string, or about another peer's
 /// `id`, is the same failure, with a message that quotes what the API said; the PATCH was
-/// sent in each. The error carries
-/// the answer's status and body, so the refusal can be traced. An empty 204 is refused
-/// before the name is looked at, with the default `internal` hint.
+/// sent in each. The error carries the answer's status and body, so the refusal can be
+/// traced. An empty 204 is refused before the name is looked at, with the default `internal`
+/// hint.
 #[test]
 fn a_rename_answer_without_the_new_name_is_internal_and_partial() {
     let home = Home::new();

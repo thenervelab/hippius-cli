@@ -285,7 +285,7 @@ fn a_profile_name_outside_the_name_rules_is_usage_and_writes_nothing() {
     }
 }
 
-/// A profile an older `hip` stored under a name outside today's rules stays usable: a name
+/// A profile an earlier release stored under a name outside today's rules stays usable: a name
 /// the file already has, as a profile or as `default_profile`, is taken as it is.
 #[test]
 fn a_stored_profile_with_an_old_style_name_can_still_be_selected() {

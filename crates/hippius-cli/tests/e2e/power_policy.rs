@@ -102,7 +102,8 @@ fn get_prints_the_policy_fields_of_the_vm() {
 }
 
 /// The read prints a policy swagger does not list as the server sent it, and fills a `vm_id`
-/// that is `null` with the one asked for; the update compares the policy with the one sent.
+/// that is `null` with the one asked for. `update_refuses_an_answer_with_another_policy`
+/// holds the update to the policy it sent.
 #[test]
 fn get_prints_a_policy_swagger_does_not_list() {
     let server = Server::start(vec![route_of(

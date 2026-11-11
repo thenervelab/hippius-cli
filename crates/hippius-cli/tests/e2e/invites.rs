@@ -311,8 +311,9 @@ fn a_bad_token_file_is_usage_and_sends_nothing() {
             error["hint"],
             "pipe only the invite token, the last part of the invite link, to `--token-file -`"
         );
+        // The path may be the invite token pasted in its place, so it is not repeated.
         let missing = home.path().join("missing.txt");
-        Hipc::against(&home, &server)
+        let error = Hipc::against(&home, &server)
             .run(&[
                 "account",
                 "invites",
@@ -321,6 +322,11 @@ fn a_bad_token_file_is_usage_and_sends_nothing() {
                 missing.to_str().unwrap(),
             ])
             .fails(2, "usage");
+        assert_eq!(
+            error["message"],
+            "cannot read the invite token from the file `--token-file` names: it does not exist; \
+             the path is not repeated here, in case it is the invite token itself"
+        );
     }
     assert!(server.requests().is_empty());
 }

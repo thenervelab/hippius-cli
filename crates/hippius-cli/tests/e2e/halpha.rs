@@ -28,7 +28,6 @@ const SELF_SIGN_HINT: &str = "top up with hAlpha in the console at `https://cons
 const SELF_SIGN: &str = "the account signs its own hAlpha buys (`self_sign`), and those are \
                          made in the console; a card or Bitcoin top-up works with `hipc` too";
 const ADDRESS: &str = "5DfhGyQdFobKM8NsWvEeAKk5EQQgYe9AydgJ7rMB6E1EqRzV";
-/// The note of a purchase row in text mode, which has no `credit_amount` until it completes.
 /// The note a text-mode run prints once the buy is accepted, up to its random key.
 const ACCEPTED: &str = "note: the buy was accepted as the purchase `p_1` under the key `";
 
@@ -393,12 +392,28 @@ fn a_retry_resends_the_exact_buy_reading_only_the_quote() {
         let error = top_up(&server, &args).fails(2, "usage");
         assert_eq!(error["message"], message);
     }
-    for bad in ["0", "0.0", "1.0000000000000000001", "x"] {
-        top_up(
+    let above_zero = "a buy accepts at least some credits, so the minimum is above `0`";
+    for (bad, why) in [
+        ("0", above_zero),
+        ("0.0", above_zero),
+        (
+            "1.0000000000000000001",
+            "credits has 18 decimals, so an amount has at most 18 digits after the point",
+        ),
+        (
+            "x",
+            "an amount is credits in digits, such as `6.12` or `990`",
+        ),
+    ] {
+        let error = top_up(
             &server,
             &["--yes", "--idempotency-key", KEY, "--min-credits", bad],
         )
         .fails(2, "usage");
+        assert_eq!(
+            error["message"],
+            format!("invalid value `{bad}` for `--min-credits <CREDITS>`: {why}")
+        );
     }
     assert!(server.requests().is_empty());
 }
@@ -1100,35 +1115,35 @@ fn an_alpha_amount_hipc_cannot_send_exactly_is_usage() {
             .contains("the chain takes at least `0.01` hAlpha"),
         "{error}"
     );
+    let halpha = ["billing", "top-up", "--method", "halpha", "--alpha", "1"];
     for timeout in ["0", "901"] {
-        Hipc::against(&Home::new(), &server)
-            .run(&[
-                "billing",
-                "top-up",
-                "--method",
-                "halpha",
-                "--alpha",
-                "1",
-                "--wait-timeout",
-                timeout,
-                "--yes",
-            ])
+        let argv = [&halpha[..], &["--wait-timeout", timeout, "--yes"]].concat();
+        let error = Hipc::against(&Home::new(), &server)
+            .run(&argv)
             .fails(2, "usage");
+        assert_eq!(
+            error["message"],
+            format!(
+                "invalid value `{timeout}` for `--wait-timeout <SECONDS>`: {timeout} is not in `1..=900`"
+            )
+        );
     }
-    Hipc::against(&Home::new(), &server)
-        .run(&[
-            "billing",
-            "top-up",
-            "--method",
-            "halpha",
-            "--alpha",
-            "1",
-            "--idempotency-key",
-            "not-a-key",
-            "--yes",
-        ])
+    let argv = [&halpha[..], &["--idempotency-key", "not-a-key", "--yes"]].concat();
+    let error = Hipc::against(&Home::new(), &server)
+        .run(&argv)
         .fails(2, "usage");
+    assert_eq!(
+        error["message"],
+        "invalid value `not-a-key` for `--idempotency-key <UUID>`: a key is a UUID such as \
+         `3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0c`, as a run prints it"
+    );
     assert!(server.requests().is_empty());
+    // The longest wait is 900 seconds, which a dry run takes.
+    let argv = [&halpha[..], &["--wait-timeout", "900", "--dry-run"]].concat();
+    assert_eq!(
+        Hipc::against(&Home::new(), &server).run(&argv).ok()["dry_run"],
+        true
+    );
 }
 
 #[test]

@@ -1235,8 +1235,8 @@ fn replace_inside_the_sync_window_cancels_a_listed_paid_plan() {
     let home = Home::new();
     let empty = listing(&[]);
     subscribe_in(&home, &empty, &["--plan", "builder", "--yes"]).ok();
-    // Nothing was cancelled, so the marker has no `cancels` key, which an older `hip` that
-    // denies unknown fields can still read.
+    // Nothing was cancelled, so the marker has no `cancels` key, which an earlier release
+    // that denies unknown fields can still read.
     assert!(
         !home.config_text().contains("cancels"),
         "{}",
@@ -1382,10 +1382,9 @@ fn a_replace_that_changed_nothing_puts_back_the_marker_it_replaced() {
     assert_eq!(home.config_text(), before);
 }
 
-/// Style reviews of 1a44398 and 262524f: a `--replace` that failed after a cancel went
-/// through, or after a cancel whose outcome is unknown, keeps its own marker, which lists
-/// every row it set out to cancel. Those rows can still show as active, so a third
-/// `--replace` that sees only them is refused before any DELETE.
+/// A `--replace` that failed after a cancel went through, or after a cancel whose outcome is
+/// unknown, keeps its own marker, which lists every row it set out to cancel. Those rows can still
+/// show as active, so a third `--replace` that sees only them is refused before any DELETE.
 #[test]
 fn a_replace_that_may_have_cancelled_keeps_its_marker() {
     let refused_post = || Reply::json(402, r#"{"error":"Not enough credits"}"#);

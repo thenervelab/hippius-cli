@@ -2080,8 +2080,8 @@ fn an_s3_subscribe_503_with_retry_after_did_nothing() {
     assert_eq!(error["retryable"], true);
 }
 
-/// A subscribe answered 502, a 503 without a numeric `Retry-After`, or no answer at all may have bought
-/// the plan, so each is `partial` and not retryable.
+/// A subscribe answered 502, a 503 without a numeric `Retry-After`, or no answer at all may have
+/// bought the plan, so each is `partial` and not retryable.
 #[test]
 fn an_s3_subscribe_502_503_or_timeout_may_have_bought_the_plan() {
     let subscribe = [

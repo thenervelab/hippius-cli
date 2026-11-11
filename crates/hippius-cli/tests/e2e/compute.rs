@@ -1776,91 +1776,149 @@ fn ssh_keys_delete_prints_a_body_when_there_is_one() {
     assert_eq!(doc["note"], "x");
 }
 
+/// Asserts that `doc`, the dry run of `hipc compute <args>`, lists at least one request, each
+/// one a method and a path that the command's row in `schema` lists among its routes: a
+/// dry run naming another route, or another method, fails here.
+fn assert_requests_are_routes_of_the_command(schema: &Value, doc: &Value, args: &[&str]) {
+    let commands = schema["commands"]
+        .as_array()
+        .expect("the schema lists commands");
+    let words: Vec<&str> = std::iter::once("compute")
+        .chain(args.iter().copied())
+        .collect();
+    let row = commands
+        .iter()
+        .filter(|command| {
+            let path = command["path"].as_array().expect("a path is an array");
+            path.len() <= words.len() && path.iter().zip(&words).all(|(word, arg)| word == arg)
+        })
+        .max_by_key(|command| command["path"].as_array().map(Vec::len));
+    assert!(row.is_some(), "{args:?} has no schema row");
+    let routes = row.expect("asserted above")["routes"]
+        .as_array()
+        .expect("a row lists its routes");
+    let fits = |template: &str, path: &str| {
+        let (template, path): (Vec<&str>, Vec<&str>) =
+            (template.split('/').collect(), path.split('/').collect());
+        template.len() == path.len()
+            && template.iter().zip(&path).all(|(part, segment)| {
+                part == segment || (part.starts_with('{') && !segment.is_empty())
+            })
+    };
+    let requests = doc["requests"]
+        .as_array()
+        .expect("a dry run lists its requests");
+    assert!(!requests.is_empty(), "{args:?}: {doc}");
+    for request in requests {
+        let url = request["url"].as_str().expect("a request has a URL");
+        let path = url
+            .split_once("/api/")
+            .map(|(_, rest)| format!("/api/{}", rest.split('?').next().unwrap_or_default()))
+            .unwrap_or_default();
+        assert!(
+            routes
+                .iter()
+                .any(|route| route["method"] == request["method"]
+                    && route["path"]
+                        .as_str()
+                        .is_some_and(|template| fits(template, &path))),
+            "{args:?}: {} {path} is not among {routes:?}",
+            request["method"]
+        );
+    }
+}
+
+/// `hipc compute` command lines, each of which a dry run describes without a request.
+const DRY_RUNS: &[&[&str]] = &[
+    &["prices"],
+    &["quota"],
+    &["charge-cap"],
+    &["flavors"],
+    &["images"],
+    &["apps"],
+    &["regions"],
+    &["feasibility", "--flavor", "small"],
+    &["account-ssh-keys"],
+    &["vms", "list"],
+    &["vms", "get", VM],
+    &["vms", "failovers", VM],
+    &["vms", "start", VM],
+    &["vms", "stop", VM],
+    &["vms", "reboot", VM],
+    &["vms", "resize-options", VM],
+    &["vms", "resize", VM, "--flavor", "large"],
+    &["vms", "resize-status", VM, "7"],
+    &["vms", "delete", VM],
+    &["public-ip", "availability"],
+    &["public-ip", "availability", "--region", "FR"],
+    &["public-ip", "get", VM],
+    &["public-ip", "create", VM],
+    &["public-ip", "delete", VM],
+    &["public-ip", "usage", VM],
+    &["public-ip", "usage", VM, "--range", "7d"],
+    &["firewall", "get", VM],
+    &["exposures", "list", VM],
+    &["exposures", "create", VM, "--port", "8080"],
+    &[
+        "exposures",
+        "create",
+        VM,
+        "--port",
+        "53",
+        "--mode",
+        "raw",
+        "--protocol",
+        "udp",
+    ],
+    &["exposures", "delete", VM, "7"],
+    &["backups", "options"],
+    &["backups", "policy", "get", VM],
+    &["backups", "policy", "update", VM, "--interval", "900"],
+    &["backups", "policy", "delete", VM],
+    &["backups", "list", VM],
+    &["backups", "restore", VM, "--run-id", "run_1"],
+    &["backups", "restore-status", VM],
+    &["runners", "settings", "get"],
+    &["runners", "settings", "update", "--enabled", "true"],
+    &["runners", "installations", "list"],
+    &["runners", "installations", "delete", "7"],
+    &["runners", "jobs"],
+    &["runners", "connect"],
+    &["ssh-keys", "list"],
+    &["ssh-keys", "get", "3"],
+    &["ssh-keys", "delete", "3"],
+    &["databases", "list"],
+    &["databases", "get", "7"],
+    &[
+        "databases",
+        "create",
+        "--tier",
+        "ha",
+        "--size",
+        "xl",
+        "--engine-version",
+        "16",
+    ],
+    &["databases", "delete", "7"],
+    &["databases", "restart", "7"],
+    &["databases", "restore", "7"],
+    &["databases", "exposure", "create", "7"],
+    &["databases", "exposure", "delete", "7"],
+    &["databases", "events", "7"],
+    &["databases", "metrics", "7"],
+    &["databases", "refusals"],
+];
+
 #[test]
 fn these_compute_commands_dry_run_without_a_request() {
     let server = Server::start(vec![]);
-    for args in [
-        &["prices"][..],
-        &["quota"],
-        &["charge-cap"],
-        &["flavors"],
-        &["images"],
-        &["apps"],
-        &["regions"],
-        &["feasibility", "--flavor", "small"],
-        &["account-ssh-keys"],
-        &["vms", "list"],
-        &["vms", "get", VM],
-        &["vms", "failovers", VM],
-        &["vms", "start", VM],
-        &["vms", "stop", VM],
-        &["vms", "reboot", VM],
-        &["vms", "resize-options", VM],
-        &["vms", "resize", VM, "--flavor", "large"],
-        &["vms", "resize-status", VM, "7"],
-        &["vms", "delete", VM],
-        &["public-ip", "availability"],
-        &["public-ip", "availability", "--region", "FR"],
-        &["public-ip", "get", VM],
-        &["public-ip", "create", VM],
-        &["public-ip", "delete", VM],
-        &["public-ip", "usage", VM],
-        &["public-ip", "usage", VM, "--range", "7d"],
-        &["firewall", "get", VM],
-        &["exposures", "list", VM],
-        &["exposures", "create", VM, "--port", "8080"],
-        &[
-            "exposures",
-            "create",
-            VM,
-            "--port",
-            "53",
-            "--mode",
-            "raw",
-            "--protocol",
-            "udp",
-        ],
-        &["exposures", "delete", VM, "7"],
-        &["backups", "options"],
-        &["backups", "policy", "get", VM],
-        &["backups", "policy", "update", VM, "--interval", "900"],
-        &["backups", "policy", "delete", VM],
-        &["backups", "list", VM],
-        &["backups", "restore", VM, "--run-id", "run_1"],
-        &["backups", "restore-status", VM],
-        &["runners", "settings", "get"],
-        &["runners", "settings", "update", "--enabled", "true"],
-        &["runners", "installations", "list"],
-        &["runners", "installations", "delete", "7"],
-        &["runners", "jobs"],
-        &["runners", "connect"],
-        &["ssh-keys", "list"],
-        &["ssh-keys", "get", "3"],
-        &["ssh-keys", "delete", "3"],
-        &["databases", "list"],
-        &["databases", "get", "7"],
-        &[
-            "databases",
-            "create",
-            "--tier",
-            "ha",
-            "--size",
-            "xl",
-            "--engine-version",
-            "16",
-        ],
-        &["databases", "delete", "7"],
-        &["databases", "restart", "7"],
-        &["databases", "restore", "7"],
-        &["databases", "exposure", "create", "7"],
-        &["databases", "exposure", "delete", "7"],
-        &["databases", "events", "7"],
-        &["databases", "metrics", "7"],
-        &["databases", "refusals"],
-    ] {
+    let schema = Hipc::new(&Home::new()).run(&["schema"]).ok();
+    for args in DRY_RUNS {
         let mut argv = args.to_vec();
         argv.push("--dry-run");
-        assert_eq!(hipc(&server, &argv).ok()["dry_run"], true, "{args:?}");
+        let doc = hipc(&server, &argv).ok();
+        assert_eq!(doc["dry_run"], true, "{args:?}");
+        assert_requests_are_routes_of_the_command(&schema, &doc, args);
     }
     let home = Home::new();
     let key = home.file("id.pub", b"ssh-ed25519 AAAA me@laptop\n");

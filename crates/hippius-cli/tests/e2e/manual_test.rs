@@ -873,7 +873,7 @@ fn an_offline_spend_run_passes_and_announces_each_cost() {
     assert!(log.contains("cleanup: ticket hipc-manual-"), "{log}");
 }
 
-/// Money fix: when the Drive subscription cannot be read, there is no telling whether a
+/// When the Drive subscription cannot be read, there is no telling whether a
 /// paid plan exists, so the purchase is not even asked about, and no subscribe is sent.
 #[test]
 fn an_unreadable_drive_subscription_buys_nothing_and_asks_nothing() {
@@ -901,7 +901,7 @@ fn an_unreadable_drive_subscription_buys_nothing_and_asks_nothing() {
     );
 }
 
-/// Money fix: a subscribe the server refuses (409) bought nothing, so neither the scenario
+/// A subscribe the server refuses (409) bought nothing, so neither the scenario
 /// nor the exit trap cancels anything: the plan that exists is not this run's.
 #[test]
 fn a_refused_subscribe_is_never_cancelled() {
@@ -1001,7 +1001,7 @@ fn a_bought_plan_is_cancelled_through_a_425() {
     );
 }
 
-/// Money fix: a deleted VM or database is `decommissioning`, then `decommissioned`, and
+/// A deleted VM or database is `decommissioning`, then `decommissioned`, and
 /// stays listed; `revoked` counts it gone, so no step picks it and a list without a live
 /// row proves the delete.
 #[test]
@@ -1034,7 +1034,7 @@ fn a_decommissioned_vm_or_database_counts_as_gone() {
     assert_eq!(stdout(&output), "[\"c\"]\n[\"live\"]\n");
 }
 
-/// Money fix: the throwaway VM's exposure is of a port nothing listens on, never SSH, and its
+/// The throwaway VM's exposure is of a port nothing listens on, never SSH, and its
 /// public IP is attached only after the exposure's delete exited 0 and a firewall with no
 /// rule closed every inbound port.
 #[test]
@@ -1133,7 +1133,7 @@ fn the_public_ip_waits_for_the_exposure_to_be_removed() {
     );
 }
 
-/// Money fix: a launch whose create exits non-zero but prints the VM (a wait that ended
+/// A launch whose create exits non-zero but prints the VM (a wait that ended
 /// early) is in the ledger by that id, so the exit trap deletes it; so is a database. A
 /// cleanup that cannot prove the delete keeps the ledger beside the log, without the lines
 /// the trap cleaned.
@@ -1194,7 +1194,7 @@ fn a_failed_create_that_answers_an_id_is_deleted_by_it() {
     );
 }
 
-/// Money fix: the balance may move only after a purchase's create exited 0; an answer of y
+/// The balance may move only after a purchase's create exited 0; an answer of y
 /// alone, or a create that failed, spent nothing.
 #[test]
 fn the_balance_may_move_only_after_a_purchase_succeeds() {
@@ -1250,7 +1250,7 @@ fn the_balance_may_move_only_after_a_purchase_succeeds() {
     );
 }
 
-/// Money fix: a rename or a rotation edits the resource's ledger line in place, so at every
+/// A rename or a rotation edits the resource's ledger line in place, so at every
 /// moment the ledger names it exactly once.
 #[test]
 fn a_rename_or_a_rotation_keeps_one_ledger_line() {
@@ -1807,7 +1807,7 @@ fn count_calls(calls: &Path, what: &str) -> usize {
         .count()
 }
 
-/// Masking, round 2: the secret fields of every command that takes `--reveal` are masked,
+/// The secret fields of every command that takes `--reveal` are masked,
 /// among them a Kubernetes backup listing's `manifest.sealed_key` and signed download link,
 /// a database's credentials, and the tokens and setup keys `hipc api --reveal` can print.
 #[test]
@@ -1849,7 +1849,7 @@ fn every_reveal_secret_field_is_masked() {
     );
 }
 
-/// Masking, round 2: the literal rules run longest first, so a password that is a prefix
+/// The literal rules run longest first, so a password that is a prefix
 /// of the passphrase and of the client key cannot replace its part of them first and leave
 /// the rest in the log.
 #[test]
@@ -1877,7 +1877,7 @@ fn a_password_that_starts_the_passphrase_and_the_key_does_not_shred_them() {
     );
 }
 
-/// Masking, round 2: the log scan also looks for the parts of a secret around a shorter
+/// The log scan also looks for the parts of a secret around a shorter
 /// secret inside it, so a part left over by a short secret's rule fails the run, even when
 /// neither whole secret is in the log.
 #[test]
@@ -1929,7 +1929,7 @@ fn the_log_scan_finds_the_rest_of_a_secret_a_shorter_one_broke_up() {
     }
 }
 
-/// Masking, round 2: a password or a passphrase in a URL's query is masked: the whole URL
+/// A password or a passphrase in a URL's query is masked: the whole URL
 /// under a `url` or `uri` key, and the value alone in any other line.
 #[test]
 fn a_password_in_a_query_string_is_masked() {
@@ -1968,7 +1968,7 @@ fn a_password_in_a_query_string_is_masked() {
     );
 }
 
-/// Drive, round 2: the Starter question is asked only on a free state the script
+/// The Starter question is asked only on a free state the script
 /// recognises; every other shape is taken for a paid plan.
 #[test]
 fn only_a_recognised_free_drive_state_may_be_bought_over() {
@@ -2023,7 +2023,7 @@ fn only_a_recognised_free_drive_state_may_be_bought_over() {
     }
 }
 
-/// Drive, round 2: a subscription read that answers `not_found` (no subscription at all) is
+/// A subscription read that answers `not_found` (no subscription at all) is
 /// a free state, so the plan is asked about and bought; a shape that is not recognised is
 /// logged, and nothing is asked or bought.
 #[test]
@@ -2070,7 +2070,7 @@ fn a_missing_drive_subscription_is_bought_over_and_an_unknown_one_is_not() {
     assert_eq!(count_calls(&calls, "drive subscription cancel"), 0, "{log}");
 }
 
-/// Drive, round 2: only a real cancelled shape counts as cancelled; a cancel date on an
+/// Only a real cancelled shape counts as cancelled; a cancel date on an
 /// active, paid plan does not, nor does a status that merely holds the word.
 #[test]
 fn only_a_real_cancelled_drive_shape_counts_as_cancelled() {
@@ -2109,7 +2109,7 @@ fn only_a_real_cancelled_drive_shape_counts_as_cancelled() {
     }
 }
 
-/// Drive, round 2: a cancel that exited 0 in the scenario marks its ledger line
+/// A cancel that exited 0 in the scenario marks its ledger line
 /// `cancelled`, and the exit trap only reads the plan again: no second cancel is sent.
 #[test]
 fn a_cancel_that_exited_0_is_never_sent_again() {
@@ -2144,7 +2144,7 @@ fn a_cancel_that_exited_0_is_never_sent_again() {
     assert!(log.contains("cleanup: drive-sub solo: undone"), "{log}");
 }
 
-/// Drive, round 2: the exit trap's cancel of a `created` line retries a 425
+/// The exit trap's cancel of a `created` line retries a 425
 /// (`still_confirming`) as the scenario's does.
 #[test]
 fn the_trap_retries_a_425_cancel() {
@@ -2192,7 +2192,7 @@ fn the_trap_retries_a_425_cancel() {
     assert!(log.contains("cleanup: drive-sub solo: undone"), "{log}");
 }
 
-/// Matching, round 2: a 403 that is not the unprovisioned network stays a failure, even when
+/// A 403 that is not the unprovisioned network stays a failure, even when
 /// its hint names `network create` (a role that may not read the network).
 #[test]
 fn a_forbidden_network_read_whose_hint_names_the_create_is_a_failure() {
@@ -2227,7 +2227,7 @@ fn a_forbidden_network_read_whose_hint_names_the_create_is_a_failure() {
     );
 }
 
-/// Matching, round 2: `revoked` reads the status from its start, so `not_deleted` is live,
+/// `revoked` reads the status from its start, so `not_deleted` is live,
 /// and a status that names a failure is never gone: the resource may still run and bill.
 #[test]
 fn a_failed_or_negated_status_is_not_gone() {
@@ -2304,7 +2304,7 @@ fn the_app_launch_dry_run_shows_a_placeholder_and_never_the_secret() {
     assert!(!log.contains("hipc-manual-app-secret-"), "{log}");
 }
 
-/// Drive, round 3: an inactive answer that still carries a status, a period end or a
+/// An inactive answer that still carries a status, a period end or a
 /// funding source may be a plan the account pays for, so nothing is asked or bought, and
 /// the answer is logged.
 #[test]
@@ -2337,7 +2337,7 @@ fn an_inactive_drive_answer_with_more_to_it_is_not_bought_over() {
     }
 }
 
-/// Drive, round 3: the snapshot keeps the Drive subscription whole, so the teardown's
+/// The snapshot keeps the Drive subscription whole, so the teardown's
 /// cancelled check reads every key `drive_free` reads, and the diff still compares only the
 /// plan fields, `plan_name` among them.
 #[test]
@@ -2502,7 +2502,7 @@ fn the_log_scan_of_a_big_log_takes_seconds() {
     );
 }
 
-/// Live write run, 2026-11-03: the S3 bucket list names its rows `bucket_name`, not `name`,
+/// The S3 bucket list names its rows `bucket_name`, not `name`,
 /// so a list that held the new bucket did not show it, and the delete's check passed for
 /// any list. Both spellings are a row's name.
 #[test]
