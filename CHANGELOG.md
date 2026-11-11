@@ -12,6 +12,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 - `hipc schema` lists, for each command, the `routes` it may send to: each one's `method` and path template, such as `{"method": "GET", "path": "/api/compute/vms/{vm_id}/"}`, with a placeholder in braces for each value the command fills in, and `{name..}` for a value of more than one segment, such as a Hub repository. `hipc api` lists none, since it sends to the route it is given, and neither does a command that sends nothing. `schema_version` is now `4`.
 
+- When an answer says its route is deprecated, with a `Deprecation` (RFC 9745) or a `Sunset` (RFC 8594) header, `hipc` prints a `warning:` that names the route and the dates the headers give, and in JSON adds the text to `warnings`; the command does what it did before. A `410` answer, a route the API has retired, gets a hint to upgrade `hipc`. TENETS tenet 15 says so.
+
 ### Changed
 
 - The HTTP library is ureq 3.5. A user name or password in a proxy variable's URL (`HTTPS_PROXY=http://user:p%40ss@proxy:3128`) is now percent-decoded once before it is sent to the proxy, so a literal `%` in it must be written `%25`; a user name or password that decodes to invalid UTF-8 is refused with exit 2 `usage`, as a proxy URL the library cannot parse is.
@@ -48,6 +50,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - A note's next command, and the `next_step` that carries it, quotes a `--profile`, `--api-url`, or selector value a shell would split or expand, an empty one included, and joins a value that starts with `-` to its flag with `=`, rather than leaving the command out. A value with a character outside printable ASCII still leaves it out.
 - TENETS tenet 5 lists the hAlpha top-up's `reads_first`, its read of the quote, and tenet 9 says that a JSON number `hipc` redacts becomes the string `"<redacted>"`.
 - A field name in a redacted answer or error (the API token in an error, an invite token, a DNS credential, a database credential `--credentials-dir` moved, App Engine secrets) is replaced whole by `<redacted>` when it is one of the redacted values or holds one of eight characters or more, as App Engine launch output already did. A field name that holds only a shorter value is kept as the server wrote it, as a number is, where before a name was redacted character by character.
+- `hipc api` treats a route that no command lists in its `routes` as one it does not know: a `GET` of it needs `--reveal`, since its answer may hold a secret, and a write still needs `--yes`, as any write does, and warns that `hipc` does not know what it changes, on stderr in text mode and in `warnings` in JSON. `reveal_when` and `confirmation_when` of `hipc api` in `hipc schema`, the `--reveal` help, and TENETS tenets 7 and 9 say so.
+- The route table decides each request to a route a command sends: its account, project, and billing headers, whether its answer holds a secret, whether a read creates something, whether it cannot be undone, and what `hipc api` asks before sending it. The path tables decide only a route no command sends. A `HEAD` counts as the `GET` of its route, so a `HEAD` of an S3 plan read takes the selected project as the `GET` does. The `--reveal` help of `hipc api` names each placeholder by what fills it, such as `/registry/keys/<key_id>/rotate/`.
 
 ### Removed
 
@@ -99,6 +103,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - The database credentials `--credentials-dir` moves to files are redacted from the field names and numbers of the rest of the answer too, as tenet 9 says: a number that is one of them becomes the string `"<redacted>"`.
 - The request body of an App Engine launch and of a DNS setup is cleared from memory when the request is dropped, and so is the token each profile of the config file stores.
 - A validation message kept under a secret field of an error body, such as `{"password": ["... is too common."]}`, has every value the request sent in a secret field redacted from it.
+- An error body drops a field whose name ends as a secret field's name does, in camelCase too, such as `authToken`, `APIKey`, or `newPassword`, as it drops the spellings it listed before; a bare `token` stays, as before.
 
 ## [0.15.0] - 2026-11-09
 

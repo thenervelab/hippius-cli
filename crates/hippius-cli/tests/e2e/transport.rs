@@ -6,7 +6,7 @@ use crate::common::{Hipc, Home, PROXY_VARIABLES, Reply, Server, TOKEN, route};
 #[test]
 fn every_request_names_hip_and_its_version() {
     let server = Server::start(vec![route("GET", "/api/x/", Reply::json(200, "{}"))]);
-    Hipc::against(&Home::new(), &server).run(&["api", "GET", "/x/"]);
+    Hipc::against(&Home::new(), &server).run(&["api", "--reveal", "GET", "/x/"]);
     assert_eq!(
         server.only_request().header("user-agent"),
         Some(&*format!("hipc/{}", env!("CARGO_PKG_VERSION")))
@@ -83,7 +83,7 @@ fn statuses_map_to_codes_with_retry_hints_and_side_effects() {
     let home = Home::new();
     let get = |path: &str, exit: i32, code: &str| {
         Hipc::against(&home, &server)
-            .run(&["api", "GET", path])
+            .run(&["api", "--reveal", "GET", path])
             .fails(exit, code)
     };
     assert_eq!(
@@ -137,7 +137,7 @@ fn a_redirect_is_not_followed_so_the_token_stays_home() {
         Reply::json(302, "").header("Location", &target),
     )]);
     let error = Hipc::against(&Home::new(), &server)
-        .run(&["api", "GET", "/moved/"])
+        .run(&["api", "--reveal", "GET", "/moved/"])
         .fails(1, "internal");
     assert!(error["message"].as_str().unwrap().contains(&target));
     assert!(elsewhere.requests().is_empty());
@@ -167,16 +167,17 @@ fn an_error_answer_that_echoes_the_token_never_prints_it() {
     ]);
     let home = Home::new();
     for (path, exit, code) in [("/echo/", 1, "auth"), ("/moved/", 1, "internal")] {
-        let run = Hipc::against(&home, &server).run(&["api", "GET", path]);
+        let run = Hipc::against(&home, &server).run(&["api", "--reveal", "GET", path]);
         let error = run.fails(exit, code);
         assert!(!run.stderr().contains(TOKEN), "{}", run.stderr());
         assert!(error.to_string().contains("<redacted>"), "{error}");
-        let text = Hipc::against(&home, &server).run(&["--output", "text", "api", "GET", path]);
+        let text = Hipc::against(&home, &server)
+            .run(&["--output", "text", "api", "--reveal", "GET", path]);
         assert_eq!(text.code(), Some(exit));
         assert!(!text.stderr().contains(TOKEN), "{}", text.stderr());
     }
     let error = Hipc::against(&home, &server)
-        .run(&["api", "GET", "/echo/"])
+        .run(&["api", "--reveal", "GET", "/echo/"])
         .fails(1, "auth");
     assert_eq!(
         error["message"],
@@ -199,7 +200,7 @@ fn an_error_answer_that_echoes_the_token_never_prints_it() {
         Reply::json(404, r#"{"detail":"no <redacted> here"}"#),
     )]);
     let error = Hipc::tokenless(&home, &plain)
-        .run(&["api", "GET", "/plain/"])
+        .run(&["api", "--reveal", "GET", "/plain/"])
         .fails(1, "not_found");
     assert_eq!(error["details"]["detail"], "no <redacted> here");
 }
@@ -236,7 +237,7 @@ fn every_spelling_of_an_echoed_token_is_redacted() {
         for mode in ["json", "text"] {
             let run = Hipc::against(&home, &server)
                 .env("HIPPIUS_TOKEN", token)
-                .run(&["--output", mode, "api", "GET", path]);
+                .run(&["--output", mode, "api", "--reveal", "GET", path]);
             assert_eq!(run.code(), Some(1), "{}", run.stderr());
             for spelling in [token, upper, lower, quoted] {
                 assert!(
@@ -257,7 +258,7 @@ fn a_server_that_never_answers_times_out() {
         route("POST", "/api/slow/", Reply::never()),
     ]);
     let error = Hipc::against(&Home::new(), &server)
-        .run(&["api", "GET", "/slow/", "--request-timeout", "1"])
+        .run(&["api", "--reveal", "GET", "/slow/", "--request-timeout", "1"])
         .fails(1, "timeout");
     assert_eq!(error["retryable"], true);
     assert_eq!(error["side_effects"], "none");
@@ -288,19 +289,20 @@ fn debug_prints_method_url_and_status_and_never_a_secret() {
         route("GET", "/api/missing/", Reply::json(404, "{}")),
     ]);
     let home = Home::new();
-    let run = Hipc::against(&home, &server).run(&["api", "GET", "/x/", "--debug"]);
+    let run = Hipc::against(&home, &server).run(&["api", "--reveal", "GET", "/x/", "--debug"]);
     assert_eq!(run.code(), Some(0));
     assert_eq!(
         run.stderr(),
         format!("debug: GET {}/api/x/\ndebug: -> 200\n", server.url())
     );
-    let run = Hipc::against(&home, &server).run(&["api", "GET", "/missing/", "--debug"]);
+    let run =
+        Hipc::against(&home, &server).run(&["api", "--reveal", "GET", "/missing/", "--debug"]);
     assert_eq!(run.code(), Some(1));
     let lines: Vec<&str> = run.stderr().lines().collect();
     assert_eq!(lines[1], "debug: -> 404");
     assert!(lines[2].starts_with("{\"error\""));
     // `Hipc::new` points `hipc` at the closed origin.
-    let run = Hipc::new(&home).run(&["api", "GET", "/x/", "--debug"]);
+    let run = Hipc::new(&home).run(&["api", "--reveal", "GET", "/x/", "--debug"]);
     assert!(
         run.stderr().contains("debug: -> no answer (unavailable)"),
         "{}",
@@ -315,7 +317,8 @@ fn a_public_route_works_without_a_token_and_sends_no_authorization() {
         "/api/drive/plans/",
         Reply::json(200, "[]"),
     )]);
-    let run = Hipc::tokenless(&Home::new(), &server).run(&["api", "GET", "/drive/plans/"]);
+    let run =
+        Hipc::tokenless(&Home::new(), &server).run(&["api", "--reveal", "GET", "/drive/plans/"]);
     assert_eq!(run.code(), Some(0));
     assert_eq!(server.only_request().header("authorization"), None);
 }
@@ -329,14 +332,11 @@ fn a_write_without_a_body_sends_content_length_zero_not_chunked() {
         route("DELETE", "/api/x/", Reply::json(200, "{}")),
     ]);
     let home = Home::new();
-    for method in ["POST", "PUT", "PATCH"] {
-        Hipc::against(&home, &server)
-            .run(&["api", method, "/x/", "--yes"])
-            .ok();
+    // `/x/` is a route no command sends, so each write also warns on stderr.
+    for method in ["POST", "PUT", "PATCH", "DELETE"] {
+        let run = Hipc::against(&home, &server).run(&["api", method, "/x/", "--yes"]);
+        assert_eq!(run.code(), Some(0), "{}", run.stderr());
     }
-    Hipc::against(&home, &server)
-        .run(&["api", "DELETE", "/x/", "--yes"])
-        .ok();
     let requests = server.requests();
     for request in &requests[..3] {
         assert_eq!(
@@ -470,7 +470,7 @@ fn all_reports_the_real_refusal_of_a_next_link_on_the_api_origin() {
         ),
     )]);
     let error = Hipc::against(&Home::new(), &server)
-        .run(&["api", "GET", "/compute/vms/", "--all"])
+        .run(&["api", "--reveal", "GET", "/compute/vms/", "--all"])
         .fails(1, "internal");
     // The real refusal is named, and it is not the caller's usage error: the server wrote it.
     assert!(
@@ -525,7 +525,7 @@ fn a_refusal_whose_body_breaks_says_it_could_not_be_read() {
     let head = "HTTP/1.1 400 Bad Request\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n";
     let server = Server::start(vec![route("GET", "/api/x/", Reply::raw(head.as_bytes()))]);
     let error = Hipc::against(&Home::new(), &server)
-        .run(&["--request-timeout", "5", "api", "GET", "/x/"])
+        .run(&["--request-timeout", "5", "api", "--reveal", "GET", "/x/"])
         .fails(1, "validation");
     assert_eq!(error["http_status"], 400);
     assert_eq!(error["details"], serde_json::Value::Null);
@@ -546,7 +546,7 @@ fn a_proxy_in_the_environment_never_carries_a_plain_http_request() {
     for name in ["HTTP_PROXY", "http_proxy", "ALL_PROXY"] {
         Hipc::against(&Home::new(), &server)
             .env(name, proxy.url())
-            .run(&["api", "GET", "/x/"])
+            .run(&["api", "--reveal", "GET", "/x/"])
             .ok();
     }
     assert!(proxy.requests().is_empty(), "the token went to the proxy");
@@ -606,8 +606,8 @@ fn text_mode_never_writes_a_control_character_from_the_server() {
 fn hipc_api_escapes_a_body_in_text_mode_and_keeps_its_bytes_in_json() {
     let body = "{\"name\":\"x\u{1b}]52;c;Y3VybCBldmlsfHNo\u{7}\"}\n";
     let server = Server::start(vec![route("GET", "/api/vms/", Reply::json(200, body))]);
-    let text =
-        Hipc::against(&Home::new(), &server).run(&["--output", "text", "api", "GET", "/vms/"]);
+    let text = Hipc::against(&Home::new(), &server)
+        .run(&["--output", "text", "api", "--reveal", "GET", "/vms/"]);
     assert_eq!(text.code(), Some(0));
     assert!(
         !text.stdout().contains('\u{1b}') && !text.stdout().contains('\u{7}'),
@@ -615,7 +615,7 @@ fn hipc_api_escapes_a_body_in_text_mode_and_keeps_its_bytes_in_json() {
         text.stdout()
     );
     assert!(text.stdout().ends_with("\"}\n"), "line breaks stay");
-    let json = Hipc::against(&Home::new(), &server).run(&["api", "GET", "/vms/"]);
+    let json = Hipc::against(&Home::new(), &server).run(&["api", "--reveal", "GET", "/vms/"]);
     assert_eq!(json.stdout(), body, "JSON mode is byte for byte");
 }
 
@@ -624,14 +624,14 @@ fn hipc_api_escapes_a_body_in_text_mode_and_keeps_its_bytes_in_json() {
 #[test]
 fn hipc_api_text_mode_ends_the_last_line() {
     let server = Server::start(vec![route("GET", "/api/vms/", Reply::json(200, "[1]"))]);
-    let text =
-        Hipc::against(&Home::new(), &server).run(&["--output", "text", "api", "GET", "/vms/"]);
+    let text = Hipc::against(&Home::new(), &server)
+        .run(&["--output", "text", "api", "--reveal", "GET", "/vms/"]);
     assert_eq!(text.stdout(), "[1]\n");
-    let json = Hipc::against(&Home::new(), &server).run(&["api", "GET", "/vms/"]);
+    let json = Hipc::against(&Home::new(), &server).run(&["api", "--reveal", "GET", "/vms/"]);
     assert_eq!(json.stdout(), "[1]");
     let empty = Server::start(vec![route("GET", "/api/vms/", Reply::json(200, ""))]);
-    let text =
-        Hipc::against(&Home::new(), &empty).run(&["--output", "text", "api", "GET", "/vms/"]);
+    let text = Hipc::against(&Home::new(), &empty)
+        .run(&["--output", "text", "api", "--reveal", "GET", "/vms/"]);
     assert_eq!(text.stdout(), "", "an empty body prints nothing");
 }
 
@@ -805,7 +805,7 @@ fn a_proxy_hipc_cannot_use_is_refused_before_sending() {
             .with_env_token("https://hipc-test.invalid", TOKEN)
             .env("ALL_PROXY", "")
             .env(name, value)
-            .run(&["api", "GET", "/x/", "--dry-run"])
+            .run(&["api", "--reveal", "GET", "/x/", "--dry-run"])
             .fails(2, "usage");
         assert_eq!(
             error["message"],
@@ -819,7 +819,7 @@ fn a_proxy_hipc_cannot_use_is_refused_before_sending() {
     let server = Server::start(vec![route("GET", "/api/x/", Reply::json(200, "{}"))]);
     Hipc::against(&Home::new(), &server)
         .env("ALL_PROXY", "socks5://127.0.0.1:1")
-        .run(&["api", "GET", "/x/"])
+        .run(&["api", "--reveal", "GET", "/x/"])
         .ok();
     let mut hipc = Hipc::new(&Home::new());
     for other in PROXY_VARIABLES {
@@ -829,7 +829,7 @@ fn a_proxy_hipc_cannot_use_is_refused_before_sending() {
         .with_env_token("https://hipc-test.invalid", TOKEN)
         .env("ALL_PROXY", "http://127.0.0.1:1")
         .env("HTTP_PROXY", "socks5://127.0.0.1:1")
-        .run(&["api", "GET", "/x/", "--dry-run"])
+        .run(&["api", "--reveal", "GET", "/x/", "--dry-run"])
         .ok();
 }
 
@@ -863,7 +863,7 @@ fn proxy_credentials_are_percent_decoded_once() {
             "HTTPS_PROXY",
             &format!("http://user:p%40ss@127.0.0.1:{port}"),
         )
-        .run(&["api", "GET", "/x/", "--request-timeout", "5"]);
+        .run(&["api", "--reveal", "GET", "/x/", "--request-timeout", "5"]);
     assert_ne!(run.code(), Some(0));
     let head = head
         .recv_timeout(std::time::Duration::from_secs(10))
@@ -889,7 +889,7 @@ fn a_long_server_message_is_cut_and_says_so() {
         Reply::json(400, &body).header("X-Request-Id", &"r".repeat(201)),
     )]);
     let error = Hipc::against(&Home::new(), &server)
-        .run(&["api", "GET", "/long/"])
+        .run(&["api", "--reveal", "GET", "/long/"])
         .fails(1, "validation");
     assert_eq!(
         error["message"],
@@ -905,7 +905,7 @@ fn a_long_server_message_is_cut_and_says_so() {
     // A token that the cut would split is redacted before the cut, so no part of it shows.
     let body = serde_json::json!({ "detail": format!("{}{TOKEN}", "x".repeat(490)) }).to_string();
     let server = Server::start(vec![route("GET", "/api/split/", Reply::json(400, &body))]);
-    let run = Hipc::against(&Home::new(), &server).run(&["api", "GET", "/split/"]);
+    let run = Hipc::against(&Home::new(), &server).run(&["api", "--reveal", "GET", "/split/"]);
     let error = run.fails(1, "validation");
     assert!(!run.stderr().contains(&TOKEN[..12]), "{}", run.stderr());
     assert!(
@@ -919,7 +919,7 @@ fn a_long_server_message_is_cut_and_says_so() {
         "/api/moved/",
         Reply::json(302, "").header("Location", &location),
     )]);
-    let run = Hipc::against(&Home::new(), &server).run(&["api", "GET", "/moved/"]);
+    let run = Hipc::against(&Home::new(), &server).run(&["api", "--reveal", "GET", "/moved/"]);
     run.fails(1, "internal");
     assert!(!run.stderr().contains(&TOKEN[..12]), "{}", run.stderr());
 }
@@ -941,13 +941,13 @@ fn a_retry_after_past_a_day_is_ignored() {
     ]);
     let home = Home::new();
     let far = Hipc::against(&home, &server)
-        .run(&["api", "GET", "/far/"])
+        .run(&["api", "--reveal", "GET", "/far/"])
         .fails(1, "rate_limited");
     assert_eq!(far["retryable"], true);
     assert_eq!(far["retry_after_ms"], serde_json::Value::Null);
     assert_eq!(far["hint"], "wait a minute, then run the command again");
     let day = Hipc::against(&home, &server)
-        .run(&["api", "GET", "/day/"])
+        .run(&["api", "--reveal", "GET", "/day/"])
         .fails(1, "rate_limited");
     assert_eq!(day["retry_after_ms"], 86_400_000);
     // A subscribe whose 503 means nothing was done stays so with any delay: `none`, and
@@ -989,7 +989,7 @@ fn an_answer_that_is_not_valid_http_is_internal_and_not_retryable() {
     let home = Home::new();
     for path in ["/control/", "/many/"] {
         let error = Hipc::against(&home, &server)
-            .run(&["api", "GET", path])
+            .run(&["api", "--reveal", "GET", path])
             .fails(1, "internal");
         assert_eq!(error["retryable"], false, "{path}");
         assert!(
@@ -1023,7 +1023,7 @@ fn an_error_body_hipc_cannot_read_is_left_to_the_status() {
     let home = Home::new();
     for path in ["/bytes/", "/deep/"] {
         let error = Hipc::against(&home, &server)
-            .run(&["api", "GET", path])
+            .run(&["api", "--reveal", "GET", path])
             .fails(1, "validation");
         assert_eq!(
             error["message"],

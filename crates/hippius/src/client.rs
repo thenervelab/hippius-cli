@@ -9,8 +9,8 @@
 //! redirect could carry the token to another host.
 
 use std::fmt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -22,17 +22,18 @@ use ureq::unversioned::transport::{
     Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout,
 };
 
-use crate::account::{self, RouteRule};
+use crate::account::{self, Rule};
 use crate::config::{Credential, Settings};
 use crate::encode::percent_encode;
 use crate::error::{Code, Error, Result, SideEffects};
 use crate::method::{Access, Method};
 use crate::phrase::quote;
 use crate::project;
-use crate::redact::token_spellings;
-use crate::routes::{API_BASE, Route, RouteFlag};
+use crate::redact::{is_secret_field, token_spellings};
+use crate::routes::{API_BASE, Endpoint, Guard, Route, RouteFlag};
 use crate::selector::{BillingId, ProjectId, Selection};
 use crate::source::{Given, Source};
+use crate::time::date_of_unix_day;
 use crate::url::{Origin, without_query_values};
 
 /// The largest response body `hipc` reads, in bytes. Console answers are small JSON
@@ -488,8 +489,73 @@ struct Target {
 impl Target {
     /// The path on the API origin, without the query.
     fn api_path(&self) -> &str {
-        account::without_query(&self.path_and_query)
+        crate::url::without_query(&self.path_and_query)
     }
+}
+
+/// The warnings of the routes the API marked deprecated in this run's answers, each once, in
+/// the order they came ([`take_deprecation_warnings`]). A lock poisoned by a panic keeps no
+/// more: the panic ends the run, whose warnings then print nowhere.
+static DEPRECATIONS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Takes the warnings of the routes the API marked deprecated in this run's answers, with a
+/// `Deprecation` (RFC 9745) or a `Sunset` (RFC 8594) header, each once, in the order they
+/// came, so the caller prints them as `warning:` lines or a `warnings` array (tenet 15).
+/// `hipc` surfaces them and changes nothing about the request.
+pub fn take_deprecation_warnings() -> Vec<String> {
+    DEPRECATIONS
+        .lock()
+        .map(|mut warnings| std::mem::take(&mut *warnings))
+        .unwrap_or_default()
+}
+
+/// Keeps the warning of an answer to `method` to `path` whose `header`s say the route is
+/// deprecated ([`deprecation_warning`]) for [`take_deprecation_warnings`], once.
+fn note_deprecation(method: Method, path: &str, header: &dyn Fn(&str) -> Option<String>) {
+    let deprecation = header("deprecation");
+    let sunset = header("sunset");
+    let Some(warning) =
+        deprecation_warning(method, path, deprecation.as_deref(), sunset.as_deref())
+    else {
+        return;
+    };
+    if let Ok(mut warnings) = DEPRECATIONS.lock()
+        && !warnings.contains(&warning)
+    {
+        warnings.push(warning);
+    }
+}
+
+/// The warning for `method` to `path`, whose answer carried `deprecation` or `sunset`, or
+/// `None` when it carried neither. Only a date the header holds in its standard form is
+/// repeated (`@` and Unix seconds for `Deprecation`, an HTTP date for `Sunset`), as a day:
+/// any other value is the server's text, which a warning does not quote.
+fn deprecation_warning(
+    method: Method,
+    path: &str,
+    deprecation: Option<&str>,
+    sunset: Option<&str>,
+) -> Option<String> {
+    if deprecation.is_none() && sunset.is_none() {
+        return None;
+    }
+    let day = |seconds: u64| i64::try_from(seconds / 86_400).ok().map(date_of_unix_day);
+    let since = deprecation
+        .and_then(|value| value.trim().strip_prefix('@'))
+        .and_then(|seconds| seconds.parse::<u64>().ok())
+        .and_then(day);
+    let until = sunset
+        .and_then(|value| crate::time::http_date(value.trim()))
+        .and_then(day);
+    let mut warning = format!("the API marks `{method} {path}` as deprecated");
+    if let Some(since) = since {
+        warning.push_str(&format!(" as of {since}"));
+    }
+    if let Some(until) = until {
+        warning.push_str(&format!(", and it may stop answering on {until}"));
+    }
+    warning.push_str(": a newer `hipc` may send another route");
+    Some(warning)
 }
 
 /// Where a request goes, and what it carries besides the body.
@@ -784,31 +850,33 @@ impl Client {
     /// cluster's sealed kubeconfig.
     pub fn route_flags(&self, request: &Request) -> Result<Vec<RouteFlag>> {
         let target = self.target(request)?;
-        let rules = account::route_rules(request.method, target.api_path());
+        let body = request.body.as_deref().map(Vec::as_slice);
         let mut needed = Vec::new();
-        for rule in rules {
-            let flags = match rule {
-                RouteRule::Needs(flags) => flags,
-                RouteRule::NeedsWhenSet(flags, key) => {
-                    if sets_key(request.body.as_deref().map(Vec::as_slice), key) {
+        for Rule { guard, route } in account::route_rules(request.method, target.api_path()) {
+            let flags = match guard {
+                // `route_rules` gives no `None`; a `Needs` with no flag needs nothing.
+                Guard::None | Guard::Needs(&[]) => &[],
+                Guard::Needs(flags) => flags,
+                Guard::NeedsWhenSet(flags, key) => {
+                    if sets_key(body, key) {
                         flags
                     } else {
                         &[]
                     }
                 }
-                RouteRule::NeedsUnlessFalse(flags, key) => {
-                    if sets_key_to_false(request.body.as_deref().map(Vec::as_slice), key) {
+                Guard::NeedsUnlessFalse(flags, key) => {
+                    if sets_key_to_false(body, key) {
                         &[]
                     } else {
                         flags
                     }
                 }
-                RouteRule::Refused { message, hint } => {
-                    return Err(Error::usage(for_method(message, request.method), hint));
+                Guard::Refused { why, hint } => {
+                    return Err(refusal(request.method, route, None, why, hint));
                 }
-                RouteRule::RefusedWhenSet { key, message, hint } => {
-                    if sets_key(request.body.as_deref().map(Vec::as_slice), key) {
-                        return Err(Error::usage(for_method(message, request.method), hint));
+                Guard::RefusedWhenSet { key, why, hint } => {
+                    if sets_key(body, key) {
+                        return Err(refusal(request.method, route, Some(key), why, hint));
                     }
                     &[]
                 }
@@ -822,18 +890,17 @@ impl Client {
         Ok(needed)
     }
 
-    /// Whether `request` is the Hub namespace publicity `PATCH`, whose `--public` refusal
-    /// names the namespace rather than a bucket. It is the one route with a
-    /// `RouteRule::NeedsUnlessFalse` rule.
+    /// The row of `hippius::routes` that `request` reaches, in any of the forms the route
+    /// tables match (a slashless path, a format suffix, another letter case), or `None` for
+    /// a route `hipc` does not know: no command sends it, and only `hipc api` can. Like
+    /// [`Client::returns_secret`], it depends on the method and the target alone.
     ///
     /// # Errors
     ///
-    /// The same local refusals of the target as [`Client::route_flags`].
-    pub fn opens_a_namespace(&self, request: &Request) -> Result<bool> {
+    /// The same local refusals of the target as [`Client::returns_secret`].
+    pub fn route_of(&self, request: &Request) -> Result<Option<&'static Endpoint>> {
         let target = self.target(request)?;
-        Ok(account::route_rules(request.method, target.api_path())
-            .iter()
-            .any(|rule| matches!(rule, RouteRule::NeedsUnlessFalse(..))))
+        Ok(account::row_of(request.method, target.api_path()))
     }
 
     /// The account this client acts in.
@@ -1126,6 +1193,7 @@ impl Client {
         let request_id = header("x-request-id").filter(|id| id.len() <= MAX_REQUEST_ID_BYTES);
         let location = header("location");
         let date = header("date");
+        note_deprecation(request.method, resolved.target.api_path(), &header);
         // The status has arrived, so it decides even when the body cannot be read: a 2xx
         // write was done (`partial`, not retryable), and a 4xx is that status's error.
         // The limit is one byte past the cap: ureq 3.5.0 refuses a read once its limit is used
@@ -1162,8 +1230,7 @@ impl Client {
         let error = status_error(&StatusAnswer {
             attempt: &attempt,
             write,
-            not_done_on_503: request.method == Method::Post
-                && crate::account::not_done_on_503(resolved.target.api_path()),
+            not_done_on_503: account::not_done_on_503(request.method, resolved.target.api_path()),
             status,
             body: &body,
             body_unread,
@@ -1330,7 +1397,7 @@ fn check_path(path_and_query: &str, written: &str) -> Result<()> {
             "remove the `#` and what follows it",
         ));
     }
-    let path = account::without_query(path_and_query);
+    let path = crate::url::without_query(path_and_query);
     // Any percent-encoding in the path is refused, not only `%2e`, `%2f`, and `%5c`: the
     // server decodes it, so `/registry/robot/rot%61te/` would reach a route the route
     // tables (account header, secret-issuing) did not recognize. No API path needs it.
@@ -1605,6 +1672,11 @@ fn status_error(answer: &StatusAnswer<'_>) -> Error {
     if maybe_done {
         error = error.with_side_effects(SideEffects::Partial);
     }
+    // The route this `hipc` sends is gone from the API (tenet 15); a newer release sends the
+    // one it serves now.
+    if status == 410 && !maybe_done {
+        return error.with_hint(RETIRED_HINT);
+    }
     // An answer whose body gave no text has only its `details` to explain it.
     if code == Code::Validation && unexplained {
         // Right in both modes: JSON mode prints `details` already, and text mode does not.
@@ -1612,6 +1684,10 @@ fn status_error(answer: &StatusAnswer<'_>) -> Error {
     }
     answer.attempt.with_hint(error)
 }
+
+/// The hint of a `410 Gone`: the API retired the route.
+const RETIRED_HINT: &str = "the API has retired this route: upgrade `hipc` to its latest release, \
+                            which sends the routes the API serves now";
 
 /// Why the body of a non-2xx answer could not be read, as the end of a sentence about it.
 fn unread_body(error: &ureq::Error) -> String {
@@ -1638,13 +1714,13 @@ fn sent_secret_spellings(body: Option<&[u8]>) -> zeroize::Zeroizing<Vec<String>>
 }
 
 /// The values `body`, a request's JSON, holds as strings in a field named as a secret
-/// ([`is_error_body_secret`]), at any depth.
+/// ([`is_secret_field`]), at any depth.
 fn sent_secrets(body: &Value) -> Vec<&str> {
     match body {
         Value::Object(fields) => fields
             .iter()
             .flat_map(|(key, value)| match value {
-                Value::String(text) if is_error_body_secret(key) => vec![text.as_str()],
+                Value::String(text) if is_secret_field(key) => vec![text.as_str()],
                 other => sent_secrets(other),
             })
             .collect(),
@@ -1777,72 +1853,22 @@ fn wait_for(retry_after_ms: Option<u64>) -> Option<String> {
     })
 }
 
-/// `message`, a refusal that names the method of its row, such as
-/// ``... does not send `POST /api/...` ``, with that method replaced by `method`: a write
-/// borrows the refusal of another write method on its route (`account::route_rules`), and
-/// the message names what was asked.
-fn for_method(message: &str, method: Method) -> String {
-    ["POST", "PUT", "PATCH", "DELETE"]
-        .iter()
-        .find_map(|listed| {
-            let named = format!("`{listed} /");
-            message
-                .contains(&named)
-                .then(|| message.replacen(&named, &format!("`{method} /"), 1))
-        })
-        .unwrap_or_else(|| message.to_owned())
+/// The `usage` refusal of `hipc api` sending `method` to `route`, the template or pattern of
+/// the row that refuses it, written as a person types it (`<cluster_id>` for
+/// `{cluster_id}`), because of `why`; `key` names the body key the refusal depends on. The
+/// method is the request's, so a write that borrows the refusal of another write method of
+/// its route (`account::route_rules`) names what was asked.
+fn refusal(method: Method, route: &str, key: Option<&str>, why: &str, hint: &'static str) -> Error {
+    let route = route.replace('{', "<").replace('}', ">");
+    let with = key.map(|key| format!(" with `{key}`")).unwrap_or_default();
+    Error::usage(
+        format!("`hipc api` does not send `{method} {route}`{with}: {why}"),
+        hint,
+    )
 }
 
-/// The fields that hold a secret in a Hippius answer, dropped from an error body (tenet 9).
-/// A bare `token` is deliberately kept: the API keys its validation errors by field name
-/// (`{"token": ["Invalid invite."]}`), and dropping it would hide why an invite was refused.
-/// A route whose answer holds a real `token` is in the secret table, so its error body is
-/// printed only to a caller who passed `--reveal`. The API token itself is redacted by value
-/// from every answer the client quotes ([`Client::send`], [`Response::refused`]).
-///
-/// A field matches in any letter case and with or without `_` or `-` between its words
-/// ([`is_error_body_secret`]), so `secretKey`, `Secret-Key`, and `secret_key` are one name.
-const ERROR_BODY_SECRET_FIELDS: [&str; 21] = [
-    "secret",
-    "robot_secret",
-    "credentials",
-    "access_token",
-    "refresh_token",
-    "ticket",
-    "setup_key",
-    "join_command",
-    "netbird_setup_key",
-    "client_secret",
-    "encrypted_secret",
-    "password",
-    "secret_key",
-    "secret_access_key",
-    "private_key",
-    "access_key",
-    "api_key",
-    "api_token",
-    "session_token",
-    "passphrase",
-    "aws_secret_access_key",
-];
-
-/// Whether `key` is one of [`ERROR_BODY_SECRET_FIELDS`], compared in lowercase without `_`
-/// and `-`.
-fn is_error_body_secret(key: &str) -> bool {
-    let folded = |name: &str| -> String {
-        name.chars()
-            .filter(|c| !matches!(c, '_' | '-'))
-            .map(|c| c.to_ascii_lowercase())
-            .collect()
-    };
-    let key = folded(key);
-    ERROR_BODY_SECRET_FIELDS
-        .iter()
-        .any(|name| folded(name) == key)
-}
-
-/// `body` without any of [`ERROR_BODY_SECRET_FIELDS`], at any depth, but for Django REST
-/// framework's field errors: a secret field whose value is a list of strings is a validation
+/// `body` without any field named as a secret ([`is_secret_field`]), at any depth, but for
+/// Django REST framework's field errors: a secret field whose value is a list of strings is a validation
 /// error about the field, such as `{"secret_access_key": ["This field may not be blank."]}`,
 /// which says why the request was refused, so it stays. Such a message may quote the value
 /// sent in the field (`'hunter2' is too common`), so each of `sent_secrets` is redacted from
@@ -1852,9 +1878,9 @@ fn without_secret_fields(body: Value, sent_secrets: &[String]) -> Value {
         Value::Object(fields) => Value::Object(
             fields
                 .into_iter()
-                .filter(|(key, value)| !is_error_body_secret(key) || is_field_error(value))
+                .filter(|(key, value)| !is_secret_field(key) || is_field_error(value))
                 .map(|(key, value)| {
-                    let value = if is_error_body_secret(&key) {
+                    let value = if is_secret_field(&key) {
                         crate::redact::redact_value_all(value, sent_secrets)
                     } else {
                         without_secret_fields(value, sent_secrets)
@@ -2657,7 +2683,7 @@ mod tests {
                 c.provisions(&request).map(|_| ()),
                 c.is_permanent(&request).map(|_| ()),
                 c.route_flags(&request).map(|_| ()),
-                c.opens_a_namespace(&request).map(|_| ()),
+                c.route_of(&request).map(|_| ()),
                 c.send(&request).map(|_| ()),
             ] {
                 assert_eq!(refused.unwrap_err().code(), Code::Usage, "{url}");
@@ -3040,6 +3066,45 @@ mod tests {
                 "{target}"
             );
         }
+    }
+
+    /// A refusal names the method the request sent and the route the guard comes from, with
+    /// each placeholder as a person types it: a write that borrows another write's refusal
+    /// on its route names its own method, and a `body` key the refusal depends on is named.
+    #[test]
+    fn a_refusal_names_the_method_sent_and_the_route_of_its_guard() {
+        let c = client(Selection::Own);
+        let message = |method, target: &str, body: Option<&str>| {
+            let mut request = Request::new(method, target);
+            if let Some(body) = body {
+                request = request.raw_json(body.as_bytes().to_vec());
+            }
+            c.route_flags(&request).unwrap_err().message().to_owned()
+        };
+        assert_eq!(
+            message(Method::Head, "/kubernetes/clusters/7/secrets/", None),
+            "`hipc api` does not send `HEAD /api/kubernetes/clusters/<cluster_id>/secrets/`: \
+             its answer holds the cluster's sealed kubeconfig"
+        );
+        assert_eq!(
+            message(Method::Put, "/registry/subscribe/", None),
+            "`hipc api` does not send `PUT /api/registry/subscribe/`: it reads no current plan \
+             first, so it could start a second paid Hub subscription"
+        );
+        assert_eq!(
+            message(
+                Method::Patch,
+                "/compute/app-engine/apps/v1/compose/",
+                Some(r#"{"secrets":{}}"#)
+            ),
+            "`hipc api` does not send `PATCH /api/compute/app-engine/apps/<vm_id>/compose/` \
+             with `secrets`: the body holds the app's secret values"
+        );
+        assert_eq!(
+            message(Method::Delete, "/auth/token/", None),
+            "`hipc api` does not send `DELETE /api/auth/token/`: the route hands out the \
+             account's API token"
+        );
     }
 
     #[test]
@@ -3476,6 +3541,65 @@ mod tests {
                 "secret_access_key": ["This field may not be blank."]
             })
         );
+        // A spelling no list names is dropped by how it ends: camelCase and acronyms fold
+        // like `_`, so `authToken` is `auth_token`, and a name ending in a secret's word is
+        // one; a name that only starts with one, or a bare `key`, is kept.
+        let error = answer(
+            false,
+            400,
+            concat!(
+                r#"{"authToken":"s3cr3t","AuthToken":"s3cr3t","sessionToken":"s3cr3t","#,
+                r#""APIKey":"s3cr3t","user_password":"s3cr3t","dbPassphrase":"s3cr3t","#,
+                r#""secret_name":"API_KEY","key":"k1","token":"t1"}"#
+            ),
+        );
+        let json = error.to_json();
+        assert!(!json.to_string().contains("s3cr3t"), "{json}");
+        assert_eq!(
+            json["error"]["details"],
+            serde_json::json!({"secret_name": "API_KEY", "key": "k1", "token": "t1"})
+        );
+    }
+
+    /// A `Deprecation` or `Sunset` header becomes one warning per route, which names the
+    /// route and the dates the headers hold in their standard forms, and never the server's
+    /// other text.
+    #[test]
+    fn a_deprecated_route_is_one_warning_with_the_dates_its_headers_hold() {
+        let warning = |deprecation, sunset| {
+            deprecation_warning(Method::Get, "/api/compute/vms/", deprecation, sunset)
+        };
+        assert_eq!(warning(None, None), None);
+        assert_eq!(
+            warning(Some("@1782864000"), Some("Fri, 01 Jan 2027 00:00:00 GMT")).as_deref(),
+            Some(
+                "the API marks `GET /api/compute/vms/` as deprecated as of 2026-07-01, and it \
+                 may stop answering on 2027-01-01: a newer `hipc` may send another route"
+            )
+        );
+        assert_eq!(
+            warning(Some("true"), None).as_deref(),
+            Some(
+                "the API marks `GET /api/compute/vms/` as deprecated: a newer `hipc` may send \
+                 another route"
+            )
+        );
+        let odd = warning(Some("@soon <script>"), Some("next week")).expect("a warning");
+        assert!(!odd.contains("soon") && !odd.contains("week"), "{odd}");
+        assert!(warning(None, Some("Fri, 01 Jan 2027 00:00:00 GMT")).is_some());
+        assert_eq!(take_deprecation_warnings(), Vec::<String>::new());
+    }
+
+    /// A `410 Gone` hints to upgrade `hipc`, whatever its body says, unless it may have been
+    /// done.
+    #[test]
+    fn a_retired_route_hints_to_upgrade() {
+        for body in ["", r#"{"detail":"Gone."}"#, r#"{"x":1}"#] {
+            let error = answer(false, 410, body);
+            assert_eq!(error.code(), Code::Validation, "{body}");
+            assert_eq!(error.hint(), Some(RETIRED_HINT), "{body}");
+        }
+        assert_ne!(answer(true, 400, "").hint(), Some(RETIRED_HINT));
     }
 
     #[test]

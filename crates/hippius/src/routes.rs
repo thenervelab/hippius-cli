@@ -7,12 +7,14 @@
 //! version is never a client setting: a release sends the version of each route it was
 //! tested against.
 //!
-//! The policy of a row (its account class, how it takes a project and a billing account,
-//! whether its answer reveals a secret, whether a read provisions, whether it cannot be
-//! undone, what `hipc api` holds it back for) restates what the tables in `account.rs` and
-//! `project.rs` decide for its path. Those tables still decide, and they also serve `hipc
-//! api`, which can send a path no row has; a test holds every row against them, so a row
-//! that disagrees fails the tests rather than change a header.
+//! The row decides. The client, for a curated command and for `hipc api` alike, asks
+//! `row` for the row of a request's method and path first, and takes its policy: its
+//! account class, how it takes a project and a billing account, whether its answer reveals a
+//! secret, whether a read provisions, whether it cannot be undone, whether its 503 means
+//! nothing was done, and what `hipc api` holds it back for. Only a path no row matches falls
+//! back to the prefix tables in `account.rs` and `project.rs`, which fail closed for a route
+//! they do not list either (tenet 12), and `hipc api` treats such a route as one `hipc` does
+//! not know.
 //!
 //! The type carries the number of placeholders, so a request built from a route fills each
 //! one, checked when it compiles: `Route<1>` takes one value.
@@ -86,6 +88,7 @@ use serde::Serialize;
 use crate::encode::percent_encode_keeping;
 use crate::error::Code;
 use crate::method::Method;
+use crate::url::with_trailing_slash;
 
 /// The path every route of the console API sits under, before its version or service. A
 /// path `hipc api` is given without it is sent under it.
@@ -167,22 +170,49 @@ impl RouteFlag {
     }
 }
 
-/// What `hipc api` needs, beyond `--yes` on a write, to send a route: the kind of its row in
-/// `account.rs`'s route rules, without the message, which stays there.
+/// What `hipc api` needs, beyond `--yes` on a write, to send a route. A refusal carries why
+/// and the one path to the route's effect; the message that names the request's method and
+/// route is built when it refuses, so a write that borrows the refusal of another write
+/// method of its route names its own method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Guard {
     /// Nothing beyond the usual confirmation of a write.
     None,
-    /// Never sent.
-    Refused,
-    /// Never sent with this top-level key in the body.
-    RefusedWhenSet(&'static str),
-    /// Sent only with each of these flags.
+    /// Never sent, whatever the flags, a dry run included: refused as `usage` because `why`,
+    /// with `hint`, which names the one path to the route's effect.
+    Refused {
+        why: &'static str,
+        hint: &'static str,
+    },
+    /// Refused as [`Guard::Refused`] is when the body sets `key`, a dry run included, and
+    /// otherwise sent as usual. A body that is not a JSON object counts as setting it, so a
+    /// shape `hipc` does not read fails closed.
+    RefusedWhenSet {
+        key: &'static str,
+        why: &'static str,
+        hint: &'static str,
+    },
+    /// Sent only with each of these flags. With none, the route lists a write method the
+    /// API documents as doing something other than its siblings, so it lends no guard to
+    /// them.
     Needs(&'static [RouteFlag]),
-    /// Sent only with each of these flags when the body sets this top-level key.
+    /// Sent only with each of these flags when the body sets this top-level key. A body
+    /// that is not a JSON object counts as setting it, so a shape `hipc` does not read fails
+    /// closed.
     NeedsWhenSet(&'static [RouteFlag], &'static str),
-    /// Sent without these flags only when this top-level key is `false`.
+    /// Sent without these flags only when the body is a JSON object whose top-level key is
+    /// exactly `false`. Anything else needs them, no body and a body without the key
+    /// included, since the server may read those as a toggle; this fails closed.
     NeedsUnlessFalse(&'static [RouteFlag], &'static str),
+}
+
+impl Guard {
+    /// Whether a write method of the same route that has no guard of its own takes this
+    /// one: every guard but none, and `Needs` with no flag, which says the method does
+    /// something else.
+    pub(crate) fn lends(self) -> bool {
+        !matches!(self, Self::None | Self::Needs([]))
+    }
 }
 
 /// One endpoint: a method, a path template under [`API_BASE`], and its policy. A
@@ -191,7 +221,7 @@ pub(crate) enum Guard {
 /// A placeholder is `{name}`, one path segment, or `{name..}`, one or more segments, as a
 /// Hub repository name (`namespace/app`) is. The name says what fills it, as the command's
 /// argument names it where it has one.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "each is a separate fact about the route, kept apart as the policy tables keep \
@@ -230,6 +260,56 @@ impl Endpoint {
     /// The path with its placeholders, such as `/api/accounts/members/{member_id}/`.
     pub fn template(&self) -> &'static str {
         self.template
+    }
+
+    /// Whether the answer holds a secret, so `hipc api` needs `--reveal` to print it
+    /// (tenet 9).
+    pub fn reveals(&self) -> bool {
+        self.reveals
+    }
+
+    /// Whether a read may create something, so `hipc api` confirms it as a write.
+    pub fn provisions(&self) -> bool {
+        self.provisions
+    }
+
+    /// How the route treats `X-Hippius-Account`.
+    pub(crate) fn account(&self) -> RouteClass {
+        self.account
+            .expect("`routes!` refuses a row that does not say its class")
+    }
+
+    pub(crate) fn account_beside_billing(&self) -> bool {
+        self.account_beside_billing
+    }
+
+    pub(crate) fn project(&self) -> Take {
+        self.project
+    }
+
+    pub(crate) fn billing(&self) -> Take {
+        self.billing
+    }
+
+    pub(crate) fn permanent(&self) -> bool {
+        self.permanent
+    }
+
+    pub(crate) fn undone_on_503(&self) -> bool {
+        self.undone_on_503
+    }
+
+    pub(crate) fn guard(&self) -> Guard {
+        self.guard
+    }
+
+    /// The segments of the template that are no placeholder, which rank two rows that match
+    /// one path: `/api/databases/refusals/` before `/api/databases/{database_id}/`.
+    fn literal_segments(&self) -> usize {
+        self.template
+            .split('/')
+            .filter(|segment| !segment.is_empty() && Placeholder::in_segment(segment).is_none())
+            .count()
     }
 
     /// The template with every placeholder filled by `fill`, which gets the placeholder's
@@ -277,7 +357,8 @@ impl Endpoint {
                     at = end;
                 }
                 Some(Placeholder::Segment) => {
-                    if segments.get(at).is_none_or(|segment| segment.is_empty()) {
+                    let name = Placeholder::name(part);
+                    if !segments.get(at).is_some_and(|value| fits(name, value)) {
                         return false;
                     }
                     at += 1;
@@ -320,10 +401,18 @@ impl Placeholder {
 
     /// The kind of placeholder a whole template segment is, or `None` for a literal one.
     fn in_segment(segment: &str) -> Option<Self> {
+        Self::inner(segment).map(|inner| Self::parse(inner).1)
+    }
+
+    /// The name of the placeholder a whole template segment is, empty for a literal one.
+    fn name(segment: &str) -> &str {
+        Self::inner(segment).map_or("", |inner| Self::parse(inner).0)
+    }
+
+    fn inner(segment: &str) -> Option<&str> {
         segment
             .strip_prefix('{')
             .and_then(|inner| inner.strip_suffix('}'))
-            .map(|inner| Self::parse(inner).1)
     }
 }
 
@@ -336,6 +425,16 @@ impl Placeholder {
               struct would be `null`"
 )]
 pub struct EmptyBody {}
+
+/// Whether `value`, one path segment, fits the `{name}` placeholder: a non-empty segment, and
+/// for the names whose value the server's router takes as a number, digits. A database and
+/// an invoice are numbered, so `/api/databases/metrics/` is not one database's route but a
+/// personal one the tables decide.
+fn fits(name: &str, value: &str) -> bool {
+    !value.is_empty()
+        && (!matches!(name, "database_id" | "invoice_id")
+            || value.bytes().all(|b| b.is_ascii_digit()))
+}
 
 /// An endpoint whose template has `N` placeholders, so a request built from it fills each.
 #[derive(Debug, Clone, Copy)]
@@ -566,9 +665,35 @@ const fn starts_with_base(template: &str) -> bool {
     true
 }
 
-/// Every endpoint of every service. Only tests read the whole table: the agreement tests in
-/// both crates and the check that `hipc schema` names only routes listed here.
-#[doc(hidden)]
+/// The row `method` to `form` reaches: one form of a request path (its query removed, a
+/// format suffix kept or removed, in one letter case), matched with its trailing `/` added,
+/// since a server or a proxy that adds the slash delivers the slashless path to the same
+/// route. As the server's router does, the path alone picks the route, the template with the
+/// most literal segments among those that match (`/api/databases/refusals/` before
+/// `/api/databases/{database_id}/`), and then the method picks its row there; a method the
+/// route has no row for reaches none, not a row of a less literal template. A `HEAD` reaches
+/// the `GET` row: Django REST framework runs a `HEAD` through the `GET` handler.
+pub(crate) fn row(method: Method, form: &str) -> Option<&'static Endpoint> {
+    let method = if method == Method::Head {
+        Method::Get
+    } else {
+        method
+    };
+    let form = with_trailing_slash(form);
+    let most_literal = matching(&form).map(Endpoint::literal_segments).max()?;
+    matching(&form)
+        .find(|endpoint| endpoint.literal_segments() == most_literal && endpoint.method == method)
+}
+
+/// Every row whose template matches `form`, a path with its trailing `/`, whatever its
+/// method, in table order.
+pub(crate) fn matching(form: &str) -> impl Iterator<Item = &'static Endpoint> {
+    all().filter(move |endpoint| endpoint.matches(form))
+}
+
+/// Every endpoint of every service: what the client consults first for a request
+/// (`row`), what `hipc api`'s help lists of the routes that reveal a secret or provision,
+/// and what the tests in both crates check `hipc schema` and the end-to-end requests against.
 pub fn all() -> impl Iterator<Item = &'static Endpoint> {
     [
         account::ALL,

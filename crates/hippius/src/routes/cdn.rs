@@ -20,7 +20,8 @@ routes! {
     /// The CDN zones.
     ZONES: 0 = Route::get("/api/cdn/zones/").scoped().project();
 
-    /// Creates a zone.
+    /// Creates a zone. `hipc api` needs `--public` on it: whether the bucket it serves is
+    /// private is known only from the answer.
     ZONE_CREATE: 0 = Route::post("/api/cdn/zones/")
         .scoped()
         .project()
@@ -29,7 +30,9 @@ routes! {
     /// One zone.
     ZONE: 1 = Route::get("/api/cdn/zones/{zone_id}/").scoped().project();
 
-    /// Changes a zone.
+    /// Changes a zone. One that sets `origin` may serve another bucket, so `hipc api` needs
+    /// `--public` as on the create; the delete carries the guard too, as every write method
+    /// of the route takes it.
     ZONE_UPDATE: 1 = Route::patch("/api/cdn/zones/{zone_id}/")
         .scoped()
         .project()
@@ -59,7 +62,9 @@ routes! {
     /// A zone's caching rules.
     RULES: 1 = Route::get("/api/cdn/zones/{zone_id}/rules/").scoped().project();
 
-    /// Replaces a zone's caching rules.
+    /// Replaces a zone's caching rules. `hipc api` needs `--remove-others` on a whole-list
+    /// replace whatever the body holds: it reads no list to compare, since a second copy of
+    /// each list's parser that misread a body would turn the guard off.
     RULES_UPDATE: 1 = Route::put("/api/cdn/zones/{zone_id}/rules/")
         .scoped()
         .project()
@@ -93,7 +98,11 @@ routes! {
     HOSTNAME_DNS_SETUP: 2 = Route::post("/api/cdn/zones/{zone_id}/hostnames/{hostname}/dns-setup/")
         .scoped()
         .project()
-        .guard(Guard::Refused);
+        .guard(Guard::Refused {
+            why: "its body and its answer hold a DNS provider credential",
+            hint: "run `hipc cdn hostnames dns-setup`, which reads the credential from a private \
+                   file and keeps it out of every output",
+        });
 
     /// A zone's WAF settings.
     WAF: 1 = Route::get("/api/cdn/zones/{zone_id}/waf/").scoped().project();
@@ -165,7 +174,8 @@ routes! {
         .project()
         .guard(Guard::NeedsWhenSet(&[RouteFlag::RemoveOthers], "items"));
 
-    /// Adds items to an IP list.
+    /// Adds items to an IP list. Swagger: a `POST` adds the items it names and a `DELETE`
+    /// removes them; neither replaces the list, so neither takes the `PUT`'s flag.
     LIST_ITEMS_ADD: 1 = Route::post("/api/cdn/lists/{list_name}/items/")
         .scoped()
         .project()

@@ -7,6 +7,9 @@ use serde_json::Value;
 use crate::routes::{Guard, Route, RouteFlag};
 use crate::view::{Slot, each, field, nested};
 
+/// Why `hipc api` refuses an App Engine launch or compose update whose body sets `secrets`.
+pub(crate) const APP_SECRETS: &str = "the body holds the app's secret values";
+
 routes! {
     /// The compute prices for the caller.
     PRICES: 0 = Route::get("/api/compute/prices/").scoped().project();
@@ -172,7 +175,12 @@ routes! {
     APP_ENGINE_APP_CREATE: 0 = Route::post("/api/compute/app-engine/apps/")
         .scoped()
         .project()
-        .guard(Guard::RefusedWhenSet("secrets"));
+        .guard(Guard::RefusedWhenSet {
+            key: "secrets",
+            why: APP_SECRETS,
+            hint: "run `hipc compute app-engine apps create --secrets-file`, which reads the \
+                   values from a private file and keeps them out of every output",
+        });
 
     /// One App Engine app.
     APP_ENGINE_APP: 1 = Route::get("/api/compute/app-engine/apps/{vm_id}/").scoped().project();
@@ -196,7 +204,11 @@ routes! {
     APP_ENGINE_VALIDATE: 0 = Route::post("/api/compute/app-engine/validate/")
         .scoped()
         .project()
-        .guard(Guard::RefusedWhenSet("secrets"));
+        .guard(Guard::RefusedWhenSet {
+            key: "secrets",
+            why: "the body holds secret values, and a compose check needs none",
+            hint: "run `hipc compute app-engine validate`, which sends the compose alone",
+        });
 
     /// Rewrites a compose file to fit; changes nothing.
     APP_ENGINE_FIX: 0 = Route::post("/api/compute/app-engine/fix/").scoped().project();

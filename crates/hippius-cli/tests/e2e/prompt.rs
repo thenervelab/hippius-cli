@@ -7,7 +7,7 @@ use std::io::Write as _;
 use std::process::{Output, Stdio};
 
 use crate::common::terminal::{Screen, pty};
-use crate::common::{self, Home, Reply, Server, TOKEN, no_server, route, route_each};
+use crate::common::{self, Home, Reply, Server, TOKEN, no_server, route, route_each_of};
 
 /// Runs `hipc --output text auth logout` at a terminal, as `at_a_terminal` does.
 fn logout_at_a_terminal(typed: &[u8], stderr_on_terminal: bool) -> (Output, String) {
@@ -219,14 +219,20 @@ fn a_terminal_in_json_mode_gets_redacted_urls_and_escaped_bodies() {
         ("HIPPIUS_TOKEN_ORIGIN", server.url()),
     ];
     let (_, shown) = at_a_terminal(
-        &["api", "GET", "/x/?token=s3cr3t&page=2", "--dry-run"],
+        &[
+            "api",
+            "--reveal",
+            "GET",
+            "/x/?token=s3cr3t&page=2",
+            "--dry-run",
+        ],
         &env,
         b"",
         true,
     );
     assert!(!shown.contains("s3cr3t"), "{shown}");
     assert!(shown.contains("token=<redacted>"), "{shown}");
-    let (output, shown) = at_a_terminal(&["api", "GET", "/x/"], &env, b"", true);
+    let (output, shown) = at_a_terminal(&["api", "--reveal", "GET", "/x/"], &env, b"", true);
     assert!(output.status.success(), "{shown}");
     assert!(!shown.contains('\u{1b}'), "{shown:?}");
     assert!(shown.contains("\\u001b]0;owned\\u0007"), "{shown:?}");
@@ -1009,9 +1015,9 @@ fn a_halpha_buy_started_while_the_question_waited_blocks_this_one() {
             "/api/billing/native/quote/",
             Reply::json(200, &quote.to_string()),
         ),
-        route_each(
-            "GET",
-            "/api/billing/native/purchases/",
+        route_each_of(
+            &hippius::routes::billing::NATIVE_PURCHASES,
+            [],
             vec![Reply::json(200, empty), Reply::json(200, started)],
         ),
     ]);

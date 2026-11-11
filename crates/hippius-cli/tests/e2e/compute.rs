@@ -4,7 +4,7 @@ use hippius::routes::compute;
 use serde_json::{Value, json};
 
 use crate::common::{
-    Hipc, Home, MEMBER, Reply, Run, Server, VM, draft, route, route_each, route_of,
+    Hipc, Home, MEMBER, Reply, Run, Server, VM, draft, route, route_each_of, route_of,
 };
 
 /// A positive attestation, as swagger documents the fields.
@@ -2115,7 +2115,7 @@ fn in_sequence(replies: Vec<Reply>) -> Server {
     let launch = replies.next().expect("a launch answer");
     Server::start(vec![
         route_of(&compute::VM_CREATE, [], launch),
-        route_each("GET", &format!("/api/compute/vms/{VM}/"), replies.collect()),
+        route_each_of(&compute::VM, [&VM], replies.collect()),
     ])
 }
 

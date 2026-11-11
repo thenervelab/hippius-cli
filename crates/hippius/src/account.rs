@@ -2,11 +2,12 @@
 //! (`TENETS.md` tenet 12).
 //!
 //! The server sorts routes into three classes: routes that act in the selected account,
-//! personal routes that ignore the header, and routes that refuse it. The prefixes below
-//! are copied from the console web client, which follows the backend's route
-//! classification (the console's header rules).
+//! personal routes that ignore the header, and routes that refuse it. A route a command
+//! sends has a row in `routes`, which says its class; the prefixes below decide only a path
+//! no row matches. They are copied from the console web client, which follows the backend's
+//! route classification (the console's header rules).
 //!
-//! A route the console does not list is treated as refusing the header. With a membership
+//! A route neither lists is treated as refusing the header. With a membership
 //! selected, the CLI refuses such a route locally instead of sending a request that would
 //! either be refused or, without the header, act on the caller's own account.
 
@@ -16,9 +17,9 @@ use std::cmp::Reverse;
 use crate::error::Result;
 use crate::method::Method;
 use crate::phrase::quote;
-use crate::routes::{RouteClass, RouteFlag};
+use crate::routes::{self, Endpoint, Guard, RouteClass, RouteFlag};
 use crate::selector::Selection;
-use crate::url::without_query_values;
+use crate::url::{with_trailing_slash, without_query, without_query_values};
 
 /// Prefixes of the routes that act in the selected account.
 ///
@@ -77,7 +78,7 @@ const PERSONAL_PREFIXES: &[&str] = &[
 /// header only under its scoped prefixes, and its docs name "settings, the session" among the
 /// personal routes that act as the signed-in user. Swagger calls the consent "the
 /// authenticated customer's".
-const PERSONAL_PATHS: &[&str] = &[
+pub(crate) const PERSONAL_PATHS: &[&str] = &[
     "/api/accounts/",
     "/api/drive/plans/",
     "/api/registry/plans/",
@@ -91,46 +92,33 @@ const PERSONAL_PATHS: &[&str] = &[
     "/api/notifications/marketing-consent/",
 ];
 
-/// Whether a POST to `path` that answers 503 with `Retry-After` did nothing. Swagger
-/// documents the Drive and S3 subscribe 503 as "Chain unreachable; retry after Retry-After
-/// seconds": the purchase never reached the chain. Only these routes, only a 503, and only
-/// with the header; every other 5xx to a write stays `partial` (TENETS 4). A path
-/// without its trailing `/` is the same route. A format suffix is not stripped here
+/// Whether `method` to `path` (no query), answered 503 with `Retry-After`, did nothing: its
+/// row says so ([`Endpoint::undone_on_503`]). Swagger documents the Drive and S3 subscribe
+/// 503 as "Chain unreachable; retry after Retry-After seconds": the purchase never reached
+/// the chain. Only those rows, only a 503, and only with the header; every other 5xx to a
+/// write stays `partial` (TENETS 4), a path no row matches included. A path without its
+/// trailing `/` is the same route. A format suffix or another letter case is not read here
 /// ([`classify`]): keeping such a write `partial` is the stricter answer.
-pub(crate) fn not_done_on_503(path: &str) -> bool {
-    matches!(
-        &*with_trailing_slash(path),
-        "/api/drive/subscription/" | "/api/s3/subscription/"
-    )
+pub(crate) fn not_done_on_503(method: Method, path: &str) -> bool {
+    routes::row(method, without_query(path)).is_some_and(Endpoint::undone_on_503)
 }
 
-/// The requests whose answer holds a secret, each a method and a path pattern in which
-/// `{id}` is one non-empty segment and `{n}` one segment of ASCII digits. Kept next to the
-/// header tables because both are route tables, and the `hipc api --reveal` help lists it
-/// from here.
+/// The requests with no row whose answer holds a secret, each a method and a path pattern in
+/// which `{n}` is one segment of ASCII digits and any other `{name}` one non-empty segment. A
+/// row says it of its own route ([`Endpoint::reveals`]); this table holds the routes `hipc`
+/// reaches only through `hipc api`, and a test refuses an entry a row covers.
 ///
-/// Most answer with a one-time secret: a key, a credential, or a setup key the server shows
-/// once. Others answer with a secret that lasts: the account's master token, a short-lived
-/// shell or sign-in ticket, a payment `client_secret`, or a signed URL that reads or writes
-/// data with no other credential until it expires. A route whose answer is unknown but may
-/// carry a session or an invitation is listed too, which fails closed: the cost is one
-/// `--reveal`. Only a `GET` of a signed-URL route is listed, not its `HEAD`: a `HEAD`
-/// answer has no body to print.
-pub const SECRET_ROUTES: &[(Method, &str)] = &[
-    (Method::Post, "/api/objectstore/master-tokens/"),
-    (Method::Post, "/api/objectstore/master-tokens/{id}/rotate/"),
-    (Method::Post, "/api/objectstore/sub-tokens/"),
-    (Method::Post, "/api/objectstore/sub-tokens/{id}/rotate/"),
-    (Method::Post, "/api/registry/keys/"),
-    (Method::Post, "/api/registry/keys/{id}/rotate/"),
-    (Method::Post, "/api/registry/robot/rotate/"),
-    (Method::Post, "/api/registry/provision/"),
-    (Method::Post, "/api/databases/"),
-    (Method::Post, "/api/databases/{n}/restore/"),
+/// Most answer with a one-time secret: a credential or a setup key the server shows once.
+/// Others answer with a secret that lasts: the account's master token, a short-lived shell or
+/// sign-in ticket, a payment `client_secret`, or a signed URL that reads data with no other
+/// credential until it expires. A route whose answer is unknown but may carry a session or an
+/// invitation is listed too, which fails closed: the cost is one `--reveal`. A `HEAD` answer
+/// has no body to print, so no `HEAD` needs `--reveal`.
+const SECRET_ROUTES: &[(Method, &str)] = &[
     (Method::Get, "/api/databases/{n}/backup-token/"),
     (Method::Post, "/api/databases/{n}/backup-token/"),
     (Method::Post, "/api/network/peers/enroll/"),
-    (Method::Post, "/api/compute/vms/{id}/terminal-ticket/"),
+    (Method::Post, "/api/compute/vms/{vm_id}/terminal-ticket/"),
     (Method::Post, "/api/infrastructure/compute-miners/prepare/"),
     (Method::Post, "/api/chat/visitors/"),
     (Method::Post, "/api/chat/transfer/"),
@@ -140,25 +128,33 @@ pub const SECRET_ROUTES: &[(Method, &str)] = &[
     (Method::Get, "/api/auth/token/"),
     (Method::Post, "/api/auth/exchange/"),
     (Method::Post, "/api/auth/verify/"),
-    (Method::Get, "/api/kubernetes/clusters/{id}/backups/"),
-    (Method::Get, "/api/objectstore/buckets/{id}/presigned-url/"),
     (
         Method::Get,
-        "/api/chat/conversations/{id}/attachments/{id}/",
+        "/api/chat/conversations/{conversation_id}/attachments/{attachment_id}/",
     ),
     (
         Method::Get,
-        "/api/support/chat/tickets/{id}/attachments/{id}/",
+        "/api/support/chat/tickets/{ticket_id}/attachments/{attachment_id}/",
     ),
     (Method::Post, "/api/auth/sso/ticket/"),
     (Method::Post, "/api/auth/session/"),
     (Method::Post, "/api/auth/sign-in-methods/step-up/verify/"),
     (Method::Post, "/api/network/infra/enroll/"),
-    (Method::Post, "/api/chat/workspaces/{id}/invites/"),
+    (Method::Post, "/api/chat/workspaces/{workspace_id}/invites/"),
 ];
 
+/// Every request whose answer holds a secret, as a method and a path template: each row that
+/// reveals one, then the routes with no row that do. `hipc api --reveal`'s help lists them.
+pub fn secret_routes() -> impl Iterator<Item = (Method, &'static str)> {
+    routes::all()
+        .filter(|row| row.reveals())
+        .map(|row| (row.method(), row.template()))
+        .chain(SECRET_ROUTES.iter().copied())
+}
+
 /// Whether `method` to `path` (under `/api/`, no query) answers with a secret. `hipc api`
-/// needs `--reveal` for these, as the curated commands that reach some of them do.
+/// needs `--reveal` for these, as the curated commands that reach some of them do. A `HEAD`
+/// never does: its answer has no body to print.
 ///
 /// A path without its trailing `/` matches as if it had one: a server or a proxy that adds
 /// the slash delivers `/api/objectstore/master-tokens` to the same route, and the secret
@@ -168,57 +164,71 @@ pub const SECRET_ROUTES: &[(Method, &str)] = &[
 /// ([`same_route`]) gets the headers the first page got.
 ///
 /// A path with a format suffix issues a secret when either of its forms does
-/// ([`classify`]).
+/// ([`classify`]), and a path in another letter case when its lowercase form does
+/// ([`folded`]).
 pub(crate) fn returns_secret(method: Method, path: &str) -> bool {
-    listed(SECRET_ROUTES, method, path)
+    method != Method::Head && decided(method, path, Endpoint::reveals, SECRET_ROUTES)
 }
-
-/// The reads that create something on the server, in the pattern language of
-/// [`SECRET_ROUTES`] and matched the same way, so `hipc api` confirms them as the curated
-/// commands do and a stored project is refused on them rather than skipped; a stored
-/// billing account is skipped, as on every route that takes none.
-///
-/// Swagger: the first `GET /api/network/me/` for an account creates its network (a default
-/// group, a VPC network, and the intra-network policy), and later calls find it. Nothing
-/// tells the first call from the others before it is sent, so every call counts. A HEAD
-/// counts too: swagger lists none, and Django runs a HEAD through the view's GET handler
-/// when the view defines no `head` (`django.views.generic.base.View.setup`), so a HEAD
-/// could create the network just as a GET does. The cost is one `--yes` on a request nobody
-/// needs.
-pub const PROVISIONING_ROUTES: &[(Method, &str)] = &[
-    (Method::Get, "/api/network/me/"),
-    (Method::Head, "/api/network/me/"),
-];
 
 /// Whether `method` to `path` (under `/api/`, no query) may create something on the
-/// server although its method reads: a row of [`PROVISIONING_ROUTES`], matched as
-/// [`returns_secret`] matches, slashless and suffixed forms included.
+/// server although its method reads, as its row says ([`Endpoint::provisions`]), matched as
+/// [`returns_secret`] matches, slashless and suffixed forms included. A path no row matches
+/// does not.
+///
+/// Swagger: the first `GET /api/network/me/` for an account creates its network, and a
+/// `HEAD` reaches the `GET` row ([`routes::row`]), so a `HEAD` counts too.
 pub(crate) fn provisions(method: Method, path: &str) -> bool {
-    listed(PROVISIONING_ROUTES, method, path)
+    decided(method, path, Endpoint::provisions, &[])
 }
 
-/// The requests whose effect cannot be undone, which `hipc api` confirms with the warning
-/// the curated commands give on the same routes, in the pattern language of
-/// [`SECRET_ROUTES`] plus `{..}` as the last segment: one or more non-empty segments.
-///
-/// A Hub repository delete, and an artifact delete under it, is permanent. The repository is
-/// `{..}`, not `{id}`, because a registry repository name holds a `/` (`namespace/app`), and
-/// whether the server reads that as one segment is unverified; every DELETE under the
-/// collection removes data, so warning on them all costs nothing. `--yes` with this warning
+/// Whether `method` to `path` (under `/api/`, no query) cannot be undone, as its row says
+/// ([`Endpoint::permanent`]), matched as [`returns_secret`] matches. `--yes` with the warning
 /// is the whole confirmation (tenet 5): no second flag stands beside it.
-const PERMANENT_ROUTES: &[(Method, &str)] = &[(Method::Delete, "/api/registry/repositories/{..}/")];
-
-/// Whether `method` to `path` (under `/api/`, no query) cannot be undone: a row of
-/// [`PERMANENT_ROUTES`], matched as [`returns_secret`] matches, slashless and suffixed forms
-/// included.
 pub(crate) fn permanent(method: Method, path: &str) -> bool {
-    listed(PERMANENT_ROUTES, method, path)
+    decided(method, path, Endpoint::permanent, &[])
+}
+
+/// What the row of each form of `path` says by `from_row`, or for a form no row matches,
+/// whether `table` lists it; true when any form's answer is (for the forms, see
+/// [`returns_secret`]).
+fn decided(
+    method: Method,
+    path: &str,
+    from_row: fn(&Endpoint) -> bool,
+    table: &[(Method, &str)],
+) -> bool {
+    let listed = |form: &str| {
+        let form = with_trailing_slash(form);
+        table
+            .iter()
+            .any(|&(route, pattern)| route == method && matches_pattern(pattern, &form))
+    };
+    folded(path).iter().any(|path| {
+        classify(path, false, |form| {
+            routes::row(method, form)
+                .map(from_row)
+                .or_else(|| listed(form).then_some(true))
+        })
+    })
+}
+
+/// The row `method` to `path` reaches in any of its forms ([`returns_secret`]), or `None`
+/// when no form has one: a route `hipc` does not know. The path as written wins, then its
+/// plain form, then the lowercase ones.
+pub(crate) fn row_of(method: Method, path: &str) -> Option<&'static Endpoint> {
+    folded(without_query(path)).iter().find_map(|path| {
+        let plain = without_format_suffix(path);
+        [Some(&**path), plain.as_deref()]
+            .into_iter()
+            .flatten()
+            .find_map(|form| routes::row(method, form))
+    })
 }
 
 /// The value of the first row of `table` that lists `method` to `path`, matched as
 /// [`returns_secret`] describes: slashless and suffixed forms included, and in any letter
-/// case, for the reason [`route_rules`] gives. A caller's table, such as the consequences
-/// `hipc api` gives its questions, is matched by the same rules as this module's own.
+/// case, for the reason [`route_rules`] gives. A caller's table, such as the support writes
+/// `hipc api` checks a body on, is matched by the same rules as this module's own.
 pub(crate) fn first_listed<'t, T>(
     table: &'t [(Method, &str, T)],
     method: Method,
@@ -240,53 +250,14 @@ pub(crate) fn first_listed<'t, T>(
         .map(|Reverse(at)| &table[at].2)
 }
 
-/// Whether `table` lists `method` to `path`, matched as [`returns_secret`] describes, and in
-/// any letter case ([`folded`]).
-fn listed(table: &[(Method, &str)], method: Method, path: &str) -> bool {
-    let matches = |form: &str| {
-        let form = with_trailing_slash(form);
-        table
-            .iter()
-            .any(|&(route, pattern)| route == method && matches_pattern(pattern, &form))
-    };
-    folded(path)
-        .iter()
-        .any(|path| classify(path, false, |form| matches(form).then_some(true)))
-}
-
-/// What `hipc api` needs to send a route in [`ROUTE_RULES`].
+/// A guard `hipc api` applies to a request, and the route it comes from, which a refusal
+/// names.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum RouteRule {
-    /// Never sent, whatever the flags, a dry run included: refused as `usage` with this
-    /// message and hint, which name the one path to the route's effect.
-    Refused {
-        message: &'static str,
-        hint: &'static str,
-    },
-    /// Refused as [`RouteRule::Refused`] is when the body sets `key`, a dry run included, and
-    /// otherwise sent as usual. A body that is not a JSON object counts as setting it, so a
-    /// shape `hipc` does not read fails closed.
-    RefusedWhenSet {
-        key: &'static str,
-        message: &'static str,
-        hint: &'static str,
-    },
-    /// Sent only with each of these flags.
-    Needs(&'static [RouteFlag]),
-    /// Sent only with each of these flags when the body sets this top-level key. A body
-    /// that is not a JSON object counts as setting it, so a shape `hipc` does not read fails
-    /// closed.
-    NeedsWhenSet(&'static [RouteFlag], &'static str),
-    /// Sent without these flags only when the body is a JSON object whose top-level key is
-    /// exactly `false`. Anything else needs them, no body and a body without the key
-    /// included, since the server may read those as a toggle; this fails closed.
-    NeedsUnlessFalse(&'static [RouteFlag], &'static str),
+pub(crate) struct Rule {
+    pub(crate) guard: Guard,
+    /// The template of the row, or the pattern of the table entry, the guard comes from.
+    pub(crate) route: &'static str,
 }
-
-/// The hint of a `hipc api` launch that carries `secrets`.
-const APP_SECRETS_HINT: &str = "run `hipc compute app-engine apps create --secrets-file`, \
-                                which reads the values from a private file and keeps them out \
-                                of every output";
 
 /// The hint of a `hipc api` compose update that carries `secrets`. `apps create` launches a
 /// second, billed app, so it is not named here.
@@ -298,286 +269,90 @@ const COMPOSE_SECRETS_HINT: &str = "a compose update with secrets is not in this
 const AUTH_TOKEN_HINT: &str = "create a token in the console settings at \
                                `https://console.hippius.com/dashboard/settings`";
 
-const CHANGE_ISOLATION: &[RouteFlag] = &[RouteFlag::ChangeIsolation];
-const PUBLIC: &[RouteFlag] = &[RouteFlag::Public];
-const REMOVE_OTHERS: &[RouteFlag] = &[RouteFlag::RemoveOthers];
+/// Why `hipc api` refuses a read of the account token route.
+const AUTH_TOKEN_READ: &str = "its answer is the account's API token";
 
-/// The requests `hipc api` holds back beyond `--yes`, in the pattern language of
-/// [`SECRET_ROUTES`]. Kept beside the secret table, with the same matching, so the two
-/// rules cannot drift.
+/// Why `hipc api` refuses a write of the account token route.
+const AUTH_TOKEN_WRITE: &str = "the route hands out the account's API token";
+
+/// The refusal of a compose update whose body sets `secrets`, on every method the API may
+/// take for it.
+const COMPOSE_SECRETS: Guard = Guard::RefusedWhenSet {
+    key: "secrets",
+    why: crate::routes::compute::APP_SECRETS,
+    hint: COMPOSE_SECRETS_HINT,
+};
+
+/// The requests with no row that `hipc api` holds back beyond `--yes`, in the pattern
+/// language of [`SECRET_ROUTES`]. A row says it of its own route ([`Endpoint::guard`]),
+/// and a test refuses an entry whose path a row matches, so a request meets the rows or this
+/// table, never both.
 ///
-/// A route is refused outright when a curated command is the one safe path to its effect:
-/// the console for an account deletion, which locks the account and revokes every token at
-/// once; the console for the account token route, on every method, whose answer would put
-/// the account's own API token in the output, where a log or an agent reads it;
-/// the kubeconfig command, which opens the sealed kubeconfig into a new private file
-/// rather than stdout; the DNS setup and App Engine commands, which read a credential or
-/// secret values from a checked private file, while `hipc api` reads its body from any file
-/// and prints it in a dry run and in a 400; and the Hub subscribe, which reads the current
-/// plans first and refuses a second paid subscription, while `hipc api` reads nothing. A
-/// `HEAD` of a refused read is refused too: Django REST framework runs a `HEAD` through the
-/// `GET` handler.
-///
-/// A permanent delete needs `--yes` alone: one confirmation per write is the rule (tenet
-/// 5), and a second flag beside it would be one more an agent learns to pass by habit.
+/// A route is refused outright when a curated command, or the console, is the one safe path
+/// to its effect: the console for an account deletion, which locks the account and revokes
+/// every token at once, and for the account token route, on every method, whose answer would
+/// put the account's own API token in the output, where a log or an agent reads it; and the
+/// App Engine commands, which read secret values from a checked private file, while `hipc
+/// api` reads its body from any file and prints it in a dry run and in a 400. A `HEAD` of a
+/// refused read is refused too: Django REST framework runs a `HEAD` through the `GET`
+/// handler.
 ///
 /// A network isolation switch needs `--change-isolation` whatever the body: either mode
-/// changes which peers of the network reach each other. A CDN zone create, and a zone
-/// `PATCH` that sets `origin`, needs `--public`: whether the bucket is private is known only
-/// from the answer.
-///
-/// A write that replaces a whole list needs `--remove-others` outright. The curated commands
-/// read the list and refuse only a removal, but `hipc api` does not compare: that would be
-/// a second copy of each route's list parser, and a body that copy misread would turn the
-/// guard off. A bucket ACL set needs both `--public` and `--remove-others` whatever the
-/// body: telling whether an S3 policy is public would mean judging it, and a misjudged one
-/// would publish the bucket. A Hub publicity `PATCH` without `public` set to `false` may be
-/// read as a toggle, so it needs `--public`.
-const ROUTE_RULES: &[(Method, &str, RouteRule)] = &[
+/// changes which peers of the network reach each other. A write that replaces a whole list
+/// needs `--remove-others` outright: `hipc api` does not read the list to compare, since that
+/// would be a second copy of each route's list parser, and a body that copy misread would
+/// turn the guard off.
+const ROUTE_RULES: &[(Method, &str, Guard)] = &[
     (
         Method::Get,
         "/api/auth/token/",
-        RouteRule::Refused {
-            message: "`hipc api` does not send `GET /api/auth/token/`: its answer is the account's API token",
+        Guard::Refused {
+            why: AUTH_TOKEN_READ,
             hint: AUTH_TOKEN_HINT,
         },
     ),
     (
         Method::Head,
         "/api/auth/token/",
-        RouteRule::Refused {
-            message: "`hipc api` does not send `HEAD /api/auth/token/`: its answer is the account's API token",
+        Guard::Refused {
+            why: AUTH_TOKEN_READ,
             hint: AUTH_TOKEN_HINT,
         },
     ),
     (
         Method::Post,
         "/api/auth/token/",
-        RouteRule::Refused {
-            message: "`hipc api` does not send `POST /api/auth/token/`: the route hands out the account's API token",
-            hint: AUTH_TOKEN_HINT,
-        },
-    ),
-    (
-        Method::Put,
-        "/api/auth/token/",
-        RouteRule::Refused {
-            message: "`hipc api` does not send `PUT /api/auth/token/`: the route hands out the account's API token",
-            hint: AUTH_TOKEN_HINT,
-        },
-    ),
-    (
-        Method::Patch,
-        "/api/auth/token/",
-        RouteRule::Refused {
-            message: "`hipc api` does not send `PATCH /api/auth/token/`: the route hands out the account's API token",
-            hint: AUTH_TOKEN_HINT,
-        },
-    ),
-    (
-        Method::Delete,
-        "/api/auth/token/",
-        RouteRule::Refused {
-            message: "`hipc api` does not send `DELETE /api/auth/token/`: the route hands out the account's API token",
+        Guard::Refused {
+            why: AUTH_TOKEN_WRITE,
             hint: AUTH_TOKEN_HINT,
         },
     ),
     // Swagger: a `DELETE` withdraws a pending deletion request, which locks and revokes
     // nothing, so it is sent as any write is; the other write methods are refused as the
     // `POST` is.
-    (
-        Method::Delete,
-        "/api/account/deletion/",
-        RouteRule::Needs(&[]),
-    ),
+    (Method::Delete, "/api/account/deletion/", Guard::Needs(&[])),
     (
         Method::Post,
         "/api/account/deletion/",
-        RouteRule::Refused {
-            message: "`hipc api` does not send `POST /api/account/deletion/`: an account \
-                      deletion locks the account and revokes every token at once",
+        Guard::Refused {
+            why: "an account deletion locks the account and revokes every token at once",
             hint: "request the deletion in the console, under Settings, Delete Account",
         },
     ),
     (
-        Method::Get,
-        "/api/kubernetes/clusters/{id}/secrets/",
-        RouteRule::Refused {
-            message: "`hipc api` does not send \
-                      `GET /api/kubernetes/clusters/<cluster_id>/secrets/`: its answer holds \
-                      the cluster's sealed kubeconfig",
-            hint: "run `hipc compute kubernetes clusters kubeconfig`, which opens the kubeconfig \
-                   with the cluster key file and writes it to a new file",
-        },
-    ),
-    (
-        Method::Head,
-        "/api/kubernetes/clusters/{id}/secrets/",
-        RouteRule::Refused {
-            message: "`hipc api` does not send \
-                      `HEAD /api/kubernetes/clusters/<cluster_id>/secrets/`: the route answers \
-                      the cluster's sealed kubeconfig",
-            hint: "run `hipc compute kubernetes clusters kubeconfig`, which opens the kubeconfig \
-                   with the cluster key file and writes it to a new file",
-        },
-    ),
-    (
-        Method::Post,
-        "/api/cdn/zones/{id}/hostnames/{id}/dns-setup/",
-        RouteRule::Refused {
-            message: "`hipc api` does not send \
-                      `POST /api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`: its body \
-                      and its answer hold a DNS provider credential",
-            hint: "run `hipc cdn hostnames dns-setup`, which reads the credential from a private \
-                   file and keeps it out of every output",
-        },
-    ),
-    (
-        Method::Post,
-        "/api/compute/app-engine/apps/",
-        RouteRule::RefusedWhenSet {
-            key: "secrets",
-            message: "`hipc api` does not send `POST /api/compute/app-engine/apps/` with \
-                      `secrets`: the body holds the app's secret values",
-            hint: APP_SECRETS_HINT,
-        },
-    ),
-    (
         Method::Put,
-        "/api/compute/app-engine/apps/{id}/compose/",
-        RouteRule::RefusedWhenSet {
-            key: "secrets",
-            message: "`hipc api` does not send \
-                      `PUT /api/compute/app-engine/apps/<vm_id>/compose/` with `secrets`: the \
-                      body holds the app's secret values",
-            hint: COMPOSE_SECRETS_HINT,
-        },
-    ),
-    (
-        Method::Patch,
-        "/api/compute/app-engine/apps/{id}/compose/",
-        RouteRule::RefusedWhenSet {
-            key: "secrets",
-            message: "`hipc api` does not send \
-                      `PATCH /api/compute/app-engine/apps/<vm_id>/compose/` with `secrets`: the \
-                      body holds the app's secret values",
-            hint: COMPOSE_SECRETS_HINT,
-        },
-    ),
-    (
-        Method::Post,
-        "/api/compute/app-engine/apps/{id}/compose/",
-        RouteRule::RefusedWhenSet {
-            key: "secrets",
-            message: "`hipc api` does not send \
-                      `POST /api/compute/app-engine/apps/<vm_id>/compose/` with `secrets`: the \
-                      body holds the app's secret values",
-            hint: COMPOSE_SECRETS_HINT,
-        },
-    ),
-    (
-        Method::Delete,
-        "/api/compute/app-engine/apps/{id}/compose/",
-        RouteRule::RefusedWhenSet {
-            key: "secrets",
-            message: "`hipc api` does not send \
-                      `DELETE /api/compute/app-engine/apps/<vm_id>/compose/` with `secrets`: the \
-                      body holds the app's secret values",
-            hint: COMPOSE_SECRETS_HINT,
-        },
-    ),
-    (
-        Method::Post,
-        "/api/compute/app-engine/validate/",
-        RouteRule::RefusedWhenSet {
-            key: "secrets",
-            message: "`hipc api` does not send `POST /api/compute/app-engine/validate/` with \
-                      `secrets`: the body holds secret values, and a compose check needs none",
-            hint: "run `hipc compute app-engine validate`, which sends the compose alone",
-        },
+        "/api/compute/app-engine/apps/{vm_id}/compose/",
+        COMPOSE_SECRETS,
     ),
     (
         Method::Post,
         "/api/network/isolation/",
-        RouteRule::Needs(CHANGE_ISOLATION),
-    ),
-    (
-        Method::Post,
-        "/api/registry/subscribe/",
-        RouteRule::Refused {
-            message: "`hipc api` does not send `POST /api/registry/subscribe/`: it reads no \
-                      current plan first, so it could start a second paid Hub subscription",
-            hint: "run `hipc hub subscription subscribe`, which refuses a second plan and \
-                   replaces one only with `--replace`",
-        },
-    ),
-    (Method::Post, "/api/cdn/zones/", RouteRule::Needs(PUBLIC)),
-    (
-        Method::Patch,
-        "/api/cdn/zones/{id}/",
-        RouteRule::NeedsWhenSet(PUBLIC, "origin"),
+        Guard::Needs(&[RouteFlag::ChangeIsolation]),
     ),
     (
         Method::Put,
-        "/api/compute/vms/{id}/firewall/",
-        RouteRule::Needs(REMOVE_OTHERS),
-    ),
-    (
-        Method::Put,
-        "/api/cdn/zones/{id}/rules/",
-        RouteRule::Needs(REMOVE_OTHERS),
-    ),
-    (
-        Method::Patch,
-        "/api/accounts/members/{id}/",
-        RouteRule::NeedsWhenSet(REMOVE_OTHERS, "grants"),
-    ),
-    (
-        Method::Put,
-        "/api/cdn/zones/{id}/waf/rules/",
-        RouteRule::Needs(REMOVE_OTHERS),
-    ),
-    (
-        Method::Put,
-        "/api/cdn/zones/{id}/waf/rate-limits/",
-        RouteRule::Needs(REMOVE_OTHERS),
-    ),
-    (
-        Method::Put,
-        "/api/cdn/lists/{id}/items/",
-        RouteRule::Needs(REMOVE_OTHERS),
-    ),
-    // Swagger: a `POST` adds the items it names and a `DELETE` removes them; neither
-    // replaces the list, so neither takes the `PUT`'s flag.
-    (
-        Method::Post,
-        "/api/cdn/lists/{id}/items/",
-        RouteRule::Needs(&[]),
-    ),
-    (
-        Method::Delete,
-        "/api/cdn/lists/{id}/items/",
-        RouteRule::Needs(&[]),
-    ),
-    (
-        Method::Patch,
-        "/api/cdn/lists/{id}/",
-        RouteRule::NeedsWhenSet(REMOVE_OTHERS, "items"),
-    ),
-    (
-        Method::Put,
-        "/api/v1/operator/nodes/{id}/storage/",
-        RouteRule::Needs(REMOVE_OTHERS),
-    ),
-    (
-        Method::Put,
-        "/api/objectstore/buckets/{id}/acl/set/",
-        RouteRule::Needs(&[RouteFlag::Public, RouteFlag::RemoveOthers]),
-    ),
-    (
-        Method::Patch,
-        "/api/registry/me/publicity/",
-        RouteRule::NeedsUnlessFalse(PUBLIC, "public"),
+        "/api/v1/operator/nodes/{node_id}/storage/",
+        Guard::Needs(&[RouteFlag::RemoveOthers]),
     ),
 ];
 
@@ -587,17 +362,23 @@ const ROUTE_RULES: &[(Method, &str, RouteRule)] = &[
 /// too ([`folded`]). A path without its trailing `/` matches as if it had one, for the reason
 /// [`returns_secret`] gives.
 ///
-/// A row whose method writes also applies to every other write method on its route that no
-/// row lists ([`applies`]): swagger names one method, but a view may take another (Django
-/// REST framework's update views take `PUT` beside `PATCH`), and a guard that a second method
-/// skipped would guard nothing. A refusal borrowed this way names the request's own method
-/// ([`Client::route_flags`](crate::Client::route_flags)). A row with no flag (`Needs(&[])`)
-/// lists a method the API documents as doing something else, so nothing is borrowed for it;
-/// it must come after the row whose rule the route's other methods borrow.
-pub(crate) fn route_rules(method: Method, path: &str) -> Vec<RouteRule> {
+/// A form's row decides ([`rule_of`]). A write method with no row of its own on a route
+/// takes the guard of another write method's row there: swagger names one method, but a view
+/// may take another (Django REST framework's update views take `PUT` beside `PATCH`), and a
+/// guard that a second method skipped would guard nothing. A refusal borrowed this way names
+/// the request's own method ([`Client::route_flags`](crate::Client::route_flags)). A guard
+/// with no flag (`Needs(&[])`) lists a method the API documents as doing something else, so
+/// nothing is borrowed from it.
+pub(crate) fn route_rules(method: Method, path: &str) -> Vec<Rule> {
     let mut rules = Vec::new();
     for form in folded(path) {
-        rules.extend(rules_as_written(method, &form));
+        let plain = without_format_suffix(&form);
+        rules.extend(
+            [Some(&*form), plain.as_deref()]
+                .into_iter()
+                .flatten()
+                .filter_map(|form| rule_of(method, &with_trailing_slash(form))),
+        );
     }
     rules
 }
@@ -614,47 +395,40 @@ fn folded(path: &str) -> Vec<Cow<'_, str>> {
     }
 }
 
-/// [`route_rules`] for `path` in its own letter case: for each form, the row that lists
-/// `method`, or else the first row that [`applies`] to it from another write method.
-fn rules_as_written(method: Method, path: &str) -> Vec<RouteRule> {
-    let plain = without_format_suffix(path);
-    [Some(path), plain.as_deref()]
-        .into_iter()
-        .flatten()
-        .filter_map(|form| {
-            let form = with_trailing_slash(form);
-            let on_route =
-                |&&(_, pattern, _): &&(Method, &str, RouteRule)| matches_pattern(pattern, &form);
-            let own = ROUTE_RULES
+/// The rule on `method` to one `form` (with its trailing `/`): the guard of its row, or for a
+/// method with none, of [`ROUTE_RULES`]' entry; else one a write borrows from another write
+/// method of the path. `None` when nothing beyond `--yes` is needed.
+fn rule_of(method: Method, form: &str) -> Option<Rule> {
+    let own = routes::row(method, form)
+        .map(|row| (row.template(), row.guard()))
+        .or_else(|| {
+            ROUTE_RULES
                 .iter()
-                .filter(on_route)
-                .find(|&&(route, _, _)| route == method);
-            match own {
-                Some(&(_, _, rule)) => Some(rule),
-                None => ROUTE_RULES
-                    .iter()
-                    .filter(on_route)
-                    .find(|&&(route, _, rule)| applies(route, rule, method))
-                    .map(|&(_, _, rule)| borrowed(rule, method)),
-            }
-        })
-        .collect()
+                .find(|&&(route, pattern, _)| route == method && matches_pattern(pattern, form))
+                .map(|&(_, pattern, guard)| (pattern, guard))
+        });
+    let lent = || {
+        let rows = routes::matching(form).map(|row| (row.method(), row.template(), row.guard()));
+        let table = ROUTE_RULES
+            .iter()
+            .filter(|(_, pattern, _)| matches_pattern(pattern, form))
+            .copied();
+        rows.chain(table)
+            .find(|&(route, _, guard)| guard.lends() && !route.is_read() && !method.is_read())
+            .map(|(_, route, guard)| (route, borrowed(guard, method)))
+    };
+    let (route, guard) = own.or_else(lent)?;
+    (guard != Guard::None).then_some(Rule { guard, route })
 }
 
-/// `rule`, borrowed from another write method's row for `method`. A `PUT` replaces the whole
-/// resource, so a field its body leaves out may be reset rather than kept: a rule that asks
+/// `guard`, borrowed from another write method's row for `method`. A `PUT` replaces the whole
+/// resource, so a field its body leaves out may be reset rather than kept: a guard that asks
 /// for a flag when the body sets a key asks for it whatever a `PUT` body sets.
-fn borrowed(rule: RouteRule, method: Method) -> RouteRule {
-    match (rule, method) {
-        (RouteRule::NeedsWhenSet(flags, _), Method::Put) => RouteRule::Needs(flags),
-        _ => rule,
+fn borrowed(guard: Guard, method: Method) -> Guard {
+    match (guard, method) {
+        (Guard::NeedsWhenSet(flags, _), Method::Put) => Guard::Needs(flags),
+        _ => guard,
     }
-}
-
-/// Whether a row listed for `route` guards a request with `method` that no row of its path
-/// lists: both write, and the row guards something (a row with no flag lends nothing).
-fn applies(route: Method, rule: RouteRule, method: Method) -> bool {
-    !matches!(rule, RouteRule::Needs([])) && !route.is_read() && !method.is_read()
 }
 
 /// The outcome of a route table for `path` (its query ignored): `table` gives the outcome
@@ -710,21 +484,9 @@ pub fn same_route(a: &str, b: &str) -> bool {
     with_trailing_slash(a) == with_trailing_slash(b)
 }
 
-/// `path` without its query.
-pub(crate) fn without_query(path: &str) -> &str {
-    path.split_once('?').map_or(path, |(path, _)| path)
-}
-
-pub(crate) fn with_trailing_slash(path: &str) -> Cow<'_, str> {
-    if path.ends_with('/') {
-        Cow::Borrowed(path)
-    } else {
-        Cow::Owned(format!("{path}/"))
-    }
-}
-
 /// Whether `path` matches `pattern` (see [`SECRET_ROUTES`] and [`ROUTE_RULES`])
-/// segment by segment.
+/// segment by segment: `{n}` is one segment of ASCII digits, `{..}` as the last segment one
+/// or more non-empty segments, and any other `{name}` one non-empty segment.
 pub(crate) fn matches_pattern(pattern: &str, path: &str) -> bool {
     if let Some(prefix) = pattern.strip_suffix("{..}/") {
         return path
@@ -735,8 +497,8 @@ pub(crate) fn matches_pattern(pattern: &str, path: &str) -> bool {
     let mut segments = path.split('/');
     let each_matches = pattern.split('/').all(|expected| {
         segments.next().is_some_and(|segment| match expected {
-            "{id}" => !segment.is_empty(),
             "{n}" => !segment.is_empty() && segment.bytes().all(|b| b.is_ascii_digit()),
+            placeholder if placeholder.starts_with('{') => !segment.is_empty(),
             literal => segment == literal,
         })
     });
@@ -753,17 +515,20 @@ pub(crate) fn matches_pattern(pattern: &str, path: &str) -> bool {
 /// body the caller wrote: the server is the guard on which fields a customer may change.
 const TICKET_PUT: &str = "/api/support/tickets/{id}/";
 
-/// The class of `method` to a request path such as `/api/compute/vms/`. A query string is
-/// ignored. Only a PUT of one ticket depends on the method. A path with a format suffix takes
+/// The class of `method` to a request path such as `/api/compute/vms/`: its row's, else the
+/// tables'. A query string is ignored. In the tables, only a PUT of one ticket depends on the
+/// method. A path with a format suffix takes
 /// the stricter class of its two forms ([`classify`]).
 pub(crate) fn route_class(method: Method, path: &str) -> RouteClass {
     classify(path, RouteClass::Unsupported, |form| {
-        listed_class(method, form)
+        routes::row(method, form)
+            .map(Endpoint::account)
+            .or_else(|| listed_class(method, form))
     })
 }
 
 /// The class the tables give `method` to `path` (one form, no query), or `None` when they
-/// do not list it.
+/// do not list it. Only a path no row matches reaches the tables ([`route_class`]).
 pub(crate) fn listed_class(method: Method, path: &str) -> Option<RouteClass> {
     let path = &*with_trailing_slash(path);
     if method == Method::Put && matches_pattern(TICKET_PUT, path) {
@@ -802,14 +567,19 @@ pub(crate) const BILLING_NAMED_ONLY_PATHS: &[&str] = &[
     "/api/billing/stripe/customer-portal/",
 ];
 
-/// Whether `path` (a request path, its query ignored) is a recurring card route, which
-/// acts in the selected account only beside `X-Hippius-Billing`. A path with a format
-/// suffix is one only when its plain form is one: no entry holds a dot, so the written form
-/// can never name one, and the plain form decides ([`classify`]).
-pub(crate) fn names_billing_only(path: &str) -> bool {
+/// Whether `method` to `path` (a request path, its query ignored) is a recurring card
+/// route, which acts in the selected account only beside `X-Hippius-Billing`: its row says
+/// so, or for a path no row matches, the table lists it. A path with a format suffix is one
+/// only when its plain form is one: no entry holds a dot, so the written form can never name
+/// one, and the plain form decides ([`classify`]).
+pub(crate) fn names_billing_only(method: Method, path: &str) -> bool {
     let path = without_query(path);
     let plain = without_format_suffix(path);
-    BILLING_NAMED_ONLY_PATHS.contains(&&*with_trailing_slash(plain.as_deref().unwrap_or(path)))
+    let form = plain.as_deref().unwrap_or(path);
+    routes::row(method, form).map_or_else(
+        || BILLING_NAMED_ONLY_PATHS.contains(&&*with_trailing_slash(form)),
+        Endpoint::account_beside_billing,
+    )
 }
 
 /// The `X-Hippius-Account` value for a `method` request to `path`, or `None` when no
@@ -832,7 +602,7 @@ pub(crate) fn header<'a>(
     };
     match route_class(method, path) {
         RouteClass::Scoped => Ok(Some(id.as_str())),
-        RouteClass::Unsupported if billing_header.is_some() && names_billing_only(path) => {
+        RouteClass::Unsupported if billing_header.is_some() && names_billing_only(method, path) => {
             Ok(Some(id.as_str()))
         }
         RouteClass::Personal => Ok(None),
@@ -1351,7 +1121,11 @@ pub(crate) mod tests {
             (Method::Post, "/api/network/infra/enroll/"),
             (Method::Post, "/api/chat/workspaces/w1/invites/"),
         ];
-        assert_eq!(routes.len(), SECRET_ROUTES.len(), "one case per table row");
+        assert_eq!(
+            routes.len(),
+            secret_routes().count(),
+            "one case per row that reveals a secret and per table entry"
+        );
         for (_, path) in routes {
             for method in METHODS {
                 let expected = routes.iter().any(|&(m, p)| p == path && m == method);
@@ -1396,7 +1170,11 @@ pub(crate) mod tests {
     /// neighbours do not.
     #[test]
     fn the_network_summary_provisions_on_its_reads_and_nowhere_else() {
-        assert_eq!(PROVISIONING_ROUTES.len(), 2, "a new row needs cases here");
+        assert_eq!(
+            routes::all().filter(|row| row.provisions()).count(),
+            1,
+            "a new row needs cases here"
+        );
         let path = "/api/network/me/";
         let mut forms = vec![path.to_owned(), slashless(path), format!("{path}?x=1")];
         forms.extend(suffixed_forms(path));
@@ -1434,14 +1212,14 @@ pub(crate) mod tests {
         };
         let mut rules: Vec<String> = route_rules(method, path)
             .into_iter()
-            .filter(|rule| !matches!(rule, RouteRule::Needs([])))
-            .map(|rule| match rule {
-                RouteRule::Refused { .. } => "refused".to_owned(),
-                RouteRule::RefusedWhenSet { key, .. } => format!("refused if {key}"),
-                RouteRule::Needs(flags) => names(flags),
-                RouteRule::NeedsWhenSet(flags, key) => format!("{} if {key}", names(flags)),
-                RouteRule::NeedsUnlessFalse(flags, key) => {
-                    format!("{} unless {key} is false", names(flags))
+            .filter_map(|rule| match rule.guard {
+                Guard::None | Guard::Needs([]) => None,
+                Guard::Refused { .. } => Some("refused".to_owned()),
+                Guard::RefusedWhenSet { key, .. } => Some(format!("refused if {key}")),
+                Guard::Needs(flags) => Some(names(flags)),
+                Guard::NeedsWhenSet(flags, key) => Some(format!("{} if {key}", names(flags))),
+                Guard::NeedsUnlessFalse(flags, key) => {
+                    Some(format!("{} unless {key} is false", names(flags)))
                 }
             })
             .collect();
@@ -1721,10 +1499,13 @@ pub(crate) mod tests {
             ),
         ];
         assert_rules_hold(&routes);
+        let guarded_rows = routes::all()
+            .filter(|row| row.guard() != Guard::None)
+            .count();
         assert_eq!(
-            ROUTE_RULES.len(),
-            33,
-            "a new row needs cases in a rule test"
+            ROUTE_RULES.len() + guarded_rows,
+            29,
+            "a new row or entry needs cases in a rule test"
         );
     }
 
@@ -1863,6 +1644,58 @@ pub(crate) mod tests {
         );
     }
 
+    /// `pattern` with each placeholder filled by a value every placeholder kind matches.
+    fn filled(pattern: &str) -> String {
+        pattern
+            .split('/')
+            .map(|segment| {
+                if segment.starts_with('{') {
+                    "7"
+                } else {
+                    segment
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    /// The tables hold only routes no row decides: a row decides its own method's secret, and
+    /// a path a row's template matches takes its guards from the rows, so an entry there
+    /// would be a second copy that never decides. Their remaining entries are routes `hipc`
+    /// reaches only through `hipc api`.
+    #[test]
+    fn no_table_entry_is_a_route_a_row_decides() {
+        for &(method, pattern) in SECRET_ROUTES {
+            let path = filled(pattern);
+            assert_eq!(routes::row(method, &path), None, "{method} {pattern}");
+        }
+        for &(method, pattern, _) in ROUTE_RULES {
+            let path = filled(pattern);
+            assert_eq!(routes::matching(&path).next(), None, "{method} {pattern}");
+        }
+    }
+
+    /// The row a request reaches is found in any form of its path, the written one first,
+    /// and a route no row matches is one `hipc` does not know.
+    #[test]
+    fn a_request_reaches_its_row_in_any_form() {
+        let vm = routes::compute::VM.endpoint();
+        for path in [
+            "/api/compute/vms/v1/",
+            "/api/compute/vms/v1",
+            "/api/compute/vms/v1.json/",
+            "/api/Compute/VMs/v1/",
+            "/api/compute/vms/v1/?x=1",
+        ] {
+            assert_eq!(row_of(Method::Get, path), Some(vm), "{path}");
+        }
+        assert_eq!(row_of(Method::Head, "/api/compute/vms/v1/"), Some(vm));
+        for path in ["/api/v2/compute/vms/v1/", "/api/compute/vms/v1/x/"] {
+            assert_eq!(row_of(Method::Get, path), None, "{path}");
+        }
+        assert_eq!(row_of(Method::Patch, "/api/compute/vms/v1/"), None);
+    }
+
     /// The curated commands' flags keep their codes in `hipc api`, and each code names the
     /// flag that gets past it, `--change-isolation` included.
     #[test]
@@ -1922,7 +1755,11 @@ pub(crate) mod tests {
                 assert!(!permanent(method, path), "{method} {path}");
             }
         }
-        assert_eq!(PERMANENT_ROUTES.len(), 1, "a new row needs cases here");
+        assert_eq!(
+            routes::all().filter(|row| row.permanent()).count(),
+            2,
+            "a new row needs cases here"
+        );
     }
 
     /// The neighbours of each route rule, which no method matches: the cancel and preview
@@ -2067,15 +1904,19 @@ pub(crate) mod tests {
             "/api/s3/subscription/",
             "/api/s3/subscription",
         ] {
-            assert!(not_done_on_503(path), "{path}");
+            assert!(not_done_on_503(Method::Post, path), "{path}");
+            for method in [Method::Get, Method::Patch, Method::Delete] {
+                assert!(!not_done_on_503(method, path), "{method} {path}");
+            }
         }
         for path in [
             "/api/drive/subscription.json",
             "/api/s3/subscription.json/",
+            "/API/drive/subscription/",
             "/api/drive/subscription/x/",
             "/api/drive/",
         ] {
-            assert!(!not_done_on_503(path), "{path}");
+            assert!(!not_done_on_503(Method::Post, path), "{path}");
         }
     }
 

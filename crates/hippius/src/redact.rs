@@ -50,6 +50,45 @@ pub fn without_fields(value: Value, withheld: &dyn Fn(&str) -> bool) -> Value {
     }
 }
 
+/// How the name of a field that holds a secret in a Hippius answer ends, folded as
+/// [`is_secret_field`] folds a name: `client_secret`, `robot_secret`, and `secret` all end in
+/// `secret`, and `netbird_setup_key` in `setupkey`. A name that ends in `token` is a secret
+/// too unless it is the bare word, which [`is_secret_field`] says why.
+const SECRET_FIELD_ENDINGS: [&str; 11] = [
+    "secret",
+    "password",
+    "passphrase",
+    "credentials",
+    "ticket",
+    "joincommand",
+    "setupkey",
+    "secretkey",
+    "privatekey",
+    "accesskey",
+    "apikey",
+];
+
+/// Whether a field named `name` holds a secret (tenet 9), in any spelling the server may
+/// give it: letter case, `_`, `-`, and camelCase are folded away, so `authToken`,
+/// `Auth-Token`, and `auth_token` are one name, as `AccessKey` and `access_key` are. A name
+/// is a secret when it ends as one of [`SECRET_FIELD_ENDINGS`] does, or ends in `token` after
+/// another word. A bare `token` is deliberately kept: the API keys its validation errors by
+/// field name (`{"token": ["Invalid invite."]}`), and dropping it would hide why an invite
+/// was refused; a route whose answer holds a real `token` needs `--reveal`. Matching the
+/// ending fails closed for a new spelling such as `user_password`, at the cost of dropping a
+/// name that only ends like a secret.
+pub(crate) fn is_secret_field(name: &str) -> bool {
+    let folded: String = name
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    SECRET_FIELD_ENDINGS
+        .iter()
+        .any(|ending| folded.ends_with(ending))
+        || (folded.len() > "token".len() && folded.ends_with("token"))
+}
+
 /// What [`redact_value`] writes in place of the secret.
 const REDACTED: &str = "<redacted>";
 
@@ -432,6 +471,45 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// A field's name is a secret's in any spelling: letter case, `_`, `-`, and camelCase
+    /// fold away, and a name that ends as a secret's does is one, a bare `token` excepted.
+    #[test]
+    fn a_secret_field_is_known_by_how_its_name_ends_in_any_spelling() {
+        for name in [
+            "secret",
+            "robot_secret",
+            "Client-Secret",
+            "authToken",
+            "AUTH_TOKEN",
+            "access_token",
+            "refreshToken",
+            "APIKey",
+            "AccessKey",
+            "aws_secret_access_key",
+            "netbird_setup_key",
+            "newPassword",
+            "credentials",
+            "ticket",
+            "join_command",
+            "passphrase",
+            "private-key",
+        ] {
+            assert!(is_secret_field(name), "{name}");
+        }
+        for name in [
+            "token",
+            "Token",
+            "key",
+            "access_key_id",
+            "secret_name",
+            "password_set",
+            "id",
+            "",
+        ] {
+            assert!(!is_secret_field(name), "{name}");
+        }
+    }
 
     /// All secrets at once, whatever order they come in: a short secret cuts neither a longer
     /// one that holds it nor a marker already written.

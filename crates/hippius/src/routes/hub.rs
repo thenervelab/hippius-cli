@@ -15,7 +15,13 @@ routes! {
     SUBSCRIPTIONS: 0 = Route::get("/api/registry/subscriptions/").own_account();
 
     /// Subscribes to a Hub plan.
-    SUBSCRIBE: 0 = Route::post("/api/registry/subscribe/").own_account().guard(Guard::Refused);
+    SUBSCRIBE: 0 = Route::post("/api/registry/subscribe/")
+        .own_account()
+        .guard(Guard::Refused {
+            why: "it reads no current plan first, so it could start a second paid Hub subscription",
+            hint: "run `hipc hub subscription subscribe`, which refuses a second plan and \
+                   replaces one only with `--replace`",
+        });
 
     /// Cancels a Hub subscription.
     SUBSCRIPTION_CANCEL: 1 = Route::delete("/api/registry/subscriptions/{subscription_id}/")
@@ -39,7 +45,9 @@ routes! {
     /// The namespace.
     NAMESPACE: 0 = Route::get("/api/registry/me/").own_account();
 
-    /// Makes the namespace public or private.
+    /// Makes the namespace public or private. Without `public` set to `false` the server may
+    /// read the body as a toggle, so `hipc api` needs `--public`, and its refusal names who
+    /// can pull rather than a bucket.
     PUBLICITY_UPDATE: 0 = Route::patch("/api/registry/me/publicity/")
         .own_account()
         .guard(Guard::NeedsUnlessFalse(&[RouteFlag::Public], "public"));

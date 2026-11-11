@@ -1,13 +1,10 @@
 use super::*;
-use crate::account::{
-    RouteRule, names_billing_only, not_done_on_503, permanent, provisions, returns_secret,
-    route_class, route_rules,
-};
-use crate::project::{billing_take, project_take};
+use crate::account::{BILLING_NAMED_ONLY_PATHS, PERSONAL_PATHS, listed_class};
+use crate::project::{BILLING_PATHS, PROJECT_EXCLUDED_PATHS, listed_billing, listed_project};
 
 /// A path that fills each placeholder of `endpoint` with a value the policy tables read as
 /// its kind: a project or billing account id where the template names one, else digits,
-/// which every `{id}` and `{n}` of the tables matches.
+/// which every `{name}` and `{n}` of the tables matches.
 fn sample(endpoint: &Endpoint) -> String {
     endpoint.sample(|name| {
         match name {
@@ -19,94 +16,136 @@ fn sample(endpoint: &Endpoint) -> String {
     })
 }
 
-/// The kind of what `route_rules` says of a request, as a row writes it.
-fn guard_of(rules: &[RouteRule]) -> Guard {
-    match rules {
-        [] => Guard::None,
-        [rule] => match *rule {
-            RouteRule::Refused { .. } => Guard::Refused,
-            RouteRule::RefusedWhenSet { key, .. } => Guard::RefusedWhenSet(key),
-            RouteRule::Needs(flags) => Guard::Needs(flags),
-            RouteRule::NeedsWhenSet(flags, key) => Guard::NeedsWhenSet(flags, key),
-            RouteRule::NeedsUnlessFalse(flags, key) => Guard::NeedsUnlessFalse(flags, key),
-        },
-        more => panic!("a path without a format suffix has at most one rule: {more:?}"),
-    }
-}
-
-/// What the policy tables decide for one row, side by side with what the row says, as
-/// `(what, the row, the tables)`.
-fn decisions(endpoint: &Endpoint) -> Vec<(&'static str, String, String)> {
-    let (method, path) = (endpoint.method, sample(endpoint));
-    let account = endpoint
-        .account
-        .expect("`routes!` checks that each row has a class");
+/// What the header tables say of `path`, a path of `endpoint`, where they list it, side by
+/// side with what the row says, as `(what, the row, the tables)`. A path the tables do not
+/// list is the row's alone to decide, such as a new API version's.
+fn listed_decisions(
+    endpoint: &Endpoint,
+    path: &str,
+) -> Vec<(&'static str, String, Option<String>)> {
+    let method = endpoint.method;
     vec![
         (
             "account class",
-            format!("{account:?}"),
-            format!("{:?}", route_class(method, &path)),
+            format!("{:?}", endpoint.account()),
+            listed_class(method, path).map(|class| format!("{class:?}")),
         ),
         (
             "account beside a billing account",
             endpoint.account_beside_billing.to_string(),
-            names_billing_only(&path).to_string(),
+            BILLING_NAMED_ONLY_PATHS
+                .contains(&path)
+                .then(|| true.to_string()),
         ),
         (
             "project",
             format!("{:?}", endpoint.project),
-            format!("{:?}", project_take(method, &path)),
+            listed_project(method, path).map(|take| format!("{take:?}")),
         ),
         (
             "billing account",
             format!("{:?}", endpoint.billing),
-            format!("{:?}", billing_take(method, &path)),
-        ),
-        (
-            "reveals a secret",
-            endpoint.reveals.to_string(),
-            returns_secret(method, &path).to_string(),
-        ),
-        (
-            "provisions",
-            endpoint.provisions.to_string(),
-            provisions(method, &path).to_string(),
-        ),
-        (
-            "permanent",
-            endpoint.permanent.to_string(),
-            permanent(method, &path).to_string(),
-        ),
-        (
-            "undone on a 503",
-            endpoint.undone_on_503.to_string(),
-            (method == Method::Post && not_done_on_503(&path)).to_string(),
-        ),
-        (
-            "`hipc api` guard",
-            format!("{:?}", endpoint.guard),
-            format!("{:?}", guard_of(&route_rules(method, &path))),
+            listed_billing(method, path).map(|take| format!("{take:?}")),
         ),
     ]
 }
 
-/// Every row says what the policy tables decide for its path: the header classes, the
-/// secret, provisioning, and permanent flags, the 503 rule, and `hipc api`'s guard. Each
-/// disagreement is listed, so one run shows them all.
+/// The paths the header tables name one by one, with no placeholder. A row whose
+/// placeholder takes one of them decides it, so it must decide it as the tables do: were a
+/// database row's `{database_id}` to take any segment, not digits alone, it would take
+/// `/api/databases/metrics/`, a personal route.
+fn literal_table_paths() -> impl Iterator<Item = &'static str> {
+    PERSONAL_PATHS
+        .iter()
+        .chain(BILLING_NAMED_ONLY_PATHS)
+        .chain(PROJECT_EXCLUDED_PATHS)
+        .chain(BILLING_PATHS)
+        .copied()
+        .filter(|path| !path.contains('{'))
+}
+
+/// The header tables decide a request only when its path has no row, and they also decide
+/// the other methods of a row's path, so where they list a path a row matches, its own or a
+/// literal path a placeholder takes, they say what the row says: the account class, the
+/// recurring card rule, and the project and billing handling. Each disagreement is listed,
+/// so one run shows them all.
 #[test]
-fn every_row_agrees_with_the_policy_tables() {
+fn the_header_tables_never_contradict_a_row() {
     let mut disagreements = Vec::new();
     for endpoint in all() {
-        for (what, row, tables) in decisions(endpoint) {
-            if row != tables {
-                disagreements.push(format!(
-                    "{} {}: {what} is {row} in the row and {tables} in the tables",
-                    endpoint.method, endpoint.template
-                ));
+        let own = sample(endpoint);
+        let literal =
+            literal_table_paths().filter(|path| row(endpoint.method, path) == Some(endpoint));
+        let paths: Vec<String> = std::iter::once(own)
+            .chain(literal.map(str::to_owned))
+            .collect();
+        for path in &paths {
+            for (what, row, tables) in listed_decisions(endpoint, path) {
+                if tables.as_ref().is_some_and(|tables| *tables != row) {
+                    disagreements.push(format!(
+                        "{} {path} ({}): {what} is {row} in the row and {} in the tables",
+                        endpoint.method,
+                        endpoint.template,
+                        tables.unwrap_or_default()
+                    ));
+                }
             }
         }
     }
     assert!(disagreements.is_empty(), "{disagreements:#?}");
+}
+
+/// The policy of a row, without its method, template, and paging, which no request decision
+/// reads.
+fn policy(endpoint: &Endpoint) -> Endpoint {
+    Endpoint {
+        method: Method::Get,
+        template: "",
+        paged: false,
+        ..*endpoint
+    }
+}
+
+/// Each row is the row its own path reaches, or one with the same policy where two templates
+/// match one path (a Hub model and a model with a reference, both under `{model..}`).
+#[test]
+fn every_row_is_reached_by_its_own_path() {
+    for endpoint in all() {
+        let path = sample(endpoint);
+        let found = row(endpoint.method, &path).expect("a row matches its own path");
+        assert!(
+            found == endpoint || policy(found) == policy(endpoint),
+            "{} {path} reaches {} instead of {}",
+            endpoint.method,
+            found.template,
+            endpoint.template
+        );
+        // Slashless, as a server or a proxy that adds the slash delivers it.
+        let slashless = path.strip_suffix('/').expect("a template ends with `/`");
+        assert_eq!(row(endpoint.method, slashless), Some(found), "{slashless}");
+    }
+}
+
+/// A literal segment beats a placeholder, as the server's router tries a literal path first,
+/// a `HEAD` reaches the `GET` row, and a path or a method no row has reaches none.
+#[test]
+fn the_most_literal_row_wins_and_a_head_reaches_the_get() {
+    let refusals = row(Method::Get, "/api/databases/refusals/").expect("a row");
+    assert_eq!(refusals, databases::DATABASE_REFUSALS.endpoint());
+    let one = row(Method::Get, "/api/databases/7/").expect("a row");
+    assert_eq!(one, databases::DATABASE.endpoint());
+    assert_eq!(
+        row(Method::Head, "/api/network/me/"),
+        Some(network::ME.endpoint())
+    );
+    assert_eq!(row(Method::Get, "/api/v2/compute/vms/"), None);
+    assert_eq!(row(Method::Put, "/api/compute/vms/"), None);
+    assert_eq!(
+        matching("/api/compute/vms/")
+            .map(|endpoint| endpoint.method)
+            .collect::<Vec<_>>(),
+        [Method::Get, Method::Post]
+    );
 }
 
 /// A method and template appear in one row only, so a command and a test that name a route
@@ -209,7 +248,10 @@ fn each_builder_method_sets_its_part_of_the_policy() {
         .permanent()
         .undone_on_503()
         .paged()
-        .guard(Guard::Refused);
+        .guard(Guard::Refused {
+            why: "why",
+            hint: "hint",
+        });
     let endpoint = flagged.endpoint();
     assert_eq!(
         (endpoint.project, endpoint.billing),
@@ -217,7 +259,17 @@ fn each_builder_method_sets_its_part_of_the_policy() {
     );
     assert!(endpoint.reveals && endpoint.provisions && endpoint.permanent);
     assert!(endpoint.undone_on_503 && endpoint.paged() && endpoint.account_beside_billing);
-    assert_eq!(endpoint.guard, Guard::Refused);
+    assert_eq!(
+        endpoint.guard(),
+        Guard::Refused {
+            why: "why",
+            hint: "hint"
+        }
+    );
+    assert!(endpoint.reveals() && endpoint.provisions());
+    assert!(endpoint.permanent() && endpoint.undone_on_503());
+    assert!(!Guard::None.lends() && !Guard::Needs(&[]).lends());
+    assert!(Guard::Needs(&[RouteFlag::Public]).lends());
     assert_eq!(Route::<0>::delete("/api/a/").method(), Method::Delete);
 }
 

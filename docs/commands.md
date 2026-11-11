@@ -8933,7 +8933,7 @@ Examples:
 ```text
 Call any console API endpoint; a method other than GET or HEAD needs --yes, as does GET or HEAD /network/me/, which may create the network
 
-The request carries the same auth, account, project, and billing rules as every command. It goes only to the configured API origin: a full URL on any other origin, plain http to a loopback port included, exits 2 usage; use curl for another host. A refusal listed for one write method (POST, PUT, PATCH, or DELETE) holds for every write method of the route, and every path counts in any letter case, with or without the trailing slash or a format suffix. An account deletion request (any write of /account/deletion/ but DELETE, which withdraws a pending one) is never sent: request it in the console. No request to the account token route (/auth/token/, any method) is sent: create a token in the console settings. A read of a Kubernetes cluster's secrets (GET or HEAD /kubernetes/clusters/<cluster_id>/secrets/) is never sent either: hipc compute kubernetes clusters kubeconfig opens the kubeconfig. A CDN hostname's DNS setup (any write of /cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/) is never sent: hipc cdn hostnames dns-setup reads the provider credential from a private file. A Hub subscribe (any write of /registry/subscribe/) is never sent: hipc hub subscription subscribe reads the current plans first and refuses a second paid one. An App Engine launch, compose update, or compose check whose body sets secrets (any write of /compute/app-engine/apps/, of /compute/app-engine/apps/<vm_id>/compose/, or of /compute/app-engine/validate/) is never sent: hipc compute app-engine apps create launches an app with secrets read from a private file, and a compose update with secrets is not in this version; without secrets they are sent as usual. A write under /support/, such as a new ticket, a reply, or a chat handoff, whose body holds HIPPIUS_TOKEN or a token a profile of the config file stores, as it is, quoted, percent-encoded, or behind a JSON escape, also when whitespace or an invisible joining character splits it, or an access key (12 to 24 BIP-39 words in a row whose checksum holds), is never sent: a person on the support team may read it. Without a token, a PATCH of one support ticket (PATCH /support/tickets/<ticket_id>/) is sent with the body given: the server decides which fields a customer may change, and hipc support tickets update sends only the close. A resume of a Kubernetes operation blocked on data loss is sent: the server is the guard, and the refusal of hipc compute kubernetes operations resume is a courtesy. hipc api sends no If-Match, so a PUT of a zone's WAF rules or rate limits (/cdn/zones/<zone_id>/waf/rules/, /cdn/zones/<zone_id>/waf/rate-limits/) is not conditional and writes over a version another client published since it was read; hipc cdn waf rules update and hipc cdn waf rate-limits update send the version they read and stop on a conflict. A 2xx answer larger than 32 MiB is not printed: it exits 1 internal. On an error status a body that large is not read: the status decides the error, and its message says the body was not read.
+The request carries the same auth, account, project, and billing rules as every command. It goes only to the configured API origin: a full URL on any other origin, plain http to a loopback port included, exits 2 usage; use curl for another host. A refusal listed for one write method (POST, PUT, PATCH, or DELETE) holds for every write method of the route, and every path counts in any letter case, with or without the trailing slash or a format suffix. An account deletion request (any write of /account/deletion/ but DELETE, which withdraws a pending one) is never sent: request it in the console. No request to the account token route (/auth/token/, any method) is sent: create a token in the console settings. A read of a Kubernetes cluster's secrets (GET or HEAD /kubernetes/clusters/<cluster_id>/secrets/) is never sent either: hipc compute kubernetes clusters kubeconfig opens the kubeconfig. A CDN hostname's DNS setup (any write of /cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/) is never sent: hipc cdn hostnames dns-setup reads the provider credential from a private file. A Hub subscribe (any write of /registry/subscribe/) is never sent: hipc hub subscription subscribe reads the current plans first and refuses a second paid one. An App Engine launch, compose update, or compose check whose body sets secrets (any write of /compute/app-engine/apps/, of /compute/app-engine/apps/<vm_id>/compose/, or of /compute/app-engine/validate/) is never sent: hipc compute app-engine apps create launches an app with secrets read from a private file, and a compose update with secrets is not in this version; without secrets they are sent as usual. A write under /support/, such as a new ticket, a reply, or a chat handoff, whose body holds HIPPIUS_TOKEN or a token a profile of the config file stores, as it is, quoted, percent-encoded, or behind a JSON escape, also when whitespace or an invisible joining character splits it, or an access key (12 to 24 BIP-39 words in a row whose checksum holds), is never sent: a person on the support team may read it. Without a token, a PATCH of one support ticket (PATCH /support/tickets/<ticket_id>/) is sent with the body given: the server decides which fields a customer may change, and hipc support tickets update sends only the close. A resume of a Kubernetes operation blocked on data loss is sent: the server is the guard, and the refusal of hipc compute kubernetes operations resume is a courtesy. hipc api sends no If-Match, so a PUT of a zone's WAF rules or rate limits (/cdn/zones/<zone_id>/waf/rules/, /cdn/zones/<zone_id>/waf/rate-limits/) is not conditional and writes over a version another client published since it was read; hipc cdn waf rules update and hipc cdn waf rate-limits update send the version they read and stop on a conflict. A route no command sends (one no command of hipc schema lists in its routes) is one hipc does not know: a GET of it needs --reveal, since its answer may hold a secret, and a write needs --yes, as any write does, and warns. A 2xx answer larger than 32 MiB is not printed: it exits 1 internal. On an error status a body that large is not read: the status decides the error, and its message says the body was not read.
 
 Usage: hipc api [OPTIONS] <METHOD> <PATH>
 
@@ -8958,31 +8958,33 @@ Options:
       --reveal
           Print a secret; required for the requests that return one, or nothing is sent
           
-          The requests that return one, where <id> is one path segment and <n> a number:
-            POST /objectstore/master-tokens/
-            POST /objectstore/master-tokens/<id>/rotate/
-            POST /objectstore/sub-tokens/
-            POST /objectstore/sub-tokens/<id>/rotate/
-            POST /registry/keys/
-            POST /registry/keys/<id>/rotate/
-            POST /registry/robot/rotate/
-            POST /registry/provision/
+          The requests that return one, where each <name> is one path segment and <n> a number:
             POST /databases/
-            POST /databases/<n>/restore/
+            POST /databases/<database_id>/restore/
+            POST /registry/provision/
+            POST /registry/robot/rotate/
+            POST /registry/keys/
+            POST /registry/keys/<key_id>/rotate/
+            GET /kubernetes/clusters/<cluster_id>/backups/
+            GET /objectstore/buckets/<bucket_name>/presigned-url/
+            POST /objectstore/master-tokens/
+            POST /objectstore/master-tokens/<token_id>/rotate/
+            POST /objectstore/sub-tokens/
+            POST /objectstore/sub-tokens/<token_id>/rotate/
             GET /databases/<n>/backup-token/
             POST /databases/<n>/backup-token/
             POST /network/peers/enroll/
-            POST /compute/vms/<id>/terminal-ticket/
+            POST /compute/vms/<vm_id>/terminal-ticket/
             POST /billing/transactions/
             POST /objectstore/tokens/auth/
             POST /auth/exchange/
             POST /auth/verify/
-            GET /kubernetes/clusters/<id>/backups/
-            GET /objectstore/buckets/<id>/presigned-url/
-            GET /chat/conversations/<id>/attachments/<id>/
+            GET /chat/conversations/<conversation_id>/attachments/<attachment_id>/
             POST /auth/sso/ticket/
             POST /auth/session/
             POST /auth/sign-in-methods/step-up/verify/
+          
+          A GET of a route no command sends (one that no command of hipc schema lists in its routes) needs --reveal too: hipc does not know what its answer holds.
           
 
       --change-isolation

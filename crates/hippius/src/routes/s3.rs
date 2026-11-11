@@ -54,7 +54,9 @@ routes! {
     /// A bucket's policy.
     BUCKET_ACL: 1 = Route::get("/api/objectstore/buckets/{bucket_name}/acl/").scoped().project();
 
-    /// Replaces a bucket's policy.
+    /// Replaces a bucket's policy. `hipc api` needs both `--public` and `--remove-others`
+    /// whatever the body: telling whether an S3 policy is public would mean judging it, and
+    /// a misjudged one would publish the bucket.
     BUCKET_ACL_SET: 1 = Route::put("/api/objectstore/buckets/{bucket_name}/acl/set/")
         .scoped()
         .project()

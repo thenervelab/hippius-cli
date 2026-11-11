@@ -812,9 +812,60 @@ impl Pages {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use hippius::Code;
 
     use super::*;
+
+    /// The files under `dir`, at any depth.
+    fn rust_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("the source tree is readable") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                rust_files(&path, files);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    /// A command builds every request from a route constant (`Request::to`), so only the
+    /// table spells a path and the row decides its policy. Two exceptions build one from a
+    /// written target: `hipc api`, which sends the route it is given, and the one dry-run
+    /// stand-in a route cannot build, the cancel `hipc hub subscription subscribe --replace`
+    /// may send first, whose `{subscription_id}` `Route::path` would percent-encode.
+    #[test]
+    fn only_hipc_api_builds_a_request_from_a_written_target() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let allowed = [("commands/api.rs", None), ("commands/hub.rs", Some(1))];
+        // Built here, so this file does not hold what it looks for.
+        let written = ["new", "get"].map(|constructor| format!("Request::{constructor}("));
+        let mut files = Vec::new();
+        rust_files(&src, &mut files);
+        let counted: Vec<(String, usize, Option<usize>)> = files
+            .iter()
+            .map(|file| {
+                let text = std::fs::read_to_string(file).expect("a source file is UTF-8");
+                let count = written.iter().map(|call| text.matches(call).count()).sum();
+                let name = file
+                    .strip_prefix(&src)
+                    .expect("under src")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let limit = allowed
+                    .iter()
+                    .find(|(allowed, _)| *allowed == name)
+                    .map_or(Some(0), |&(_, limit)| limit);
+                (name, count, limit)
+            })
+            .collect();
+        let over: Vec<&(String, usize, Option<usize>)> = counted
+            .iter()
+            .filter(|(_, count, limit)| limit.is_some_and(|limit| *count > limit))
+            .collect();
+        assert_eq!(over, Vec::<&(String, usize, Option<usize>)>::new());
+    }
 
     /// `dry_run` comes first, then `action`, then every field of the real run's document, in
     /// order: the fields are an object by their type, so none can be dropped.

@@ -564,10 +564,10 @@ fn a_slashless_personal_route_goes_out_without_the_stored_project() {
     for path in paths {
         let path = path.strip_prefix("/api").unwrap();
         Hipc::against(&home, &server)
-            .run(&["api", "GET", path])
+            .run(&["api", "--reveal", "GET", path])
             .ok();
         Hipc::against(&home, &server)
-            .run(&["--project", PROJECT, "api", "GET", path])
+            .run(&["--project", PROJECT, "api", "--reveal", "GET", path])
             .ok();
     }
     let requests = server.requests();

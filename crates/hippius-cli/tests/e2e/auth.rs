@@ -1090,7 +1090,7 @@ fn public_routes_and_hipc_api_go_to_another_origin_without_the_stored_token() {
         ])
         .ok();
     for args in [
-        vec!["--api-url", other.url(), "api", "GET", "/x/"],
+        vec!["--api-url", other.url(), "api", "--reveal", "GET", "/x/"],
         vec!["--api-url", other.url(), "drive", "plans"],
     ] {
         let run = Hipc::new(&home).run(&args);

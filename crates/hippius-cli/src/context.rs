@@ -6,7 +6,7 @@
 //! the method, the URL with every query value redacted, and the status, and never a header
 //! or a body.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::OsString;
 use std::io::{self, BufRead};
 use std::os::fd::AsFd as _;
@@ -89,6 +89,8 @@ pub(crate) struct Context<'a> {
     /// server, so the server may have changed. A failure after that, such as a stdout that
     /// cannot be written, is `partial` (tenet 4).
     wrote: Cell<bool>,
+    /// The warnings of [`Context::run_warning`], for the `warnings` array of JSON mode.
+    warnings: RefCell<Vec<String>>,
 }
 
 impl<'a> Context<'a> {
@@ -104,6 +106,7 @@ impl<'a> Context<'a> {
             mode,
             args,
             wrote: Cell::new(false),
+            warnings: RefCell::new(Vec::new()),
         }
     }
 
@@ -177,6 +180,19 @@ impl<'a> Context<'a> {
                 ("--api-url", overrides.api_url),
             ],
         ))
+    }
+
+    /// [`Context::warning`], kept for JSON mode too, which puts it in the `warnings` array
+    /// the config warnings go in ([`Context::take_warnings`]): a warning about the request
+    /// itself, which an agent reading only the JSON must see as well (tenet 15).
+    pub(crate) fn run_warning(&self, text: &str) {
+        self.warning(text);
+        self.warnings.borrow_mut().push(text.to_owned());
+    }
+
+    /// Takes the warnings of [`Context::run_warning`], in the order they came.
+    pub(crate) fn take_warnings(&self) -> Vec<String> {
+        std::mem::take(&mut *self.warnings.borrow_mut())
     }
 
     fn aside(&self, label: &str, text: &str) {
