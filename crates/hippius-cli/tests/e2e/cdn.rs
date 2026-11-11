@@ -633,7 +633,7 @@ fn zones_update_names_each_change_in_the_question() {
     assert_eq!(
         refused(&["--prefix", "", "--name", "n", "--public"]),
         format!(
-            "this would move the CDN zone `{ZONE}` to the bucket `web` and the prefix `\"\"`, \
+            "this would move the CDN zone `{ZONE}` to its bucket `web` and the prefix `\"\"`, \
              which purges the whole zone and makes what it then serves public if the bucket is \
              private, and set `name` to `n`, and `--yes` was not passed"
         )

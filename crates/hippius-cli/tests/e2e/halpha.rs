@@ -410,9 +410,15 @@ fn a_retry_resends_the_exact_buy_reading_only_the_quote() {
             &["--yes", "--idempotency-key", KEY, "--min-credits", bad],
         )
         .fails(2, "usage");
+        // A value of 20 characters or more is not repeated (tenet 9).
+        let value = if bad.len() >= 20 {
+            String::new()
+        } else {
+            format!("`{bad}` ")
+        };
         assert_eq!(
             error["message"],
-            format!("invalid value `{bad}` for `--min-credits <CREDITS>`: {why}")
+            format!("invalid value {value}for `--min-credits <CREDITS>`: {why}")
         );
     }
     assert!(server.requests().is_empty());

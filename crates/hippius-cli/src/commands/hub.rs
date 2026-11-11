@@ -1045,7 +1045,7 @@ fn docker_login_command(login: &str) -> Result<String> {
 /// ([`set_up_first`]: `You must call /api/registry/provision/ first.`). The hint carries this run's
 /// profile and origin, so the namespace it creates is on the server this run read.
 fn with_provision_hint(ctx: &Context<'_>, error: Error) -> Error {
-    if set_up_first(&error, "/api/registry/provision/") {
+    if set_up_first(&error, hub::NAMESPACE_CREATE.endpoint().template()) {
         let hint = run_hint(
             ctx,
             "hub namespace create <namespace> --reveal --yes",

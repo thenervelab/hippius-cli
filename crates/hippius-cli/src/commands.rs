@@ -25,6 +25,7 @@ pub(crate) mod support;
 
 use std::io::Read;
 use std::os::fd::AsFd as _;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
 use hippius::routes::{self, Change, Route, SettingChangeBody};
@@ -109,6 +110,7 @@ pub(crate) struct Input<'a> {
 }
 
 /// What [`Input::open`] opened: stdin, or a regular file that passed the checks.
+#[derive(Debug)]
 enum Opened {
     Stdin,
     File(std::fs::File),
@@ -203,7 +205,6 @@ impl Input<'_> {
     /// secret. A file that cannot be inspected (`None`) is not refused: the read then fails, or
     /// reads a file that is not one of them.
     fn refuse_secret_store(&self, opened: Option<&std::fs::Metadata>) -> Result<()> {
-        use std::os::unix::fs::MetadataExt as _;
         let home = context::env_os("HOME").map(PathBuf::from);
         let config = [
             context::config_path().ok(),
@@ -343,13 +344,6 @@ impl Input<'_> {
             Opened::File(file) => self.take(file, limit, &mut bytes)?,
         }
         Ok(bytes)
-    }
-
-    /// [`Input::read_secret`] of stdin, for a secret that must not outlive its use, such as
-    /// a hotkey phrase piped in.
-    pub(crate) fn read_cleared_stdin(&self) -> Result<Zeroizing<String>> {
-        debug_assert_eq!(self.path, Path::new("-"), "only stdin");
-        self.read_secret()
     }
 
     /// Reads at most `limit` bytes of UTF-8 text.
