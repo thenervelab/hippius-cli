@@ -6,7 +6,7 @@ use hippius::routes::hub;
 use serde_json::{Value, json};
 
 use crate::common::{
-    Hipc, Home, MEMBER, Reply, Server, draft, hub_provision_hint, route, route_of,
+    Hipc, Home, MEMBER, Reply, Server, docker_logins, draft, hub_provision_hint, route, route_of,
 };
 
 /// A key row as the list answers it, in the shape `hippius-hub registry keys list` reads.
@@ -140,22 +140,12 @@ fn list_drops_every_command_field_the_server_sends() {
 /// can list, so the whole list is refused and nothing is printed.
 #[test]
 fn list_refuses_a_row_with_any_other_docker_login_command() {
-    for row in [
-        json!({"id": 7, "argv": ["docker", "login", "-u", "robot", "-p", "leaked_secret"]}),
-        json!({"id": 7, "argv": ["echo", "leaked_secret", "|", "docker", "login", "-u", "r"]}),
-        json!({"id": 7, "argv": ["DOCKER_PASSWORD=leaked_secret", "docker", "login"]}),
-        json!({"id": 7, "help": "docker\u{200D}login --password=leaked_secret"}),
-        json!({"id": 7, "name": "echo leaked_secret | docker login"}),
-        // As a shell reads them: quotes, backslashes, a continued line, a flag between the
-        // words, a substitution, and a key.
-        json!({"id": 7, "help": "\"docker\" \"login\" -u u -p leaked_secret"}),
-        json!({"id": 7, "help": "docker \\\nlogin -p leaked_secret"}),
-        json!({"id": 7, "help": "docke\\r log\\in -p leaked_secret"}),
-        json!({"id": 7, "help": "docker $'login' -p leaked_secret"}),
-        json!({"id": 7, "help": "/usr/bin/docker -D login -p leaked_secret"}),
-        json!({"id": 7, "help": "$(printf docker) login -p leaked_secret"}),
-        json!({"id": 7, "docker login -u r -p leaked_secret": "ok"}),
-    ] {
+    let rows = docker_logins("leaked_secret")
+        .into_iter()
+        .map(|login| json!({"id": 7, "help": login}))
+        // A command as a key.
+        .chain([json!({"id": 7, "docker login -u r -p leaked_secret": "ok"})]);
+    for row in rows {
         let rows = json!([row]).to_string();
         let server = keys_list(Reply::json(200, &rows));
         let run = Hipc::against(&Home::new(), &server).run(&["hub", "keys", "list"]);

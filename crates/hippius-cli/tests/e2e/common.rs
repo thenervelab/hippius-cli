@@ -19,7 +19,9 @@ mod routes;
 pub(crate) mod terminal;
 mod watchdog;
 
-pub(crate) use fixtures::{BILLING, OWN_ACCOUNT, PROJECT, VM, parsed, permission_bits_apply};
+pub(crate) use fixtures::{
+    BILLING, OWN_ACCOUNT, PROJECT, VM, docker_logins, parsed, permission_bits_apply,
+};
 pub(crate) use watchdog::{finish, finished};
 
 /// The token every test uses. Every run asserts it never appears in any output.

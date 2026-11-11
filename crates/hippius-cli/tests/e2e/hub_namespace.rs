@@ -6,7 +6,7 @@
 use hippius::routes::hub;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, route_of};
+use crate::common::{Hipc, Home, MEMBER, Reply, Server, docker_logins, draft, route_of};
 
 const PUBLICITY: &str = "/api/registry/me/publicity/";
 
@@ -433,15 +433,11 @@ fn rotate_drops_every_command_field_the_server_sends() {
 /// names the rotate with the run's own flags. The secret is on neither stream.
 #[test]
 fn rotate_refuses_an_answer_with_any_other_docker_login_command() {
-    for body in [
-        json!({"robot_secret": "s3cr3t-rotated", "help": "docker login -p s3cr3t-rotated"}),
-        json!({"robot_secret": "s3cr3t-rotated", "argv": ["docker", "login", "-u", "r"]}),
-        json!({
-            "robot_secret": "s3cr3t-rotated",
-            "x": ["echo s3cr3t-rotated | docker\u{200B}login"],
-        }),
-        json!({"robot_secret": "s3cr3t-rotated", "secret": "DOCKER LOGIN"}),
-    ] {
+    let bodies = docker_logins("s3cr3t-rotated")
+        .into_iter()
+        .map(|login| json!({"robot_secret": "s3cr3t-rotated", "help": login}))
+        .chain([json!({"robot_secret": "s3cr3t-rotated", "secret": "DOCKER LOGIN"})]);
+    for body in bodies {
         let server = rotate(Reply::json(201, &body.to_string()));
         let run = Hipc::against(&Home::new(), &server)
             .env("HIPPIUS_PROFILE", "work")

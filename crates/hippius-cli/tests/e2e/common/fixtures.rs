@@ -1,7 +1,7 @@
 //! Fixtures and small helpers that many suites share: one spelling of each id, one way to
 //! list what a server received, and one guard for the tests that rely on permission bits.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::{Run, Server};
 
@@ -77,4 +77,52 @@ pub(crate) fn permission_bits_apply() -> bool {
         );
     }
     normal_user
+}
+
+/// The `docker login` commands a Hub answer may hold outside a command key, each passing
+/// `secret` or able to, as a value to put under any key of the answer: one string, an argv
+/// array, a nested list, invisible joiners, letter case, and the ways a shell reads one
+/// word (quotes, backslashes, a continued line, a flag between the words, a substitution).
+/// Every Hub read that prints a robot or key answer refuses each one whole, so the suites
+/// of `hub keys list`, `hub namespace robot get`, and `robot rotate` share this list.
+pub(crate) fn docker_logins(secret: &str) -> Vec<Value> {
+    vec![
+        json!(["docker", "login", "-u", "r", "-p", secret]),
+        json!(["docker", "login", "-u", "r", format!("-p{secret}")]),
+        json!(["docker", "login", "-u", "r", "--password", secret]),
+        json!(["docker", "login", "-u", "r", format!("--password={secret}")]),
+        json!([
+            "echo",
+            secret,
+            "|",
+            "docker",
+            "login",
+            "-u",
+            "r",
+            "--password-stdin"
+        ]),
+        json!([
+            format!("DOCKER_PASSWORD={secret}"),
+            "docker",
+            "login",
+            "-u",
+            "r"
+        ]),
+        json!(["kept", format!("docker\u{200B}login -p {secret}")]),
+        json!({"x": ["docker\u{FEFF}", "login", format!("-p{secret}")]}),
+        json!(format!("docker\u{200D}login --password={secret}")),
+        json!(format!("echo {secret} | docker login")),
+        json!(format!(
+            "run: echo {secret} | docker  LOGIN -u r --password-stdin"
+        )),
+        json!(format!("\"docker\" \"login\" -u u -p {secret}")),
+        json!(format!("docker \\\nlogin -p {secret}")),
+        json!(format!("docke\\r log\\in -p {secret}")),
+        json!(format!("docker $'login' -p {secret}")),
+        json!(format!("/usr/bin/docker -D login -p {secret}")),
+        json!(format!("$(printf docker) login -p {secret}")),
+        // A command that passes nothing yet, which a later field could complete.
+        json!(["docker", "login", "-u", "r"]),
+        json!("DOCKER LOGIN"),
+    ]
 }

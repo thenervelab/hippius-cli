@@ -4,7 +4,8 @@ use hippius::routes::hub;
 use serde_json::{Value, json};
 
 use crate::common::{
-    self, Hipc, Home, MEMBER, Reply, Route, Run, Server, draft, hub_provision_hint, route, route_of,
+    self, Hipc, Home, MEMBER, Reply, Route, Run, Server, docker_logins, draft, hub_provision_hint,
+    route, route_of,
 };
 
 const PLANS: &str = concat!(
@@ -1708,15 +1709,12 @@ fn namespace_robot_drops_secret_keys_in_any_case() {
 /// so the answer is refused whole and nothing is printed.
 #[test]
 fn namespace_robot_refuses_any_other_docker_login_command() {
-    for body in [
-        json!({"argv": ["echo", "S3CRET", "|", "docker", "login", "-u", "r", "--password-stdin"]}),
-        json!({"argv": ["DOCKER_PASSWORD=S3CRET", "docker", "login", "-u", "r"]}),
-        json!({"help": "run: echo S3CRET | docker  LOGIN -u r --password-stdin"}),
-        json!({"list": ["kept", "docker\u{200B}login -p S3CRET"]}),
-        json!({"nested": {"x": ["docker\u{FEFF}", "login", "-pS3CRET"]}}),
-        json!("echo S3CRET | docker login -u r --password-stdin"),
-        json!({"argv": ["docker", "login", "-u", "r", "--password", "S3CRET"]}),
-    ] {
+    let bodies = docker_logins("S3CRET")
+        .into_iter()
+        .map(|login| json!({"help": login}))
+        // The whole body.
+        .chain([json!("echo S3CRET | docker login -u r --password-stdin")]);
+    for body in bodies {
         let server = Server::start(vec![route_of(
             &hub::ROBOT,
             [],
