@@ -8,8 +8,8 @@ use hippius::{Client, Request, Result, phrase, view_of};
 use serde_json::Value;
 
 use crate::cli::{VmId, VmTarget, Vms};
-use crate::commands::compute::VMS_LIST_COMMAND;
 use crate::commands::compute::power_policy::power_policy_command;
+use crate::commands::compute::{VMS_LIST_COMMAND, of_vm};
 use crate::commands::{
     Decided, Printed, print_body, print_envelope, print_keyed_list, print_with, read_then_write,
 };
@@ -34,11 +34,7 @@ fn stop(ctx: &Context<'_>, client: &Client, request: &Request, vm_id: &VmId) -> 
 }
 
 pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<Printed> {
-    let power = |route: &Route<1>, vm_id: &VmId, action: &str| {
-        Request::to(route, [vm_id])
-            .listed_by(VMS_LIST_COMMAND)
-            .about(format!("{action} the VM `{vm_id}`"))
-    };
+    let power = |route: &Route<1>, vm_id: &VmId, action: &str| of_vm(route, action, vm_id);
     match command {
         // Swagger types the VM list as a bare array with no page parameters, so it is read
         // whole; a `next` link fails `internal` rather than printing part of the list.
@@ -48,15 +44,10 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
             &Request::to(&compute::VMS, []).about("list the VMs"),
         ),
         Vms::Get(VmTarget { vm_id }) => {
-            let request = Request::to(&compute::VM, [vm_id])
-                .about(format!("get the VM `{vm_id}`"))
-                .listed_by(VMS_LIST_COMMAND);
-            print_body(ctx, client, &request, Gate::Open)
+            print_body(ctx, client, &of_vm(&compute::VM, "get", vm_id), Gate::Open)
         }
         Vms::Attestation(VmTarget { vm_id }) => {
-            let request = Request::to(&compute::VM_ATTESTATION, [vm_id])
-                .about(format!("get the attestation of the VM `{vm_id}`"))
-                .listed_by(VMS_LIST_COMMAND);
+            let request = of_vm(&compute::VM_ATTESTATION, "get the attestation of", vm_id);
             print_with(ctx, client, &request, Gate::Open, |response| {
                 let attestation = response.json()?;
                 Ok(match ctx.mode() {
@@ -67,9 +58,7 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
         }
         // Swagger: `{failovers}`, at most 10, newest first.
         Vms::Failovers(VmTarget { vm_id }) => {
-            let request = Request::to(&compute::VM_FAILOVERS, [vm_id])
-                .about(format!("list the failovers of the VM `{vm_id}`"))
-                .listed_by(VMS_LIST_COMMAND);
+            let request = of_vm(&compute::VM_FAILOVERS, "list the failovers of", vm_id);
             print_keyed_list(ctx, client, &request, "failovers")
         }
         Vms::Create(args) => create::create(ctx, client, args),
@@ -94,9 +83,11 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
             )
         }
         Vms::ResizeOptions(VmTarget { vm_id }) => {
-            let request = Request::to(&compute::VM_RESIZE_OPTIONS, [vm_id])
-                .about(format!("get the resize options of the VM `{vm_id}`"))
-                .listed_by(VMS_LIST_COMMAND);
+            let request = of_vm(
+                &compute::VM_RESIZE_OPTIONS,
+                "get the resize options of",
+                vm_id,
+            );
             print_body(ctx, client, &request, Gate::Open)
         }
         // The command does not wait for `done`; `resize-status` follows it. Operations that
@@ -152,9 +143,7 @@ fn vm_delete(ctx: &Context<'_>, client: &Client, vm_id: &VmId) -> Result<Printed
             .listed_by(VMS_LIST_COMMAND)
             .about(format!("delete the VM {named} and its disks"))
     };
-    let read = Request::to(&compute::VM, [&vm_id])
-        .about(format!("get the VM `{vm_id}`"))
-        .listed_by(VMS_LIST_COMMAND);
+    let read = of_vm(&compute::VM, "get", vm_id);
     let draft = delete(&format!("`{vm_id}`"));
     let decide = || {
         let vm: Vm = view_of(&ctx.send(client, &read)?.document()?);

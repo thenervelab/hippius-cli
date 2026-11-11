@@ -5,7 +5,7 @@ use hippius::{Error, Request, Result, phrase, view_of};
 use serde_json::json;
 
 use crate::cli::{ExposeMode, ExposeProtocol, ExposureCreate, Exposures, VmTarget};
-use crate::commands::compute::VMS_LIST_COMMAND;
+use crate::commands::compute::{VMS_LIST_COMMAND, of_vm};
 use crate::commands::{Printed, print_body_or, print_envelope, print_with};
 use crate::context::{Context, Gate};
 
@@ -13,9 +13,7 @@ pub(super) fn exposures(ctx: &Context<'_>, command: &Exposures) -> Result<Printe
     match command {
         // Swagger types the list as a bare array with no page parameters.
         Exposures::List(VmTarget { vm_id }) => {
-            let request = Request::to(&compute::EXPOSURES, [vm_id])
-                .about(format!("list the exposures of the VM `{vm_id}`"))
-                .listed_by(VMS_LIST_COMMAND);
+            let request = of_vm(&compute::EXPOSURES, "list the exposures of", vm_id);
             print_envelope(ctx, &ctx.load_authed_client()?, &request)
         }
         Exposures::Create(args) => exposure_create(ctx, args),
