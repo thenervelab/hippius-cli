@@ -3039,7 +3039,7 @@ fn an_account_without_a_hub_namespace_is_a_state_not_a_failure() {
     assert_eq!(
         log.matches("note: this account has no Hub namespace")
             .count(),
-        6,
+        7,
         "{log}"
     );
     // The snapshot takes the state as the value of its two Hub reads.

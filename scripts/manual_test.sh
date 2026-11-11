@@ -1356,6 +1356,9 @@ scenario_hub() {
     -- hipc --json hub events list
   step read net/not_found,hub_unprovisioned "Read the usage" "see storage and pulls against the plan" \
     -- hipc --json hub usage
+  step read net/not_found,hub_unprovisioned "Read the usage by repository" \
+    "see each repository's size and pulls, every page of them" \
+    -- hipc --json hub usage --repositories
   step read net/hub_unprovisioned "List the repositories" "see the images in the namespace" \
     -- hipc --json hub repositories list
   repository="$(pick "<repository>" "library/hipc-manual" 'first(rows // [] | .[] | .name)')"

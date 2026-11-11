@@ -282,6 +282,7 @@ scenario hub: read the registry; the write tier creates and deletes a CI key
   [dry-run] hipc --output text hub namespace robot rotate --reveal --yes --dry-run
   [read] hipc --json hub events list
   [read] hipc --json hub usage
+  [read] hipc --json hub usage --repositories
   [read] hipc --json hub repositories list
   [read] hipc --output text hub repositories get <repository>
   [read] hipc --json hub artifacts list <repository>
