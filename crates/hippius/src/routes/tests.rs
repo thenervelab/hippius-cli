@@ -207,6 +207,15 @@ fn a_template_matches_paths_with_a_value_in_each_placeholder() {
     }
 }
 
+/// A path that ends before a one-segment placeholder is not the route.
+#[test]
+fn a_path_that_stops_before_a_placeholder_is_not_the_route() {
+    const ONE: Route<1> = Route::get("/api/a/{id}/").own_account();
+    let endpoint = ONE.endpoint();
+    assert!(endpoint.matches("/api/a/7/"));
+    assert!(!endpoint.matches("/api/a"));
+}
+
 #[test]
 fn a_template_counts_only_whole_segment_placeholders() {
     assert_eq!(placeholders("/api/a/"), 0);
@@ -308,6 +317,14 @@ fn a_route_with_the_wrong_count_is_refused() {
 #[should_panic(expected = "a route starts with `/api/`")]
 fn a_route_outside_the_base_is_refused() {
     let _outside = Route::<0>::get("/v2/a/");
+}
+
+/// A write that needs no flag says so with `Guard::Distinct` or `Guard::None`, so an empty
+/// `Guard::Needs` stops the build of a constant.
+#[test]
+#[should_panic(expected = "a `Guard::Needs` names a flag")]
+fn a_guard_that_needs_no_flag_is_refused() {
+    let _needs_nothing = Route::<0>::post("/api/a/").guard(Guard::Needs(&[]));
 }
 
 /// Each paging style names the queries its pages are asked for with, and says whether its

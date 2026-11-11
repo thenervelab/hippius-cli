@@ -1915,8 +1915,8 @@ refusal_checks() {
     --backup-interval 3600 --yes
   offline "feasibility tier outside the enum" 2 compute feasibility --flavor small \
     --os-disk-tier sata
-  offline "backup interval outside the set" 2 \
-    compute backups policy update "$MISSING_UUID" --interval 600 --yes
+  offline "backup interval of no seconds" 2 \
+    compute backups policy update "$MISSING_UUID" --interval 0 --yes
   # The local checks: each refuses before anything is read or sent.
   local typo="$WORK/input/fw-typo.json" cache="$WORK/input/cache-typo.json" keys=() i
   printf '{"rules": [{"protocol": "tcp", "ports": ["22"], "sources": ["0.0.0.0/0"]}]}\n' >"$typo"

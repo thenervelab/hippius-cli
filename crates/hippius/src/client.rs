@@ -873,32 +873,22 @@ impl Client {
         let mut needed = Vec::new();
         for Rule { guard, route } in account::route_rules(request.method, target.api_path()) {
             let flags = match guard {
-                // `route_rules` gives neither.
-                Guard::None | Guard::Distinct => &[],
                 Guard::Needs(flags) => flags,
-                Guard::NeedsWhenSet(flags, key) => {
-                    if sets_key(body, key) {
-                        flags
-                    } else {
-                        &[]
-                    }
-                }
-                Guard::NeedsUnlessFalse(flags, key) => {
-                    if sets_key_to_false(body, key) {
-                        &[]
-                    } else {
-                        flags
-                    }
-                }
+                Guard::NeedsWhenSet(flags, key) if sets_key(body, key) => flags,
+                Guard::NeedsUnlessFalse(flags, key) if !sets_key_to_false(body, key) => flags,
                 Guard::Refused { why, hint } => {
                     return Err(refusal(request.method, route, None, why, hint));
                 }
-                Guard::RefusedWhenSet { key, why, hint } => {
-                    if sets_key(body, key) {
-                        return Err(refusal(request.method, route, Some(key), why, hint));
-                    }
-                    &[]
+                Guard::RefusedWhenSet { key, why, hint } if sets_key(body, key) => {
+                    return Err(refusal(request.method, route, Some(key), why, hint));
                 }
+                // `route_rules` gives neither `None` nor `Distinct`; the other three need
+                // nothing when the body leaves their key as it is.
+                Guard::None
+                | Guard::Distinct
+                | Guard::NeedsWhenSet(..)
+                | Guard::NeedsUnlessFalse(..)
+                | Guard::RefusedWhenSet { .. } => &[],
             };
             for &flag in flags {
                 if !needed.iter().any(|&(other, _)| other == flag) {
