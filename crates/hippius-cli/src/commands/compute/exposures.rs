@@ -4,7 +4,7 @@ use hippius::routes::compute;
 use hippius::{Error, Request, Result, phrase, view_of};
 use serde_json::json;
 
-use crate::cli::{ExposeMode, ExposeProtocol, ExposureCreate, Exposures};
+use crate::cli::{ExposeMode, ExposeProtocol, ExposureCreate, Exposures, VmTarget};
 use crate::commands::compute::VMS;
 use crate::commands::{Printed, print_body_or, print_envelope, print_with};
 use crate::context::{Context, Gate};
@@ -12,16 +12,23 @@ use crate::context::{Context, Gate};
 pub(super) fn exposures(ctx: &Context<'_>, command: &Exposures) -> Result<Printed> {
     match command {
         // Swagger types the list as a bare array with no page parameters.
-        Exposures::List { vm_id } => {
+        Exposures::List(VmTarget { vm_id }) => {
             let request = Request::to(&compute::EXPOSURES, [vm_id])
                 .about(format!("list the exposures of the VM `{vm_id}`"))
                 .listed_by(VMS);
             print_envelope(ctx, &ctx.load_authed_client()?, &request)
         }
         Exposures::Create(args) => exposure_create(ctx, args),
-        Exposures::Delete { vm_id, exposure_id } => {
+        Exposures::Delete {
+            vm: VmTarget { vm_id },
+            exposure_id,
+        } => {
             let request = Request::to(&compute::EXPOSURE_DELETE, [vm_id, exposure_id])
-                .listed_by(crate::cli::with_id("compute exposures list", vm_id, ""))
+                .listed_by(crate::cli::with_id(
+                    "compute exposures list",
+                    vm_id.as_str(),
+                    "",
+                ))
                 .about(format!(
                     "take down the exposure `{exposure_id}` of the VM `{vm_id}`"
                 ));
@@ -49,7 +56,7 @@ fn exposure_create(ctx: &Context<'_>, args: &ExposureCreate) -> Result<Printed> 
             "pass `--mode raw`",
         ));
     }
-    let request = Request::to(&compute::EXPOSURE_CREATE, [&args.vm_id])
+    let request = Request::to(&compute::EXPOSURE_CREATE, [&args.vm.vm_id])
         .json(&compute::ExposureCreateBody {
             port: args.port,
             mode: args.mode.map(ExposeMode::code),
@@ -62,7 +69,7 @@ fn exposure_create(ctx: &Context<'_>, args: &ExposureCreate) -> Result<Printed> 
     };
     let request = request.about(format!(
         "expose {port} of the VM `{}` to the internet {}",
-        args.vm_id,
+        args.vm.vm_id,
         exposure_reach(args.mode)
     ));
     let gate = Gate::Confirm { consequence: None };

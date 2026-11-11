@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use clap::{Args, Subcommand, ValueEnum};
 
 use crate::cli::values::{Charset, Dash, word};
-use crate::cli::{StatsStep, examples, number, zone_id};
+use crate::cli::{StatsStep, ZoneTarget, examples, number};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum CdnWaf {
@@ -15,11 +15,7 @@ pub(crate) enum CdnWaf {
     #[command(after_help = examples(&[
         "hipc cdn waf get zab12cd34ef56",
     ]))]
-    Get {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
-    },
+    Get(ZoneTarget),
     /// Change the zone's WAF settings: only the flags given are sent; spends money while the mode
     /// is not off: needs --yes
     ///
@@ -35,11 +31,7 @@ pub(crate) enum CdnWaf {
     #[command(after_help = examples(&[
         "hipc cdn waf status zab12cd34ef56",
     ]))]
-    Status {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
-    },
+    Status(ZoneTarget),
     /// The zone's WAF matches over a window, as counters
     #[command(after_help = examples(&[
         "hipc cdn waf analytics zab12cd34ef56 --step 1h --group-by rule",
@@ -81,9 +73,8 @@ pub(crate) enum CdnWaf {
 
 #[derive(Debug, Args)]
 pub(crate) struct WafUpdate {
-    /// The zone id from hipc cdn zones list
-    #[arg(value_parser = zone_id)]
-    pub(crate) zone_id: String,
+    #[command(flatten)]
+    pub(crate) zone: ZoneTarget,
     /// What the WAF does: on blocks, log only counts, and off stops it and its billing
     #[arg(long, value_enum)]
     pub(crate) mode: Option<WafMode>,
@@ -181,9 +172,8 @@ impl BlockContentType {
 
 #[derive(Debug, Args)]
 pub(crate) struct WafAnalytics {
-    /// The zone id from hipc cdn zones list
-    #[arg(value_parser = zone_id)]
-    pub(crate) zone_id: String,
+    #[command(flatten)]
+    pub(crate) zone: ZoneTarget,
     /// The start of the window, as an ISO 8601 date-time
     #[arg(long, value_name = "DATETIME")]
     pub(crate) from: Option<String>,
@@ -218,9 +208,8 @@ impl GroupBy {
 
 #[derive(Debug, Args)]
 pub(crate) struct WafEvents {
-    /// The zone id from hipc cdn zones list
-    #[arg(value_parser = zone_id)]
-    pub(crate) zone_id: String,
+    #[command(flatten)]
+    pub(crate) zone: ZoneTarget,
     /// The start of the window, as an ISO 8601 date-time
     #[arg(long, value_name = "DATETIME")]
     pub(crate) from: Option<String>,
@@ -258,9 +247,8 @@ impl RuleAction {
 
 #[derive(Debug, Args)]
 pub(crate) struct WafTest {
-    /// The zone id from hipc cdn zones list
-    #[arg(value_parser = zone_id)]
-    pub(crate) zone_id: String,
+    #[command(flatten)]
+    pub(crate) zone: ZoneTarget,
     /// A JSON file holding the request, or - for stdin, with exactly ten keys
     ///
     /// The keys are ip, country, asn (a number), host, method, path, query, headers (an object
@@ -285,11 +273,7 @@ pub(crate) enum WafRules {
     #[command(after_help = examples(&[
         "hipc cdn waf rules get zab12cd34ef56",
     ]))]
-    Get {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
-    },
+    Get(ZoneTarget),
     /// Replace the whole custom rule list with a file's, publishing a new version; needs --yes,
     /// and --remove-others to drop, move, or change a rule; --check only checks the file
     ///
@@ -314,9 +298,8 @@ pub(crate) enum WafRules {
         "hipc cdn waf rules update zab12cd34ef56 --rules-file waf-rules.json --remove-others --yes",
     ]))]
     Update {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
+        #[command(flatten)]
+        zone: ZoneTarget,
         /// A JSON file such as {"rules": [...]}, or - for stdin, sent as it is
         ///
         /// {"rules": []} removes every rule. A rule key the API does not list is refused.
@@ -351,11 +334,7 @@ pub(crate) enum WafRateLimits {
     #[command(after_help = examples(&[
         "hipc cdn waf rate-limits get zab12cd34ef56",
     ]))]
-    Get {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
-    },
+    Get(ZoneTarget),
     // The keys, periods, and actions are the docs' (https://docs.hippius.com/use/cdn/firewall).
     /// Replace the whole rate limit list with a file's, publishing a new version; needs --yes,
     /// and --remove-others to drop or change a rate limit; --check only checks the file
@@ -381,9 +360,8 @@ pub(crate) enum WafRateLimits {
          --remove-others --yes",
     ]))]
     Update {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
+        #[command(flatten)]
+        zone: ZoneTarget,
         /// A JSON file such as {"rules": [...]}, or - for stdin, sent as it is
         ///
         /// {"rules": []} removes every rate limit. A key the API does not list is refused.
@@ -420,19 +398,14 @@ pub(crate) enum WafVersions {
     #[command(after_help = examples(&[
         "hipc cdn waf versions list zab12cd34ef56",
     ]))]
-    List {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
-    },
+    List(ZoneTarget),
     /// One version and its source
     #[command(after_help = examples(&[
         "hipc cdn waf versions get zab12cd34ef56 3",
     ]))]
     Get {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
+        #[command(flatten)]
+        zone: ZoneTarget,
         /// The version number from hipc cdn waf versions list
         #[arg(value_parser = number(VERSION))]
         version_number: u64,
@@ -445,9 +418,8 @@ pub(crate) enum WafVersions {
         "hipc cdn waf versions rollback zab12cd34ef56 3 --yes",
     ]))]
     Rollback {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
+        #[command(flatten)]
+        zone: ZoneTarget,
         /// The version number from hipc cdn waf versions list
         #[arg(value_parser = number(VERSION))]
         version_number: u64,
@@ -656,44 +628,11 @@ pub(crate) fn tier_zones(value: &str) -> Result<TierZones, String> {
     };
     let (tier, zones) = value.split_once('=').ok_or_else(refused)?;
     let tier = WafTier::from_str(tier, false).map_err(|_| refused())?;
-    let zones: u32 = zones.parse().map_err(|_| refused())?;
+    let zones = crate::units::whole_number(zones)
+        .and_then(|zones| u32::try_from(zones).ok())
+        .ok_or_else(refused)?;
     if zones > MAX_ESTIMATE_WAF_ZONES {
         return Err(refused());
     }
     Ok(TierZones { tier, zones })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Each value goes on the wire as the word the command line takes for it.
-    #[test]
-    fn every_value_is_sent_as_it_is_typed() {
-        fn typed<T: ValueEnum>(value: &T) -> String {
-            let possible = value.to_possible_value().expect("no value is skipped");
-            possible.get_name().to_owned()
-        }
-        for value in WafMode::value_variants() {
-            assert_eq!(value.code(), typed(value));
-        }
-        for value in WafTier::value_variants() {
-            assert_eq!(value.code(), typed(value));
-        }
-        for value in BlockStatus::value_variants() {
-            assert_eq!(value.code().to_string(), typed(value));
-        }
-        for value in BlockContentType::value_variants() {
-            assert_eq!(value.code(), typed(value));
-        }
-        for value in GroupBy::value_variants() {
-            assert_eq!(value.code(), typed(value));
-        }
-        for value in RuleAction::value_variants() {
-            assert_eq!(value.code(), typed(value));
-        }
-        for value in ListKind::value_variants() {
-            assert_eq!(value.code(), typed(value));
-        }
-    }
 }

@@ -343,7 +343,11 @@ fn a_zone_name_outside_the_label_rules_is_usage() {
             assert!(
                 error["message"]
                     .as_str()
-                    .is_some_and(|m| m.contains("a zone name is one line of 1 to 64 characters")),
+                    .is_some_and(|m| m.contains(if bad.contains('\n') {
+                        "a zone name holds no control character or line break"
+                    } else {
+                        "a zone name is one line of 1 to 64 characters"
+                    })),
                 "{bad:?}: {error}"
             );
         }

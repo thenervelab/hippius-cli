@@ -4,10 +4,10 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand, ValueEnum};
 
-use crate::cli::values::{Charset, Dash, word};
+use crate::cli::values::{Charset, Dash, Spaces, label, word};
 use crate::cli::{
-    AppEngine, BackupInterval, Backups, Databases, Exposures, FailoverMode, Firewall, Kubernetes,
-    ListArgs, RESIZE_ID, Runners, SSH_KEY_ID, examples, number, region, vm_id,
+    AppEngine, Backups, Databases, Exposures, FailoverMode, Firewall, Kubernetes, ListArgs,
+    RESIZE_ID, Runners, SSH_KEY_ID, VmTarget, backup_interval, examples, number, region,
 };
 
 #[derive(Debug, Subcommand)]
@@ -230,11 +230,7 @@ pub(crate) enum Vms {
     #[command(after_help = examples(&[
         "hipc compute vms get vm-1a2b",
     ]))]
-    Get {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Get(VmTarget),
     /// Whether the VM booted as a confidential (AMD SEV-SNP) guest, as the key broker recorded it
     ///
     /// verdict unknown means no evidence was recorded, so confidentiality is not proven either way;
@@ -244,11 +240,7 @@ pub(crate) enum Vms {
     #[command(after_help = examples(&[
         "hipc compute vms attestation vm-1a2b",
     ]))]
-    Attestation {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Attestation(VmTarget),
     /// Up to the VM's last 10 failovers, newest first: each time it was restarted on another
     /// server because its own stopped responding
     ///
@@ -258,11 +250,7 @@ pub(crate) enum Vms {
     #[command(after_help = examples(&[
         "hipc compute vms failovers vm-1a2b",
     ]))]
-    Failovers {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Failovers(VmTarget),
     /// Launch a VM, and at a terminal wait until it is running; spends money: needs --yes
     ///
     /// The VM is billed from its launch until it is deleted, running or stopped. The launch
@@ -283,18 +271,14 @@ pub(crate) enum Vms {
         "hipc compute vms create --flavor small --ssh-key-id 1 --public-ip --no-wait --yes",
         "hipc compute vms create --flavor small --ssh-key-id 1 --public-ip --open-ssh --open-port 443 --yes",
     ]))]
-    Create(VmCreate),
+    Create(Box<VmCreate>),
     /// Power a VM on
     ///
     /// A VM that is already running answers conflict.
     #[command(after_help = examples(&[
         "hipc compute vms start vm-1a2b",
     ]))]
-    Start {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Start(VmTarget),
     /// Power a VM off; needs --yes
     ///
     /// Everything the VM serves goes down until it is started again. A stopped VM is still
@@ -302,30 +286,18 @@ pub(crate) enum Vms {
     #[command(after_help = examples(&[
         "hipc compute vms stop vm-1a2b --yes",
     ]))]
-    Stop {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Stop(VmTarget),
     /// Restart a VM; needs --yes
     #[command(after_help = examples(&[
         "hipc compute vms reboot vm-1a2b --yes",
     ]))]
-    Reboot {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Reboot(VmTarget),
     /// The sizes a VM can be resized to, with prices, and why a resize cannot start now (blocked,
     /// cooldown_until, in_flight)
     #[command(after_help = examples(&[
         "hipc compute vms resize-options vm-1a2b",
     ]))]
-    ResizeOptions {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    ResizeOptions(VmTarget),
     /// Change a VM's vCPU and memory; its disk and data are kept; spends money, as the bill
     /// switches to the new size: needs --yes
     ///
@@ -337,9 +309,8 @@ pub(crate) enum Vms {
         "hipc compute vms resize vm-1a2b --flavor large --yes",
     ]))]
     Resize {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
+        #[command(flatten)]
+        vm: VmTarget,
         /// The flavor code from hipc compute vms resize-options
         #[arg(long, value_parser = flavor)]
         flavor: String,
@@ -350,9 +321,8 @@ pub(crate) enum Vms {
         "hipc compute vms resize-status vm-1a2b 3",
     ]))]
     ResizeStatus {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
+        #[command(flatten)]
+        vm: VmTarget,
         /// The resize id that hipc compute vms resize printed
         #[arg(value_parser = number(RESIZE_ID))]
         resize_id: u64,
@@ -374,11 +344,7 @@ pub(crate) enum Vms {
     #[command(after_help = examples(&[
         "hipc compute vms delete vm-1a2b --yes",
     ]))]
-    Delete {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Delete(VmTarget),
 }
 
 #[derive(Debug, Subcommand)]
@@ -391,11 +357,7 @@ pub(crate) enum PowerPolicy {
     #[command(after_help = examples(&[
         "hipc compute vms power-policy get vm-1a2b",
     ]))]
-    Get {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Get(VmTarget),
     /// Set what happens when the VM's own operating system powers it off
     ///
     /// restart, the default, starts the VM again, so a VM shut down from inside keeps running
@@ -407,9 +369,8 @@ pub(crate) enum PowerPolicy {
         "hipc compute vms power-policy update vm-1a2b --on-guest-poweroff stop",
     ]))]
     Update {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
+        #[command(flatten)]
+        vm: VmTarget,
         /// What a power-off from inside the VM does: restart or stop
         #[arg(long, value_name = "POLICY", value_enum)]
         on_guest_poweroff: GuestPoweroff,
@@ -441,10 +402,6 @@ impl GuestPoweroff {
         .multiple(true)
         .args(["ssh_key_ids", "ssh_public_key_file"])
 ))]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each bool is one independent command-line flag, which clap parses into a field"
-)]
 pub(crate) struct VmCreate {
     /// The flavor code from hipc compute flavors
     #[arg(long, value_parser = flavor)]
@@ -515,6 +472,29 @@ pub(crate) struct VmCreate {
     /// Same as --open-port 22, for SSH
     #[arg(long)]
     pub(crate) open_ssh: bool,
+    /// A whole physical disk for the VM, SIZE:TIER, such as 2000:hdd; repeat it once per disk,
+    /// up to 8
+    ///
+    /// SIZE is the least GiB the disk has, 1000 or more; TIER is nvme, ssd, or hdd, a minimum.
+    /// Every disk of a launch has the same size and tier. Each is billed per GiB-hour at its
+    /// size class (floored to 100 GiB), while the VM is stopped too, at the price dedicated_disks
+    /// in hipc compute prices. The disks pin the VM to its server: no backup, migration, or
+    /// failover, so --backup-interval cannot go with it.
+    #[arg(
+        long,
+        value_name = "SIZE:TIER",
+        value_parser = dedicated_disk,
+        conflicts_with_all = ["backup_interval", "failover"]
+    )]
+    pub(crate) dedicated_disk: Vec<DedicatedDisk>,
+    #[command(flatten)]
+    pub(crate) launch: LaunchFlags,
+}
+
+/// The flags the VM launch and the App Engine launch share: where the VM lands, its backups,
+/// and the wait. An app is a VM, so each flag means the same for both.
+#[derive(Debug, Args)]
+pub(crate) struct LaunchFlags {
     /// The anti-affinity group: two VMs of the account in one group never share a server
     ///
     /// A name is 1 to 64 of a-z, 0-9, and -, not starting with -. Fixed for the VM's life. hipc
@@ -529,40 +509,21 @@ pub(crate) struct VmCreate {
     /// land now.
     #[arg(long, value_name = "TIER", value_enum)]
     pub(crate) os_disk_tier: Option<DiskTier>,
-    /// A whole physical disk for the VM, SIZE:TIER, such as 2000:hdd; repeat it once per disk,
-    /// up to 8
-    ///
-    /// SIZE is the least GiB the disk has, 1000 or more; TIER is nvme, ssd, or hdd, a minimum.
-    /// Every disk of a launch has the same size and tier. Each is billed per GiB-hour at its
-    /// size class (floored to 100 GiB), while the VM is stopped too, at the price dedicated_disks
-    /// in hipc compute prices. The disks pin the VM to its server: no backup, migration, or
-    /// failover, so --backup-interval cannot go with it.
-    #[arg(
-        long,
-        value_name = "SIZE:TIER",
-        value_parser = dedicated_disk,
-        conflicts_with = "backup_interval"
-    )]
-    pub(crate) dedicated_disk: Vec<DedicatedDisk>,
-    /// Turn on scheduled backups once the VM runs, at this many seconds between backups
+    /// Turn on scheduled backups once the VM runs, at this many seconds between backups: 900,
+    /// 3600, 21600, or 86400
     ///
     /// Stored backups are billed per GB-hour at the price hipc compute backups options shows.
     /// The server checks the interval before anything is bought; a failure to turn backups on
-    /// later is the VM's backup_error.
-    #[arg(long, value_name = "SECONDS", value_enum)]
-    pub(crate) backup_interval: Option<BackupInterval>,
+    /// later is the VM's backup_error. The server owns the intervals: these are its own when this
+    /// hipc was built, and hipc compute backups options lists them.
+    #[arg(long, value_name = "SECONDS", value_parser = backup_interval)]
+    pub(crate) backup_interval: Option<u32>,
     /// The failover of those backups: auto restarts the VM on another server from its latest
     /// backup if its server dies, losing what was written after it; manual, the server's
     /// default, leaves that to Hippius support
     ///
     /// auto places the VM only on a server with a failover peer, so it is chosen at launch.
-    #[arg(
-        long,
-        value_name = "MODE",
-        value_enum,
-        requires = "backup_interval",
-        conflicts_with = "dedicated_disk"
-    )]
+    #[arg(long, value_name = "MODE", value_enum, requires = "backup_interval")]
     pub(crate) failover: Option<FailoverMode>,
     /// What a power-off from inside the VM does: restart (the server's default) or stop
     ///
@@ -572,8 +533,9 @@ pub(crate) struct VmCreate {
     pub(crate) on_guest_poweroff: Option<GuestPoweroff>,
     /// Wait for running even when stdout is not a terminal, CI is set, or AI_AGENT is set
     ///
-    /// A run killed during the wait prints nothing on stdout; a caller that may be killed
-    /// before running omits --wait and follows the VM with hipc compute vms get.
+    /// An app is running when its status and boot_phase both are. A run killed during the wait
+    /// prints nothing on stdout; a caller that may be killed first omits --wait and follows the
+    /// VM with hipc compute vms get, or the app with hipc compute app-engine apps get.
     #[arg(long, conflicts_with = "no_wait")]
     pub(crate) wait: bool,
     /// Print the launch answer and exit without waiting for running
@@ -584,8 +546,9 @@ pub(crate) struct VmCreate {
     pub(crate) no_wait: bool,
     /// Wait for running for this many seconds, 1 to 3600, default 300
     ///
-    /// It waits as --wait does, even when stdout is not a terminal, or CI or AI_AGENT is set.
-    /// A poll still in flight at the deadline can add up to --request-timeout.
+    /// It waits as --wait does, even when stdout is not a terminal, or CI or AI_AGENT is set. A
+    /// poll still in flight at the deadline can add up to --request-timeout. A wait that ends
+    /// before running still prints the VM or the app on stdout, so its vm_id is not lost.
     #[arg(
         long,
         value_name = "SECONDS",
@@ -642,7 +605,7 @@ pub(crate) enum SshKeys {
 /// one would otherwise fail only at launch. The pattern is swagger's (`POST
 /// /api/compute/vms/`, `placement_group`): 1 to 64 of `a-z`, `0-9`, and `-`. A leading `-`
 /// is refused too, as for every name the caller picks: a command line reads it as a flag.
-pub(crate) fn placement_group(value: &str) -> Result<String, String> {
+fn placement_group(value: &str) -> Result<String, String> {
     word(
         value,
         1..=64,
@@ -670,13 +633,9 @@ pub(crate) fn flavor(value: &str) -> Result<String, String> {
     }
 }
 
-/// An `ssh-keys create --name`: 1 to 100 characters, as its help says.
+/// An `ssh-keys create --name`: a [`label`] of 1 to 100 characters, as its help says.
 fn ssh_key_name(value: &str) -> Result<String, String> {
-    if (1..=100).contains(&value.chars().count()) {
-        Ok(value.to_owned())
-    } else {
-        Err("an SSH key name is 1 to 100 characters".to_owned())
-    }
+    label(value, 1..=100, Spaces::Kept, "an SSH key name")
 }
 
 /// The disk tiers of `POST /api/compute/vms/` (`os_disk_tier`, and `tier` in
@@ -724,10 +683,7 @@ fn dedicated_disk(value: &str) -> Result<DedicatedDisk, String> {
         )
     };
     let (size, tier) = value.split_once(':').ok_or_else(refused)?;
-    // `u64::from_str` takes a leading `+`, which the message's "whole number" does not.
-    let min_size_gb = Some(size)
-        .filter(|size| size.bytes().all(|b| b.is_ascii_digit()))
-        .and_then(|size| size.parse().ok())
+    let min_size_gb = crate::units::whole_number(size)
         .filter(|gb| *gb >= MIN_DEDICATED_GB)
         .ok_or_else(refused)?;
     let tier = DiskTier::from_str(tier, false).map_err(|_| refused())?;
@@ -750,11 +706,7 @@ pub(crate) enum PublicIp {
     #[command(after_help = examples(&[
         "hipc compute public-ip get vm-1a2b",
     ]))]
-    Get {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Get(VmTarget),
     /// Attach a dedicated public IPv4 to a VM; spends money: needs --yes
     ///
     /// The address is billed per second at the price hipc compute public-ip availability shows:
@@ -765,11 +717,7 @@ pub(crate) enum PublicIp {
     #[command(after_help = examples(&[
         "hipc compute public-ip create vm-1a2b --yes",
     ]))]
-    Create {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Create(VmTarget),
     /// Detach a VM's public IPv4; needs --yes
     ///
     /// Billing for it stops. Deleting the VM releases the address too, so a VM about to be
@@ -780,20 +728,15 @@ pub(crate) enum PublicIp {
     #[command(after_help = examples(&[
         "hipc compute public-ip delete vm-1a2b --yes",
     ]))]
-    Delete {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Delete(VmTarget),
     /// Bytes in and out of a VM's public IPv4, per step, over the periods it held one
     #[command(after_help = examples(&[
         "hipc compute public-ip usage vm-1a2b",
         "hipc compute public-ip usage vm-1a2b --range 7d",
     ]))]
     Usage {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
+        #[command(flatten)]
+        vm: VmTarget,
         /// The window
         ///
         /// Without it the server uses 24h.

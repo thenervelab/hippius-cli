@@ -60,7 +60,7 @@ const KEY_FILE: &str = "--cluster-key-file";
 /// kubeconfig opened, so a failed run leaves no file behind.
 pub(super) fn kubeconfig(ctx: &Context<'_>, args: &ClusterKubeconfig) -> Result<Printed> {
     let key = ClusterKey::load(&args.key.path, KEY_FILE)?;
-    let id = args.cluster_id;
+    let id = args.cluster.cluster_id;
     let client = ctx.load_authed_client()?;
     let read = cluster_get(id);
     let secrets = Request::to(&kubernetes::CLUSTER_SECRETS, [&id])
@@ -99,7 +99,7 @@ pub(super) fn scale(ctx: &Context<'_>, args: &NodePoolScale) -> Result<Printed> 
         .as_deref()
         .map(|path| ClusterKey::load(path, KEY_FILE))
         .transpose()?;
-    let (id, pool_id, count) = (args.cluster_id, args.pool_id, args.count);
+    let (id, pool_id, count) = (args.cluster.cluster_id, args.pool_id, args.count);
     let client = ctx.load_authed_client()?;
     let post = |action: String| {
         Request::to(&kubernetes::NODE_POOL_SCALE, [&id, &pool_id])
@@ -207,7 +207,7 @@ struct Adds<'a, 'k> {
 /// (module docs).
 pub(super) fn replace(ctx: &Context<'_>, args: &NodeReplace) -> Result<Printed> {
     let key = ClusterKey::load(&args.key.path, KEY_FILE)?;
-    let (id, node) = (args.cluster_id, args.node_name.as_str());
+    let (id, node) = (args.cluster.cluster_id, args.node_name.as_str());
     let client = ctx.load_authed_client()?;
     let post = |action: String| {
         Request::to(&kubernetes::NODE_REPLACE, [&id, &node])

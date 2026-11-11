@@ -5,11 +5,25 @@ use std::os::unix::fs::PermissionsExt as _;
 use hippius::routes::s3;
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, PROJECT, Reply, Server, command, draft, route, route_of};
+use crate::common::{
+    Hipc, Home, MEMBER, PROJECT, Reply, Route, Server, command, draft, route, route_of,
+};
 
 /// A secret the server returns once. Tests assert where it may and may not appear.
 const SECRET: &str = "s3cr3t-QZ7-only-once";
 const ID: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+
+/// The S3 plan catalog a subscribe or a plan change reads after its question.
+fn plans() -> Route {
+    route_of(
+        &s3::PLANS,
+        [],
+        Reply::json(
+            200,
+            r#"{"plans":[{"code":"pro"},{"code":"business"},{"code":"enterprise"}]}"#,
+        ),
+    )
+}
 
 fn created() -> String {
     format!(
@@ -37,6 +51,7 @@ fn plans_are_the_catalog_object_and_need_no_token() {
 #[test]
 fn subscription_routes_send_the_account_header_for_a_membership() {
     let server = Server::start(vec![
+        plans(),
         route_of(
             &s3::SUBSCRIPTION,
             [],
@@ -72,6 +87,7 @@ fn subscription_routes_send_the_account_header_for_a_membership() {
 #[test]
 fn subscribe_sends_plan_and_rail_and_change_sends_plan_only() {
     let server = Server::start(vec![
+        plans(),
         route_of(&s3::SUBSCRIBE, [], Reply::json(201, r#"{"active":true}"#)),
         route_of(
             &s3::SUBSCRIPTION_CHANGE,
@@ -101,12 +117,100 @@ fn subscribe_sends_plan_and_rail_and_change_sends_plan_only() {
         ])
         .ok();
     let requests = server.requests();
+    let sent: Vec<(&str, &str)> = requests
+        .iter()
+        .map(|r| (r.method.as_str(), r.target.as_str()))
+        .collect();
     assert_eq!(
-        requests[0].json(),
+        sent,
+        [
+            ("GET", "/api/s3/plans/"),
+            ("POST", "/api/s3/subscription/"),
+            ("GET", "/api/s3/plans/"),
+            ("PATCH", "/api/s3/subscription/"),
+        ]
+    );
+    assert_eq!(
+        requests[1].json(),
         json!({"plan": "enterprise", "rail": "credits"})
     );
-    assert_eq!(requests[1].method, "PATCH");
-    assert_eq!(requests[1].json(), json!({"plan": "business"}));
+    assert_eq!(requests[3].json(), json!({"plan": "business"}));
+}
+
+/// The plans are the server's (owner decision D5): a code its catalog lists is bought even
+/// when this hipc does not know it, and one it does not list is refused after the question and
+/// the read, before anything is bought. A dry run lists the read and reads nothing.
+#[test]
+fn a_plan_is_checked_against_the_server_catalog() {
+    let server = Server::start(vec![
+        route_of(
+            &s3::PLANS,
+            [],
+            Reply::json(200, r#"{"plans":[{"code":"pro"},{"code":"team"}]}"#),
+        ),
+        route_of(&s3::SUBSCRIBE, [], Reply::json(201, r#"{"active":true}"#)),
+    ]);
+    let home = Home::new();
+    let subscribe = |plan: &str| {
+        Hipc::against(&home, &server).run(&[
+            "s3",
+            "subscription",
+            "subscribe",
+            "--plan",
+            plan,
+            "--yes",
+        ])
+    };
+    subscribe("team").ok();
+    assert_eq!(server.requests()[1].json()["plan"], "team");
+    let error = subscribe("business").fails(2, "usage");
+    assert_eq!(
+        error["message"],
+        "an S3 plan `business` is not one the server offers: the server offers `pro` and `team`"
+    );
+    assert_eq!(error["hint"], "run `hipc s3 plans` to see them");
+    let error = Hipc::against(&home, &server)
+        .run(&["s3", "subscription", "change", "--plan", "gold", "--yes"])
+        .fails(2, "usage");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("an S3 plan `gold` is not one")
+    );
+    let methods: Vec<String> = server.requests().iter().map(|r| r.method.clone()).collect();
+    assert_eq!(
+        methods,
+        ["GET", "POST", "GET", "GET"],
+        "nothing bought after a refusal"
+    );
+
+    let doc = Hipc::against(&home, &server)
+        .run(&[
+            "s3",
+            "subscription",
+            "subscribe",
+            "--plan",
+            "gold",
+            "--dry-run",
+        ])
+        .ok();
+    let sent: Vec<&str> = doc["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(sent, ["GET", "POST"]);
+    assert_eq!(server.requests().len(), 4);
+    let error = subscribe("Pro").fails(2, "usage");
+    assert!(
+        error["message"].as_str().unwrap().contains(
+            "an S3 plan is a code of lowercase letters, digits, `.`, and `-`, such as `pro`, \
+             `business`, or `enterprise`"
+        ),
+        "{error}"
+    );
 }
 
 /// Swagger `s3_subscription_partial_update`: a PATCH is a plan change, a funding switch,
@@ -114,6 +218,7 @@ fn subscribe_sends_plan_and_rail_and_change_sends_plan_only() {
 #[test]
 fn a_card_checkout_and_a_cancel_note_only_in_text_mode() {
     let server = Server::start(vec![
+        plans(),
         route_of(
             &s3::SUBSCRIBE,
             [],
@@ -150,7 +255,7 @@ fn a_card_checkout_and_a_cancel_note_only_in_text_mode() {
             "next_step": format!("hipc --api-url {} s3 subscription checkout i-2", server.url())
         })
     );
-    assert_eq!(server.requests()[0].json()["rail"], "card");
+    assert_eq!(server.requests()[1].json()["rail"], "card");
     let mut text = vec!["--output", "text"];
     text.extend(card);
     let text_run = Hipc::against(&home, &server).run(&text);
@@ -194,7 +299,10 @@ fn a_card_checkout_and_a_cancel_note_only_in_text_mode() {
 
 #[test]
 fn a_bodyless_checkout_says_nothing_was_bought() {
-    let server = Server::start(vec![route_of(&s3::SUBSCRIBE, [], Reply::json(202, "{}"))]);
+    let server = Server::start(vec![
+        plans(),
+        route_of(&s3::SUBSCRIBE, [], Reply::json(202, "{}")),
+    ]);
     let run = Hipc::against(&Home::new(), &server).run(&[
         "--output",
         "text",
@@ -342,8 +450,9 @@ fn bucket_acl_refuses_a_bad_name_and_maps_its_errors() {
         .fails(2, "usage");
     assert_eq!(
         error["message"],
-        "`a..b` is not a bucket name: a name is 3 to 63 lowercase letters, digits, `.`, and \
-         `-`, starts and ends with a letter or a digit, and has no `..`"
+        "invalid value `a..b` for `<BUCKET_NAME>`: a bucket name is 3 to 63 lowercase \
+         letters, digits, `.`, and `-`, starts and ends with a letter or a digit, and has no \
+         `..`, such as `my-bucket.2`"
     );
     assert!(server.requests().is_empty());
     let error = Hipc::against(&home, &server)
@@ -929,11 +1038,7 @@ fn token_writes_name_a_token() {
         .fails(2, "usage");
     assert_eq!(
         error["message"],
-        "`abc` is not a token id: a token id is a UUID"
-    );
-    assert_eq!(
-        error["hint"],
-        "run `hipc s3 tokens list` to see the token ids"
+        "invalid value `abc` for `<TOKEN_ID>`: a token id is a UUID, from `hipc s3 tokens list`"
     );
     let error = Hipc::against(&Home::new(), &server)
         .run(&[
@@ -1841,11 +1946,10 @@ fn buckets_list_with_a_membership_sends_the_account_header() {
 #[test]
 fn subscribe_404_and_409_map_to_their_codes() {
     for (status, code) in [(404, "not_found"), (409, "conflict")] {
-        let server = Server::start(vec![route_of(
-            &s3::SUBSCRIBE,
-            [],
-            Reply::json(status, r#"{"error":"no"}"#),
-        )]);
+        let server = Server::start(vec![
+            plans(),
+            route_of(&s3::SUBSCRIBE, [], Reply::json(status, r#"{"error":"no"}"#)),
+        ]);
         let error = Hipc::against(&Home::new(), &server)
             .run(&["s3", "subscription", "subscribe", "--plan", "pro", "--yes"])
             .fails(1, code);
@@ -1961,11 +2065,14 @@ fn tokens_list_refuses_a_page_that_is_not_the_one_asked() {
 
 #[test]
 fn an_s3_subscribe_503_with_retry_after_did_nothing() {
-    let server = Server::start(vec![route_of(
-        &s3::SUBSCRIBE,
-        [],
-        Reply::json(503, r#"{"error":"Chain unreachable"}"#).header("Retry-After", "2"),
-    )]);
+    let server = Server::start(vec![
+        plans(),
+        route_of(
+            &s3::SUBSCRIBE,
+            [],
+            Reply::json(503, r#"{"error":"Chain unreachable"}"#).header("Retry-After", "2"),
+        ),
+    ]);
     let error = Hipc::against(&Home::new(), &server)
         .run(&["s3", "subscription", "subscribe", "--plan", "pro", "--yes"])
         .fails(1, "unavailable");
@@ -1996,13 +2103,13 @@ fn an_s3_subscribe_502_503_or_timeout_may_have_bought_the_plan() {
         ),
         (Reply::never(), "timeout"),
     ] {
-        let server = Server::start(vec![route_of(&s3::SUBSCRIBE, [], reply)]);
+        let server = Server::start(vec![plans(), route_of(&s3::SUBSCRIBE, [], reply)]);
         let error = Hipc::against(&Home::new(), &server)
             .run(&subscribe)
             .fails(1, code);
         assert_eq!(error["side_effects"], "partial", "{error}");
         assert_eq!(error["retryable"], false, "{error}");
-        assert_eq!(server.requests().len(), 1);
+        assert_eq!(server.requests().len(), 2);
     }
 }
 

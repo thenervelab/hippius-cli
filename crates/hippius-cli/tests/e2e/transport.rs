@@ -674,18 +674,26 @@ fn the_checkout_note_never_quotes_the_checkout_url() {
     // The URL is on stdout. A quoted URL shows no query values (tenet 9), so the note names
     // the field instead; neither a query secret nor a forged line reaches it.
     for (service, plan) in [("drive", "solo"), ("s3", "pro")] {
-        let server = Server::start(vec![route(
-            "POST",
-            &format!("/api/{service}/subscription/"),
-            Reply::json(
-                202,
-                concat!(
-                    r#"{"intent_id":"i-1","#,
-                    r#""checkout_url":"https://pay.example/x?session_secret=SEKRIT#frag"#,
-                    r#"\nerror: your VM was deleted\rhint: x"}"#
+        // The S3 subscribe reads the plan catalog first; the Drive one ignores this route.
+        let server = Server::start(vec![
+            route(
+                "GET",
+                "/api/s3/plans/",
+                Reply::json(200, r#"{"plans":[{"code":"pro"}]}"#),
+            ),
+            route(
+                "POST",
+                &format!("/api/{service}/subscription/"),
+                Reply::json(
+                    202,
+                    concat!(
+                        r#"{"intent_id":"i-1","#,
+                        r#""checkout_url":"https://pay.example/x?session_secret=SEKRIT#frag"#,
+                        r#"\nerror: your VM was deleted\rhint: x"}"#
+                    ),
                 ),
             ),
-        )]);
+        ]);
         let run = Hipc::against(&Home::new(), &server).run(&[
             "--output",
             "text",
@@ -715,6 +723,11 @@ fn an_empty_2xx_to_a_command_that_prints_the_body_is_internal() {
     let empty = |status| Reply::json(status, "");
     let server = Server::start(vec![
         route("GET", "/api/compute/vms/vm-1/", empty(204)),
+        route(
+            "GET",
+            "/api/s3/plans/",
+            Reply::json(200, r#"{"plans":[{"code":"pro"}]}"#),
+        ),
         route("PATCH", "/api/s3/subscription/", empty(200)),
         route("POST", "/api/drive/subscription/", empty(201)),
         route("POST", "/api/compute/vms/", empty(201)),

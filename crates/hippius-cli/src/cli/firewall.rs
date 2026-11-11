@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
-use crate::cli::{examples, vm_id};
+use crate::cli::{VmTarget, examples};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Firewall {
@@ -12,11 +12,7 @@ pub(crate) enum Firewall {
     #[command(after_help = examples(&[
         "hipc compute firewall get vm-1a2b",
     ]))]
-    Get {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Get(VmTarget),
     /// Replace every inbound rule of a VM with the rules in a file; needs --yes, and
     /// --remove-others to drop a rule or change its protocol, ports, sources, or enabled flag
     ///
@@ -48,9 +44,8 @@ pub(crate) enum Firewall {
 
 #[derive(Debug, Args)]
 pub(crate) struct FirewallUpdate {
-    /// The vm_id from hipc compute vms list
-    #[arg(value_parser = vm_id)]
-    pub(crate) vm_id: String,
+    #[command(flatten)]
+    pub(crate) vm: VmTarget,
     /// The JSON file with the rules, or - for stdin
     ///
     /// It is read only as a regular file, never through a symlink; /dev/stdin and <(...) are

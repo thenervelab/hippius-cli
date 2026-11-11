@@ -22,16 +22,16 @@ use serde_json::{Map, Value, json};
 
 use crate::cli::{
     Cdn, CdnCap, CdnEstimate, CdnHostnames, CdnPurge, CdnPurges, CdnRules, CdnStats, CdnZones,
-    DnsSetup, StatsStep, ZoneCreate, ZoneSettings, ZoneUpdate,
+    DnsSetup, StatsStep, ZoneCreate, ZoneId, ZoneSettings, ZoneTarget, ZoneUpdate,
 };
 use crate::commands::cdn::rule_list::{CACHE_RULES, ListUpdate, read_rules, update_rules};
-use crate::commands::credits::{DECIMALS, amount, compare};
 use crate::commands::spend_cap::{self, InForce, NewCap};
 use crate::commands::{
     Decided, Input, Printed, print_body, print_body_or, print_keyed_list, print_with,
     read_then_write, require_public,
 };
 use crate::context::{self, Context, Gate, Write, WritePlan};
+use crate::units::{DECIMALS, Decimal, compare};
 
 /// The largest `--cors-file` read, in bytes. Arbitrary: swagger's limits (32 origins, and
 /// 32 headers each way) fit in a few kilobytes, and a wrong path is refused rather than sent.
@@ -70,14 +70,14 @@ const ZONES: &str = "hipc cdn zones list";
 
 fn cap(ctx: &Context<'_>, client: &Client, command: &CdnCap) -> Result<Printed> {
     match command {
-        CdnCap::Get { zone_id } => {
+        CdnCap::Get(ZoneTarget { zone_id }) => {
             let request = Request::to(&cdn::CAP, [zone_id])
                 .about(format!("get the spend cap of the CDN zone `{zone_id}`"))
                 .listed_by(ZONES);
             print_body(ctx, client, &request, Gate::Open)
         }
         CdnCap::Update {
-            zone_id,
+            zone: ZoneTarget { zone_id },
             monthly_cap,
         } => cap_update(ctx, client, zone_id, monthly_cap),
     }
@@ -86,7 +86,7 @@ fn cap(ctx: &Context<'_>, client: &Client, command: &CdnCap) -> Result<Printed> 
 /// `credits`, an amount of credits, in base units (`10^18` per credit) as a decimal string
 /// without leading zeros, or `None` when it is not an amount or has more than 18 decimals.
 fn base_units(credits: &str) -> Option<String> {
-    let (whole, fraction) = amount(credits)?;
+    let (whole, fraction) = Decimal::parse(credits)?.significant();
     let places = DECIMALS as usize;
     if fraction.len() > places {
         return None;
@@ -104,7 +104,7 @@ fn base_units(credits: &str) -> Option<String> {
 fn cap_update(
     ctx: &Context<'_>,
     client: &Client,
-    zone_id: &str,
+    zone_id: &ZoneId,
     monthly_cap: &str,
 ) -> Result<Printed> {
     let named = format!("the monthly spend cap of the CDN zone `{zone_id}`");
@@ -168,13 +168,16 @@ fn purges(ctx: &Context<'_>, client: &Client, command: &CdnPurges) -> Result<Pri
         CdnPurges::Create(args) => purge(ctx, client, args),
         // Swagger gives this list no shape, and no zone was on the account to check it: a
         // bare array or an object holding `purges` is read.
-        CdnPurges::List { zone_id } => {
+        CdnPurges::List(ZoneTarget { zone_id }) => {
             let request = Request::to(&cdn::PURGES, [zone_id])
                 .about(format!("list the purges of the CDN zone `{zone_id}`"))
                 .listed_by(ZONES);
             print_keyed_list(ctx, client, &request, "purges")
         }
-        CdnPurges::Get { zone_id, purge_id } => {
+        CdnPurges::Get {
+            zone: ZoneTarget { zone_id },
+            purge_id,
+        } => {
             let request = Request::to(&cdn::PURGE, [zone_id, purge_id])
                 .about(format!(
                     "get the purge `{purge_id}` of the CDN zone `{zone_id}`"
@@ -187,9 +190,9 @@ fn purges(ctx: &Context<'_>, client: &Client, command: &CdnPurges) -> Result<Pri
 
 fn rules(ctx: &Context<'_>, command: &CdnRules) -> Result<Printed> {
     match command {
-        CdnRules::Get { zone_id } => read_rules(ctx, zone_id, &CACHE_RULES),
+        CdnRules::Get(ZoneTarget { zone_id }) => read_rules(ctx, zone_id, &CACHE_RULES),
         CdnRules::Update {
-            zone_id,
+            zone: ZoneTarget { zone_id },
             rules_file,
             remove_others,
         } => {
@@ -259,7 +262,7 @@ fn zones(ctx: &Context<'_>, command: &CdnZones) -> Result<Printed> {
             &Request::to(&cdn::ZONES, []).about("list the CDN zones"),
             "zones",
         ),
-        CdnZones::Get { zone_id } => {
+        CdnZones::Get(ZoneTarget { zone_id }) => {
             let request = Request::to(&cdn::ZONE, [zone_id])
                 .about(format!("get the CDN zone `{zone_id}`"))
                 .listed_by(ZONES);
@@ -267,7 +270,7 @@ fn zones(ctx: &Context<'_>, command: &CdnZones) -> Result<Printed> {
         }
         CdnZones::Create(args) => create_zone(ctx, args),
         CdnZones::Update(args) => update_zone(ctx, args),
-        CdnZones::Delete { zone_id } => {
+        CdnZones::Delete(ZoneTarget { zone_id }) => {
             let request = Request::to(&cdn::ZONE_DELETE, [zone_id])
                 .listed_by(ZONES)
                 .about(format!("delete the CDN zone `{zone_id}`"));
@@ -396,9 +399,9 @@ fn update_zone(ctx: &Context<'_>, args: &ZoneUpdate) -> Result<Printed> {
     if args.bucket.is_some() || prefix.is_none() {
         return print_body(ctx, &client, &patch(origin)?, gate);
     }
-    let read = Request::to(&cdn::ZONE, [&args.zone_id])
+    let read = Request::to(&cdn::ZONE, [&args.zone.zone_id])
         .listed_by(ZONES)
-        .about(format!("get the CDN zone `{}`", args.zone_id));
+        .about(format!("get the CDN zone `{}`", args.zone.zone_id));
     let draft = patch(Some(Origin {
         kind: Some("<the zone's origin kind>"),
         bucket: Some("<the zone's bucket>"),
@@ -406,7 +409,7 @@ fn update_zone(ctx: &Context<'_>, args: &ZoneUpdate) -> Result<Printed> {
     }))?;
     let decide = || {
         let zone = ctx.send(&client, &read)?.document()?;
-        let (kind, bucket) = zone_origin(&zone, &args.zone_id)?;
+        let (kind, bucket) = zone_origin(&zone, &args.zone.zone_id)?;
         let request = patch(Some(Origin {
             kind: kind.as_deref(),
             bucket: Some(&bucket),
@@ -425,7 +428,7 @@ fn update_zone(ctx: &Context<'_>, args: &ZoneUpdate) -> Result<Printed> {
 ///
 /// `internal` when the origin has no `bucket` string: the PATCH would then send a partial
 /// origin.
-fn zone_origin(zone: &Value, zone_id: &str) -> Result<(Option<String>, String)> {
+fn zone_origin(zone: &Value, zone_id: &ZoneId) -> Result<(Option<String>, String)> {
     let origin = view_of::<cdn::Zone>(zone).origin.unwrap_or_default();
     let Some(bucket) = origin.bucket else {
         return Err(Error::internal(format!(
@@ -482,7 +485,7 @@ fn zone_patch(
     origin: Option<Origin<'_>>,
 ) -> Result<Request> {
     let action = match &origin {
-        None => format!("update the CDN zone `{}`: {set}", args.zone_id),
+        None => format!("update the CDN zone `{}`: {set}", args.zone.zone_id),
         Some(origin) => {
             require_public(
                 ctx,
@@ -490,7 +493,7 @@ fn zone_patch(
                 &format!(
                     "the new origin of the CDN zone `{}` would be readable by anyone if its \
                      bucket is private",
-                    args.zone_id
+                    args.zone.zone_id
                 ),
             )?;
             // The kind a read adds is the zone's own, not a change.
@@ -508,7 +511,7 @@ fn zone_patch(
             format!(
                 "move the CDN zone `{}` to {}, which purges the whole zone and makes what it \
                  then serves public if the bucket is private{and_set}",
-                args.zone_id,
+                args.zone.zone_id,
                 phrase::join(&to, "and")
             )
         }
@@ -517,7 +520,7 @@ fn zone_patch(
         origin,
         ..body.clone()
     };
-    Ok(Request::to(&cdn::ZONE_UPDATE, [&args.zone_id])
+    Ok(Request::to(&cdn::ZONE_UPDATE, [&args.zone.zone_id])
         .listed_by(ZONES)
         .json(&body)
         .about(action))
@@ -622,7 +625,7 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
     match command {
         // Swagger gives this list no shape, and no zone was on the account to check it: a
         // bare array or an object holding `hostnames` is read.
-        CdnHostnames::List { zone_id } => print_keyed_list(
+        CdnHostnames::List(ZoneTarget { zone_id }) => print_keyed_list(
             ctx,
             &client()?,
             &Request::to(&cdn::HOSTNAMES, [zone_id])
@@ -630,7 +633,10 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
                 .listed_by(ZONES),
             "hostnames",
         ),
-        CdnHostnames::Create { zone_id, hostname } => {
+        CdnHostnames::Create {
+            zone: ZoneTarget { zone_id },
+            hostname,
+        } => {
             let request = Request::to(&cdn::HOSTNAME_CREATE, [zone_id])
                 .listed_by(ZONES)
                 .json(&cdn::HostnameCreateBody { hostname })
@@ -643,7 +649,10 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
             print_body(ctx, &client()?, &request, gate)
         }
         // A check of the DNS records: a repeat changes nothing, so it is not confirmed.
-        CdnHostnames::Verify { zone_id, hostname } => {
+        CdnHostnames::Verify {
+            zone: ZoneTarget { zone_id },
+            hostname,
+        } => {
             let request = Request::to(&cdn::HOSTNAME_VERIFY, [zone_id, hostname])
                 .about(format!("verify the custom hostname `{hostname}`"))
                 .listed_by(format!("hipc cdn hostnames list {zone_id}"));
@@ -655,7 +664,10 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
         // published: hipc does not wait for a person in a browser, as with a card checkout
         // (tenet 3). Swagger: a 404 while the feature flag is off, and the console offers the
         // link only when the provider has the template, so a 404 says both.
-        CdnHostnames::DomainConnect { zone_id, hostname } => {
+        CdnHostnames::DomainConnect {
+            zone: ZoneTarget { zone_id },
+            hostname,
+        } => {
             let request = Request::to(&cdn::HOSTNAME_DOMAIN_CONNECT, [zone_id, hostname])
                 .about(format!(
                     "get the Domain Connect link of the custom hostname `{hostname}`"
@@ -694,7 +706,10 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
                 }
             })
         }
-        CdnHostnames::Delete { zone_id, hostname } => {
+        CdnHostnames::Delete {
+            zone: ZoneTarget { zone_id },
+            hostname,
+        } => {
             let request = Request::to(&cdn::HOSTNAME_DELETE, [zone_id, hostname])
                 .listed_by(format!("hipc cdn hostnames list {zone_id}"))
                 .about(format!(
@@ -724,7 +739,7 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
 /// ([`dns_setup_error`]). `--debug` prints no body.
 fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
     let DnsSetup {
-        zone_id,
+        zone: ZoneTarget { zone_id },
         hostname,
         provider,
         credentials_file,
@@ -826,16 +841,16 @@ fn purge(ctx: &Context<'_>, client: &Client, args: &CdnPurge) -> Result<Printed>
     } else {
         cdn::PurgeBody::Paths(&args.paths)
     };
-    let request = Request::to(&cdn::PURGE_CREATE, [&args.zone_id])
+    let request = Request::to(&cdn::PURGE_CREATE, [&args.zone.zone_id])
         .json(&body)
-        .about(format!("purge the CDN zone `{}`", args.zone_id))
+        .about(format!("purge the CDN zone `{}`", args.zone.zone_id))
         .listed_by(ZONES);
     print_with(ctx, client, &request, Gate::Open, |response| {
         let body = response.document()?;
         // A zone id starts with `z`, so the printed command cannot read it as a flag.
         if let Some(id) = view_of::<cdn::Purge>(&body).id
             && let Some(command) =
-                ctx.next_command(&format!("cdn purges get {} {id}", args.zone_id))
+                ctx.next_command(&format!("cdn purges get {} {id}", args.zone.zone_id))
         {
             ctx.note(&format!("`{command}` shows its progress"));
         }
@@ -847,10 +862,10 @@ fn purge(ctx: &Context<'_>, client: &Client, args: &CdnPurge) -> Result<Printed>
 /// `to`, `step`, `region`), each only when given. Swagger names none, and no zone was on
 /// the account to check them.
 fn stats(ctx: &Context<'_>, client: &Client, args: &CdnStats) -> Result<Printed> {
-    let request = Request::to(&cdn::STATS, [&args.zone_id])
+    let request = Request::to(&cdn::STATS, [&args.zone.zone_id])
         .about(format!(
             "get the traffic of the CDN zone `{}`",
-            args.zone_id
+            args.zone.zone_id
         ))
         .listed_by(ZONES);
     let query = [

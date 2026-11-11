@@ -1,9 +1,10 @@
 //! S3 storage: plans, the subscription, buckets and their objects and policies, and access
 //! keys.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::routes::{Guard, Paging, Route, RouteFlag};
+use crate::view::{each, field};
 
 routes! {
     /// The S3 plans.
@@ -198,4 +199,21 @@ mod tests {
             r#"{"storage_cap_bytes":null}"#
         );
     }
+}
+
+/// The answer of [`PLANS`], as far as `hipc` decides on it: the codes a plan purchase or
+/// change may send.
+#[derive(Debug, Default, Deserialize)]
+pub struct Plans {
+    /// The plans; `None` when the answer has no list of them.
+    #[serde(default, deserialize_with = "each")]
+    pub plans: Option<Vec<Plan>>,
+}
+
+/// One plan of [`Plans`].
+#[derive(Debug, Default, Deserialize)]
+pub struct Plan {
+    /// The plan's code, which a purchase sends.
+    #[serde(default, deserialize_with = "field")]
+    pub code: Option<String>,
 }

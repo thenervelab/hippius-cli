@@ -158,10 +158,13 @@ fn a_name_outside_one_line_of_64_characters_is_usage() {
             let args = [command, vec!["--name", name]].concat();
             let error = Hipc::new(&home).run(&args).fails(2, "usage");
             assert!(
-                error["message"]
-                    .as_str()
-                    .unwrap()
-                    .contains("a referral name is one line of 1 to 64 characters"),
+                error["message"].as_str().unwrap().contains(
+                    if name.trim().is_empty() || name.len() > 64 {
+                        "a referral name is one line of 1 to 64 characters"
+                    } else {
+                        "a referral name holds no control character or line break"
+                    }
+                ),
                 "{error}"
             );
         }

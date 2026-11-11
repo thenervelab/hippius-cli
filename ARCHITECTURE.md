@@ -17,7 +17,11 @@ Two crates. A layer calls down, never up.
 crates/hippius-cli   the `hipc` binary: argv, the output mode, every byte of output
   main.rs            entry point; calls `run::run` and exits with its code
   run.rs             parses argv, builds the context, dispatches one command, hands the result to output
-  cli.rs, cli/       the clap grammar, one file per group; its doc comments are the help text
+  cli.rs, cli/       the clap grammar, one file per group; its doc comments are the help text.
+                     cli/ids.rs holds the id types and the argument each command acts on;
+                     cli/values.rs the one rule of names, ids, labels, and catalog codes
+  units.rs           exact decimal amounts: the one grammar of an amount, credits, dollars,
+                     and planck
   commands.rs, commands/
                      the steps of each command, one module per group; each returns `Printed`
   context.rs         what a command runs with: global flags, the terminal, and the steps of
@@ -215,7 +219,12 @@ What `hipc` sends is typed; what the server answers is printed as it came.
   operation's state and kind) is an enum in the route's file with an `Other(String)` variant,
   so a value the server adds is not an error, and an `as_str` that gives the server's spelling
   back for a message. The `vocabulary!` macro in `routes.rs` declares one. A server catalog (an S3
-  plan, a Hub key role) stays a validated string (owner decision D5).
+  plan, a backup interval, a database tier, size, or engine version, a runner size, a Hub key
+  role) is a validated string, not a closed enum, so a code the server adds needs no release
+  (owner decision D5): `cli::values::catalog` checks its shape and the help lists the codes known
+  today. Where the server lists the catalog, the write is sent through
+  `commands::send_from_catalog`, which reads it after the question and refuses a code it does
+  not list, as Hub's `--plan` is resolved.
 - **A dry run** is a `context::DryRun`, which only `Context::dry_run_of(client, &[&read,
   &write])` builds: every request a real run sends, in order, then the fields some commands
   add through its methods (`reads_first`, `may_cancel_first`). A command that changes only a
@@ -263,7 +272,11 @@ refusal's behaviour and both texts. A route only `hipc api` reaches is a row too
 ## How to add a command (today)
 
 1. The clap type in `cli/<group>.rs`: short help one sentence, long help says what it sends,
-   reads first and refuses, then examples that parse (CONTRIBUTING, "Docs").
+   reads first and refuses, then examples that parse (CONTRIBUTING, "Docs"). The thing it acts
+   on is the id's `*Target` struct from `cli/ids.rs`, flattened (`Get(VmTarget)`), so its help
+   line and parser are written once; a text id is a newtype only its parser builds, which
+   `Request::to` takes as it is. A one-line label goes through `cli::values::label`, an amount
+   through `units`.
 2. The steps in `commands/<group>.rs`, returning `Printed`; dispatch from the group's `run`
    (or `run.rs` for `auth` and `account`).
 3. Its row in its group's function in `spec/rows.rs`. A test walks the parser and fails when

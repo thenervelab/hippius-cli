@@ -1,9 +1,9 @@
 //! The grammar of `hipc hub keys`, the namespace's scoped CI keys.
 
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
 
-use crate::cli::values::{Charset, Dash, word};
-use crate::cli::{SecretFile, examples, number};
+use crate::cli::values::{Charset, Dash, catalog, word};
+use crate::cli::{OneTimeSecret, examples, number};
 
 const KEY_ID: &str = "a key id is a whole number, from `hipc hub keys list`";
 
@@ -49,11 +49,8 @@ pub(crate) enum HubKeys {
         /// The key id, from hipc hub keys list
         #[arg(value_parser = number(KEY_ID))]
         key_id: u64,
-        /// Print the new one-time secret on stdout; without it or --secret-file nothing is sent
-        #[arg(long)]
-        reveal: bool,
         #[command(flatten)]
-        secret_file: SecretFile,
+        secret: OneTimeSecret,
     },
     /// Delete a CI key; needs --yes
     ///
@@ -71,42 +68,19 @@ pub(crate) struct KeyCreate {
     /// A short name for the key, one word; the registry login ends in it
     #[arg(long, value_parser = key_name)]
     pub(crate) name: String,
-    /// What the key may do in the namespace
-    #[arg(long)]
-    pub(crate) role: KeyRole,
+    /// What the key may do in the namespace: read, push, push-delete, or admin
+    ///
+    /// read pulls and lists images and artifacts; push does what read does, and pushes;
+    /// push-delete does what push does, and deletes; admin is the whole namespace. These are the
+    /// presets the Hub client offers; the API names the role field but not its values, so any
+    /// other role is sent as given for the server to judge.
+    #[arg(long, value_parser = catalog("a key role", &["read", "push", "push-delete", "admin"]))]
+    pub(crate) role: String,
     /// Days until the key stops working, 1 or more; without it the key does not expire
     #[arg(long, value_name = "DAYS", value_parser = clap::value_parser!(u32).range(1..))]
     pub(crate) expires_in: Option<u32>,
-    /// Print the one-time secret on stdout; without it or --secret-file nothing is sent
-    #[arg(long)]
-    pub(crate) reveal: bool,
     #[command(flatten)]
-    pub(crate) secret_file: SecretFile,
-}
-
-/// The role presets of a key. Swagger names the `role` field but not its values; these are
-/// the four the `hippius-hub` client offers and its live tests create.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum KeyRole {
-    /// Pull and list images and artifacts
-    Read,
-    /// What read can do, and push
-    Push,
-    /// What push can do, and delete
-    PushDelete,
-    /// The whole namespace
-    Admin,
-}
-
-impl KeyRole {
-    pub(crate) fn code(self) -> &'static str {
-        match self {
-            Self::Read => "read",
-            Self::Push => "push",
-            Self::PushDelete => "push-delete",
-            Self::Admin => "admin",
-        }
-    }
+    pub(crate) secret: OneTimeSecret,
 }
 
 /// A key name. The registry makes the login `robot$<project>+<name>` from it (the Hub

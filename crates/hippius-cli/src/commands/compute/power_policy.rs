@@ -4,7 +4,7 @@ use hippius::routes::compute::{self, Vm};
 use hippius::{Client, Request, Response, Result, phrase, view_of};
 use serde_json::{Map, Value};
 
-use crate::cli::{GuestPoweroff, PowerPolicy};
+use crate::cli::{GuestPoweroff, PowerPolicy, VmId, VmTarget};
 use crate::commands::compute::VMS;
 use crate::commands::{Printed, print_with};
 use crate::context::{Context, Gate};
@@ -29,7 +29,7 @@ const POWER_POLICY: [&str; 5] = [
 /// The read takes any text as the policy, not only swagger's `restart` and `stop`: it changes
 /// nothing, and a policy the server adds later is better printed than refused. An answer
 /// without its `vm_id` gets the one asked for (`vm_id`), so the document always names its VM.
-fn power_policy(response: &Response, vm_id: &str, sent: Option<GuestPoweroff>) -> Result<Value> {
+fn power_policy(response: &Response, vm_id: &VmId, sent: Option<GuestPoweroff>) -> Result<Value> {
     let vm = response.document()?;
     match (view_of::<Vm>(&vm).on_guest_poweroff, sent) {
         (Some(policy), Some(sent)) if policy != sent.code() => {
@@ -47,7 +47,7 @@ fn power_policy(response: &Response, vm_id: &str, sent: Option<GuestPoweroff>) -
         policy.insert(field.to_owned(), value);
     }
     if policy["vm_id"].is_null() {
-        policy.insert("vm_id".to_owned(), Value::from(vm_id));
+        policy.insert("vm_id".to_owned(), Value::from(vm_id.as_str()));
     }
     Ok(Value::Object(policy))
 }
@@ -59,7 +59,7 @@ pub(super) fn power_policy_command(
     command: &PowerPolicy,
 ) -> Result<Printed> {
     match command {
-        PowerPolicy::Get { vm_id } => {
+        PowerPolicy::Get(VmTarget { vm_id }) => {
             let request = Request::to(&compute::VM, [vm_id])
                 .about(format!("get the power policy of the VM `{vm_id}`"))
                 .listed_by(VMS);
@@ -70,7 +70,7 @@ pub(super) fn power_policy_command(
             })
         }
         PowerPolicy::Update {
-            vm_id,
+            vm: VmTarget { vm_id },
             on_guest_poweroff,
         } => update_power_policy(ctx, client, vm_id, *on_guest_poweroff),
     }
@@ -88,7 +88,7 @@ pub(super) fn power_policy_command(
 fn update_power_policy(
     ctx: &Context<'_>,
     client: &Client,
-    vm_id: &str,
+    vm_id: &VmId,
     policy: GuestPoweroff,
 ) -> Result<Printed> {
     let does = match policy {

@@ -2819,7 +2819,7 @@ Options:
       --plan <PLAN>
           The plan code: pro, business, or enterprise
           
-          [possible values: pro, business, enterprise]
+          The server owns the plans: these are its codes when this hipc was built, and hipc s3 plans lists them. After the question, the plans are read, and a code they do not list is refused before anything is bought.
 
       --pay-from <PAY_FROM>
           Pay from the balance (credits), or start a card checkout (card)
@@ -2849,9 +2849,9 @@ Usage: hipc s3 subscription change <--plan <PLAN>|--pay-from <PAY_FROM>|--storag
 
 Options:
       --plan <PLAN>
-          The plan code to switch to
+          The plan code to switch to: pro, business, or enterprise
           
-          [possible values: pro, business, enterprise]
+          The server owns the plans: these are its codes when this hipc was built, and hipc s3 plans lists them. After the question, the plans are read, and a code they do not list is refused before anything is bought.
 
       --pay-from <PAY_FROM>
           How each renewal is paid; keeps the plan
@@ -3344,7 +3344,7 @@ Options:
           [possible values: master, sub]
 
       --reveal
-          Print the new one-time secret on stdout; without it or --secret-file nothing is sent
+          Print the one-time secret on stdout; without it or --secret-file nothing is sent
 
       --secret-file <PATH>
           Write the one-time secret to a new file of mode 0600 at this path instead of stdout; in place of --reveal
@@ -3594,7 +3594,7 @@ Arguments:
 
 Options:
       --reveal
-          Print the one-time robot secret on stdout; without it or --secret-file nothing is sent
+          Print the one-time secret on stdout; without it or --secret-file nothing is sent
 
       --secret-file <PATH>
           Write the one-time secret to a new file of mode 0600 at this path instead of stdout; in place of --reveal
@@ -3715,7 +3715,7 @@ Usage: hipc hub namespace robot rotate [OPTIONS]
 
 Options:
       --reveal
-          Print the new one-time robot secret on stdout; without it or --secret-file nothing is sent
+          Print the one-time secret on stdout; without it or --secret-file nothing is sent
 
       --secret-file <PATH>
           Write the one-time secret to a new file of mode 0600 at this path instead of stdout; in place of --reveal
@@ -3822,13 +3822,9 @@ Options:
           A short name for the key, one word; the registry login ends in it
 
       --role <ROLE>
-          What the key may do in the namespace
-
-          Possible values:
-          - read:        Pull and list images and artifacts
-          - push:        What read can do, and push
-          - push-delete: What push can do, and delete
-          - admin:       The whole namespace
+          What the key may do in the namespace: read, push, push-delete, or admin
+          
+          read pulls and lists images and artifacts; push does what read does, and pushes; push-delete does what push does, and deletes; admin is the whole namespace. These are the presets the Hub client offers; the API names the role field but not its values, so any other role is sent as given for the server to judge.
 
       --expires-in <DAYS>
           Days until the key stops working, 1 or more; without it the key does not expire
@@ -3866,7 +3862,7 @@ Arguments:
 
 Options:
       --reveal
-          Print the new one-time secret on stdout; without it or --secret-file nothing is sent
+          Print the one-time secret on stdout; without it or --secret-file nothing is sent
 
       --secret-file <PATH>
           Write the one-time secret to a new file of mode 0600 at this path instead of stdout; in place of --reveal
@@ -4546,52 +4542,54 @@ Options:
           
           Without it the scheduler chooses.
 
+      --placement-group <NAME>
+          The anti-affinity group: two VMs of the account in one group never share a server
+          
+          A name is 1 to 64 of a-z, 0-9, and -, not starting with -. Fixed for the VM's life. hipc compute placement-groups says whether the server offers groups.
+
       --os-disk-tier <TIER>
           The OS disk's tier, a minimum: the disk may land on a faster one; the server defaults it to nvme
           
-          Fixed for the VM's life, and billed at that tier's price, vm_by_os_disk_tier in hipc compute prices.
+          Fixed for the VM's life, and billed at that tier's price, vm_by_os_disk_tier in hipc compute prices. hipc compute feasibility --os-disk-tier says whether a launch on it could land now.
 
           Possible values:
           - nvme: The fastest tier
           - ssd:  Slower than nvme, and cheaper
           - hdd:  The slowest and cheapest: as an OS disk, slow shared storage for development and test, not for production or databases; max_flavor in hipc compute public-prices is the largest flavor it is offered on
 
-      --placement-group <NAME>
-          The anti-affinity group: two VMs of the account in one group never share a server
+      --backup-interval <SECONDS>
+          Turn on scheduled backups once the VM runs, at this many seconds between backups: 900, 3600, 21600, or 86400
           
-          A name is 1 to 64 of a-z, 0-9, and -, not starting with -. Fixed for the VM's life.
+          Stored backups are billed per GB-hour at the price hipc compute backups options shows. The server checks the interval before anything is bought; a failure to turn backups on later is the VM's backup_error. The server owns the intervals: these are its own when this hipc was built, and hipc compute backups options lists them.
+
+      --failover <MODE>
+          The failover of those backups: auto restarts the VM on another server from its latest backup if its server dies, losing what was written after it; manual, the server's default, leaves that to Hippius support
+          
+          auto places the VM only on a server with a failover peer, so it is chosen at launch.
+          
+          [possible values: auto, manual]
 
       --on-guest-poweroff <POLICY>
           What a power-off from inside the VM does: restart (the server's default) or stop
           
+          stop places the VM only on a server that supports it, so it is chosen at launch; hipc compute vms power-policy update changes it later.
+          
           [possible values: restart, stop]
-
-      --backup-interval <SECONDS>
-          Turn on scheduled backups once the app runs, at this many seconds between backups
-          
-          Stored backups are billed per GB-hour at the price hipc compute backups options shows.
-          
-          [possible values: 900, 3600, 21600, 86400]
-
-      --failover <MODE>
-          The failover of those backups: auto restarts the app on another server from its latest backup if its server dies, losing what was written after it; manual, the server's default, leaves that to Hippius support
-          
-          [possible values: auto, manual]
 
       --wait
           Wait for running even when stdout is not a terminal, CI is set, or AI_AGENT is set
           
-          The app is running when its status and boot_phase both are. A run killed during the wait prints nothing on stdout; a caller that may be killed first omits --wait and follows the app with hipc compute app-engine apps get.
+          An app is running when its status and boot_phase both are. A run killed during the wait prints nothing on stdout; a caller that may be killed first omits --wait and follows the VM with hipc compute vms get, or the app with hipc compute app-engine apps get.
 
       --no-wait
           Print the launch answer and exit without waiting for running
           
-          The default when stdout is not a terminal, or CI is set, or AI_AGENT is set and not off.
+          The default when stdout is not a terminal, or CI is set, or AI_AGENT is set and not off: the rule that picks JSON for --output auto.
 
       --wait-timeout <SECONDS>
           Wait for running for this many seconds, 1 to 3600, default 300
           
-          It waits as --wait does. A wait that ends before running prints the app on stdout, so its vm_id is not lost.
+          It waits as --wait does, even when stdout is not a terminal, or CI or AI_AGENT is set. A poll still in flight at the deadline can add up to --request-timeout. A wait that ends before running still prints the VM or the app on stdout, so its vm_id is not lost.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -4913,6 +4911,11 @@ Options:
       --open-ssh
           Same as --open-port 22, for SSH
 
+      --dedicated-disk <SIZE:TIER>
+          A whole physical disk for the VM, SIZE:TIER, such as 2000:hdd; repeat it once per disk, up to 8
+          
+          SIZE is the least GiB the disk has, 1000 or more; TIER is nvme, ssd, or hdd, a minimum. Every disk of a launch has the same size and tier. Each is billed per GiB-hour at its size class (floored to 100 GiB), while the VM is stopped too, at the price dedicated_disks in hipc compute prices. The disks pin the VM to its server: no backup, migration, or failover, so --backup-interval cannot go with it.
+
       --placement-group <NAME>
           The anti-affinity group: two VMs of the account in one group never share a server
           
@@ -4928,17 +4931,10 @@ Options:
           - ssd:  Slower than nvme, and cheaper
           - hdd:  The slowest and cheapest: as an OS disk, slow shared storage for development and test, not for production or databases; max_flavor in hipc compute public-prices is the largest flavor it is offered on
 
-      --dedicated-disk <SIZE:TIER>
-          A whole physical disk for the VM, SIZE:TIER, such as 2000:hdd; repeat it once per disk, up to 8
-          
-          SIZE is the least GiB the disk has, 1000 or more; TIER is nvme, ssd, or hdd, a minimum. Every disk of a launch has the same size and tier. Each is billed per GiB-hour at its size class (floored to 100 GiB), while the VM is stopped too, at the price dedicated_disks in hipc compute prices. The disks pin the VM to its server: no backup, migration, or failover, so --backup-interval cannot go with it.
-
       --backup-interval <SECONDS>
-          Turn on scheduled backups once the VM runs, at this many seconds between backups
+          Turn on scheduled backups once the VM runs, at this many seconds between backups: 900, 3600, 21600, or 86400
           
-          Stored backups are billed per GB-hour at the price hipc compute backups options shows. The server checks the interval before anything is bought; a failure to turn backups on later is the VM's backup_error.
-          
-          [possible values: 900, 3600, 21600, 86400]
+          Stored backups are billed per GB-hour at the price hipc compute backups options shows. The server checks the interval before anything is bought; a failure to turn backups on later is the VM's backup_error. The server owns the intervals: these are its own when this hipc was built, and hipc compute backups options lists them.
 
       --failover <MODE>
           The failover of those backups: auto restarts the VM on another server from its latest backup if its server dies, losing what was written after it; manual, the server's default, leaves that to Hippius support
@@ -4957,7 +4953,7 @@ Options:
       --wait
           Wait for running even when stdout is not a terminal, CI is set, or AI_AGENT is set
           
-          A run killed during the wait prints nothing on stdout; a caller that may be killed before running omits --wait and follows the VM with hipc compute vms get.
+          An app is running when its status and boot_phase both are. A run killed during the wait prints nothing on stdout; a caller that may be killed first omits --wait and follows the VM with hipc compute vms get, or the app with hipc compute app-engine apps get.
 
       --no-wait
           Print the launch answer and exit without waiting for running
@@ -4967,7 +4963,7 @@ Options:
       --wait-timeout <SECONDS>
           Wait for running for this many seconds, 1 to 3600, default 300
           
-          It waits as --wait does, even when stdout is not a terminal, or CI or AI_AGENT is set. A poll still in flight at the deadline can add up to --request-timeout.
+          It waits as --wait does, even when stdout is not a terminal, or CI or AI_AGENT is set. A poll still in flight at the deadline can add up to --request-timeout. A wait that ends before running still prints the VM or the app on stdout, so its vm_id is not lost.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -5598,9 +5594,9 @@ Arguments:
 
 Options:
       --interval <SECONDS>
-          Seconds between backups: the most data a restore could lose
+          Seconds between backups, the most data a restore could lose: 900, 3600, 21600, or 86400
           
-          [possible values: 900, 3600, 21600, 86400]
+          The server owns the intervals: these are its own when this hipc was built, and hipc compute backups options lists them. After the question, the options are read, and an interval they do not list is refused before anything is sent.
 
       --failover <FAILOVER>
           The failover: auto restarts the VM on another server from its latest backup if its server dies, losing what was written after that backup; manual leaves that to Hippius support
@@ -5790,7 +5786,7 @@ Options:
       --allowed-size <SIZE>
           A size jobs may use: small, medium, or large; repeat it for several; the list given replaces the current one
           
-          [possible values: small, medium, large]
+          The server owns the list: these are its codes when this hipc was built, and any other code is sent as given for the server to judge.
 
       --default-region <CC>
           Where runners launch when a job's label names no region: a two-letter country code, such as FR, or anywhere
@@ -6183,17 +6179,17 @@ Options:
       --tier <TIER>
           The tier: starter and production are one instance; ha is three, with failover
           
-          [possible values: starter, production, ha]
+          The server owns the list: these are its codes when this hipc was built, and any other code is sent as given for the server to judge.
 
       --size <SIZE>
-          The instance size
+          The instance size: s, m, l, or xl
           
-          [possible values: s, m, l, xl]
+          The server owns the list: these are its codes when this hipc was built, and any other code is sent as given for the server to judge.
 
       --engine-version <ENGINE_VERSION>
-          The PostgreSQL major version
+          The PostgreSQL major version: 16, 17, or 18
           
-          [possible values: 16, 17, 18]
+          The server owns the list: these are its codes when this hipc was built, and any other code is sent as given for the server to judge.
 
       --name <NAME>
           A label

@@ -2834,7 +2834,7 @@ fn launch_options_add_exactly_their_fields_to_the_body() {
 }
 
 /// Every launch option is checked against swagger before anything is sent, a dry run
-/// included: the tier enum, the backup interval set, a dedicated disk's size (at least
+/// included: the tier enum, a backup interval of whole seconds, a dedicated disk's size (at least
 /// 1000 GiB) and count (1 to 8, one tier and size for all), and no backups beside
 /// dedicated disks (swagger: 409 `dedicated-pinned`).
 #[test]
@@ -2844,7 +2844,7 @@ fn bad_launch_options_are_usage_without_a_request() {
     let cases: [(&[&str], &str); 15] = [
         (&["--os-disk-tier", "sata"], "sata"),
         (&["--os-disk-tier", "HDD"], "HDD"),
-        (&["--backup-interval", "600"], "600"),
+        (&["--backup-interval", "0"], "a backup interval is"),
         (&["--backup-interval", "1h"], "1h"),
         (&["--dedicated-disk", "999:hdd"], "a dedicated disk is"),
         (&["--dedicated-disk", "1000"], "a dedicated disk is"),
@@ -2993,9 +2993,15 @@ fn schema_lists_the_launch_options() {
         flag(&["compute", "feasibility"], "--os-disk-tier")["possible_values"],
         tiers
     );
-    assert_eq!(
-        flag(&create, "--backup-interval")["possible_values"],
-        json!(["900", "3600", "21600", "86400"])
+    // The intervals are the server's (owner decision D5): the help names those known today.
+    let interval = flag(&create, "--backup-interval");
+    assert_eq!(interval["possible_values"], json!([]));
+    assert!(
+        interval["help"]
+            .as_str()
+            .unwrap()
+            .ends_with("900, 3600, 21600, or 86400"),
+        "{interval}"
     );
     let disk = flag(&create, "--dedicated-disk");
     assert_eq!(disk["repeats"], true);

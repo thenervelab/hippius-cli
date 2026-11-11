@@ -68,7 +68,7 @@ pub use crate::redact::{
 pub use crate::regular::{OpenRegularError, open_regular};
 pub use crate::routes::RouteFlag;
 pub use crate::secret::SecretValue;
-pub use crate::selector::{BillingId, DEFAULT, ProjectId, Selection};
+pub use crate::selector::{AccountId, BillingId, DEFAULT, ProjectId, Selection};
 pub use crate::source::{Given, Source};
 pub use crate::time::{Now, date_of_unix_day, rfc3339_seconds};
 pub use crate::url::without_query_values;

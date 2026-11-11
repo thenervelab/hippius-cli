@@ -4,7 +4,10 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand, ValueEnum};
 
+use crate::cli::account::email;
+use crate::cli::values::{Spaces, is_uuid, label};
 use crate::cli::{INVOICE_ID, ListArgs, examples, new_file, number};
+use crate::units::{Decimal, ONE, Planck, Usd, usd};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Billing {
@@ -293,31 +296,31 @@ pub(crate) enum BillingProfile {
 ))]
 pub(crate) struct ProfileUpdate {
     /// The company name invoices carry
-    #[arg(long, value_name = "NAME")]
+    #[arg(long, value_name = "NAME", value_parser = profile_text)]
     pub(crate) company_name: Option<String>,
     /// The first line of the address
-    #[arg(long, value_name = "LINE")]
+    #[arg(long, value_name = "LINE", value_parser = profile_text)]
     pub(crate) address_line1: Option<String>,
     /// The second line of the address
-    #[arg(long, value_name = "LINE")]
+    #[arg(long, value_name = "LINE", value_parser = profile_text)]
     pub(crate) address_line2: Option<String>,
     /// The city
-    #[arg(long, value_name = "CITY")]
+    #[arg(long, value_name = "CITY", value_parser = profile_text)]
     pub(crate) city: Option<String>,
     /// The postal code
-    #[arg(long, value_name = "CODE")]
+    #[arg(long, value_name = "CODE", value_parser = profile_text)]
     pub(crate) postal_code: Option<String>,
     /// The region, state, or province
-    #[arg(long, value_name = "REGION")]
+    #[arg(long, value_name = "REGION", value_parser = profile_text)]
     pub(crate) region: Option<String>,
     /// The country, as a two-letter ISO 3166-1 code such as GB, sent in upper case
     #[arg(long, value_name = "CC", value_parser = country)]
     pub(crate) country: Option<String>,
     /// The tax id, such as a VAT number
-    #[arg(long, value_name = "ID")]
+    #[arg(long, value_name = "ID", value_parser = profile_text)]
     pub(crate) tax_id: Option<String>,
     /// Where invoices are mailed; empty means the account's email
-    #[arg(long, value_name = "EMAIL")]
+    #[arg(long, value_name = "EMAIL", value_parser = billing_email)]
     pub(crate) billing_email: Option<String>,
 }
 
@@ -392,34 +395,14 @@ pub(crate) struct TopUp {
     pub(crate) wait_timeout: Option<u64>,
 }
 
-/// An amount in planck, the 18-decimal base unit of hAlpha and of credits: 10^18 is one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Planck(pub(crate) u128);
-
-/// Planck in one hAlpha or one credit.
-pub(crate) const ONE: u128 = 1_000_000_000_000_000_000;
-
 /// The least `Marketplace.buy_credits` takes, 0.01 hAlpha: less fails on chain with
 /// `BuyAmountTooLow`.
 pub(crate) const CHAIN_MINIMUM: Planck = Planck(ONE / 100);
 
-impl std::fmt::Display for Planck {
-    /// The amount as a decimal, exactly: `1.5`, `0.01`, `2`.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let fraction = format!("{:018}", self.0 % ONE);
-        let fraction = fraction.trim_end_matches('0');
-        if fraction.is_empty() {
-            write!(f, "{}", self.0 / ONE)
-        } else {
-            write!(f, "{}.{fraction}", self.0 / ONE)
-        }
-    }
-}
-
-/// `--alpha`: hAlpha in plain digits, with at most 18 after a point, to an exact planck
-/// count. No float is involved, so the amount sent is the amount typed.
+/// `--alpha`: hAlpha in the amount grammar, with at most 18 decimals, to an exact planck
+/// count ([`Planck::parse`]).
 pub(crate) fn alpha(text: &str) -> Result<Planck, String> {
-    let planck = decimal18(text, "hAlpha", "`1.5` or `0.01`")?;
+    let planck = Planck::parse(text, "hAlpha", "`1.5` or `0.01`")?;
     if planck < CHAIN_MINIMUM {
         return Err(format!(
             "the chain takes at least `{CHAIN_MINIMUM}` hAlpha, and a smaller buy fails with \
@@ -431,45 +414,36 @@ pub(crate) fn alpha(text: &str) -> Result<Planck, String> {
 
 /// `--min-credits`: credits as [`alpha`] reads hAlpha, above zero.
 fn min_credits(text: &str) -> Result<Planck, String> {
-    let planck = decimal18(text, "credits", "`6.12` or `990`")?;
+    let planck = Planck::parse(text, "credits", "`6.12` or `990`")?;
     if planck.0 == 0 {
         return Err("a buy accepts at least some credits, so the minimum is above `0`".to_owned());
     }
     Ok(planck)
 }
 
-/// A decimal of `unit`, which has 18 decimals, to its exact count of planck.
-fn decimal18(text: &str, unit: &str, examples: &str) -> Result<Planck, String> {
-    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
-    let digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
-    if whole.is_empty() || !digits(whole) || !digits(fraction) || text.ends_with('.') {
-        return Err(format!("an amount is {unit} in digits, such as {examples}"));
+/// A text field of the billing profile, which invoices print: a [`label`], empty to clear it.
+/// The API documents no length.
+fn profile_text(value: &str) -> Result<String, String> {
+    label(
+        value,
+        0..=usize::MAX,
+        Spaces::Kept,
+        "a billing profile field",
+    )
+}
+
+/// `--billing-email`: an email address as an invite takes it, or empty for the account's own.
+fn billing_email(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        Ok(String::new())
+    } else {
+        email(value)
     }
-    if fraction.len() > 18 {
-        return Err(format!(
-            "{unit} has 18 decimals, so an amount has at most 18 digits after the point"
-        ));
-    }
-    let too_large = || format!("the amount is larger than any {unit} balance");
-    let whole: u128 = whole.parse().map_err(|_| too_large())?;
-    let fraction: u128 = format!("{fraction:0<18}")
-        .parse()
-        .expect("checked: 18 ASCII digits");
-    whole
-        .checked_mul(ONE)
-        .and_then(|w| w.checked_add(fraction))
-        .map(Planck)
-        .ok_or_else(too_large)
 }
 
 /// `--idempotency-key`: a UUID, as each run makes one: hex in groups of 8, 4, 4, 4, and 12.
 fn idempotency_key(text: &str) -> Result<String, String> {
-    let groups: Vec<&str> = text.split('-').collect();
-    let lengths: Vec<usize> = groups.iter().map(|g| g.len()).collect();
-    let hex = groups
-        .iter()
-        .all(|g| g.bytes().all(|b| b.is_ascii_hexdigit()));
-    if lengths == [8, 4, 4, 4, 12] && hex {
+    if is_uuid(text) {
         Ok(text.to_owned())
     } else {
         Err(
@@ -477,48 +451,6 @@ fn idempotency_key(text: &str) -> Result<String, String> {
                 .to_owned(),
         )
     }
-}
-
-/// An amount of US dollars, in cents.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub(crate) struct Usd {
-    cents: u64,
-}
-
-impl Usd {
-    pub(crate) const fn from_cents(cents: u64) -> Self {
-        Self { cents }
-    }
-}
-
-impl std::fmt::Display for Usd {
-    /// The amount as the top-up routes take it: dollars, a point, and two digits.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{:02}", self.cents / 100, self.cents % 100)
-    }
-}
-
-/// `--amount`: dollars in plain digits, with at most two digits after a point. At most nine
-/// digits before the point (arbitrary, far above any top-up), so the cents fit in a `u64`.
-pub(crate) fn usd(text: &str) -> Result<Usd, String> {
-    let (dollars, cents) = text.split_once('.').unwrap_or((text, "00"));
-    let digits = |part: &str, most: usize| {
-        (1..=most).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit())
-    };
-    if !digits(dollars, 9) || !digits(cents, 2) {
-        return Err("an amount is US dollars to the cent, such as `50` or `12.50`".to_owned());
-    }
-    let parse = |part: &str| {
-        part.parse::<u64>()
-            .expect("checked: one to nine ASCII digits")
-    };
-    // One digit after the point is tenths: `20.5` is 20 dollars and 50 cents.
-    let cents = if cents.len() == 1 {
-        parse(cents) * 10
-    } else {
-        parse(cents)
-    };
-    Ok(Usd::from_cents(parse(dollars) * 100 + cents))
 }
 
 /// How a top-up is paid. USDC and TAO are left to the console.
@@ -703,20 +635,18 @@ fn hotkey(text: &str) -> Result<String, String> {
     }
 }
 
-/// `--amount` of gamma: digits with at most 9 after the point, at least `0.1`, sent as written.
+/// `--amount` of gamma: an amount with at most 9 decimals, at least `0.1`, sent as written.
 fn gamma_amount(text: &str) -> Result<String, String> {
-    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
-    let digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
-    if whole.is_empty() || !digits(whole) || !digits(fraction) || text.ends_with('.') {
+    let Some(amount) = Decimal::parse(text) else {
         return Err("an amount is gamma in digits, such as `10` or `0.5`".to_owned());
-    }
-    if fraction.len() > 9 {
+    };
+    if amount.fraction().len() > 9 {
         return Err(
             "gamma has 9 decimals, so an amount has at most 9 digits after the point".to_owned(),
         );
     }
-    let whole_zero = whole.bytes().all(|b| b == b'0');
-    let tenths = fraction.bytes().next().unwrap_or(b'0');
+    let whole_zero = amount.whole().bytes().all(|b| b == b'0');
+    let tenths = amount.fraction().bytes().next().unwrap_or(b'0');
     if whole_zero && tenths == b'0' {
         return Err("a conversion takes at least `0.1` gamma".to_owned());
     }
@@ -777,37 +707,6 @@ mod tests {
     /// each spelling `--amount` takes: `d.cc`, `d.c` for whole tenths, and `d` for whole
     /// dollars, with leading zeros too.
     #[test]
-    fn usd_reads_every_spelling_of_an_amount_back_to_its_cents() {
-        // Every cent up to past both minimums and around both maximums, and a prime stride
-        // across the rest, which keeps the run short in a debug build.
-        let cents = (0..=200_000)
-            .chain(999_000..=1_001_000)
-            .chain(9_999_000..=10_001_000)
-            .chain((200_001..=99_999_999_999).step_by(999_983));
-        for cents in cents {
-            let usd = Usd::from_cents(cents);
-            let written = usd.to_string();
-            assert_eq!(super::usd(&written), Ok(usd), "{written}");
-            if cents < 10_000_000_000 {
-                assert_eq!(super::usd(&format!("0{written}")), Ok(usd), "{written}");
-            }
-            if cents % 10 == 0 {
-                let tenths = &written[..written.len() - 1];
-                assert_eq!(super::usd(tenths), Ok(usd), "{tenths}");
-            }
-            if cents % 100 == 0 {
-                let dollars = (cents / 100).to_string();
-                assert_eq!(super::usd(&dollars), Ok(usd), "{dollars}");
-            }
-        }
-        assert!(
-            super::usd("1000000000").is_err(),
-            "ten digits before the point"
-        );
-        assert!(super::usd("999999999.99").is_ok());
-    }
-
-    #[test]
     fn alpha_reads_a_decimal_to_exact_planck() {
         for (text, planck) in [
             ("0.01", 10_000_000_000_000_000),
@@ -847,20 +746,6 @@ mod tests {
             ("9999999999999999999999999999999999999999", large),
         ] {
             assert_eq!(super::alpha(text), Err(error.to_owned()), "{text:?}");
-        }
-    }
-
-    #[test]
-    fn planck_prints_as_an_exact_decimal() {
-        for (planck, text) in [
-            (0, "0"),
-            (1, "0.000000000000000001"),
-            (ONE, "1"),
-            (ONE / 100, "0.01"),
-            (7_425_000_000_000_000_000, "7.425"),
-            (u128::MAX, "340282366920938463463.374607431768211455"),
-        ] {
-            assert_eq!(Planck(planck).to_string(), text);
         }
         assert_eq!(CHAIN_MINIMUM.to_string(), "0.01");
     }

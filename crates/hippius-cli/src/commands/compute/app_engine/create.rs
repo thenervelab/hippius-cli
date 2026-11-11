@@ -23,7 +23,7 @@ use hippius::{AppSecrets, Error, Request, Result, SecretValue, Slot, phrase, vie
 use serde_json::{Map, Value};
 
 use super::{APPS, Compose, Hashed, check_hash, read_compose, unavailable_hint};
-use crate::cli::{AppCreate, BackupInterval, DiskTier, FailoverMode, GuestPoweroff};
+use crate::cli::{AppCreate, DiskTier, FailoverMode, GuestPoweroff};
 use crate::commands::Printed;
 use crate::commands::compute::launch::{
     Kind, STAYS_STOPPED, backups_clause, balance_hint, launch_wait, os_disk_clause, wait,
@@ -34,7 +34,7 @@ use crate::context::{Context, Write, WritePlan};
 const SECRETS_FLAG: &str = "--secrets-file";
 
 pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
-    let timeout = launch_wait(ctx, args.wait, args.no_wait, args.wait_timeout);
+    let timeout = launch_wait(ctx, &args.launch);
     let compose = read_compose(&args.compose.path)?;
     let secrets = args
         .secrets_file
@@ -131,13 +131,13 @@ fn launch_action(args: &AppCreate) -> String {
         action.push_str(&format!(" in `{region}`"));
     }
     let mut more = Vec::new();
-    if let Some(tier) = args.os_disk_tier {
+    if let Some(tier) = args.launch.os_disk_tier {
         more.push(os_disk_clause(tier));
     }
-    if let Some(interval) = args.backup_interval {
-        more.push(backups_clause(interval, args.failover));
+    if let Some(interval) = args.launch.backup_interval {
+        more.push(backups_clause(interval, args.launch.failover));
     }
-    if args.on_guest_poweroff == Some(GuestPoweroff::Stop) {
+    if args.launch.on_guest_poweroff == Some(GuestPoweroff::Stop) {
         more.push(STAYS_STOPPED.to_owned());
     }
     if !more.is_empty() {
@@ -159,11 +159,11 @@ fn create_body<'a>(
         secrets,
         name: args.name.as_deref(),
         region: args.region.as_deref(),
-        os_disk_tier: args.os_disk_tier.map(DiskTier::code),
-        placement_group: args.placement_group.as_deref(),
-        on_guest_poweroff: args.on_guest_poweroff.map(GuestPoweroff::code),
-        failover_mode: args.failover.map(FailoverMode::code),
-        backup_interval_s: args.backup_interval.map(BackupInterval::seconds),
+        os_disk_tier: args.launch.os_disk_tier.map(DiskTier::code),
+        placement_group: args.launch.placement_group.as_deref(),
+        on_guest_poweroff: args.launch.on_guest_poweroff.map(GuestPoweroff::code),
+        failover_mode: args.launch.failover.map(FailoverMode::code),
+        backup_interval_s: args.launch.backup_interval,
     }
 }
 
@@ -312,7 +312,7 @@ fn shaped(key: &str, text: &str) -> bool {
 
 /// Whether `text` is a `vm_id` by the rule of the argument.
 fn is_vm_id(text: &str) -> bool {
-    crate::cli::vm_id(text).is_ok()
+    crate::cli::VmId::parse(text).is_ok()
 }
 
 /// Whether `text` is a SHA-256 of 64 hex digits.

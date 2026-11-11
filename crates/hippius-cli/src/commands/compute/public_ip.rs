@@ -4,7 +4,7 @@ use hippius::routes::compute;
 use hippius::{Client, Request, Result};
 use serde_json::json;
 
-use crate::cli::PublicIp;
+use crate::cli::{PublicIp, VmTarget};
 use crate::commands::compute::VMS;
 use crate::commands::{Printed, print_body, print_body_or, print_with};
 use crate::context::{Context, Gate};
@@ -20,7 +20,7 @@ pub(super) fn public_ip(ctx: &Context<'_>, client: &Client, command: &PublicIp) 
             };
             print_body(ctx, client, &request, Gate::Open)
         }
-        PublicIp::Get { vm_id } => print_body(
+        PublicIp::Get(VmTarget { vm_id }) => print_body(
             ctx,
             client,
             &Request::to(&compute::PUBLIC_IP, [vm_id])
@@ -30,7 +30,7 @@ pub(super) fn public_ip(ctx: &Context<'_>, client: &Client, command: &PublicIp) 
         ),
         // Swagger documents the attach as idempotent: a repeat returns the address already
         // attached. It still needs `--yes`, because the first call starts a bill.
-        PublicIp::Create { vm_id } => {
+        PublicIp::Create(VmTarget { vm_id }) => {
             let request = Request::to(&compute::PUBLIC_IP_CREATE, [vm_id])
                 .listed_by(VMS)
                 .about(format!("attach a public IPv4 to the VM `{vm_id}`"));
@@ -39,11 +39,11 @@ pub(super) fn public_ip(ctx: &Context<'_>, client: &Client, command: &PublicIp) 
             };
             print_with(ctx, client, &request, gate, |response| {
                 let address = response.document()?;
-                ctx.warning(&inbound_blocked(vm_id));
+                ctx.warning(&inbound_blocked(vm_id.as_str()));
                 Ok(address)
             })
         }
-        PublicIp::Delete { vm_id } => {
+        PublicIp::Delete(VmTarget { vm_id }) => {
             let request = Request::to(&compute::PUBLIC_IP_DELETE, [vm_id])
                 .listed_by(VMS)
                 .about(format!("detach the public IPv4 from the VM `{vm_id}`"));
@@ -53,7 +53,10 @@ pub(super) fn public_ip(ctx: &Context<'_>, client: &Client, command: &PublicIp) 
             let done = json!({ "vm_id": vm_id, "public_ip": null });
             print_body_or(ctx, client, &request, gate, done)
         }
-        PublicIp::Usage { vm_id, range } => {
+        PublicIp::Usage {
+            vm: VmTarget { vm_id },
+            range,
+        } => {
             let request = Request::to(&compute::PUBLIC_IP_USAGE, [vm_id])
                 .about(format!("get the public IPv4 usage of the VM `{vm_id}`"))
                 .listed_by(VMS);

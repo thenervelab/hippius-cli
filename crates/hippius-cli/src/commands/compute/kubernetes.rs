@@ -39,8 +39,8 @@ use hippius::{Client, Error, Failure, Request, Result, phrase, view_of};
 use serde_json::{Map, Value};
 
 use crate::cli::{
-    Clusters, Kubernetes, KubernetesBackups, NodePoolCreate, NodePools, Nodes, OperationTarget,
-    Operations,
+    ClusterTarget, Clusters, Kubernetes, KubernetesBackups, NodePoolCreate, NodePools, Nodes,
+    OperationTarget, Operations,
 };
 use crate::commands::{
     Decided, Printed, print_body, print_envelope, print_keyed_list, read_then_write, require_reveal,
@@ -53,7 +53,10 @@ const CLUSTERS: &str = "hipc compute kubernetes clusters list";
 pub(super) fn run(ctx: &Context<'_>, command: &Kubernetes) -> Result<Printed> {
     match command {
         Kubernetes::Clusters(command) => clusters(ctx, command),
-        Kubernetes::Backups(KubernetesBackups::List { cluster_id, reveal }) => {
+        Kubernetes::Backups(KubernetesBackups::List {
+            cluster: ClusterTarget { cluster_id },
+            reveal,
+        }) => {
             require_reveal(ctx, *reveal)?;
             let request = Request::to(&kubernetes::BACKUPS, [cluster_id])
                 .about(format!(
@@ -62,19 +65,19 @@ pub(super) fn run(ctx: &Context<'_>, command: &Kubernetes) -> Result<Printed> {
                 .listed_by(CLUSTERS);
             print_keyed_list(ctx, &ctx.load_authed_client()?, &request, "snapshots")
         }
-        Kubernetes::NodePools(NodePools::List { cluster_id }) => {
+        Kubernetes::NodePools(NodePools::List(ClusterTarget { cluster_id })) => {
             list(ctx, *cluster_id, &kubernetes::NODE_POOLS, "node pools")
         }
         Kubernetes::NodePools(NodePools::Create(args)) => pool_create(ctx, args),
         Kubernetes::NodePools(NodePools::Scale(args)) => keyed::scale(ctx, args),
         Kubernetes::Nodes(Nodes::Replace(args)) => keyed::replace(ctx, args),
-        Kubernetes::Operations(Operations::List { cluster_id }) => {
+        Kubernetes::Operations(Operations::List(ClusterTarget { cluster_id })) => {
             list(ctx, *cluster_id, &kubernetes::OPERATIONS, "operations")
         }
         Kubernetes::Operations(Operations::Cancel(target)) => operation(ctx, target, Verb::Cancel),
         Kubernetes::Operations(Operations::Resume(target)) => operation(ctx, target, Verb::Resume),
         Kubernetes::Nodes(Nodes::Delete {
-            cluster_id,
+            cluster: ClusterTarget { cluster_id },
             node_name,
         }) => {
             let request = Request::to(&kubernetes::NODE_REMOVE, [cluster_id, node_name])
@@ -102,11 +105,11 @@ fn clusters(ctx: &Context<'_>, command: &Clusters) -> Result<Printed> {
             &ctx.load_authed_client()?,
             &Request::to(&kubernetes::CLUSTERS, []).about("list the Kubernetes clusters"),
         ),
-        Clusters::Get { cluster_id } => read(cluster_get(*cluster_id)),
-        Clusters::Delete { cluster_id } => {
+        Clusters::Get(ClusterTarget { cluster_id }) => read(cluster_get(*cluster_id)),
+        Clusters::Delete(ClusterTarget { cluster_id }) => {
             cluster_delete(ctx, &ctx.load_authed_client()?, *cluster_id)
         }
-        Clusters::Events { cluster_id } => {
+        Clusters::Events(ClusterTarget { cluster_id }) => {
             list(ctx, *cluster_id, &kubernetes::CLUSTER_EVENTS, "events")
         }
         Clusters::Refusals => print_envelope(
@@ -233,7 +236,7 @@ impl Verb {
 /// read. What the read finds the verb cannot act on is refused as `conflict` before the
 /// question, with nothing sent after the read.
 fn operation(ctx: &Context<'_>, target: &OperationTarget, verb: Verb) -> Result<Printed> {
-    let (id, op_id) = (target.cluster_id, target.operation_id);
+    let (id, op_id) = (target.cluster.cluster_id, target.operation_id);
     let operations = format!("hipc compute kubernetes operations list {id}");
     let post = |action: String| {
         Request::to(verb.route(), [&id, &op_id])
@@ -261,7 +264,7 @@ fn operation(ctx: &Context<'_>, target: &OperationTarget, verb: Verb) -> Result<
 /// The operation `target` names in `listed`, the cluster's operations, when `verb` may act
 /// on it; refused otherwise, so nothing is sent after the read.
 fn actionable(target: &OperationTarget, verb: Verb, listed: &[Value]) -> Result<Operation> {
-    let (id, op_id) = (target.cluster_id, target.operation_id);
+    let (id, op_id) = (target.cluster.cluster_id, target.operation_id);
     let operations = format!("hipc compute kubernetes operations list {id}");
     let found = listed
         .iter()
@@ -395,7 +398,7 @@ fn pool_create(ctx: &Context<'_>, args: &NodePoolCreate) -> Result<Printed> {
             ));
         }
     }
-    let id = args.cluster_id;
+    let id = args.cluster.cluster_id;
     let request = Request::to(&kubernetes::NODE_POOL_CREATE, [&id])
         .json(&kubernetes::NodePoolCreateBody {
             name: &args.name,

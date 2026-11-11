@@ -322,6 +322,23 @@ pub struct ExposureCreateBody<'a> {
     pub protocol: Option<&'a str>,
 }
 
+/// The answer of [`BACKUP_OPTIONS`], as far as `hipc` decides on it: the intervals a backup
+/// policy may take.
+#[derive(Debug, Default, Deserialize)]
+pub struct BackupOptions {
+    /// The intervals offered; `None` when the answer has no list of them.
+    #[serde(default, deserialize_with = "each")]
+    pub intervals: Option<Vec<BackupInterval>>,
+}
+
+/// One interval of [`BackupOptions`].
+#[derive(Debug, Default, Deserialize)]
+pub struct BackupInterval {
+    /// The seconds between backups, which a policy sends as `interval_s`.
+    #[serde(default, deserialize_with = "field")]
+    pub seconds: Option<u64>,
+}
+
 /// The body of [`BACKUP_POLICY_UPDATE`]: `failover_mode` only when given, since swagger says
 /// one left out keeps the mode in force.
 #[derive(Debug, Serialize)]

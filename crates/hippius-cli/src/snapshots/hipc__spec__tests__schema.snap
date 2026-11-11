@@ -3214,11 +3214,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "value_name": "PLAN",
           "required": true,
           "repeats": false,
-          "possible_values": [
-            "pro",
-            "business",
-            "enterprise"
-          ],
+          "possible_values": [],
           "default": null,
           "help": "The plan code: pro, business, or enterprise"
         },
@@ -3240,6 +3236,10 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         {
           "method": "POST",
           "path": "/api/s3/subscription/"
+        },
+        {
+          "method": "GET",
+          "path": "/api/s3/plans/"
         }
       ]
     },
@@ -3264,13 +3264,9 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "value_name": "PLAN",
           "required": false,
           "repeats": false,
-          "possible_values": [
-            "pro",
-            "business",
-            "enterprise"
-          ],
+          "possible_values": [],
           "default": null,
-          "help": "The plan code to switch to"
+          "help": "The plan code to switch to: pro, business, or enterprise"
         },
         {
           "name": "--pay-from",
@@ -3308,6 +3304,10 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         {
           "method": "PATCH",
           "path": "/api/s3/subscription/"
+        },
+        {
+          "method": "GET",
+          "path": "/api/s3/plans/"
         }
       ]
     },
@@ -4051,7 +4051,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "repeats": false,
           "possible_values": [],
           "default": null,
-          "help": "Print the new one-time secret on stdout; without it or --secret-file nothing is sent"
+          "help": "Print the one-time secret on stdout; without it or --secret-file nothing is sent"
         },
         {
           "name": "--secret-file",
@@ -4347,7 +4347,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "repeats": false,
           "possible_values": [],
           "default": null,
-          "help": "Print the one-time robot secret on stdout; without it or --secret-file nothing is sent"
+          "help": "Print the one-time secret on stdout; without it or --secret-file nothing is sent"
         },
         {
           "name": "--secret-file",
@@ -4516,7 +4516,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "repeats": false,
           "possible_values": [],
           "default": null,
-          "help": "Print the new one-time robot secret on stdout; without it or --secret-file nothing is sent"
+          "help": "Print the one-time secret on stdout; without it or --secret-file nothing is sent"
         },
         {
           "name": "--secret-file",
@@ -4661,14 +4661,9 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "value_name": "ROLE",
           "required": true,
           "repeats": false,
-          "possible_values": [
-            "read",
-            "push",
-            "push-delete",
-            "admin"
-          ],
+          "possible_values": [],
           "default": null,
-          "help": "What the key may do in the namespace"
+          "help": "What the key may do in the namespace: read, push, push-delete, or admin"
         },
         {
           "name": "--expires-in",
@@ -4739,7 +4734,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "repeats": false,
           "possible_values": [],
           "default": null,
-          "help": "Print the new one-time secret on stdout; without it or --secret-file nothing is sent"
+          "help": "Print the one-time secret on stdout; without it or --secret-file nothing is sent"
         },
         {
           "name": "--secret-file",
@@ -5565,6 +5560,15 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "help": "The region: a two-letter country code from hipc compute regions, such as FR"
         },
         {
+          "name": "--placement-group",
+          "value_name": "NAME",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The anti-affinity group: two VMs of the account in one group never share a server"
+        },
+        {
           "name": "--os-disk-tier",
           "value_name": "TIER",
           "required": false,
@@ -5578,13 +5582,25 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "help": "The OS disk's tier, a minimum: the disk may land on a faster one; the server defaults it to nvme"
         },
         {
-          "name": "--placement-group",
-          "value_name": "NAME",
+          "name": "--backup-interval",
+          "value_name": "SECONDS",
           "required": false,
           "repeats": false,
           "possible_values": [],
           "default": null,
-          "help": "The anti-affinity group: two VMs of the account in one group never share a server"
+          "help": "Turn on scheduled backups once the VM runs, at this many seconds between backups: 900, 3600, 21600, or 86400"
+        },
+        {
+          "name": "--failover",
+          "value_name": "MODE",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "auto",
+            "manual"
+          ],
+          "default": null,
+          "help": "The failover of those backups: auto restarts the VM on another server from its latest backup if its server dies, losing what was written after it; manual, the server's default, leaves that to Hippius support"
         },
         {
           "name": "--on-guest-poweroff",
@@ -5597,32 +5613,6 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           ],
           "default": null,
           "help": "What a power-off from inside the VM does: restart (the server's default) or stop"
-        },
-        {
-          "name": "--backup-interval",
-          "value_name": "SECONDS",
-          "required": false,
-          "repeats": false,
-          "possible_values": [
-            "900",
-            "3600",
-            "21600",
-            "86400"
-          ],
-          "default": null,
-          "help": "Turn on scheduled backups once the app runs, at this many seconds between backups"
-        },
-        {
-          "name": "--failover",
-          "value_name": "MODE",
-          "required": false,
-          "repeats": false,
-          "possible_values": [
-            "auto",
-            "manual"
-          ],
-          "default": null,
-          "help": "The failover of those backups: auto restarts the app on another server from its latest backup if its server dies, losing what was written after it; manual, the server's default, leaves that to Hippius support"
         },
         {
           "name": "--wait",
@@ -6098,6 +6088,15 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "help": "Same as --open-port 22, for SSH"
         },
         {
+          "name": "--dedicated-disk",
+          "value_name": "SIZE:TIER",
+          "required": false,
+          "repeats": true,
+          "possible_values": [],
+          "default": null,
+          "help": "A whole physical disk for the VM, SIZE:TIER, such as 2000:hdd; repeat it once per disk, up to 8"
+        },
+        {
           "name": "--placement-group",
           "value_name": "NAME",
           "required": false,
@@ -6120,27 +6119,13 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "help": "The OS disk's tier, a minimum: the disk may land on a faster one; the server defaults it to nvme"
         },
         {
-          "name": "--dedicated-disk",
-          "value_name": "SIZE:TIER",
-          "required": false,
-          "repeats": true,
-          "possible_values": [],
-          "default": null,
-          "help": "A whole physical disk for the VM, SIZE:TIER, such as 2000:hdd; repeat it once per disk, up to 8"
-        },
-        {
           "name": "--backup-interval",
           "value_name": "SECONDS",
           "required": false,
           "repeats": false,
-          "possible_values": [
-            "900",
-            "3600",
-            "21600",
-            "86400"
-          ],
+          "possible_values": [],
           "default": null,
-          "help": "Turn on scheduled backups once the VM runs, at this many seconds between backups"
+          "help": "Turn on scheduled backups once the VM runs, at this many seconds between backups: 900, 3600, 21600, or 86400"
         },
         {
           "name": "--failover",
@@ -7090,14 +7075,9 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "value_name": "SECONDS",
           "required": true,
           "repeats": false,
-          "possible_values": [
-            "900",
-            "3600",
-            "21600",
-            "86400"
-          ],
+          "possible_values": [],
           "default": null,
-          "help": "Seconds between backups: the most data a restore could lose"
+          "help": "Seconds between backups, the most data a restore could lose: 900, 3600, 21600, or 86400"
         },
         {
           "name": "--failover",
@@ -7117,6 +7097,10 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         {
           "method": "PUT",
           "path": "/api/compute/vms/{vm_id}/backup/"
+        },
+        {
+          "method": "GET",
+          "path": "/api/compute/backup-options/"
         }
       ]
     },
@@ -7348,11 +7332,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "value_name": "SIZE",
           "required": false,
           "repeats": true,
-          "possible_values": [
-            "small",
-            "medium",
-            "large"
-          ],
+          "possible_values": [],
           "default": null,
           "help": "A size jobs may use: small, medium, or large; repeat it for several; the list given replaces the current one"
         },
@@ -7881,11 +7861,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "value_name": "TIER",
           "required": true,
           "repeats": false,
-          "possible_values": [
-            "starter",
-            "production",
-            "ha"
-          ],
+          "possible_values": [],
           "default": null,
           "help": "The tier: starter and production are one instance; ha is three, with failover"
         },
@@ -7894,27 +7870,18 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "value_name": "SIZE",
           "required": true,
           "repeats": false,
-          "possible_values": [
-            "s",
-            "m",
-            "l",
-            "xl"
-          ],
+          "possible_values": [],
           "default": null,
-          "help": "The instance size"
+          "help": "The instance size: s, m, l, or xl"
         },
         {
           "name": "--engine-version",
           "value_name": "ENGINE_VERSION",
           "required": true,
           "repeats": false,
-          "possible_values": [
-            "16",
-            "17",
-            "18"
-          ],
+          "possible_values": [],
           "default": null,
-          "help": "The PostgreSQL major version"
+          "help": "The PostgreSQL major version: 16, 17, or 18"
         },
         {
           "name": "--name",

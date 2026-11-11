@@ -5,9 +5,11 @@ use std::path::PathBuf;
 use clap::{Args, Subcommand, ValueEnum};
 use hippius::phrase;
 
+use crate::cli::ids::billing_account_id;
+use crate::cli::values::{Spaces, label};
 use crate::cli::{
-    Budget, INVITE_ID, MEMBER_ID, ProjectCreate, ProjectTransfer, ProjectTransfers, ProjectUpdate,
-    Quota, REFERRAL_ID, examples, number, projects,
+    BillingAccount, Budget, INVITE_ID, MEMBER_ID, ProjectCreate, ProjectTarget, ProjectTransfer,
+    ProjectTransfers, ProjectUpdate, Quota, REFERRAL_ID, examples, number, projects,
 };
 
 #[derive(Debug, Subcommand)]
@@ -163,18 +165,10 @@ pub(crate) enum Referrals {
     },
 }
 
-/// A referral link's name. Swagger's `name` is required, at most 64 characters, and a
-/// label, so a blank one or one with a control character is refused here rather than by a
-/// 400 from the server.
+/// A referral link's name. Swagger's `name` is required and at most 64 characters, so it is a
+/// [`label`] refused here rather than by a 400 from the server.
 fn referral_name(value: &str) -> Result<String, String> {
-    let valid = !value.trim().is_empty()
-        && value.chars().count() <= 64
-        && !value.chars().any(char::is_control);
-    if valid {
-        Ok(value.to_owned())
-    } else {
-        Err("a referral name is one line of 1 to 64 characters".to_owned())
-    }
+    label(value, 1..=64, Spaces::Kept, "a referral name")
 }
 
 #[derive(Debug, Subcommand)]
@@ -299,12 +293,7 @@ pub(crate) enum Projects {
     #[command(after_help = examples(&[
         "hipc account projects delete proj_0a1b2c3d4e5f60718293 --yes",
     ]))]
-    Delete {
-        /// The project id, proj_ and 20 lowercase hex characters, from hipc account projects
-        /// list
-        #[arg(value_parser = projects::project_id)]
-        project_id: String,
-    },
+    Delete(ProjectTarget),
     /// Offer a project to another account, which accepts or declines it; needs --yes
     ///
     /// The project leaves the selected account once the other account accepts. Only the
@@ -379,8 +368,8 @@ pub(crate) enum BillingAccounts {
     Update {
         /// The billing account id, bill_ and 20 lowercase hex characters, from hipc account
         /// billing-accounts list
-        #[arg(value_parser = projects::billing_account_id)]
-        billing_account_id: String,
+        #[arg(value_parser = billing_account_id)]
+        billing_account_id: hippius::BillingId,
         /// The new name, 1 to 64 characters on one line, none invisible, sent trimmed
         #[arg(long, value_parser = projects::principal_name)]
         name: String,
@@ -419,8 +408,8 @@ pub(crate) enum BillingAccounts {
 #[derive(Debug, Args)]
 pub(crate) struct Costs {
     /// The billing account: default, or an id from hipc account billing-accounts list
-    #[arg(value_parser = costs_account)]
-    pub(crate) billing_account_id: String,
+    #[arg(value_parser = BillingAccount::parse)]
+    pub(crate) billing_account_id: BillingAccount,
     /// The first day, as YYYY-MM-DD in UTC
     #[arg(long, value_name = "DAY", value_parser = day)]
     pub(crate) from: Option<String>,
@@ -444,25 +433,12 @@ pub(crate) enum CostGroup {
 }
 
 impl CostGroup {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub(crate) fn code(self) -> &'static str {
         match self {
             Self::Project => "project",
             Self::Kind => "kind",
             Self::Day => "day",
         }
-    }
-}
-
-/// The billing account of a costs read: `default` or a billing account id, which goes into
-/// the path. Checked at parse time, so nothing else can reach the path.
-fn costs_account(text: &str) -> Result<String, String> {
-    match hippius::BillingId::parse(text, &hippius::Source::Argument) {
-        Ok(_) => Ok(text.to_owned()),
-        Err(_) => Err(
-            "a billing account is `default`, or `bill_` and 20 lowercase hex \
-                       characters, from `hipc account billing-accounts list`"
-                .to_owned(),
-        ),
     }
 }
 
@@ -794,7 +770,7 @@ fn grant_target(scope: &str, id: &str) -> Result<GrantTarget, String> {
 /// sent. One `@` with text on both sides, a `.` in the domain, no space or control
 /// character, and at most 254 bytes (RFC 5321's path limit in octets, less the brackets). The
 /// server's check is the real one.
-fn email(value: &str) -> Result<String, String> {
+pub(super) fn email(value: &str) -> Result<String, String> {
     let valid = value.len() <= 254
         && !value.chars().any(|c| c.is_whitespace() || c.is_control())
         && value.split_once('@').is_some_and(|(local, domain)| {

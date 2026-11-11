@@ -5,7 +5,7 @@ use hippius::routes::compute::{self, Vm};
 use hippius::{Client, Error, Request, Result, Slot, phrase, view_of};
 use serde_json::{Value, json};
 
-use crate::cli::{BackupInterval, DedicatedDisk, DiskTier, FailoverMode, GuestPoweroff, VmCreate};
+use crate::cli::{DedicatedDisk, DiskTier, FailoverMode, GuestPoweroff, VmCreate};
 use crate::commands::compute::launch::{
     Goal, Kind, STAYS_STOPPED, backups_clause, balance_hint, launch_wait, os_disk_clause, wait,
 };
@@ -40,7 +40,7 @@ pub(super) fn create(ctx: &Context<'_>, client: &Client, args: &VmCreate) -> Res
         ));
     }
     let dedicated = dedicated_disks(&args.dedicated_disk)?;
-    let timeout = launch_wait(ctx, args.wait, args.no_wait, args.wait_timeout);
+    let timeout = launch_wait(ctx, &args.launch);
     let public_key = args
         .ssh_public_key_file
         .as_deref()
@@ -112,7 +112,7 @@ pub(super) fn create(ctx: &Context<'_>, client: &Client, args: &VmCreate) -> Res
     {
         address_warning(ctx, vm, launch_error.as_deref(), &ports);
     }
-    if args.backup_interval.is_some()
+    if args.launch.backup_interval.is_some()
         && let Printed::Document(vm) = &printed
     {
         backup_warning(ctx, vm, &backup_error);
@@ -167,7 +167,7 @@ fn address_warning(ctx: &Context<'_>, vm: &Value, launch_error: Option<&str>, po
     let vm_id = vm
         .vm_id
         .as_deref()
-        .and_then(|id| crate::cli::as_argument(id, crate::cli::vm_id))
+        .and_then(|id| crate::cli::as_argument(id, crate::cli::VmId::parse))
         .unwrap_or("<vm_id>");
     ctx.warning(&inbound_blocked(vm_id));
 }
@@ -277,7 +277,7 @@ fn open_launched_ports(
     // leading `-` is fine there, and only matters to a printed command (the hint below).
     let vm_id = view_of::<Vm>(launched)
         .vm_id
-        .filter(|id| crate::cli::vm_id(id).is_ok());
+        .filter(|id| crate::cli::VmId::parse(id).is_ok());
     let Some(vm_id) = vm_id.as_deref() else {
         return Err(Error::internal(
             "the launch answer has no usable `vm_id`, so the firewall rule was not set",
@@ -387,7 +387,7 @@ fn launch_action(args: &VmCreate, dedicated: Option<Dedicated>) -> String {
                 .to_owned(),
         );
     }
-    if let Some(tier) = args.os_disk_tier {
+    if let Some(tier) = args.launch.os_disk_tier {
         clauses.push(os_disk_clause(tier));
     }
     if let Some(Dedicated { disk, count }) = dedicated {
@@ -401,10 +401,10 @@ fn launch_action(args: &VmCreate, dedicated: Option<Dedicated>) -> String {
             disk.tier.code()
         ));
     }
-    if let Some(interval) = args.backup_interval {
-        clauses.push(backups_clause(interval, args.failover));
+    if let Some(interval) = args.launch.backup_interval {
+        clauses.push(backups_clause(interval, args.launch.failover));
     }
-    if args.on_guest_poweroff == Some(GuestPoweroff::Stop) {
+    if args.launch.on_guest_poweroff == Some(GuestPoweroff::Stop) {
         clauses.push(STAYS_STOPPED.to_owned());
     }
     let ports = open_ports(args);
@@ -435,11 +435,11 @@ fn create_body<'a>(
         name: args.name.as_deref(),
         image: args.image.as_deref(),
         region: args.region.as_deref(),
-        placement_group: args.placement_group.as_deref(),
+        placement_group: args.launch.placement_group.as_deref(),
         ssh_key_ids: &args.ssh_key_ids,
         ssh_public_key: public_key,
         public_ip: args.public_ip,
-        os_disk_tier: args.os_disk_tier.map(DiskTier::code),
+        os_disk_tier: args.launch.os_disk_tier.map(DiskTier::code),
         dedicated_disks: dedicated.map(|Dedicated { disk, count }| compute::DedicatedDisks {
             tier: disk.tier.code(),
             count,
@@ -451,8 +451,8 @@ fn create_body<'a>(
         // `pinned_ack_version` is not sent: only a read of `GET /api/compute/prices/` gives
         // it, and swagger refuses only a stale one (422 `dedicated-ack-stale`).
         pinned_ack: dedicated.is_some(),
-        backup_interval_s: args.backup_interval.map(BackupInterval::seconds),
-        failover_mode: args.failover.map(FailoverMode::code),
-        on_guest_poweroff: args.on_guest_poweroff.map(GuestPoweroff::code),
+        backup_interval_s: args.launch.backup_interval,
+        failover_mode: args.launch.failover.map(FailoverMode::code),
+        on_guest_poweroff: args.launch.on_guest_poweroff.map(GuestPoweroff::code),
     }
 }

@@ -15,10 +15,9 @@ use hippius::{
 };
 use serde_json::{Map, Value, json};
 
-use crate::cli::values::{Charset, Dash, is_word};
 use crate::cli::{
     Hub, HubArtifacts, HubNamespace, HubRepositories, HubRobot, HubSubscribe, HubSubscription,
-    PayFrom, Visibility,
+    Namespace, OneTimeSecret, PayFrom, Visibility,
 };
 use crate::commands::files::{save_secret, shown_once};
 use crate::commands::{
@@ -595,9 +594,8 @@ fn cancel(ctx: &Context<'_>, client: &Client, subscription_id: u64) -> Result<Pr
 fn namespace(ctx: &Context<'_>, command: &HubNamespace) -> Result<Printed> {
     match command {
         HubNamespace::Availability { namespace } => {
-            check_namespace(namespace)?;
             let request = Request::to(&hub::NAMESPACE_CHECK, [])
-                .query("name", namespace)
+                .query("name", namespace.as_str())
                 .about(format!("check the Hub namespace `{namespace}`"));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
@@ -628,15 +626,13 @@ fn namespace(ctx: &Context<'_>, command: &HubNamespace) -> Result<Printed> {
         )
         .map_err(|error| with_provision_hint(ctx, error)),
         HubNamespace::Robot(HubRobot::Rotate {
-            reveal,
-            secret_file,
-        }) => rotate_robot(ctx, *reveal, secret_file.path.as_deref())
+            secret: OneTimeSecret { reveal, path },
+        }) => rotate_robot(ctx, *reveal, path.as_deref())
             .map_err(|error| with_provision_hint(ctx, error)),
         HubNamespace::Create {
             namespace,
-            reveal,
-            secret_file,
-        } => provision(ctx, namespace, *reveal, secret_file.path.as_deref()),
+            secret: OneTimeSecret { reveal, path },
+        } => provision(ctx, namespace, *reveal, path.as_deref()),
         HubNamespace::Update { visibility, public } => update_namespace(ctx, *visibility, *public)
             .map_err(|error| with_provision_hint(ctx, error)),
     }
@@ -1058,14 +1054,15 @@ const ROTATE_ROBOT: &str = "hub namespace robot rotate --reveal --yes";
 /// secret once, so `--reveal` is required before anything is sent (tenet 9).
 fn provision(
     ctx: &Context<'_>,
-    name: &str,
+    name: &Namespace,
     reveal: bool,
     secret_file: Option<&Path>,
 ) -> Result<Printed> {
-    check_namespace(name)?;
     require_reveal_or_file(ctx, reveal, secret_file.is_some())?;
     let request = Request::to(&hub::NAMESPACE_CREATE, [])
-        .json(&hub::NamespaceCreateBody { namespace: name })
+        .json(&hub::NamespaceCreateBody {
+            namespace: name.as_str(),
+        })
         .about(format!("create the Hub namespace `{name}`"));
     // Without a file the question says nothing of the secret, as it always has.
     let consequence = secret_file.map(|_| shown_once("its robot secret", secret_file));
@@ -1119,58 +1116,8 @@ fn provision(
     })
 }
 
-/// Namespace names are 1 to 63 lowercase letters, digits, and dashes, and do not start with
-/// a dash, which a command line would read as a flag.
-fn check_namespace(name: &str) -> Result<()> {
-    if is_word(name, 1..=63, Charset::LowerDash, Dash::Refused) {
-        Ok(())
-    } else {
-        Err(Error::usage(
-            format!(
-                "`{name}` is not a namespace name: a name is 1 to 63 lowercase letters, \
-                 digits, and `-`, and does not start with `-`"
-            ),
-            "pass a namespace name such as `my-team`",
-        ))
-    }
-}
-
 /// What a Hub subscription cancel leaves, for its question and `hipc api`'s. The grace period
 /// and the deletion after it are the ones the Hub billing docs state.
 pub(crate) const CANCELLED: &str = "the namespace stays available for a 30-day grace period, \
                                     and subscribing again within it keeps everything; when it \
                                     ends, the namespace and everything in it are deleted for good";
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The namespace rule: 1 to 63 of `a-z`, `0-9`, and `-`, not starting with `-`.
-    #[test]
-    fn namespace_names_hold_one_rule() {
-        for good in ["a", "my-team", "a-", "0", &"a".repeat(63)] {
-            assert!(check_namespace(good).is_ok(), "{good}");
-        }
-        for bad in [
-            "",
-            &"a".repeat(64),
-            "-a",
-            "..",
-            "a.b",
-            "A",
-            "a_b",
-            "a/b",
-            "a b",
-            "é",
-        ] {
-            let error = check_namespace(bad).expect_err(bad);
-            assert!(
-                error.message().ends_with(
-                    "is not a namespace name: a name is 1 to 63 lowercase letters, digits, and \
-                     `-`, and does not start with `-`"
-                ),
-                "{bad}: {error}"
-            );
-        }
-    }
-}

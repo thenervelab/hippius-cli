@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 
 use hippius::phrase;
 
-use crate::commands::credits::amount;
+use crate::units::Decimal;
 
 /// A spend cap, as the question names it.
 #[derive(Debug, Clone, Copy)]
@@ -35,7 +35,7 @@ pub(crate) enum InForce {
     Null,
     /// No amount: `monthly_cap_credits` is missing, or the answer is not an object.
     Unknown,
-    /// `monthly_cap_credits`, as text, which [`amount`] reads as an amount or not.
+    /// `monthly_cap_credits`, as text, which [`Decimal::parse`] reads as an amount or not.
     Credits(String),
 }
 
@@ -75,7 +75,7 @@ pub(crate) fn question(
                     format!("remove {named}, whose current value is unknown: {no_amount}"),
                     unknown,
                 )),
-                InForce::Credits(old) if amount(old).is_some() => Some((
+                InForce::Credits(old) if Decimal::parse(old).is_some() => Some((
                     format!("remove {named} of {} credits", phrase::quote(old)),
                     more,
                 )),

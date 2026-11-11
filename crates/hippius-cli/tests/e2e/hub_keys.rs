@@ -281,7 +281,10 @@ fn bad_flags_are_usage_and_send_nothing() {
     let home = Home::new();
     let create = ["hub", "keys", "create", "--reveal", "--yes"];
     for (extra, words) in [
-        (&["--name", "ci", "--role", "write"][..], "write"),
+        (
+            &["--name", "ci", "--role", "Write"][..],
+            "a key role is a code",
+        ),
         (&["--name", "ci"], "--role"),
         (&["--role", "read"], "--name"),
         (

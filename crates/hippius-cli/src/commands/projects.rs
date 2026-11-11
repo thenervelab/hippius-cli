@@ -18,8 +18,8 @@ use hippius::{
 use serde_json::{Value, json};
 
 use crate::cli::{
-    BillingAccounts, Budget, BudgetUpdate, Costs, ProjectTransfer, ProjectTransfers, Projects,
-    Quota, QuotaLimit, QuotaUpdate,
+    BillingAccount, BillingAccounts, Budget, BudgetUpdate, Costs, ProjectTarget, ProjectTransfer,
+    ProjectTransfers, Projects, Quota, QuotaLimit, QuotaUpdate,
 };
 use crate::commands::account;
 use crate::commands::credits::{AmountPath, shown_in_credits};
@@ -62,23 +62,23 @@ pub(crate) fn projects(ctx: &Context<'_>, command: &Projects) -> Result<Printed>
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         Projects::Update(args) => {
-            let request = Request::to(&routes::account::PROJECT_UPDATE, [&args.project_id])
+            let request = Request::to(&routes::account::PROJECT_UPDATE, [&args.project.project_id])
                 .json(&NameBody { name: &args.name })
                 .listed_by(PROJECTS)
                 .about(format!(
                     "rename the project `{}` to {}",
-                    args.project_id,
+                    args.project.project_id,
                     phrase::quote(&args.name)
                 ));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
-        Projects::Delete { project_id } => {
+        Projects::Delete(ProjectTarget { project_id }) => {
             let request = Request::to(&routes::account::PROJECT_DELETE, [project_id])
                 .listed_by(PROJECTS)
                 .about(format!(
                     "archive the project `{project_id}`, which must own nothing"
                 ));
-            let done = json!({ "id": project_id, "archived": true });
+            let done = json!({ "id": project_id.as_str(), "archived": true });
             let config = crate::context::config()?;
             let (settings, client) = ctx.authed(&config)?;
             let printed = print_body_or(
@@ -88,13 +88,13 @@ pub(crate) fn projects(ctx: &Context<'_>, command: &Projects) -> Result<Printed>
                 Gate::Confirm { consequence: None },
                 done,
             )
-            .map_err(|error| still_holds(error, project_id))?;
+            .map_err(|error| still_holds(error, project_id.as_str()))?;
             let stored = settings
                 .project
                 .as_ref()
-                .is_some_and(|p| p.is_stored() && p.as_str() == project_id.as_str());
+                .is_some_and(|p| p.is_stored() && p == project_id);
             if stored && !ctx.dry_run() {
-                forget_archived(ctx, &config, &settings.profile, project_id);
+                forget_archived(ctx, &config, &settings.profile, project_id.as_str());
             }
             Ok(printed)
         }
@@ -216,7 +216,7 @@ fn costs(ctx: &Context<'_>, args: &Costs) -> Result<Printed> {
         let mut groups = args.group_by.clone();
         groups.sort();
         groups.dedup();
-        let groups: Vec<&str> = groups.iter().map(|group| group.as_str()).collect();
+        let groups: Vec<&str> = groups.iter().map(|group| group.code()).collect();
         request = request.query("group", &groups.join(","));
     }
     print_with(
@@ -248,23 +248,26 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
     // Decided from the command line alone, so the invocation must change: `usage`.
     if member.as_deref() == Some(args.to_account.as_str()) {
         return Err(Error::usage(
-            same_account(&args.to_account),
+            same_account(args.to_account.as_str()),
             SAME_ACCOUNT_HINT,
         ));
     }
     let write = |project: &str, from: &str| {
-        Request::to(&routes::account::PROJECT_TRANSFER, [&args.project_id])
-            .json(&routes::account::ProjectTransferBody {
-                to_account: &args.to_account,
-            })
-            .listed_by(PROJECTS)
-            .about(format!(
-                "offer the project {project} to the account `{}`{from}",
-                args.to_account
-            ))
+        Request::to(
+            &routes::account::PROJECT_TRANSFER,
+            [&args.project.project_id],
+        )
+        .json(&routes::account::ProjectTransferBody {
+            to_account: args.to_account.as_str(),
+        })
+        .listed_by(PROJECTS)
+        .about(format!(
+            "offer the project {project} to the account `{}`{from}",
+            args.to_account
+        ))
     };
     let own = " from the token's own account";
-    let shown_id = format!("`{}`", args.project_id);
+    let shown_id = format!("`{}`", args.project.project_id);
     let draft = write(&shown_id, if member.is_some() { "" } else { own });
     let projects = Request::to(&routes::account::PROJECTS, [])
         .about("list the projects")
@@ -282,7 +285,7 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
             .into_iter()
             .flatten()
             .map(view_of::<routes::account::ProjectEntry>)
-            .find(|project| project.id.as_deref() == Some(args.project_id.as_str()));
+            .find(|project| project.id.as_deref() == Some(args.project.project_id.as_str()));
         let Some(project) = project else {
             let account = member.as_ref().map_or_else(
                 || "the token's own account".to_owned(),
@@ -293,7 +296,7 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
                 Failure::NotFound,
                 format!(
                     "the project `{}` is not one of the projects of {account}",
-                    args.project_id
+                    args.project.project_id
                 ),
             );
             return Err(missing.with_hint(format!("run `{PROJECTS}` to see the project ids")));
@@ -307,8 +310,8 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
         } else {
             let id = own_account_id(ctx.send(&client, &accounts)?.json()?)?;
             // A state `hipc` read that rules the write out (tenet 4): `conflict`.
-            if id == args.to_account {
-                let same = Error::new(Failure::Conflict, same_account(&args.to_account));
+            if id == args.to_account.as_str() {
+                let same = Error::new(Failure::Conflict, same_account(args.to_account.as_str()));
                 return Err(same.with_hint(SAME_ACCOUNT_HINT));
             }
             format!("{own} {}", phrase::quote(&id))
@@ -422,21 +425,21 @@ fn resource(resource: &Value) -> Option<String> {
 /// `/api/accounts/projects/<id>/budget/`: `GET`, `PUT`, and `DELETE`.
 fn budget(ctx: &Context<'_>, command: &Budget) -> Result<Printed> {
     match command {
-        Budget::Get { project_id } => {
+        Budget::Get(ProjectTarget { project_id }) => {
             let request = Request::to(&routes::account::PROJECT_BUDGET, [project_id])
                 .listed_by(PROJECTS)
                 .about(format!("get the budget of the project `{project_id}`"));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         Budget::Update(args) => budget_update(ctx, args),
-        Budget::Delete { project_id } => {
+        Budget::Delete(ProjectTarget { project_id }) => {
             let request = Request::to(&routes::account::PROJECT_BUDGET_DELETE, [project_id])
                 .listed_by(PROJECTS)
                 .about(format!(
                     "remove the monthly budget of the project `{project_id}`, with its alerts and \
                  any launch block"
                 ));
-            let done = json!({ "project": project_id, "deleted": true });
+            let done = json!({ "project": project_id.as_str(), "deleted": true });
             let client = ctx.load_authed_client()?;
             print_body_or(
                 ctx,
@@ -477,19 +480,22 @@ fn budget_update(ctx: &Context<'_>, args: &BudgetUpdate) -> Result<Printed> {
     } else {
         "allowing new launches over it"
     };
-    let request = Request::to(&routes::account::PROJECT_BUDGET_UPDATE, [&args.project_id])
-        .json(&routes::account::ProjectBudgetUpdateBody {
-            monthly_limit: &limit,
-            thresholds: &thresholds,
-            block_launch_over: args.block_launches,
-        })
-        .listed_by(PROJECTS)
-        .about(format!(
-            "set the monthly budget of the project `{}` to `{limit}` USD, mailing at {} percent \
+    let request = Request::to(
+        &routes::account::PROJECT_BUDGET_UPDATE,
+        [&args.project.project_id],
+    )
+    .json(&routes::account::ProjectBudgetUpdateBody {
+        monthly_limit: &limit,
+        thresholds: &thresholds,
+        block_launch_over: args.block_launches,
+    })
+    .listed_by(PROJECTS)
+    .about(format!(
+        "set the monthly budget of the project `{}` to `{limit}` USD, mailing at {} percent \
          of it and {launches}",
-            args.project_id,
-            phrase::join(&shown, "and")
-        ));
+        args.project.project_id,
+        phrase::join(&shown, "and")
+    ));
     print_body(
         ctx,
         &ctx.load_authed_client()?,
@@ -502,7 +508,7 @@ fn budget_update(ctx: &Context<'_>, args: &BudgetUpdate) -> Result<Printed> {
 /// limits given, which the server merges, as the console sends it.
 fn quota(ctx: &Context<'_>, command: &Quota) -> Result<Printed> {
     match command {
-        Quota::Get { project_id } => {
+        Quota::Get(ProjectTarget { project_id }) => {
             let request = Request::to(&routes::account::PROJECT_QUOTA, [project_id])
                 .listed_by(PROJECTS)
                 .about(format!("get the quota of the project `{project_id}`"));
@@ -537,14 +543,17 @@ fn quota_update(ctx: &Context<'_>, args: &QuotaUpdate) -> Result<Printed> {
         public_ips: sent(args.public_ips),
         runners: sent(args.runners),
     };
-    let request = Request::to(&routes::account::PROJECT_QUOTA_UPDATE, [&args.project_id])
-        .json(&routes::account::ProjectQuotaUpdateBody { limits })
-        .listed_by(PROJECTS)
-        .about(format!(
-            "set the compute limits of the project `{}`: {}",
-            args.project_id,
-            phrase::join(&shown, "and")
-        ));
+    let request = Request::to(
+        &routes::account::PROJECT_QUOTA_UPDATE,
+        [&args.project.project_id],
+    )
+    .json(&routes::account::ProjectQuotaUpdateBody { limits })
+    .listed_by(PROJECTS)
+    .about(format!(
+        "set the compute limits of the project `{}`: {}",
+        args.project.project_id,
+        phrase::join(&shown, "and")
+    ));
     print_body(
         ctx,
         &ctx.load_authed_client()?,
@@ -569,14 +578,11 @@ pub(crate) fn project_transfers(ctx: &Context<'_>, command: &ProjectTransfers) -
             transfer_id,
             bill_to,
         } => {
-            let billing = match bill_to {
-                Some(text) => BillingId::parse(text, &Source::Argument)?,
-                None => None,
-            };
+            let billing = bill_to.as_ref().and_then(BillingAccount::id);
             let body = routes::account::ProjectTransferAcceptBody {
-                billing: billing.as_ref().map(BillingId::as_str),
+                billing: billing.map(BillingId::as_str),
             };
-            let billed = match &billing {
+            let billed = match billing {
                 Some(id) => format!("the billing account `{}`", id.as_str()),
                 None => "the Default billing account".to_owned(),
             };

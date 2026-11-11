@@ -8,7 +8,7 @@ use hippius::routes::compute::{self, BootPhase, Vm, VmStatus};
 use hippius::{Client, Code, Error, Failure, Request, Result, phrase, view_of};
 use serde_json::Value;
 
-use crate::cli::{BackupInterval, DiskTier, FailoverMode};
+use crate::cli::{DiskTier, FailoverMode, LaunchFlags};
 use crate::commands::Printed;
 use crate::commands::compute::VMS;
 use crate::commands::compute::app_engine::APPS;
@@ -37,14 +37,14 @@ pub(super) fn os_disk_clause(tier: DiskTier) -> String {
 
 /// The launch clause of `--backup-interval`, for the VM and the app questions: how often, the
 /// failover, and that stored backups are billed, so neither question can leave the bill out.
-pub(crate) fn backups_clause(interval: BackupInterval, failover: Option<FailoverMode>) -> String {
+pub(crate) fn backups_clause(seconds: u32, failover: Option<FailoverMode>) -> String {
     let failover = failover.map_or(String::new(), |mode| {
         format!(" and {}", failover_clause(mode))
     });
     format!(
         "backups every {}{failover}, stored backups billed per GB-hour at the price that `hipc \
          compute backups options` shows",
-        phrase::count(u64::from(interval.seconds()), "second")
+        phrase::count(u64::from(seconds), "second")
     )
 }
 
@@ -91,14 +91,15 @@ const WAIT_TIMEOUT: Duration = Duration::from_secs(300);
 /// pipe. Beside `--no-wait` it means nothing, and clap refuses that pair.
 ///
 /// `hipc compute app-engine apps create` takes the same three flags and waits by this rule.
-pub(crate) fn launch_wait(
-    ctx: &Context<'_>,
-    wait: bool,
-    no_wait: bool,
-    wait_timeout: Option<u64>,
-) -> Option<Duration> {
-    let waits = wait || wait_timeout.is_some() || !(no_wait || ctx.reader_is_program());
-    waits.then(|| wait_timeout.map_or(WAIT_TIMEOUT, Duration::from_secs))
+pub(crate) fn launch_wait(ctx: &Context<'_>, launch: &LaunchFlags) -> Option<Duration> {
+    let waits = launch.wait
+        || launch.wait_timeout.is_some()
+        || !(launch.no_wait || ctx.reader_is_program());
+    waits.then(|| {
+        launch
+            .wait_timeout
+            .map_or(WAIT_TIMEOUT, Duration::from_secs)
+    })
 }
 
 /// What ends a VM launch wait.
@@ -185,7 +186,7 @@ impl Kind<'_> {
             Self::App { redactions } if hippius::holds_secret(id, redactions) => {
                 Err("it may be a secret value sent".to_owned())
             }
-            Self::Vm(_) | Self::App { .. } => crate::cli::vm_id(id).map(drop),
+            Self::Vm(_) | Self::App { .. } => crate::cli::VmId::parse(id).map(drop),
         }
     }
 
@@ -307,7 +308,7 @@ pub(super) fn wait(
         format!("the {noun}")
     };
     let argument = quoted
-        .then(|| crate::cli::as_argument(&id, crate::cli::vm_id))
+        .then(|| crate::cli::as_argument(&id, crate::cli::VmId::parse))
         .flatten();
     let hint = match argument {
         Some(id) => format!(
