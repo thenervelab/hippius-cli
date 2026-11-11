@@ -59,6 +59,7 @@ mod server_words;
 mod snapshots;
 mod sources;
 mod status;
+mod subscription_change;
 mod support;
 mod team;
 mod top_up;
