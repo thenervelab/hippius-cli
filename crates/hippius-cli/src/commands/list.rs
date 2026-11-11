@@ -612,6 +612,14 @@ mod tests {
         assert_eq!(next(2, 2, 1), None);
         assert_eq!(next(3, 2, 0), None);
         assert_eq!(next(1, 0, 0), None);
+        // A `next` link, if the server ever sends one, is the next page as it names it.
+        let linked = serde_json::json!({
+            "page": 1,
+            "page_size": 1,
+            "repositories": [null],
+            "next": "https://api.hippius.com/api/registry/usage/repositories/?page=2",
+        });
+        assert!(matches!(read(linked).unwrap().next, Some(Next::Link(_))));
         for answer in [
             page(1, 0, 1),
             serde_json::json!({"page": 1, "repositories": [null]}),
