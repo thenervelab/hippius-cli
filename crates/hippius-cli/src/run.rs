@@ -130,13 +130,21 @@ fn run_warnings(ctx: &Context<'_>) -> Vec<String> {
 
 /// The refusal of a command line that holds a seed phrase or an API token the run knows, which
 /// an error that quoted a word of it would copy into a log or a transcript.
+///
+/// The phrase is looked for with anything that is not a letter read as a space, so a value
+/// joined to its flag (`--name=abandon ...`), or a numbered or comma-separated paste of the
+/// words, is found, as in a support text.
 fn secret_in_argv(args: &[OsString]) -> Option<hippius::Error> {
     let line = args
         .iter()
         .map(|arg| arg.to_string_lossy())
         .collect::<Vec<_>>()
         .join(" ");
-    if hippius::holds_phrase(&line) {
+    let words: String = line
+        .chars()
+        .map(|c| if c.is_alphabetic() { c } else { ' ' })
+        .collect();
+    if hippius::holds_phrase(&words) {
         Some(hippius::phrase_in_argv())
     } else if holds_a_known_token(&line) {
         Some(token_in_argv())
