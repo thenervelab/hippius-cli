@@ -411,8 +411,9 @@ fn env_file(dir: &Path, created: &CreatedDatabase) -> std::result::Result<String
             "PGSSLMODE",
             Some(
                 connection
-                    .and_then(|c| c.sslmode.clone())
-                    .unwrap_or_else(|| "verify-ca".to_owned()),
+                    .and_then(|c| c.sslmode.as_deref())
+                    .unwrap_or("verify-ca")
+                    .to_owned(),
             ),
         ),
         ("PGSSLROOTCERT", Some(path(TLS_FILES[2].0))),

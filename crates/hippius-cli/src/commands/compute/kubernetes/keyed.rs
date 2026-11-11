@@ -645,10 +645,9 @@ fn pool_size(pool: &Pool, operations: &[Operation]) -> u64 {
     let active: Vec<&Operation> = operations.iter().filter(|op| op.is_active()).collect();
     let leaving: HashSet<&str> = active
         .iter()
-        .filter(|op| match op.kind {
-            Some(OperationKind::RemoveNode) => true,
-            Some(OperationKind::AddNode) => op.replaces().is_some(),
-            Some(OperationKind::Other(_)) | None => false,
+        .filter(|op| {
+            op.kind == Some(OperationKind::RemoveNode)
+                || op.kind == Some(OperationKind::AddNode) && op.replaces().is_some()
         })
         .filter_map(|op| op.node.value().map(String::as_str))
         .collect();
