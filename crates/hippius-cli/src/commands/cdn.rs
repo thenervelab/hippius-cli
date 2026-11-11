@@ -14,7 +14,8 @@ pub(crate) mod waf;
 
 use std::cmp::Ordering;
 
-use hippius::{Client, DnsCredentials, Error, Method, Request, Result, phrase};
+use hippius::routes::cdn;
+use hippius::{Client, DnsCredentials, Error, Request, Result, phrase};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
@@ -43,13 +44,13 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Cdn) -> Result<Printed> {
         Cdn::Prices => print_body(
             ctx,
             &ctx.client(&context::config()?)?,
-            &Request::get("/cdn/prices/").about("get the CDN prices"),
+            &Request::to(&cdn::PRICES, []).about("get the CDN prices"),
             Gate::Open,
         ),
         Cdn::Regions => print_body(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/cdn/regions/").about("list the CDN regions"),
+            &Request::to(&cdn::REGIONS, []).about("list the CDN regions"),
             Gate::Open,
         ),
         Cdn::Estimate(args) => estimate(ctx, args),
@@ -67,14 +68,10 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Cdn) -> Result<Printed> {
 /// The command that lists the zone ids, for the hint of a 404 on a zone route.
 const ZONES: &str = "hipc cdn zones list";
 
-fn zone_path(zone_id: &str) -> String {
-    format!("/cdn/zones/{zone_id}/")
-}
-
 fn cap(ctx: &Context<'_>, client: &Client, command: &CdnCap) -> Result<Printed> {
     match command {
         CdnCap::Get { zone_id } => {
-            let request = Request::get(format!("{}cap/", zone_path(zone_id)))
+            let request = Request::to(&cdn::CAP, [zone_id])
                 .about(format!("get the spend cap of the CDN zone `{zone_id}`"))
                 .listed_by(ZONES);
             print_body(ctx, client, &request, Gate::Open)
@@ -110,17 +107,16 @@ fn cap_update(
     zone_id: &str,
     monthly_cap: &str,
 ) -> Result<Printed> {
-    let path = format!("{}cap/", zone_path(zone_id));
     let set =
         format!("set the monthly spend cap of the CDN zone `{zone_id}` to `{monthly_cap}` credits");
     // The cap is the one writable field: the server refuses any other key.
     let patch = |about: &str| {
-        Request::new(Method::Patch, &path)
+        Request::to(&cdn::CAP_UPDATE, [&zone_id])
             .listed_by(ZONES)
             .json(&json!({ "monthly_cap": monthly_cap }))
             .about(about)
     };
-    let read = Request::get(&path)
+    let read = Request::to(&cdn::CAP, [&zone_id])
         .about(format!("get the spend cap of the CDN zone `{zone_id}`"))
         .listed_by(ZONES);
     let draft = patch(&set);
@@ -192,14 +188,13 @@ fn purges(ctx: &Context<'_>, client: &Client, command: &CdnPurges) -> Result<Pri
         // Swagger gives this list no shape, and no zone was on the account to check it: a
         // bare array or an object holding `purges` is read.
         CdnPurges::List { zone_id } => {
-            let path = format!("{}purges/", zone_path(zone_id));
-            let request = Request::get(path)
+            let request = Request::to(&cdn::PURGES, [zone_id])
                 .about(format!("list the purges of the CDN zone `{zone_id}`"))
                 .listed_by(ZONES);
             print_keyed_list(ctx, client, &request, "purges")
         }
         CdnPurges::Get { zone_id, purge_id } => {
-            let request = Request::get(format!("{}purges/{purge_id}/", zone_path(zone_id)))
+            let request = Request::to(&cdn::PURGE, [zone_id, purge_id])
                 .about(format!(
                     "get the purge `{purge_id}` of the CDN zone `{zone_id}`"
                 ))
@@ -243,7 +238,7 @@ fn rules(ctx: &Context<'_>, command: &CdnRules) -> Result<Printed> {
             let read = rules_get(zone_id);
             let read_action = read.action();
             let replace = Replace {
-                write: Request::new(Method::Put, format!("{}rules/", zone_path(zone_id)))
+                write: Request::to(&cdn::RULES_UPDATE, [zone_id])
                     .listed_by(ZONES)
                     .raw_json(body)
                     .about(format!(
@@ -275,7 +270,7 @@ fn rules(ctx: &Context<'_>, command: &CdnRules) -> Result<Printed> {
 }
 
 fn rules_get(zone_id: &str) -> Request {
-    Request::get(format!("{}rules/", zone_path(zone_id)))
+    Request::to(&cdn::RULES, [&zone_id])
         .about(format!("get the cache rules of the CDN zone `{zone_id}`"))
         .listed_by(ZONES)
 }
@@ -440,7 +435,7 @@ fn estimate(ctx: &Context<'_>, args: &CdnEstimate) -> Result<Printed> {
         }
         body.insert("waf".to_owned(), Value::Object(waf));
     }
-    let request = Request::new(Method::Post, "/cdn/estimate/")
+    let request = Request::to(&cdn::ESTIMATE, [])
         .json(&Value::Object(body))
         .about("estimate the CDN cost")
         .changes_nothing();
@@ -453,11 +448,11 @@ fn zones(ctx: &Context<'_>, command: &CdnZones) -> Result<Printed> {
         CdnZones::List => print_keyed_list(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/cdn/zones/").about("list the CDN zones"),
+            &Request::to(&cdn::ZONES, []).about("list the CDN zones"),
             "zones",
         ),
         CdnZones::Get { zone_id } => {
-            let request = Request::get(zone_path(zone_id))
+            let request = Request::to(&cdn::ZONE, [zone_id])
                 .about(format!("get the CDN zone `{zone_id}`"))
                 .listed_by(ZONES);
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
@@ -465,7 +460,7 @@ fn zones(ctx: &Context<'_>, command: &CdnZones) -> Result<Printed> {
         CdnZones::Create(args) => create_zone(ctx, args),
         CdnZones::Update(args) => update_zone(ctx, args),
         CdnZones::Delete { zone_id } => {
-            let request = Request::new(Method::Delete, zone_path(zone_id))
+            let request = Request::to(&cdn::ZONE_DELETE, [zone_id])
                 .listed_by(ZONES)
                 .about(format!("delete the CDN zone `{zone_id}`"));
             let gate = Gate::Confirm {
@@ -524,7 +519,7 @@ fn create_zone(ctx: &Context<'_>, args: &ZoneCreate) -> Result<Printed> {
     };
     // That a private bucket's prefix becomes public is part of the action, so the refusal an
     // agent reads says it too, not only the prompt.
-    let request = Request::new(Method::Post, "/cdn/zones/")
+    let request = Request::to(&cdn::ZONE_CREATE, [])
         .json(&Value::Object(body))
         .about(format!(
             "create the CDN zone `{}` serving `{published}`, which makes that prefix public if \
@@ -587,7 +582,7 @@ fn update_zone(ctx: &Context<'_>, args: &ZoneUpdate) -> Result<Printed> {
     if args.bucket.is_some() || !origin.contains_key("prefix") {
         return print_body(ctx, &client, &patch(origin)?, gate);
     }
-    let read = Request::get(zone_path(&args.zone_id))
+    let read = Request::to(&cdn::ZONE, [&args.zone_id])
         .listed_by(ZONES)
         .about(format!("get the CDN zone `{}`", args.zone_id));
     let with_origin = |kept: &Map<String, Value>| {
@@ -714,7 +709,7 @@ fn zone_patch(
             phrase::join(&to, "and")
         )
     };
-    Ok(Request::new(Method::Patch, zone_path(&args.zone_id))
+    Ok(Request::to(&cdn::ZONE_UPDATE, [&args.zone_id])
         .listed_by(ZONES)
         .json(&Value::Object(body))
         .about(action))
@@ -839,21 +834,19 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
     // Built in each arm, so `dns-setup` checks its credential file before the config file is
     // read (tenet 5).
     let client = || ctx.load_authed_client();
-    let hostname_path =
-        |zone_id: &str, hostname: &str| format!("{}hostnames/{hostname}/", zone_path(zone_id));
     match command {
         // Swagger gives this list no shape, and no zone was on the account to check it: a
         // bare array or an object holding `hostnames` is read.
         CdnHostnames::List { zone_id } => print_keyed_list(
             ctx,
             &client()?,
-            &Request::get(format!("{}hostnames/", zone_path(zone_id)))
+            &Request::to(&cdn::HOSTNAMES, [zone_id])
                 .about(format!("list the hostnames of the CDN zone `{zone_id}`"))
                 .listed_by(ZONES),
             "hostnames",
         ),
         CdnHostnames::Create { zone_id, hostname } => {
-            let request = Request::new(Method::Post, format!("{}hostnames/", zone_path(zone_id)))
+            let request = Request::to(&cdn::HOSTNAME_CREATE, [zone_id])
                 .listed_by(ZONES)
                 .json(&json!({ "hostname": hostname }))
                 .about(format!(
@@ -866,8 +859,7 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
         }
         // A check of the DNS records: a repeat changes nothing, so it is not confirmed.
         CdnHostnames::Verify { zone_id, hostname } => {
-            let path = format!("{}verify/", hostname_path(zone_id, hostname));
-            let request = Request::new(Method::Post, path)
+            let request = Request::to(&cdn::HOSTNAME_VERIFY, [zone_id, hostname])
                 .about(format!("verify the custom hostname `{hostname}`"))
                 .listed_by(format!("hipc cdn hostnames list {zone_id}"));
             print_body(ctx, &client()?, &request, Gate::Open)
@@ -879,8 +871,7 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
         // (tenet 3). Swagger: a 404 while the feature flag is off, and the console offers the
         // link only when the provider has the template, so a 404 says both.
         CdnHostnames::DomainConnect { zone_id, hostname } => {
-            let path = format!("{}domain-connect/", hostname_path(zone_id, hostname));
-            let request = Request::get(path)
+            let request = Request::to(&cdn::HOSTNAME_DOMAIN_CONNECT, [zone_id, hostname])
                 .about(format!(
                     "get the Domain Connect link of the custom hostname `{hostname}`"
                 ))
@@ -919,7 +910,7 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
             })
         }
         CdnHostnames::Delete { zone_id, hostname } => {
-            let request = Request::new(Method::Delete, hostname_path(zone_id, hostname))
+            let request = Request::to(&cdn::HOSTNAME_DELETE, [zone_id, hostname])
                 .listed_by(format!("hipc cdn hostnames list {zone_id}"))
                 .about(format!(
                     "remove the custom hostname `{hostname}` from the CDN zone `{zone_id}`"
@@ -955,10 +946,9 @@ fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
     } = args;
     let provider = provider.provider();
     let credentials = DnsCredentials::load(credentials_file, "--credentials-file", provider)?;
-    let path = format!("{}hostnames/{hostname}/dns-setup/", zone_path(zone_id));
     let provider_field = || Map::from_iter([("provider".to_owned(), provider.code().into())]);
     let request = |body: &Value| {
-        Request::new(Method::Post, path.as_str())
+        Request::to(&cdn::HOSTNAME_DNS_SETUP, [zone_id, hostname])
             .json(body)
             .listed_by(format!("hipc cdn hostnames list {zone_id}"))
             .about(format!(
@@ -1055,7 +1045,7 @@ fn purge(ctx: &Context<'_>, client: &Client, args: &CdnPurge) -> Result<Printed>
     } else {
         json!({ "paths": args.paths })
     };
-    let request = Request::new(Method::Post, format!("{}purge/", zone_path(&args.zone_id)))
+    let request = Request::to(&cdn::PURGE_CREATE, [&args.zone_id])
         .json(&body)
         .about(format!("purge the CDN zone `{}`", args.zone_id))
         .listed_by(ZONES);
@@ -1076,7 +1066,7 @@ fn purge(ctx: &Context<'_>, client: &Client, args: &CdnPurge) -> Result<Printed>
 /// `to`, `step`, `region`), each only when given. Swagger names none, and no zone was on
 /// the account to check them.
 fn stats(ctx: &Context<'_>, client: &Client, args: &CdnStats) -> Result<Printed> {
-    let request = Request::get(format!("{}stats/", zone_path(&args.zone_id)))
+    let request = Request::to(&cdn::STATS, [&args.zone_id])
         .about(format!(
             "get the traffic of the CDN zone `{}`",
             args.zone_id

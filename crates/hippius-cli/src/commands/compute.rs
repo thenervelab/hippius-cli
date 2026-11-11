@@ -29,7 +29,8 @@ mod kubernetes;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use hippius::{Client, Code, Error, Method, Request, Response, Result, phrase};
+use hippius::routes::{Route, compute};
+use hippius::{Client, Code, Error, Request, Response, Result, phrase};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
@@ -50,14 +51,15 @@ use crate::output::Mode;
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 pub(crate) fn run(ctx: &Context<'_>, command: &Compute) -> Result<Printed> {
-    let get = |path: &str, action: &str| {
+    let get = |route: &Route<0>, action: &str| {
         let client = ctx.load_authed_client()?;
-        print_body(ctx, &client, &Request::get(path).about(action), Gate::Open)
+        let request = Request::to(route, []).about(action);
+        print_body(ctx, &client, &request, Gate::Open)
     };
     match command {
         // Prices, quota, the charge cap, images, and placement groups are objects, printed as
         // the server sent them.
-        Compute::Prices => get("/compute/prices/", "get the compute prices"),
+        Compute::Prices => get(&compute::PRICES, "get the compute prices"),
         // Swagger documents the public list with no security, so it sends a token only when
         // one is configured, as `cdn prices` does. It is a command of its own, not what
         // `prices` reads when no token is set: the two answers differ in shape and unit,
@@ -65,35 +67,35 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Compute) -> Result<Printed> {
         Compute::PublicPrices => print_body(
             ctx,
             &ctx.client(&context::config()?)?,
-            &Request::get("/compute/public-prices/").about("get the public compute prices"),
+            &Request::to(&compute::PUBLIC_PRICES, []).about("get the public compute prices"),
             Gate::Open,
         ),
-        Compute::Quota => get("/compute/quota/", "get the compute quota"),
-        Compute::ChargeCap => get("/compute/charge-cap/", "get the compute charge cap"),
-        Compute::Images => get("/compute/images/", "list the VM images"),
-        Compute::PlacementGroups => get("/compute/placement-groups/", "list the placement groups"),
+        Compute::Quota => get(&compute::QUOTA, "get the compute quota"),
+        Compute::ChargeCap => get(&compute::CHARGE_CAP, "get the compute charge cap"),
+        Compute::Images => get(&compute::IMAGES, "list the VM images"),
+        Compute::PlacementGroups => get(&compute::PLACEMENT_GROUPS, "list the placement groups"),
         Compute::Flavors => print_envelope(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/compute/flavors/").about("list the VM flavors"),
+            &Request::to(&compute::FLAVORS, []).about("list the VM flavors"),
         ),
         Compute::Regions => print_envelope(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/compute/regions/").about("list the VM regions"),
+            &Request::to(&compute::REGIONS, []).about("list the VM regions"),
         ),
         // The console reads the apps catalog and the owner's keys as bare arrays;
         // swagger documents no body.
         Compute::Apps => print_envelope(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/compute/apps/").about("list the ready-made apps"),
+            &Request::to(&compute::APPS, []).about("list the ready-made apps"),
         ),
         Compute::AppEngine(command) => app_engine::run(ctx, command),
         Compute::AccountSshKeys => print_envelope(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/compute/account-ssh-keys/")
+            &Request::to(&compute::ACCOUNT_SSH_KEYS, [])
                 .about("list the SSH keys of the account's owner"),
         ),
         Compute::Feasibility {
@@ -101,7 +103,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Compute) -> Result<Printed> {
             region,
             os_disk_tier,
         } => {
-            let request = Request::get("/compute/feasibility/")
+            let request = Request::to(&compute::FEASIBILITY, [])
                 .query("flavor", flavor)
                 .about(format!("check whether the flavor `{flavor}` can launch"))
                 .listed_by("hipc compute flavors");
@@ -137,14 +139,6 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Compute) -> Result<Printed> {
 /// 404 on a VM route, and a launch that may or may not have gone through.
 const VMS: &str = "hipc compute vms list";
 
-fn vm_path(vm_id: &str) -> String {
-    format!("/compute/vms/{vm_id}/")
-}
-
-fn resize_path(vm_id: &str) -> String {
-    format!("{}resize/", vm_path(vm_id))
-}
-
 /// `POST .../stop/`, confirmed: a stop takes down what the VM serves. Text mode warns that
 /// the stopped VM is still billed.
 fn stop(ctx: &Context<'_>, client: &Client, request: &Request, vm_id: &str) -> Result<Printed> {
@@ -163,8 +157,8 @@ fn stop(ctx: &Context<'_>, client: &Client, request: &Request, vm_id: &str) -> R
 }
 
 fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<Printed> {
-    let power = |vm_id: &str, action: &str| {
-        Request::new(Method::Post, format!("{}{action}/", vm_path(vm_id)))
+    let power = |route: &Route<1>, vm_id: &str, action: &str| {
+        Request::to(route, [&vm_id])
             .listed_by(VMS)
             .about(format!("{action} the VM `{vm_id}`"))
     };
@@ -174,16 +168,16 @@ fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<Printed> {
         Vms::List => print_envelope(
             ctx,
             client,
-            &Request::get("/compute/vms/").about("list the VMs"),
+            &Request::to(&compute::VMS, []).about("list the VMs"),
         ),
         Vms::Get { vm_id } => {
-            let request = Request::get(vm_path(vm_id))
+            let request = Request::to(&compute::VM, [vm_id])
                 .about(format!("get the VM `{vm_id}`"))
                 .listed_by(VMS);
             print_body(ctx, client, &request, Gate::Open)
         }
         Vms::Attestation { vm_id } => {
-            let request = Request::get(format!("{}attestation/", vm_path(vm_id)))
+            let request = Request::to(&compute::VM_ATTESTATION, [vm_id])
                 .about(format!("get the attestation of the VM `{vm_id}`"))
                 .listed_by(VMS);
             print_with(ctx, client, &request, Gate::Open, |response| {
@@ -196,7 +190,7 @@ fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<Printed> {
         }
         // Swagger: `{failovers}`, at most 10, newest first.
         Vms::Failovers { vm_id } => {
-            let request = Request::get(format!("{}failovers/", vm_path(vm_id)))
+            let request = Request::to(&compute::VM_FAILOVERS, [vm_id])
                 .about(format!("list the failovers of the VM `{vm_id}`"))
                 .listed_by(VMS);
             print_keyed_list(ctx, client, &request, "failovers")
@@ -204,14 +198,24 @@ fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<Printed> {
         Vms::Create(args) => create(ctx, client, args),
         // A start spends nothing new and deletes nothing (tenet 5): the VM is billed until it
         // is deleted, stopped or not. A stop takes down what the VM serves, so it is confirmed.
-        Vms::Start { vm_id } => print_body(ctx, client, &power(vm_id, "start"), Gate::Open),
-        Vms::Stop { vm_id } => stop(ctx, client, &power(vm_id, "stop"), vm_id),
+        Vms::Start { vm_id } => print_body(
+            ctx,
+            client,
+            &power(&compute::VM_START, vm_id, "start"),
+            Gate::Open,
+        ),
+        Vms::Stop { vm_id } => stop(ctx, client, &power(&compute::VM_STOP, vm_id, "stop"), vm_id),
         Vms::Reboot { vm_id } => {
             let gate = Gate::Confirm { consequence: None };
-            print_body(ctx, client, &power(vm_id, "reboot"), gate)
+            print_body(
+                ctx,
+                client,
+                &power(&compute::VM_REBOOT, vm_id, "reboot"),
+                gate,
+            )
         }
         Vms::ResizeOptions { vm_id } => {
-            let request = Request::get(resize_path(vm_id))
+            let request = Request::to(&compute::VM_RESIZE_OPTIONS, [vm_id])
                 .about(format!("get the resize options of the VM `{vm_id}`"))
                 .listed_by(VMS);
             print_body(ctx, client, &request, Gate::Open)
@@ -219,7 +223,7 @@ fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<Printed> {
         // The command does not wait for `done`; `resize-status` follows it. Operations that
         // finish later get a status command and no new wait.
         Vms::Resize { vm_id, flavor } => {
-            let request = Request::new(Method::Post, resize_path(vm_id))
+            let request = Request::to(&compute::VM_RESIZE, [vm_id])
                 .json(&json!({ "flavor": flavor }))
                 .listed_by(VMS);
             let request = request.about(format!("resize the VM `{vm_id}` to `{flavor}`"));
@@ -245,7 +249,7 @@ fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<Printed> {
         Vms::ResizeStatus { vm_id, resize_id } => print_body(
             ctx,
             client,
-            &Request::get(format!("{}{resize_id}/", resize_path(vm_id)))
+            &Request::to(&compute::VM_RESIZE_STATUS, [vm_id, resize_id])
                 .about(format!("get the resize `{resize_id}` of the VM `{vm_id}`"))
                 .listed_by(VMS),
             Gate::Open,
@@ -259,11 +263,11 @@ fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<Printed> {
 /// person checks the name and not only the id. A dry run sends neither, and lists both.
 fn vm_delete(ctx: &Context<'_>, client: &Client, vm_id: &str) -> Result<Printed> {
     let delete = |named: &str| {
-        Request::new(Method::Delete, vm_path(vm_id))
+        Request::to(&compute::VM_DELETE, [&vm_id])
             .listed_by(VMS)
             .about(format!("delete the VM {named} and its disks"))
     };
-    let read = Request::get(vm_path(vm_id))
+    let read = Request::to(&compute::VM, [&vm_id])
         .about(format!("get the VM `{vm_id}`"))
         .listed_by(VMS);
     let draft = delete(&format!("`{vm_id}`"));
@@ -374,7 +378,7 @@ fn power_policy_command(
 ) -> Result<Printed> {
     match command {
         PowerPolicy::Get { vm_id } => {
-            let request = Request::get(vm_path(vm_id))
+            let request = Request::to(&compute::VM, [vm_id])
                 .about(format!("get the power policy of the VM `{vm_id}`"))
                 .listed_by(VMS);
             print_with(ctx, client, &request, Gate::Open, |response| {
@@ -409,7 +413,7 @@ fn update_power_policy(
         GuestPoweroff::Restart => "restart",
         GuestPoweroff::Stop => "stay stopped",
     };
-    let request = Request::new(Method::Put, format!("{}power-policy/", vm_path(vm_id)))
+    let request = Request::to(&compute::VM_POWER_POLICY_UPDATE, [&vm_id])
         .json(&json!({ "on_guest_poweroff": policy.code() }))
         .listed_by(VMS)
         .about(format!(
@@ -503,7 +507,7 @@ fn create(ctx: &Context<'_>, client: &Client, args: &VmCreate) -> Result<Printed
     } else {
         "it is billed until it is deleted"
     };
-    let request = Request::new(Method::Post, "/compute/vms/")
+    let request = Request::to(&compute::VM_CREATE, [])
         .json(&create_body(args, public_key.as_deref(), dedicated))
         .about(launch_action(args, dedicated));
     let gate = Gate::Confirm {
@@ -679,7 +683,7 @@ fn open_ports_rules(ports: &[u16]) -> Value {
 
 /// `PUT .../firewall/` of the VM `vm_id` with [`open_ports_rules`].
 fn open_ports_request(vm_id: &str, ports: &[u16]) -> Request {
-    Request::new(Method::Put, firewall_path(vm_id))
+    Request::to(&compute::FIREWALL_UPDATE, [&vm_id])
         .listed_by(VMS)
         .json(&open_ports_rules(ports))
         .about(format!(
@@ -1092,7 +1096,7 @@ fn wait(
             "launched the VM {vm_quoted}; waiting until {until}"
         ));
     }
-    let request = Request::get(vm_path(&vm_id)).about(format!("poll the VM {vm_quoted}"));
+    let request = Request::to(&compute::VM, [&vm_id]).about(format!("poll the VM {vm_quoted}"));
     let schedule = Schedule {
         first: POLL_INTERVAL,
         interval: POLL_INTERVAL,
@@ -1197,16 +1201,8 @@ impl Wait for VmLaunch<'_> {
     }
 }
 
-fn public_ip_path(vm_id: &str) -> String {
-    format!("{}public-ip/", vm_path(vm_id))
-}
-
-fn firewall_path(vm_id: &str) -> String {
-    format!("{}firewall/", vm_path(vm_id))
-}
-
 fn firewall_get(vm_id: &str) -> Request {
-    Request::get(firewall_path(vm_id))
+    Request::to(&compute::FIREWALL, [&vm_id])
         .about(format!("get the firewall of the VM `{vm_id}`"))
         .listed_by(VMS)
 }
@@ -1214,7 +1210,7 @@ fn firewall_get(vm_id: &str) -> Request {
 fn public_ip(ctx: &Context<'_>, client: &Client, command: &PublicIp) -> Result<Printed> {
     match command {
         PublicIp::Availability { region } => {
-            let request = Request::get("/compute/public-ip/availability/")
+            let request = Request::to(&compute::PUBLIC_IP_AVAILABILITY, [])
                 .about("get the public IPv4 availability");
             let request = match region {
                 Some(region) => request.query("region", region),
@@ -1225,7 +1221,7 @@ fn public_ip(ctx: &Context<'_>, client: &Client, command: &PublicIp) -> Result<P
         PublicIp::Get { vm_id } => print_body(
             ctx,
             client,
-            &Request::get(public_ip_path(vm_id))
+            &Request::to(&compute::PUBLIC_IP, [vm_id])
                 .about(format!("get the public IPv4 of the VM `{vm_id}`"))
                 .listed_by(VMS),
             Gate::Open,
@@ -1233,7 +1229,7 @@ fn public_ip(ctx: &Context<'_>, client: &Client, command: &PublicIp) -> Result<P
         // Swagger documents the attach as idempotent: a repeat returns the address already
         // attached. It still needs `--yes`, because the first call starts a bill.
         PublicIp::Create { vm_id } => {
-            let request = Request::new(Method::Post, public_ip_path(vm_id))
+            let request = Request::to(&compute::PUBLIC_IP_CREATE, [vm_id])
                 .listed_by(VMS)
                 .about(format!("attach a public IPv4 to the VM `{vm_id}`"));
             let gate = Gate::Confirm {
@@ -1246,7 +1242,7 @@ fn public_ip(ctx: &Context<'_>, client: &Client, command: &PublicIp) -> Result<P
             })
         }
         PublicIp::Delete { vm_id } => {
-            let request = Request::new(Method::Delete, public_ip_path(vm_id))
+            let request = Request::to(&compute::PUBLIC_IP_DELETE, [vm_id])
                 .listed_by(VMS)
                 .about(format!("detach the public IPv4 from the VM `{vm_id}`"));
             let gate = Gate::Confirm {
@@ -1256,7 +1252,7 @@ fn public_ip(ctx: &Context<'_>, client: &Client, command: &PublicIp) -> Result<P
             print_body_or(ctx, client, &request, gate, done)
         }
         PublicIp::Usage { vm_id, range } => {
-            let request = Request::get(format!("{}usage/", public_ip_path(vm_id)))
+            let request = Request::to(&compute::PUBLIC_IP_USAGE, [vm_id])
                 .about(format!("get the public IPv4 usage of the VM `{vm_id}`"))
                 .listed_by(VMS);
             let request = match range {
@@ -1268,29 +1264,22 @@ fn public_ip(ctx: &Context<'_>, client: &Client, command: &PublicIp) -> Result<P
     }
 }
 
-fn expose_path(vm_id: &str) -> String {
-    format!("{}expose/", vm_path(vm_id))
-}
-
 fn exposures(ctx: &Context<'_>, command: &Exposures) -> Result<Printed> {
     match command {
         // Swagger types the list as a bare array with no page parameters.
         Exposures::List { vm_id } => {
-            let request = Request::get(expose_path(vm_id))
+            let request = Request::to(&compute::EXPOSURES, [vm_id])
                 .about(format!("list the exposures of the VM `{vm_id}`"))
                 .listed_by(VMS);
             print_envelope(ctx, &ctx.load_authed_client()?, &request)
         }
         Exposures::Create(args) => exposure_create(ctx, args),
         Exposures::Delete { vm_id, exposure_id } => {
-            let request = Request::new(
-                Method::Delete,
-                format!("{}{exposure_id}/", expose_path(vm_id)),
-            )
-            .listed_by(crate::cli::with_id("compute exposures list", vm_id, ""))
-            .about(format!(
-                "take down the exposure `{exposure_id}` of the VM `{vm_id}`"
-            ));
+            let request = Request::to(&compute::EXPOSURE_DELETE, [vm_id, exposure_id])
+                .listed_by(crate::cli::with_id("compute exposures list", vm_id, ""))
+                .about(format!(
+                    "take down the exposure `{exposure_id}` of the VM `{vm_id}`"
+                ));
             let gate = Gate::Confirm {
                 consequence: Some(EXPOSURE_DELETED),
             };
@@ -1323,7 +1312,7 @@ fn exposure_create(ctx: &Context<'_>, args: &ExposureCreate) -> Result<Printed> 
     if let Some(protocol) = args.protocol {
         body.insert("protocol".to_owned(), protocol.code().into());
     }
-    let request = Request::new(Method::Post, expose_path(&args.vm_id))
+    let request = Request::to(&compute::EXPOSURE_CREATE, [&args.vm_id])
         .json(&Value::Object(body))
         .listed_by(VMS);
     let port = match args.protocol {
@@ -1378,32 +1367,24 @@ fn exposure_reach(mode: Option<ExposeMode>) -> &'static str {
     }
 }
 
-fn backup_path(vm_id: &str) -> String {
-    format!("{}backup/", vm_path(vm_id))
-}
-
-fn restore_path(vm_id: &str) -> String {
-    format!("{}backups/restore/", vm_path(vm_id))
-}
-
 fn backups(ctx: &Context<'_>, client: &Client, command: &Backups) -> Result<Printed> {
     let get = |request: Request| print_body(ctx, client, &request, Gate::Open);
-    let of_vm = |path: String, what: &str, vm_id: &str| {
-        Request::get(path)
+    let of_vm = |route: &Route<1>, what: &str, vm_id: &str| {
+        Request::to(route, [&vm_id])
             .about(format!("get the {what} of the VM `{vm_id}`"))
             .listed_by(VMS)
     };
     match command {
         Backups::Options => {
-            get(Request::get("/compute/backup-options/").about("get the backup options"))
+            get(Request::to(&compute::BACKUP_OPTIONS, []).about("get the backup options"))
         }
         Backups::Policy(BackupPolicy::Get { vm_id }) => {
-            get(of_vm(backup_path(vm_id), "backup policy", vm_id))
+            get(of_vm(&compute::BACKUP_POLICY, "backup policy", vm_id))
         }
         Backups::Policy(BackupPolicy::Update(args)) => policy_update(ctx, client, args),
         // Swagger: "Idempotent". The 204 has no body, so the document says what is now true.
         Backups::Policy(BackupPolicy::Delete { vm_id }) => {
-            let request = Request::new(Method::Delete, backup_path(vm_id))
+            let request = Request::to(&compute::BACKUP_POLICY_DELETE, [vm_id])
                 .about(format!("turn off the backups of the VM `{vm_id}`"))
                 .listed_by(VMS);
             let gate = Gate::Confirm {
@@ -1417,7 +1398,7 @@ fn backups(ctx: &Context<'_>, client: &Client, command: &Backups) -> Result<Prin
         // Swagger requires no field of the answer, so one without `restore_points`, or with
         // `null`, such as a VM whose backups are off, is an empty list.
         Backups::List { vm_id } => {
-            let request = of_vm(format!("{}backups/", vm_path(vm_id)), "backups", vm_id);
+            let request = of_vm(&compute::BACKUPS, "backups", vm_id);
             print_list_with(ctx, client, &request, |response| {
                 let mut answer = response.json()?;
                 if let Value::Object(fields) = &mut answer
@@ -1431,9 +1412,11 @@ fn backups(ctx: &Context<'_>, client: &Client, command: &Backups) -> Result<Prin
         Backups::Restore(args) => restore(ctx, client, args),
         // A restore runs for minutes. Operations that finish later get a status command,
         // not a wait, so this reads once.
-        Backups::RestoreStatus { vm_id } => {
-            get(of_vm(restore_path(vm_id), "restore status", vm_id))
-        }
+        Backups::RestoreStatus { vm_id } => get(of_vm(
+            &compute::BACKUP_RESTORE_STATUS,
+            "restore status",
+            vm_id,
+        )),
     }
 }
 
@@ -1451,7 +1434,7 @@ fn policy_update(ctx: &Context<'_>, client: &Client, args: &BackupPolicyUpdate) 
         }
         None => String::new(),
     };
-    let request = Request::new(Method::Put, backup_path(vm_id))
+    let request = Request::to(&compute::BACKUP_POLICY_UPDATE, [vm_id])
         .json(&Value::Object(body))
         .listed_by(VMS)
         .about(format!(
@@ -1495,8 +1478,8 @@ fn restore(ctx: &Context<'_>, client: &Client, args: &BackupRestore) -> Result<P
         }
         Value::Object(body)
     };
-    let post = |name: &str| Request::new(Method::Post, restore_path(vm_id)).json(&body(name));
-    let read = Request::get(vm_path(vm_id))
+    let post = |name: &str| Request::to(&compute::BACKUP_RESTORE, [vm_id]).json(&body(name));
+    let read = Request::to(&compute::VM, [vm_id])
         .about(format!("get the VM `{vm_id}`"))
         .listed_by(VMS);
     let draft = post(NAME_PLACEHOLDER);
@@ -1558,11 +1541,11 @@ fn ssh_keys(ctx: &Context<'_>, command: &SshKeys) -> Result<Printed> {
         SshKeys::List(args) => list::run(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/ssh-keys/").about("list the SSH keys"),
+            &Request::to(&compute::SSH_KEYS, []).about("list the SSH keys"),
             args,
         ),
         SshKeys::Get { key_id } => {
-            let request = Request::get(format!("/ssh-keys/{key_id}/"))
+            let request = Request::to(&compute::SSH_KEY, [key_id])
                 .about(format!("get the SSH key `{key_id}`"))
                 .listed_by("hipc compute ssh-keys list");
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
@@ -1572,14 +1555,14 @@ fn ssh_keys(ctx: &Context<'_>, command: &SshKeys) -> Result<Printed> {
             public_key_file,
         } => {
             let public_key = read_public_key(public_key_file, "--public-key-file")?;
-            let request = Request::new(Method::Post, "/ssh-keys/")
+            let request = Request::to(&compute::SSH_KEY_CREATE, [])
                 .json(&json!({ "name": name, "public_key": public_key }));
             let request = request.about(format!("store the SSH key {}", phrase::quote(name)));
             let client = ctx.load_authed_client()?;
             print_body(ctx, &client, &request, Gate::Confirm { consequence: None })
         }
         SshKeys::Delete { key_id } => {
-            let request = Request::new(Method::Delete, format!("/ssh-keys/{key_id}/"))
+            let request = Request::to(&compute::SSH_KEY_DELETE, [key_id])
                 .listed_by("hipc compute ssh-keys list")
                 .about(format!("delete the SSH key `{key_id}`"));
             let gate = Gate::Confirm {

@@ -20,10 +20,11 @@
 
 use std::time::{Duration, Instant};
 
-use hippius::{AppSecrets, Code, Error, Method, Request, Result, SecretValue, phrase};
+use hippius::routes::compute;
+use hippius::{AppSecrets, Code, Error, Request, Result, SecretValue, phrase};
 use serde_json::{Map, Value};
 
-use super::{APPS, Compose, Hashed, app_path, check_hash, path, read_compose, unavailable_hint};
+use super::{APPS, Compose, Hashed, check_hash, read_compose, unavailable_hint};
 use crate::cli::{AppCreate, DiskTier, FailoverMode, GuestPoweroff};
 use crate::commands::Printed;
 use crate::commands::compute::{
@@ -49,12 +50,12 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
     let action = launch_action(args);
     let launch = |body: &Value| {
-        Request::new(Method::Post, path("apps/"))
+        Request::to(&compute::APP_ENGINE_APP_CREATE, [])
             .json(body)
             .about(&action)
             .listed_by(APPS)
     };
-    let validate = compose.request("validate/", "validate");
+    let validate = compose.request(&compute::APP_ENGINE_VALIDATE, "validate");
     let placeholders = secrets
         .as_ref()
         .map(|secrets| SecretValue::new(secrets.placeholder_body()));
@@ -534,7 +535,8 @@ fn wait(
             "launched {app_named}; waiting until it is running"
         ));
     }
-    let request = Request::get(app_path(&vm_id, "")).about(format!("poll {app_named}"));
+    let request =
+        Request::to(&compute::APP_ENGINE_APP, [&vm_id]).about(format!("poll {app_named}"));
     let schedule = Schedule {
         first: POLL_INTERVAL,
         interval: POLL_INTERVAL,

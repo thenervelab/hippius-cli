@@ -38,15 +38,14 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
-use hippius::{
-    Client, ClusterKey, Code, Error, MatchedKey, Method, Request, Response, Result, phrase,
-};
+use hippius::routes::kubernetes;
+use hippius::{Client, ClusterKey, Code, Error, MatchedKey, Request, Response, Result, phrase};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{ClusterKubeconfig, NodePoolScale, NodeReplace};
 use crate::commands::Printed;
 use crate::commands::compute::kubernetes::{
-    ACTIVE, CLUSTERS, cluster_get, cluster_path, list_request, read_list,
+    ACTIVE, CLUSTERS, cluster_get, list_request, read_list,
 };
 use crate::commands::files::write_output_file;
 use crate::context::{Context, Gate, Step, Write};
@@ -62,7 +61,7 @@ pub(super) fn kubeconfig(ctx: &Context<'_>, args: &ClusterKubeconfig) -> Result<
     let id = args.cluster_id;
     let client = ctx.load_authed_client()?;
     let read = cluster_get(id);
-    let secrets = Request::get(format!("{}secrets/", cluster_path(id)))
+    let secrets = Request::to(&kubernetes::CLUSTER_SECRETS, [&id])
         .about(format!(
             "get the sealed secrets of the Kubernetes cluster `{id}`"
         ))
@@ -100,18 +99,15 @@ pub(super) fn scale(ctx: &Context<'_>, args: &NodePoolScale) -> Result<Printed> 
     let (id, pool_id, count) = (args.cluster_id, args.pool_id, args.count);
     let client = ctx.load_authed_client()?;
     let post = |action: String, body: &Value| {
-        Request::new(
-            Method::Post,
-            format!("{}node-pools/{pool_id}/scale/", cluster_path(id)),
-        )
-        .json(body)
-        .about(action)
-        .listed_by(format!("hipc compute kubernetes node-pools list {id}"))
+        Request::to(&kubernetes::NODE_POOL_SCALE, [&id, &pool_id])
+            .json(body)
+            .about(action)
+            .listed_by(format!("hipc compute kubernetes node-pools list {id}"))
     };
     let reads = [
         cluster_get(id),
-        list_request(id, "node-pools/", "node pools"),
-        list_request(id, "operations/", "operations"),
+        list_request(id, &kubernetes::NODE_POOLS, "node pools"),
+        list_request(id, &kubernetes::OPERATIONS, "operations"),
     ];
     let draft = post(
         format!("scale the pool `{pool_id}` of the Kubernetes cluster `{id}` to {count} nodes"),
@@ -212,18 +208,15 @@ pub(super) fn replace(ctx: &Context<'_>, args: &NodeReplace) -> Result<Printed> 
     let (id, node) = (args.cluster_id, args.node_name.as_str());
     let client = ctx.load_authed_client()?;
     let post = |action: String, body: &Value| {
-        Request::new(
-            Method::Post,
-            format!("{}nodes/{node}/replace/", cluster_path(id)),
-        )
-        .json(body)
-        .about(action)
-        .listed_by(format!("hipc compute kubernetes node-pools list {id}"))
+        Request::to(&kubernetes::NODE_REPLACE, [&id, &node])
+            .json(body)
+            .about(action)
+            .listed_by(format!("hipc compute kubernetes node-pools list {id}"))
     };
     let reads = [
         cluster_get(id),
-        list_request(id, "node-pools/", "node pools"),
-        list_request(id, "operations/", "operations"),
+        list_request(id, &kubernetes::NODE_POOLS, "node pools"),
+        list_request(id, &kubernetes::OPERATIONS, "operations"),
     ];
     let draft = post(
         format!("replace the node `{node}` of the Kubernetes cluster `{id}`"),

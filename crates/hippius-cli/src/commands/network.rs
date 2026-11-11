@@ -11,7 +11,8 @@
 //! keys) are left to `hipc api`, which guards the enrollment with `--reveal`.
 
 use hippius::phrase::quote;
-use hippius::{Error, ISSUES_URL, Method, Request, Response, Result};
+use hippius::routes::{Route, network};
+use hippius::{Error, ISSUES_URL, Request, Response, Result};
 use serde_json::{Value, json};
 
 use crate::cli::{Groups, Network, Peers, Policies, VpcResources, VpcRouters, Vpcs};
@@ -36,10 +37,6 @@ pub(crate) fn creation_gate() -> Gate<'static> {
     }
 }
 
-/// The route `hipc network create` sends, which the API's 403 names while the account has
-/// no network (`You must call /api/network/provision/ first.`).
-const PROVISION_ROUTE: &str = "/api/network/provision/";
-
 pub(crate) fn run(ctx: &Context<'_>, command: &Network) -> Result<Printed> {
     match command {
         // The create is the fix the mapping names, so its own refusal keeps the server's
@@ -56,14 +53,17 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Network) -> Result<Printed> {
 /// message give way to what they mean, and the hint names the command that fixes it, with
 /// this run's profile, origin, and account, so it creates the network this run read.
 fn not_set_up(ctx: &Context<'_>, error: Error) -> Error {
-    if !set_up_first(&error, PROVISION_ROUTE) {
+    // The API's 403 names the route `hipc network create` sends, with its base:
+    // `You must call /api/network/provision/ first.`
+    let provision = network::PROVISION.endpoint().template();
+    if !set_up_first(&error, provision) {
         return error;
     }
     // The message is `cannot <action>: the API says <the sentence>`; the sentence is known
     // whole, so it is cut off exactly, whatever the action holds.
     let says = format!(
         ": the API says {}",
-        quote(format!("You must call {PROVISION_ROUTE} first."))
+        quote(format!("You must call {provision} first."))
     );
     let message = error.message();
     let action = message.strip_suffix(says.as_str()).unwrap_or(message);
@@ -82,31 +82,32 @@ fn dispatch(ctx: &Context<'_>, command: &Network) -> Result<Printed> {
         // the same GET answers every later call. Nothing tells the two apart before the
         // request, so every call is confirmed and treated as a write.
         Network::Get => {
-            let request = Request::get("/network/me/")
+            let request = Request::to(&network::ME, [])
                 .provisions()
                 .about("get the private network, creating it if the account has none");
             print_body(ctx, &ctx.load_authed_client()?, &request, creation_gate())
         }
         // Swagger: idempotent, no body, and it answers the summary `get` reads.
         Network::Create => {
-            let request = Request::new(Method::Post, "/network/provision/")
-                .about("create the private network");
+            let request = Request::to(&network::PROVISION, []).about("create the private network");
             print_body(ctx, &ctx.load_authed_client()?, &request, creation_gate())
         }
         Network::Peers(command) => peers(ctx, command),
-        Network::Groups(Groups::List) => list(ctx, "/network/groups/", "list the network's groups"),
+        Network::Groups(Groups::List) => list(ctx, &network::GROUPS, "list the network's groups"),
         Network::Policies(Policies::List) => {
-            list(ctx, "/network/policies/", "list the network's policies")
+            list(ctx, &network::POLICIES, "list the network's policies")
         }
-        Network::Vpcs(Vpcs::List) => list(ctx, "/network/networks/", "list the VPC networks"),
+        Network::Vpcs(Vpcs::List) => list(ctx, &network::VPCS, "list the VPC networks"),
         Network::Vpcs(Vpcs::Resources(VpcResources::List { vpc_id })) => list_of_vpc(
             ctx,
-            &format!("/network/networks/{vpc_id}/resources/"),
+            &network::VPC_RESOURCES,
+            vpc_id,
             &format!("list the resources of the VPC network `{vpc_id}`"),
         ),
         Network::Vpcs(Vpcs::Routers(VpcRouters::List { vpc_id })) => list_of_vpc(
             ctx,
-            &format!("/network/networks/{vpc_id}/routers/"),
+            &network::VPC_ROUTERS,
+            vpc_id,
             &format!("list the routers of the VPC network `{vpc_id}`"),
         ),
     }
@@ -114,9 +115,9 @@ fn dispatch(ctx: &Context<'_>, command: &Network) -> Result<Printed> {
 
 fn peers(ctx: &Context<'_>, command: &Peers) -> Result<Printed> {
     match command {
-        Peers::List => list(ctx, "/network/peers/", "list the network's peers"),
+        Peers::List => list(ctx, &network::PEERS, "list the network's peers"),
         Peers::Get { peer_id } => {
-            let request = Request::get(format!("/network/peers/{peer_id}/"))
+            let request = Request::to(&network::PEER, [peer_id])
                 .listed_by("hipc network peers list")
                 .about(format!("get the network peer `{peer_id}`"));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
@@ -125,7 +126,7 @@ fn peers(ctx: &Context<'_>, command: &Peers) -> Result<Printed> {
         // `name` is NetBird's field for a peer's name; not yet verified against the live API,
         // which is why `renamed` trusts nothing but an answer that carries the new name.
         Peers::Update { peer_id, name } => {
-            let request = Request::new(Method::Patch, format!("/network/peers/{peer_id}/"))
+            let request = Request::to(&network::PEER_UPDATE, [peer_id])
                 .json(&json!({ "name": name }))
                 .listed_by("hipc network peers list")
                 .about(format!(
@@ -142,7 +143,7 @@ fn peers(ctx: &Context<'_>, command: &Peers) -> Result<Printed> {
             )
         }
         Peers::Delete { peer_id } => {
-            let request = Request::new(Method::Delete, format!("/network/peers/{peer_id}/"))
+            let request = Request::to(&network::PEER_DELETE, [peer_id])
                 .listed_by("hipc network peers list")
                 .about(format!(
                     "remove the peer `{peer_id}` from the private network"
@@ -194,16 +195,16 @@ fn renamed(response: &Response, peer_id: &str, name: &str) -> Result<Value> {
     )))
 }
 
-/// `GET path`, a list read whole and printed as the list envelope.
-fn list(ctx: &Context<'_>, path: &str, action: &str) -> Result<Printed> {
-    let request = Request::get(path).about(action);
+/// `GET` of `route`, a list read whole and printed as the list envelope.
+fn list(ctx: &Context<'_>, route: &Route<0>, action: &str) -> Result<Printed> {
+    let request = Request::to(route, []).about(action);
     print_envelope(ctx, &ctx.load_authed_client()?, &request)
 }
 
-/// `GET path`, a list of one VPC network, read as [`list`] reads one. A 404 names the
-/// list of VPC networks.
-fn list_of_vpc(ctx: &Context<'_>, path: &str, action: &str) -> Result<Printed> {
-    let request = Request::get(path)
+/// `GET` of `route`, a list of the VPC network `vpc_id`, read as [`list`] reads one. A 404
+/// names the list of VPC networks.
+fn list_of_vpc(ctx: &Context<'_>, route: &Route<1>, vpc_id: &str, action: &str) -> Result<Printed> {
+    let request = Request::to(route, [&vpc_id])
         .listed_by("hipc network vpcs list")
         .about(action);
     print_envelope(ctx, &ctx.load_authed_client()?, &request)

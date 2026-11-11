@@ -5,10 +5,11 @@
 use std::net::Ipv4Addr;
 use std::path::Path;
 
-use hippius::{Error, Method, Request, Result, phrase};
+use hippius::routes::compute;
+use hippius::{Error, Request, Result, phrase};
 use serde_json::{Map, Value, json};
 
-use super::{VMS, firewall_get, firewall_path};
+use super::{VMS, firewall_get};
 use crate::cli::FirewallUpdate;
 use crate::commands::replace::{self, Entry, Found, Replace, replace_list};
 use crate::commands::{Input, Printed};
@@ -41,7 +42,7 @@ pub(super) fn update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed
     let read = firewall_get(vm_id);
     let read_action = read.action();
     let replace = Replace {
-        write: Request::new(Method::Put, firewall_path(vm_id))
+        write: Request::to(&compute::FIREWALL_UPDATE, [&vm_id])
             .listed_by(VMS)
             .json(&put_body(args.base_revision.as_deref()))
             .about(action.as_str()),

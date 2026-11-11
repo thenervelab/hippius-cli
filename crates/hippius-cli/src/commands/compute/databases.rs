@@ -17,7 +17,8 @@
 
 use std::path::Path;
 
-use hippius::{Error, Method, Request, Response, Result, phrase, without_field};
+use hippius::routes::databases;
+use hippius::{Error, Request, Response, Result, phrase, without_field};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
@@ -32,7 +33,7 @@ use crate::context::{Context, Gate};
 /// `DELETE /api/databases/<id>/`, which names in its question and a text-mode note what the
 /// server keeps after it ([`left_after_delete`]).
 fn delete(ctx: &Context<'_>, database_id: u64) -> Result<Printed> {
-    let request = Request::new(Method::Delete, path(database_id))
+    let request = Request::to(&databases::DATABASE_DELETE, [&database_id])
         .about(format!(
             "decommission the database `{database_id}` and every VM behind it"
         ))
@@ -81,14 +82,14 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
         // Swagger types the list as a bare array with no page parameters, so it is read
         // whole.
         Databases::List => {
-            let request = Request::get("/databases/").about("list the databases");
+            let request = Request::to(&databases::DATABASES, []).about("list the databases");
             print_list_with(ctx, &ctx.load_authed_client()?, &request, |r| {
                 let list = hippius::page(r.json()?)?.complete_envelope(request.target())?;
                 Ok(without_field(list, CREDENTIALS))
             })
         }
         Databases::Get { database_id } => print(
-            &Request::get(path(*database_id))
+            &Request::to(&databases::DATABASE, [database_id])
                 .about(format!("get the database `{database_id}`"))
                 .listed_by(DATABASES),
             Gate::Open,
@@ -96,7 +97,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
         Databases::Create(args) => create(ctx, args),
         Databases::Delete { database_id } => delete(ctx, *database_id),
         Databases::Restart { database_id } => {
-            let request = Request::new(Method::Post, format!("{}restart/", path(*database_id)))
+            let request = Request::to(&databases::DATABASE_RESTART, [database_id])
                 .about(format!(
                     "restart PostgreSQL on the database `{database_id}`"
                 ))
@@ -119,7 +120,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
         Databases::Restore(args) => restore(ctx, args),
         Databases::Exposure(DatabaseExposure::Create { database_id }) => {
             // Who can reach it is part of the action, so an agent's refusal names it too.
-            let request = Request::new(Method::Post, expose_path(*database_id))
+            let request = Request::to(&databases::DATABASE_EXPOSE, [database_id])
                 .about(format!(
                     "publish the primary of the database `{database_id}` on the public edge, \
                      where anyone can reach it"
@@ -131,7 +132,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
             print(&request, gate)
         }
         Databases::Exposure(DatabaseExposure::Delete { database_id }) => {
-            let request = Request::new(Method::Delete, expose_path(*database_id))
+            let request = Request::to(&databases::DATABASE_EXPOSURE_DELETE, [database_id])
                 .about(format!(
                     "take the primary of the database `{database_id}` off the public edge"
                 ))
@@ -151,14 +152,14 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
         // The console reads the journal as `{events: [...]}`; a bare array or a page is read
         // too, and either way it is printed as the list envelope, a `next` link refused.
         Databases::Events { database_id } => {
-            let request = Request::get(format!("{}events/", path(*database_id)))
+            let request = Request::to(&databases::DATABASE_EVENTS, [database_id])
                 .about(format!("list the events of the database `{database_id}`"))
                 .listed_by(DATABASES);
             print_list(ctx, &request, "events")
         }
         // The metrics answer is an object: `samples`, `latest`, and `agent_last_seen`.
         Databases::Metrics { database_id } => {
-            let request = Request::get(format!("{}metrics/", path(*database_id)))
+            let request = Request::to(&databases::DATABASE_METRICS, [database_id])
                 .about(format!("get the metrics of the database `{database_id}`"))
                 .listed_by(DATABASES);
             print(&request, Gate::Open)
@@ -166,7 +167,8 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
         // Swagger: `{refusals: [...]}`.
         Databases::Refusals => print_list(
             ctx,
-            &Request::get("/databases/refusals/").about("list the refused database requests"),
+            &Request::to(&databases::DATABASE_REFUSALS, [])
+                .about("list the refused database requests"),
             "refusals",
         ),
     }
@@ -194,14 +196,6 @@ fn without_credentials(response: &Response) -> Result<Value> {
     Ok(without_field(response.document()?, CREDENTIALS))
 }
 
-fn path(id: u64) -> String {
-    format!("/databases/{id}/")
-}
-
-fn expose_path(id: u64) -> String {
-    format!("{}expose/", path(id))
-}
-
 /// `POST /api/databases/` with exactly `tier`, `size`, `engine_version`, and `name` when
 /// given (swagger: "nothing else"). The 202 answer is printed as sent, credentials
 /// included, or with the secrets replaced by their files under `--credentials-dir`
@@ -220,7 +214,7 @@ fn create(ctx: &Context<'_>, args: &DatabaseCreate) -> Result<Printed> {
     if let Some(name) = &args.name {
         body.insert("name".to_owned(), name.as_str().into());
     }
-    let request = Request::new(Method::Post, "/databases/")
+    let request = Request::to(&databases::DATABASE_CREATE, [])
         .json(&Value::Object(body))
         .about(format!(
             "create a `{}` PostgreSQL {} database of size `{}`",
@@ -458,7 +452,7 @@ fn env_file(dir: &Path, created: &Value) -> std::result::Result<String, String> 
 fn restore(ctx: &Context<'_>, args: &DatabaseRestore) -> Result<Printed> {
     require_reveal_or_file(ctx, args.reveal, args.credentials_dir.is_some())?;
     let id = args.database_id;
-    let request = Request::new(Method::Post, format!("{}restore/", path(id))).listed_by(DATABASES);
+    let request = Request::to(&databases::DATABASE_RESTORE, [&id]).listed_by(DATABASES);
     let (request, point) = match &args.target_time {
         Some(time) => (
             request.json(&json!({ "target_time": time })),

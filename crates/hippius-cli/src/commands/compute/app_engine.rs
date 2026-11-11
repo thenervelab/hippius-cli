@@ -23,7 +23,8 @@ mod create;
 
 use std::path::Path;
 
-use hippius::{Error, Method, Request, Response, Result, phrase};
+use hippius::routes::{Route, compute};
+use hippius::{Error, Request, Response, Result, phrase};
 use serde_json::{Value, json};
 
 use crate::cli::{AppEngine, AppEngineApps, GuestComponents};
@@ -39,19 +40,12 @@ const MAX_COMPOSE_BYTES: u64 = 1024 * 1024;
 /// The command that lists the `vm_id`s, for the hint of a 404 on an app route.
 const APPS: &str = "hipc compute app-engine apps list";
 
-fn path(rest: &str) -> String {
-    format!("/compute/app-engine/{rest}")
-}
-
-fn app_path(vm_id: &str, rest: &str) -> String {
-    path(&format!("apps/{vm_id}/{rest}"))
-}
-
 pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
     match command {
         // `get` is the command the unavailable hint names, so it is sent without that hint.
         AppEngine::Get => {
-            let request = Request::get(path("info/")).about("get the App Engine limits");
+            let request =
+                Request::to(&compute::APP_ENGINE_INFO, []).about("get the App Engine limits");
             send(ctx, &request, |response| {
                 let info = response.document()?;
                 if info.get("enabled") == Some(&Value::Bool(false)) {
@@ -72,7 +66,8 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
         // Swagger types the list as a bare array with no page parameters, so it is read whole
         // and printed as the list envelope, as the VM list is.
         AppEngine::Apps(AppEngineApps::List) => {
-            let request = Request::get(path("apps/")).about("list the App Engine apps");
+            let request =
+                Request::to(&compute::APP_ENGINE_APPS, []).about("list the App Engine apps");
             print_list_with(ctx, &ctx.load_authed_client()?, &request, |response| {
                 hippius::page(response.json()?)?.complete_envelope(request.target())
             })
@@ -80,7 +75,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
         }
         AppEngine::Apps(AppEngineApps::Create(args)) => create::create(ctx, args),
         AppEngine::Apps(AppEngineApps::Get { vm_id }) => {
-            let request = Request::get(app_path(vm_id, ""))
+            let request = Request::to(&compute::APP_ENGINE_APP, [vm_id])
                 .about(format!("get the app `{vm_id}`"))
                 .listed_by(APPS);
             show(ctx, &request, |response| {
@@ -100,7 +95,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
             })
         }
         AppEngine::Apps(AppEngineApps::Runtime { vm_id }) => {
-            let request = Request::get(app_path(vm_id, "runtime/"))
+            let request = Request::to(&compute::APP_ENGINE_RUNTIME, [vm_id])
                 .about(format!("get the runtime of the app `{vm_id}`"))
                 .listed_by(APPS);
             show(ctx, &request, |response| {
@@ -115,7 +110,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
             })
         }
         AppEngine::GuestComponents(GuestComponents::Get { vm_id }) => {
-            let request = Request::get(app_path(vm_id, "guest-components/"))
+            let request = Request::to(&compute::APP_ENGINE_GUEST_COMPONENTS, [vm_id])
                 .about(format!("get the guest components of the app `{vm_id}`"))
                 .listed_by(APPS);
             show(ctx, &request, |response| {
@@ -129,7 +124,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
             })
         }
         AppEngine::GuestComponents(GuestComponents::UpdateStatus { vm_id }) => {
-            let request = Request::get(app_path(vm_id, "guest-upgrade/"))
+            let request = Request::to(&compute::APP_ENGINE_GUEST_UPGRADE, [vm_id])
                 .about(format!("get the guest upgrade of the app `{vm_id}`"))
                 .listed_by(APPS);
             show(ctx, &request, |response| {
@@ -205,11 +200,11 @@ fn read_compose(path: &Path) -> Result<Compose> {
 }
 
 impl Compose {
-    /// The POST of `route` with this compose as its only field. It changes nothing on the
+    /// The POST to `route` with this compose as its only field. It changes nothing on the
     /// server, so a stored billing account is skipped rather than refused, and a failure is a
     /// read's.
-    fn request(&self, route: &str, verb: &str) -> Request {
-        Request::new(Method::Post, path(route))
+    fn request(&self, route: &Route<0>, verb: &str) -> Request {
+        Request::to(route, [])
             .json(&json!({ "compose": self.text }))
             .changes_nothing()
             .about(format!("{verb} {}", self.name))
@@ -239,7 +234,7 @@ impl Compose {
 fn validate(ctx: &Context<'_>, file: &Path) -> Result<Printed> {
     let compose = read_compose(file)?;
     compose.warn_of_invisible_bytes(ctx);
-    let request = compose.request("validate/", "validate");
+    let request = compose.request(&compute::APP_ENGINE_VALIDATE, "validate");
     show(ctx, &request, |response| {
         let parsed = response.document()?;
         check_hash(
@@ -258,7 +253,7 @@ fn validate(ctx: &Context<'_>, file: &Path) -> Result<Printed> {
 fn fix(ctx: &Context<'_>, file: &Path, output: Option<&Path>) -> Result<Printed> {
     let compose = read_compose(file)?;
     compose.warn_of_invisible_bytes(ctx);
-    let request = compose.request("fix/", "fix");
+    let request = compose.request(&compute::APP_ENGINE_FIX, "fix");
     show(ctx, &request, |response| {
         let fixed = response.document()?;
         let Some(text) = fixed.get("fixed_compose").and_then(Value::as_str) else {

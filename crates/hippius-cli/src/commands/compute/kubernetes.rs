@@ -33,7 +33,8 @@
 
 mod keyed;
 
-use hippius::{Client, Code, Error, Method, Request, Result, phrase};
+use hippius::routes::{Route, kubernetes};
+use hippius::{Client, Code, Error, Request, Result, phrase};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
@@ -51,7 +52,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Kubernetes) -> Result<Printed> {
         Kubernetes::Clusters(command) => clusters(ctx, command),
         Kubernetes::Backups(KubernetesBackups::List { cluster_id, reveal }) => {
             require_reveal(ctx, *reveal)?;
-            let request = Request::get(format!("{}backups/", cluster_path(*cluster_id)))
+            let request = Request::to(&kubernetes::BACKUPS, [cluster_id])
                 .about(format!(
                     "get the backups of the Kubernetes cluster `{cluster_id}`"
                 ))
@@ -59,13 +60,13 @@ pub(super) fn run(ctx: &Context<'_>, command: &Kubernetes) -> Result<Printed> {
             print_keyed_list(ctx, &ctx.load_authed_client()?, &request, "snapshots")
         }
         Kubernetes::NodePools(NodePools::List { cluster_id }) => {
-            list(ctx, *cluster_id, "node-pools/", "node pools")
+            list(ctx, *cluster_id, &kubernetes::NODE_POOLS, "node pools")
         }
         Kubernetes::NodePools(NodePools::Create(args)) => pool_create(ctx, args),
         Kubernetes::NodePools(NodePools::Scale(args)) => keyed::scale(ctx, args),
         Kubernetes::Nodes(Nodes::Replace(args)) => keyed::replace(ctx, args),
         Kubernetes::Operations(Operations::List { cluster_id }) => {
-            list(ctx, *cluster_id, "operations/", "operations")
+            list(ctx, *cluster_id, &kubernetes::OPERATIONS, "operations")
         }
         Kubernetes::Operations(Operations::Cancel(target)) => operation(ctx, target, Verb::Cancel),
         Kubernetes::Operations(Operations::Resume(target)) => operation(ctx, target, Verb::Resume),
@@ -73,19 +74,17 @@ pub(super) fn run(ctx: &Context<'_>, command: &Kubernetes) -> Result<Printed> {
             cluster_id,
             node_name,
         }) => {
-            let request = Request::new(
-                Method::Post,
-                format!("{}nodes/{node_name}/remove/", cluster_path(*cluster_id)),
-            )
-            .json(&json!({}))
-            .about(format!(
-                "remove the node `{node_name}` from the Kubernetes cluster `{cluster_id}`, \
-                 draining its pods to other nodes and decommissioning its VM; if data on the node \
-                 would be lost, the operation blocks until the loss is accepted in the console"
-            ))
-            .listed_by(format!(
-                "hipc compute kubernetes node-pools list {cluster_id}"
-            ));
+            let request = Request::to(&kubernetes::NODE_REMOVE, [cluster_id, node_name])
+                .json(&json!({}))
+                .about(format!(
+                    "remove the node `{node_name}` from the Kubernetes cluster `{cluster_id}`, \
+                     draining its pods to other nodes and decommissioning its VM; if data on the \
+                     node would be lost, the operation blocks until the loss is accepted in the \
+                     console"
+                ))
+                .listed_by(format!(
+                    "hipc compute kubernetes node-pools list {cluster_id}"
+                ));
             let gate = Gate::Confirm { consequence: None };
             print_body(ctx, &ctx.load_authed_client()?, &request, gate)
         }
@@ -98,45 +97,43 @@ fn clusters(ctx: &Context<'_>, command: &Clusters) -> Result<Printed> {
         Clusters::List => print_envelope(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/kubernetes/clusters/").about("list the Kubernetes clusters"),
+            &Request::to(&kubernetes::CLUSTERS, []).about("list the Kubernetes clusters"),
         ),
         Clusters::Get { cluster_id } => read(cluster_get(*cluster_id)),
         Clusters::Delete { cluster_id } => {
             cluster_delete(ctx, &ctx.load_authed_client()?, *cluster_id)
         }
-        Clusters::Events { cluster_id } => list(ctx, *cluster_id, "events/", "events"),
+        Clusters::Events { cluster_id } => {
+            list(ctx, *cluster_id, &kubernetes::CLUSTER_EVENTS, "events")
+        }
         Clusters::Refusals => print_envelope(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/kubernetes/clusters/refusals/")
+            &Request::to(&kubernetes::CLUSTER_REFUSALS, [])
                 .about("list the refused Kubernetes cluster launches"),
         ),
         Clusters::Kubeconfig(args) => keyed::kubeconfig(ctx, args),
     }
 }
 
-fn cluster_path(id: u64) -> String {
-    format!("/kubernetes/clusters/{id}/")
-}
-
 fn cluster_get(id: u64) -> Request {
-    Request::get(cluster_path(id))
+    Request::to(&kubernetes::CLUSTER, [&id])
         .about(format!("get the Kubernetes cluster `{id}`"))
         .listed_by(CLUSTERS)
 }
 
-/// A list under a cluster, `suffix` of its path, read whole as the envelope (module docs).
-fn list(ctx: &Context<'_>, id: u64, suffix: &str, what: &str) -> Result<Printed> {
+/// A list under a cluster, at `route`, read whole as the envelope (module docs).
+fn list(ctx: &Context<'_>, id: u64, route: &Route<1>, what: &str) -> Result<Printed> {
     print_envelope(
         ctx,
         &ctx.load_authed_client()?,
-        &list_request(id, suffix, what),
+        &list_request(id, route, what),
     )
 }
 
-/// The read of the list under the cluster `id` at `suffix` of its path, which holds `what`.
-fn list_request(id: u64, suffix: &str, what: &str) -> Request {
-    Request::get(format!("{}{suffix}", cluster_path(id)))
+/// The read of the list under the cluster `id` at `route`, which holds `what`.
+fn list_request(id: u64, route: &Route<1>, what: &str) -> Request {
+    Request::to(route, [&id])
         .about(format!("list the {what} of the Kubernetes cluster `{id}`"))
         .listed_by(CLUSTERS)
 }
@@ -152,7 +149,7 @@ fn read_list(ctx: &Context<'_>, client: &Client, request: &Request) -> Result<Ve
 /// and lists both.
 fn cluster_delete(ctx: &Context<'_>, client: &Client, id: u64) -> Result<Printed> {
     let delete = |named: &str| {
-        Request::new(Method::Delete, cluster_path(id))
+        Request::to(&kubernetes::CLUSTER_DELETE, [&id])
             .about(format!(
                 "delete the Kubernetes cluster {named}: every VM in it stops and is \
                  decommissioned, with the workloads and the data on it, and this cannot be \
@@ -188,11 +185,19 @@ enum Verb {
 }
 
 impl Verb {
-    /// The last segment of the route, which is also the verb of the question.
+    /// The verb as the question says it.
     fn segment(self) -> &'static str {
         match self {
             Self::Cancel => "cancel",
             Self::Resume => "resume",
+        }
+    }
+
+    /// The route the verb posts to.
+    fn route(self) -> &'static Route<2> {
+        match self {
+            Self::Cancel => &kubernetes::OPERATION_CANCEL,
+            Self::Resume => &kubernetes::OPERATION_RESUME,
         }
     }
 
@@ -242,15 +247,12 @@ fn operation(ctx: &Context<'_>, target: &OperationTarget, verb: Verb) -> Result<
     let (id, op_id) = (target.cluster_id, target.operation_id);
     let operations = format!("hipc compute kubernetes operations list {id}");
     let post = |action: String| {
-        Request::new(
-            Method::Post,
-            format!("{}operations/{op_id}/{}/", cluster_path(id), verb.segment()),
-        )
-        .json(&json!({}))
-        .about(action)
-        .listed_by(operations.clone())
+        Request::to(verb.route(), [&id, &op_id])
+            .json(&json!({}))
+            .about(action)
+            .listed_by(operations.clone())
     };
-    let read = list_request(id, "operations/", "operations");
+    let read = list_request(id, &kubernetes::OPERATIONS, "operations");
     let client = ctx.load_authed_client()?;
     let draft = post(format!(
         "{} the operation `{op_id}` of the Kubernetes cluster `{id}`",
@@ -397,7 +399,7 @@ fn pool_create(ctx: &Context<'_>, args: &NodePoolCreate) -> Result<Printed> {
         "labels": Value::Object(labels),
         "taints": args.taints,
     });
-    let request = Request::new(Method::Post, format!("{}node-pools/", cluster_path(id)))
+    let request = Request::to(&kubernetes::NODE_POOL_CREATE, [&id])
         .json(&body)
         .about(format!(
             "create the empty worker pool `{}` of flavor {} in the Kubernetes cluster `{id}`, \

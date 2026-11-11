@@ -25,7 +25,8 @@
 
 use std::cmp::Ordering;
 
-use hippius::{Client, Error, ISSUES_URL, Method, Request, Response, Result, phrase};
+use hippius::routes::runners;
+use hippius::{Client, Error, ISSUES_URL, Request, Response, Result, phrase};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
@@ -36,30 +37,25 @@ use crate::commands::credits::{amount, compare};
 use crate::commands::{Printed, list, print_body, print_body_or, print_envelope, print_with};
 use crate::context::{Context, Gate, Write};
 
-const LIMIT: &str = "/runners/limit/";
-
 pub(super) fn run(ctx: &Context<'_>, command: &Runners) -> Result<Printed> {
     match command {
         Runners::Settings(RunnerSettings::Get) => {
-            let request = Request::get("/runners/settings/").about("get the runner settings");
+            let request = Request::to(&runners::SETTINGS, []).about("get the runner settings");
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         Runners::Settings(RunnerSettings::Update(args)) => update(ctx, args),
         // The API answers a bare array.
         Runners::Installations(RunnerInstallations::List) => {
             let request =
-                Request::get("/runners/installations/").about("list the GitHub App installations");
+                Request::to(&runners::INSTALLATIONS, []).about("list the GitHub App installations");
             print_envelope(ctx, &ctx.load_authed_client()?, &request)
         }
         Runners::Installations(RunnerInstallations::Delete { installation_id }) => {
-            let request = Request::new(
-                Method::Delete,
-                format!("/runners/installations/{installation_id}/"),
-            )
-            .listed_by("hipc compute runners installations list")
-            .about(format!(
-                "unlink the GitHub App installation `{installation_id}` from the account"
-            ));
+            let request = Request::to(&runners::INSTALLATION_DELETE, [installation_id])
+                .listed_by("hipc compute runners installations list")
+                .about(format!(
+                    "unlink the GitHub App installation `{installation_id}` from the account"
+                ));
             let gate = Gate::Confirm {
                 consequence: Some(UNLINKED),
             };
@@ -67,12 +63,12 @@ pub(super) fn run(ctx: &Context<'_>, command: &Runners) -> Result<Printed> {
             print_body_or(ctx, &ctx.load_authed_client()?, &request, gate, done)
         }
         Runners::Jobs(args) => {
-            let request = Request::get("/runners/jobs/").about("list the runner jobs");
+            let request = Request::to(&runners::JOBS, []).about("list the runner jobs");
             list::run_cursor(ctx, &ctx.load_authed_client()?, &request, args)
         }
         Runners::Connect => connect(ctx, &ctx.load_authed_client()?),
         Runners::Usage => {
-            let request = Request::get("/runners/usage/").about("get the runner spend");
+            let request = Request::to(&runners::USAGE, []).about("get the runner spend");
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         Runners::Limit(RunnerLimit::Get) => {
@@ -84,7 +80,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Runners) -> Result<Printed> {
 }
 
 fn read_limit() -> Request {
-    Request::get(LIMIT).about("get the runner spend limit")
+    Request::to(&runners::LIMIT, []).about("get the runner spend limit")
 }
 
 /// A 404 on the limit is the server-wide switch being off, not a missing resource the
@@ -118,7 +114,7 @@ fn update_limit(ctx: &Context<'_>, cap: &MonthlyCap) -> Result<Printed> {
     // Credits go in `monthly_cap`, as `cdn cap update` sends them, although the CDN cap reads
     // back base units there and credits in `monthly_cap_credits`. Both names are assumptions
     // for this route until a live run checks them (swagger types no body).
-    let put = || Request::new(Method::Put, LIMIT).json(&json!({ "monthly_cap": sent }));
+    let put = || Request::to(&runners::LIMIT_UPDATE, []).json(&json!({ "monthly_cap": sent }));
     let draft = put().about(format!("set the monthly runner spend cap to {shown}"));
     let checked = match ctx.check_write(&client, &draft)? {
         Write::DryRun(mut doc) => {
@@ -333,10 +329,10 @@ fn update(ctx: &Context<'_>, args: &RunnerSettingsUpdate) -> Result<Printed> {
     } else {
         "runners may then spend more of the balance"
     };
-    let request = Request::new(Method::Put, "/runners/settings/")
+    let request = Request::to(&runners::SETTINGS_UPDATE, [])
         .json(&Value::Object(body))
         .about(action);
-    let read = Request::get("/runners/settings/").about("get the runner settings");
+    let read = Request::to(&runners::SETTINGS, []).about("get the runner settings");
     let client = ctx.load_authed_client()?;
     let checked = match ctx.check_write(&client, &request)? {
         Write::DryRun(mut doc) => {
@@ -413,8 +409,7 @@ fn allowed_sizes(given: &[RunnerSize]) -> Result<Vec<&'static str>> {
 /// `POST /api/runners/github/connect/` with no body. The answer is printed as sent, and
 /// text mode says what is left to do: the link needs the browser and the console.
 fn connect(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
-    let request = Request::new(Method::Post, "/runners/github/connect/")
-        .about("start the GitHub App installation");
+    let request = Request::to(&runners::CONNECT, []).about("start the GitHub App installation");
     print_with(ctx, client, &request, Gate::Open, |response| {
         let started = response.document()?;
         // The URL is not repeated here: it is on stdout, and a quoted URL would have its
