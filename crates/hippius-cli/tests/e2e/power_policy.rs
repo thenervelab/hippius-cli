@@ -195,6 +195,15 @@ fn update_refuses_an_answer_with_another_policy() {
             r#"{"vm_id":"x"}"#.to_owned(),
             "the API answered without `on_guest_poweroff`",
         ),
+        // A policy that is not text is no policy, and `partial` here as after any `PUT`.
+        (
+            r#"{"vm_id":"x","on_guest_poweroff":1}"#.to_owned(),
+            "the API answered without `on_guest_poweroff`",
+        ),
+        (
+            r#"{"vm_id":"x","on_guest_poweroff":null}"#.to_owned(),
+            "the API answered without `on_guest_poweroff`",
+        ),
     ];
     for (body, why) in cases {
         let server = Server::start(vec![route_of(

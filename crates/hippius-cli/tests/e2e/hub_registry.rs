@@ -275,6 +275,34 @@ fn a_confirmed_delete_sends_one_delete_and_prints_what_went() {
     }
 }
 
+/// A delete refused with a 404 or a 409 changed nothing; one answered 502 or 503 may have
+/// deleted the repository or the artifact, so it is `partial` and not retryable (tenet 4).
+#[test]
+fn a_failed_delete_says_whether_it_may_have_deleted() {
+    for (args, path, _) in deletes() {
+        for (status, code, effects) in [
+            (404, "not_found", "none"),
+            (409, "conflict", "none"),
+            (502, "unavailable", "partial"),
+            (503, "unavailable", "partial"),
+        ] {
+            let server = Server::start(vec![route(
+                "DELETE",
+                path,
+                Reply::json(status, r#"{"detail":"x"}"#),
+            )]);
+            let argv = [&args[..], &["--yes"]].concat();
+            let error = Hipc::against(&Home::new(), &server)
+                .run(&argv)
+                .fails(1, code);
+            assert_eq!(error["http_status"], status, "{argv:?}");
+            assert_eq!(error["side_effects"], effects, "{argv:?} {status}");
+            assert_eq!(error["retryable"], false, "{argv:?} {status}");
+            assert_eq!(server.requests().len(), 1);
+        }
+    }
+}
+
 /// A body on the 2xx is printed as sent, in place of the document `hipc` writes for a 204.
 #[test]
 fn a_delete_that_answers_a_body_prints_it() {

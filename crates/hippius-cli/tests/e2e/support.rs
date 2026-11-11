@@ -344,6 +344,39 @@ fn create_and_reply_dry_runs_show_the_body_and_send_nothing() {
     assert!(server.requests().is_empty());
 }
 
+/// A create or a reply the server answers 502 or 503 may have posted the ticket or the
+/// message, so each is `partial` and not retryable (tenet 4): a retry could post it twice.
+#[test]
+fn a_create_or_reply_answered_502_or_503_is_partial() {
+    for status in [502, 503] {
+        let reply = || Reply::json(status, r#"{"error":"x"}"#).header("Retry-After", "4");
+        let server = Server::start(vec![ticket_route(reply()), message_route(reply())]);
+        let home = Home::new();
+        let file = body_file(&home, TEXT);
+        for args in [
+            &[
+                "support",
+                "tickets",
+                "create",
+                "--subject",
+                "Help",
+                "--body-file",
+                &file,
+                "--yes",
+            ][..],
+            &["support", "tickets", "reply", "7", "--body-file", &file],
+        ] {
+            let error = Hipc::against(&home, &server)
+                .run(args)
+                .fails(1, "unavailable");
+            assert_eq!(error["side_effects"], "partial", "{args:?}");
+            assert_eq!(error["retryable"], false, "{args:?}");
+            assert_eq!(error["http_status"], status, "{args:?}");
+        }
+        assert_eq!(server.requests().len(), 2);
+    }
+}
+
 #[test]
 fn reply_needs_no_yes_and_sends_only_the_body() {
     let server = Server::start(vec![message_route(Reply::json(201, MESSAGE))]);
@@ -416,10 +449,11 @@ fn a_ticket_text_that_holds_a_token_is_usage_and_sends_nothing() {
             assert!(!error.to_string().contains("padded"), "{error}");
         }
     }
-    // The subject is checked too.
+    // A token whole in the subject is refused too, by the scan of the command line, which
+    // answers before the ticket text is read.
     let file = body_file(&home, TEXT);
     let subject = format!("token {TOKEN}");
-    Hipc::against(&home, &server)
+    let error = Hipc::against(&home, &server)
         .run(&[
             "support",
             "tickets",
@@ -431,6 +465,11 @@ fn a_ticket_text_that_holds_a_token_is_usage_and_sends_nothing() {
             "--yes",
         ])
         .fails(2, "usage");
+    assert_eq!(
+        error["message"],
+        "the command line holds an API token, so it is not repeated here; treat the token as \
+         exposed to anyone who can read this machine's process list or shell history"
+    );
     assert!(server.requests().is_empty());
     // An empty stored token matches no text.
     home.write_config("[profiles.other]\ntoken = \"\"\n");
@@ -517,6 +556,41 @@ fn a_ticket_text_with_a_split_token_or_an_access_key_is_refused() {
         ])
         .fails(2, "usage");
     assert!(!error.to_string().contains("6789"), "{error}");
+    // An access key whole in the subject is the command line's (the argv scan answers first,
+    // as for a token); one split between the subject and the message is the ticket text's.
+    let key = crate::common::SEED_PHRASES[0];
+    let (first, last) = key.split_at(key.match_indices(' ').nth(5).map_or(0, |(at, _)| at));
+    for (subject, message, says) in [
+        (
+            key,
+            TEXT,
+            "the command line holds what looks like a seed phrase, so it is not repeated here; \
+             treat the words as exposed to anyone who can read this machine's process list or \
+             shell history",
+        ),
+        (
+            first,
+            last,
+            "the ticket text holds what looks like an access key, which a person on the Hippius \
+             support team would read",
+        ),
+    ] {
+        let file = body_file(&home, message);
+        let error = Hipc::against(&home, &server)
+            .run(&[
+                "support",
+                "tickets",
+                "create",
+                "--subject",
+                subject,
+                "--body-file",
+                &file,
+                "--yes",
+            ])
+            .fails(2, "usage");
+        assert_eq!(error["message"], says, "{subject:?} {message:?}");
+        assert!(!error.to_string().contains("curtain"), "{error}");
+    }
     assert!(server.requests().is_empty());
     // Eleven listed words in a row, then one that is not listed, then more: no run of 12.
     let eleven = "abandon ability able about above absent absorb abstract absurd abuse access";

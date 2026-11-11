@@ -602,11 +602,21 @@ fn the_gamma_refusals_name_what_helps() {
 #[test]
 fn a_membership_is_refused_before_anything_is_sent() {
     let server = Server::start(vec![]);
-    let id = ID;
+    let home = Home::new();
+    let file = hotkey_file(&home);
     for args in [
         &["billing", "gamma", "get"][..],
         &["billing", "gamma", "conversions", "list"][..],
-        &["billing", "gamma", "conversions", "get", id][..],
+        &["billing", "gamma", "conversions", "get", ID][..],
+        // The one command that reads a secret file is refused too, and quotes none of it.
+        &[
+            "billing",
+            "gamma",
+            "hotkeys",
+            "create",
+            "--hotkey-file",
+            &file,
+        ][..],
         &["billing", "gamma", "hotkeys", "delete", HOTKEY, "--yes"][..],
         &[
             "billing",
@@ -622,7 +632,7 @@ fn a_membership_is_refused_before_anything_is_sent() {
     ] {
         let mut full = vec!["--account", MEMBER];
         full.extend_from_slice(args);
-        Hipc::against(&Home::new(), &server)
+        Hipc::against(&home, &server)
             .run(&full)
             .fails(2, "account_scope_unsupported");
     }
