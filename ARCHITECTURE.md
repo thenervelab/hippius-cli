@@ -51,6 +51,7 @@ crates/hippius       the library: never prints, never reads argv
   encode.rs          hex and percent-encoding
   ids.rs             random UUIDs: request ids and idempotency keys
   phrase.rs          the recurring pieces of a message, built one way (tenet 15)
+  view.rs            how a typed view reads an answer's fields (see "Bodies and views")
   regular.rs, source.rs, digest.rs
                      file opening, where a value came from, SHA-256
 ```
@@ -158,6 +159,44 @@ written: a test that spells the path checks the constant independently. So do th
 that serve a route with a query string or with several replies (`route_each`), which
 `route_of` does not cover.
 
+## Bodies and views
+
+What `hipc` sends is typed; what the server answers is printed as it came.
+
+- **A body** is a `#[derive(Serialize)]` struct in the route's file, `routes/<service>.rs`,
+  below the `routes!` table, named after its route: `MEMBER_UPDATE` takes
+  `MemberUpdateBody`. Its fields are in the order the wire carries them, and a key the
+  request leaves out is `#[serde(skip_serializing_if = "Option::is_none")]`; a field that is
+  sent as `null` is a plain `Option`. The end-to-end tests assert the bytes sent, so a field
+  moved or renamed fails them. One shape several routes take is one struct whose doc names
+  each (`NameBody`); a body that holds a secret writes its own `Debug`, which leaves it out.
+  `Request::json` takes the struct.
+- **A view** is a small `#[derive(Deserialize)]` struct in the same file, with the fields a
+  command decides on and nothing else, read from the answer's `Value` and never printed:
+  `let offer: InviteOffer = hippius::view_of(&answer);`. A view that replaces
+  `answer.get("field").and_then(Value::as_str)` reads each field with
+  `#[serde(default, deserialize_with = "field")]` and is read with `view_of`, so a field that
+  is missing, `null`, or of another type is `None`, as the `Value` read was, and an answer that
+  is not an object reads as all `None`. A view a command needs whole (the hAlpha quote) takes
+  plain fields and is read with `deserialize`, whose error the command turns into its own
+  `internal`.
+- **Never** `#[serde(flatten)]`, an untagged enum, or an internally tagged one in a view:
+  `serde_json`'s `arbitrary_precision` buffers a number through them as a private map and the
+  read fails ([serde-rs/json#559](https://github.com/serde-rs/json/issues/559)). Never
+  `deny_unknown_fields`: a field the server adds must change nothing (tenet 15).
+- **Numbers** a decision depends on stay exact: an integer is `u64` (which takes only an
+  integer that fits, as `as_u64` did), an 18-decimal amount is the digits (`planck` in
+  `routes/billing.rs`), and a number kept as sent is a `serde_json::Number`.
+- **A server vocabulary** (a purchase status, an auto-reload state) is an enum in the route's
+  file with an `Other(String)` variant, so a value the server adds is not an error, and an
+  `as_str` that gives the server's spelling back for a message. A server catalog (an S3
+  plan, a Hub key role) stays a validated string (owner decision D5).
+- **A dry run** is built by `Context::dry_run_of(client, &[&read, &write])`, every request a
+  real run sends, in order; a command adds its own field (`reads_first`) after. A command
+  that changes only a local file uses `commands::local_dry_run`, whose fields are a
+  `serde_json::Map`, so none can be dropped. The few commands that still set
+  `doc["requests"]` themselves move to `dry_run_of` when their service gets its bodies.
+
 ## How to add a command (today)
 
 1. The clap type in `cli/<group>.rs`: short help one sentence, long help says what it sends,
@@ -167,7 +206,8 @@ that serve a route with a query string or with several replies (`route_each`), w
 3. Its row in `spec.rs`. A test walks the parser and fails when a command has no row.
 4. Its routes: a constant in `hippius::routes` for each, built with `Request::to`, and the
    command's arm in `spec/routes.rs` (see "How to add a route"); a route new to `hipc` also
-   goes in the library's policy tables while they decide.
+   goes in the library's policy tables while they decide. A write's body is a struct beside
+   the route, and a field it decides on is read through a view ("Bodies and views").
 5. An end-to-end test in `crates/hippius-cli/tests/e2e/` against the local server, and a row
    in `scripts/release-check.sh` (read-only against the live API), which reads the route
    from `hipc schema`.
