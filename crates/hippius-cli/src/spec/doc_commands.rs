@@ -122,13 +122,12 @@ fn page_commands_start_with_a_schema_path_and_parse() {
                 .rev()
                 .map(|n| args[..n].join(" "))
                 .find(|path| paths.contains(path));
-            let Some(path) = path else {
-                panic!(
-                    "{page} `{source}`: `hipc {line}` starts with no `hipc schema` path \
-                     (a renamed command, or a flag before the path)"
-                );
-            };
-            found.insert((page, path));
+            assert!(
+                path.is_some(),
+                "{page} `{source}`: `hipc {line}` starts with no `hipc schema` path \
+                 (a renamed command, or a flag before the path)"
+            );
+            found.insert((page, path.expect("a schema path was found, asserted above")));
 
             let argv = [&["hipc"], args.as_slice(), &["--help"]].concat();
             let stop = parser

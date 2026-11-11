@@ -92,9 +92,13 @@ fn every_help_lists_its_own_options_before_the_global_ones() {
         let path: Vec<&str> = path.iter().map(String::as_str).collect();
         let help = help(&mut parser, &path);
         let own = if path.is_empty() {
+            assert!(
+                help.contains("\nGlobal options:\n"),
+                "the top-level help has no Global options heading:\n{help}"
+            );
             let (own, global) = help
                 .split_once("\nGlobal options:\n")
-                .unwrap_or_else(|| panic!("{path:?} has no Global options heading:\n{help}"));
+                .expect("the heading is in the help, asserted above");
             assert_eq!(option_flags(global), GLOBAL_FLAGS, "{path:?}");
             own
         } else {
@@ -205,9 +209,13 @@ fn schema_line(heading: &str, entry: &Value) -> HelpLine {
 
 /// The `hipc schema` entries of `command[field]`, as the lines `-h` prints under `heading`.
 fn schema_lines(command: &Value, field: &str, heading: &str) -> Vec<HelpLine> {
+    assert!(
+        command[field].is_array(),
+        "{field} is not an array: {command}"
+    );
     command[field]
         .as_array()
-        .unwrap_or_else(|| panic!("{field} is an array: {command}"))
+        .expect("the field is an array, asserted above")
         .iter()
         .map(|entry| schema_line(heading, entry))
         .collect()
@@ -234,9 +242,14 @@ fn usage(help: &str, path: &[&str]) -> Usage {
         .lines()
         .find_map(|line| line.strip_prefix("Usage: hipc "))
         .expect("a help has a usage line");
+    let prefix = path.join(" ");
+    assert!(
+        line.starts_with(&prefix),
+        "the usage of {path:?} does not start with its path: {line}"
+    );
     let rest = line
-        .strip_prefix(&path.join(" "))
-        .unwrap_or_else(|| panic!("the usage of {path:?} starts with its path: {line}"));
+        .strip_prefix(&prefix)
+        .expect("the usage starts with the path, asserted above");
     let mut usage = Usage::default();
     let mut words = rest.split_whitespace();
     while let Some(word) = words.next() {
@@ -346,15 +359,14 @@ fn takes_twice(parser: &mut clap::Command, path: &[&str], flag: &Value) -> bool 
     let error = parser
         .try_get_matches_from_mut(argv)
         .expect_err("`-h` or the second use stops the parse");
-    match error.kind() {
-        ErrorKind::DisplayHelp => true,
-        ErrorKind::ArgumentConflict
-            if error.to_string().contains("cannot be used multiple times") =>
-        {
-            false
-        }
-        _ => panic!("{path:?} {name}: {error}"),
-    }
+    // Only these two stops are answers; any other error is a broken argv or parser.
+    let refused = error.kind() == ErrorKind::ArgumentConflict
+        && error.to_string().contains("cannot be used multiple times");
+    assert!(
+        refused || error.kind() == ErrorKind::DisplayHelp,
+        "{path:?} {name}: {error}"
+    );
+    !refused
 }
 
 /// Every argument and flag the parser gives a command is in `hipc schema`, in the order its
