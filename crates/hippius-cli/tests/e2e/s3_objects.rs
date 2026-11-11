@@ -228,6 +228,9 @@ fn all_stops_on_a_token_that_leads_back() {
     assert_eq!(server.requests().len(), 3);
 }
 
+/// The end-to-end test of the page cap, and the next one of the byte cap: every `--all` pages
+/// through `list::walk`, whose caps `list::tests` checks, so no other list repeats these
+/// two, the heaviest runs of the suite.
 #[test]
 fn all_stops_after_a_thousand_pages() {
     let server = crate::common::endless_pages(PATH, |served| {

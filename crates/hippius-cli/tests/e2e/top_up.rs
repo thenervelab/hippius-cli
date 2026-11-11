@@ -263,18 +263,23 @@ fn a_refused_top_up_changed_nothing() {
 }
 
 /// A top-up answered 502 or 503, or not at all, may have started the checkout or the
-/// invoice, so each is `partial` and not retryable, whatever `Retry-After` says.
+/// invoice, so each is `partial` and not retryable, whatever `Retry-After` says. Both rails
+/// send through one `start_top_up`, so the timeout, which costs a second of waiting, runs on
+/// the card rail only.
 #[test]
 fn a_top_up_answered_502_503_or_not_at_all_is_partial() {
     for (method, path) in [("card", CARD), ("bitcoin", BITCOIN)] {
+        let never = (method == "card").then(|| (Reply::never(), "timeout"));
         for (reply, code) in [
             (Reply::json(502, r#"{"error":"x"}"#), "unavailable"),
             (
                 Reply::json(503, r#"{"error":"x"}"#).header("Retry-After", "4"),
                 "unavailable",
             ),
-            (Reply::never(), "timeout"),
-        ] {
+        ]
+        .into_iter()
+        .chain(never)
+        {
             let server = Server::start(vec![route("POST", path, reply)]);
             let words = top_up("50", method, &["--yes", "--request-timeout", "1"]);
             let error = Hipc::against(&Home::new(), &server)

@@ -313,6 +313,24 @@ fn a_format_suffix_meets_the_guard_of_its_plain_route() {
         "--remove-others"
     );
     assert_eq!(rule(Method::Post, "/api/cdn/zones.json"), "--public");
+    // Each suffix, with and without the trailing `/`, on each route `e2e::api` sends one of
+    // them to: the guard is the plain route's, and the plain route is guarded.
+    let guard = |method, path: &str| (returns_secret(method, path), rule_name(method, path));
+    for (method, plain) in [
+        (Method::Post, "/api/objectstore/master-tokens"),
+        (Method::Post, "/api/objectstore/master-tokens/1/rotate"),
+        (Method::Get, "/api/auth/token"),
+        (Method::Post, "/api/account/deletion"),
+        (Method::Put, "/api/compute/vms/abc/firewall"),
+        (Method::Post, "/api/cdn/zones"),
+    ] {
+        let guarded = guard(method, &format!("{plain}/"));
+        assert_ne!(guarded, (false, None), "{method} {plain}");
+        for suffix in [".json", ".api", ".json/", ".api/"] {
+            let path = format!("{plain}{suffix}");
+            assert_eq!(guard(method, &path), guarded, "{method} {path}");
+        }
+    }
     assert_eq!(
         route_class(Method::Put, "/api/support/tickets/7.json/"),
         RouteClass::Unsupported

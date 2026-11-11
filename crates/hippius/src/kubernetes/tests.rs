@@ -845,18 +845,18 @@ fn a_string_is_escaped_as_python_escapes_it() {
 /// Every character, U+0000 to U+10FFFF, is written as Python's `json.dumps(ensure_ascii=False)`
 /// writes it. `serde_json` writes a string by the same rules (the two-character escapes, every
 /// other control below U+0020 as lowercase `\u00xx`, everything else as it is), so it is the
-/// oracle here; the pinned test above holds both to Python's own output.
+/// oracle here; the pinned test above holds both to Python's own output. Both escape each
+/// character alone, so a block of 256 characters escapes as its characters do one by one.
 #[test]
 fn every_character_is_escaped_as_python_escapes_it() {
-    for c in (0..=0x10_FFFF).filter_map(char::from_u32) {
-        let text = c.to_string();
+    for start in (0..=0x10_FFFF_u32).step_by(256) {
+        let text: String = (start..start + 256).filter_map(char::from_u32).collect();
         let mut out = String::new();
         python_string(&text, &mut out);
         assert_eq!(
             out,
             serde_json::to_string(&text).unwrap(),
-            "U+{:04X}",
-            u32::from(c)
+            "the block from U+{start:04X}"
         );
     }
 }

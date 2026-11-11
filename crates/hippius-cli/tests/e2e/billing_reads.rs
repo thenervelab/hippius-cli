@@ -604,15 +604,19 @@ fn each_read_maps_the_server_errors_to_their_codes() {
         (500, "{}", "internal"),
         (503, "{}", "unavailable"),
     ];
-    for (args, path) in reads {
-        for (status, body, code) in answers {
-            let server = Server::start(vec![route("GET", path, Reply::json(status, body))]);
-            let error = Hipc::against(&Home::new(), &server)
-                .run(args)
-                .fails(1, code);
-            assert_eq!(error["http_status"], status, "{args:?}");
-            assert_eq!(error["side_effects"], "none", "{args:?}");
-        }
+    // The mapping is the library's (`client::tests` holds every status), so the whole table
+    // runs on one read, and each other read shows it is wired to it with one status.
+    let cases = answers
+        .iter()
+        .map(|&answer| (reads[0], answer))
+        .chain(reads[1..].iter().map(|&read| (read, answers[3])));
+    for ((args, path), (status, body, code)) in cases {
+        let server = Server::start(vec![route("GET", path, Reply::json(status, body))]);
+        let error = Hipc::against(&Home::new(), &server)
+            .run(args)
+            .fails(1, code);
+        assert_eq!(error["http_status"], status, "{args:?}");
+        assert_eq!(error["side_effects"], "none", "{args:?}");
     }
 }
 

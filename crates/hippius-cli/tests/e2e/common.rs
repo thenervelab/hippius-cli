@@ -19,7 +19,7 @@ mod routes;
 pub(crate) mod terminal;
 mod watchdog;
 
-pub(crate) use fixtures::{BILLING, OWN_ACCOUNT, PROJECT, VM, api, parsed, permission_bits_apply};
+pub(crate) use fixtures::{BILLING, OWN_ACCOUNT, PROJECT, VM, parsed, permission_bits_apply};
 pub(crate) use watchdog::{finish, finished};
 
 /// The token every test uses. Every run asserts it never appears in any output.
@@ -622,7 +622,7 @@ impl Home {
         std::fs::read_to_string(self.config()).unwrap_or_default()
     }
 
-    /// A private config file with `body`, as an older `hip` or a person wrote it.
+    /// A private config file with `body`, as an earlier release or a person wrote it.
     pub(crate) fn write_config(&self, body: &str) {
         let config = self.config();
         let dir = config.parent().expect("the config has a directory");
@@ -706,11 +706,11 @@ pub(crate) const PROXY_VARIABLES: [&str; 8] = [
     "no_proxy",
 ];
 
-/// The `hipc` binary with stdin empty and the clean environment every test starts from: no
-/// `CI` or `AI_AGENT`, no `HIPPIUS_*`, AWS file, or proxy variables from the parent, `HOME`
-/// set to the test home, and `HIPPIUS_API_URL` and `HIPPIUS_TOKEN_ORIGIN` set to
-/// [`no_server()`], and every wait polling each [`POLL_MS`] milliseconds. A test that runs `hipc` some other way than [`Hipc`] (a terminal, a
-/// closed stdout) starts here too, and ends with [`finished`] or [`finish`].
+/// The `hipc` binary with stdin empty and the clean environment every test starts from: no `CI` or
+/// `AI_AGENT`, no `HIPPIUS_*`, AWS file, or proxy variables from the parent, `HOME` set to the test
+/// home, and `HIPPIUS_API_URL` and `HIPPIUS_TOKEN_ORIGIN` set to [`no_server()`], and every wait
+/// polling each [`POLL_MS`] milliseconds. A test that runs `hipc` some other way than [`Hipc`] (a
+/// terminal, a closed stdout) starts here too, and ends with [`finished`] or [`finish`].
 pub(crate) fn command(home: &Home) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_hipc"));
     for name in [

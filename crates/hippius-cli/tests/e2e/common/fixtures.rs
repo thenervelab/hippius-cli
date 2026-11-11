@@ -17,15 +17,6 @@ pub(crate) const VM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 /// The token's own account, first in [`super::ACCOUNTS`].
 pub(crate) const OWN_ACCOUNT: &str = "acct_ffffffffffffffffffff";
 
-/// The route prefix every API path starts with: `api("/compute/vms/")` is the route
-/// `/api/compute/vms/`. A test that builds its routes through this follows the prefix if it
-/// ever changes. A route `hipc` sends to is better named by its constant in
-/// `hippius::routes`, which also carries the version.
-pub(crate) fn api(path: &str) -> String {
-    assert!(path.starts_with('/'), "an API path starts with `/`: {path}");
-    format!("{}{path}", hippius::routes::API_BASE)
-}
-
 /// A JSON fixture, parsed.
 pub(crate) fn parsed(text: &str) -> Value {
     serde_json::from_str(text).expect("the fixture is JSON")

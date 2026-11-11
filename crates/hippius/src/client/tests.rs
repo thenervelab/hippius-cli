@@ -423,12 +423,34 @@ fn the_account_token_route_is_refused_before_the_secret_check() {
         Method::Patch,
         Method::Delete,
     ] {
-        for path in ["/auth/token/", "/api/auth/token", "/auth/token.json"] {
+        let why = if matches!(method, Method::Get | Method::Head) {
+            "its answer is the account's API token"
+        } else {
+            "the route hands out the account's API token"
+        };
+        for path in [
+            "/auth/token/",
+            "/auth/token",
+            "/api/auth/token",
+            "/auth/token.json",
+            "/api/auth/token/?x=1",
+        ] {
             let request = Request::new(method, path);
             let error = c.returns_secret(&request).unwrap_err();
             assert_eq!(error.code(), Code::Usage, "{method} {path}");
-            let message = error.message();
-            assert!(message.contains("/api/auth/token/`"), "{message}");
+            assert_eq!(
+                error.message(),
+                format!("`hipc api` does not send `{method} /api/auth/token/`: {why}"),
+                "{method} {path}"
+            );
+            assert_eq!(
+                error.hint(),
+                Some(
+                    "create a token in the console settings at \
+                     `https://console.hippius.com/dashboard/settings`"
+                ),
+                "{method} {path}"
+            );
             assert_eq!(c.route_flags(&request).unwrap_err().code(), Code::Usage);
         }
     }
@@ -828,20 +850,37 @@ fn an_account_deletion_request_is_left_to_the_console() {
 #[test]
 fn a_cluster_secrets_read_is_left_to_the_kubeconfig_command() {
     let c = client(member());
-    for (method, target) in [
-        (Method::Get, "/kubernetes/clusters/7/secrets/?a=1"),
-        (Method::Get, "/kubernetes/clusters/7/secrets"),
-        (Method::Head, "/kubernetes/clusters/7/secrets/"),
-    ] {
-        let error = c.route_flags(&Request::new(method, target)).unwrap_err();
-        assert_eq!(error.code(), Code::Usage, "{target}");
-        assert!(
-            error
-                .hint()
-                .unwrap()
-                .starts_with("run `hipc compute kubernetes clusters kubeconfig`"),
-            "{target}"
-        );
+    for method in [Method::Get, Method::Head] {
+        for target in [
+            "/kubernetes/clusters/7/secrets/",
+            "/kubernetes/clusters/7/secrets",
+            "/kubernetes/clusters/7/secrets.json",
+            "/kubernetes/clusters/7/secrets.json/",
+            "/kubernetes/clusters/7/secrets.api",
+            "/kubernetes/clusters/7/secrets/?a=1",
+            "/api/kubernetes/clusters/7/secrets/?format=json",
+            "https://api.hippius.com/api/kubernetes/clusters/7/secrets/",
+        ] {
+            let error = c.route_flags(&Request::new(method, target)).unwrap_err();
+            assert_eq!(error.code(), Code::Usage, "{method} {target}");
+            assert_eq!(
+                error.message(),
+                format!(
+                    "`hipc api` does not send `{method} \
+                     /api/kubernetes/clusters/<cluster_id>/secrets/`: its answer holds the \
+                     cluster's sealed kubeconfig"
+                ),
+                "{method} {target}"
+            );
+            assert_eq!(
+                error.hint(),
+                Some(
+                    "run `hipc compute kubernetes clusters kubeconfig`, which opens the \
+                     kubeconfig with the cluster key file and writes it to a new file"
+                ),
+                "{method} {target}"
+            );
+        }
     }
 }
 
