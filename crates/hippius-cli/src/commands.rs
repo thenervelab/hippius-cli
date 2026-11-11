@@ -474,6 +474,10 @@ pub(crate) fn read_then_write(
         Write::Checked(checked) => checked,
     };
     let Decided { write, question } = decide()?;
+    debug_assert!(
+        plan.drafts(client, &write),
+        "the write `decide` returns reaches the draft's route, which scoped the question"
+    );
     let confirmed = match question {
         Some((action, consequence)) => {
             ctx.confirm_write(checked, &action, consequence.as_deref())?

@@ -162,6 +162,20 @@ impl<'r> WritePlan<'r> {
             draft,
         }
     }
+
+    /// Whether `write`, the write a command sends after the reads, reaches the draft's route,
+    /// whose account, project, and billing scope the question named: a write that reaches
+    /// another could be confirmed for one account and sent with another's header.
+    pub(crate) fn drafts(&self, client: &Client, write: &Request) -> bool {
+        let route = |request| {
+            client
+                .route_of(request)
+                .ok()
+                .flatten()
+                .map(std::ptr::from_ref)
+        };
+        route(write) == route(self.draft)
+    }
 }
 
 /// The outcome of [`Context::check_write`].
@@ -437,17 +451,28 @@ impl<'a> Context<'a> {
 
     /// Runs `request`: describes it under `--dry-run`, asks for the confirmation `gate`
     /// names, then sends it. An open write is one the command's row never asks about, or, for
-    /// a row that asks sometimes, one the command decided it does not ask about; a row that
-    /// always asks never sends one open.
+    /// a row that asks sometimes, one the command decided it does not ask about, which goes
+    /// out with the [`Confirmed`] of [`Context::unasked`], as every write of an asking row
+    /// does; a row that always asks never sends one open.
     pub(crate) fn call(&self, client: &Client, request: &Request, gate: Gate<'_>) -> Result<Step> {
         match gate {
+            Gate::Open if !request.is_read() && matches!(self.asks, Confirmation::When(_)) => {
+                match self.check_write(client, &WritePlan::new(&[], request))? {
+                    Write::DryRun(doc) => Ok(Step::DryRun(doc)),
+                    Write::Checked(checked) => {
+                        let confirmed = self.unasked(checked);
+                        self.send_confirmed(client, request, &confirmed)
+                            .map(Step::Sent)
+                    }
+                }
+            }
             Gate::Open if self.global.dry_run => {
                 self.dry_run_of(client, &[request]).map(Step::DryRun)
             }
             // An open request meets the same refusals in `transmit`.
             Gate::Open => {
                 assert!(
-                    request.is_read() || self.asks != Confirmation::Always,
+                    sendable_unconfirmed(self.asks, request.is_read()),
                     "a command whose schema row always asks sends no write open"
                 );
                 self.transmit(client, request).map(Step::Sent)
