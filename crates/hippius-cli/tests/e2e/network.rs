@@ -3,10 +3,11 @@
 //! the selected account, so a membership sends `X-Hippius-Account`, and the network is
 //! account-wide, so a project or a billing account is refused. A list is read whole.
 
+use hippius::routes::network;
 use serde_json::{Value, json};
 
 use crate::common::{
-    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Server, one_request_dry_run, route,
+    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Server, one_request_dry_run, route, route_of,
 };
 
 /// A peer; swagger documents no answer body, and types the peer id as a string.
@@ -40,11 +41,7 @@ pub(crate) const COMMANDS: [&[&str]; 11] = [
 
 #[test]
 fn get_with_yes_prints_the_summary() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/network/me/",
-        Reply::json(200, SUMMARY),
-    )]);
+    let server = Server::start(vec![route_of(&network::ME, [], Reply::json(200, SUMMARY))]);
     let doc = Hipc::against(&Home::new(), &server)
         .run(&["network", "get", "--yes"])
         .ok();
@@ -72,9 +69,9 @@ fn get_without_yes_is_refused_and_sends_nothing() {
 /// is `partial` and not retryable; a 4xx is `none`.
 #[test]
 fn a_failed_get_says_it_may_have_created_the_network() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/network/me/",
+    let server = Server::start(vec![route_of(
+        &network::ME,
+        [],
         Reply::json(502, r#"{"detail":"bad gateway"}"#),
     )]);
     let home = Home::new();
@@ -83,9 +80,9 @@ fn a_failed_get_says_it_may_have_created_the_network() {
         .fails(1, "unavailable");
     assert_eq!(error["side_effects"], "partial");
     assert_eq!(error["retryable"], false);
-    let suspended = Server::start(vec![route(
-        "GET",
-        "/api/network/me/",
+    let suspended = Server::start(vec![route_of(
+        &network::ME,
+        [],
         Reply::json(403, r#"{"detail":"suspended"}"#),
     )]);
     let error = Hipc::against(&home, &suspended)
@@ -100,8 +97,8 @@ fn a_failed_get_says_it_may_have_created_the_network() {
 #[test]
 fn a_stored_selection_is_skipped_on_reads_and_a_stored_project_refused_on_get() {
     let server = Server::start(vec![
-        route("GET", "/api/network/peers/", Reply::json(200, "[]")),
-        route("GET", "/api/network/me/", Reply::json(200, SUMMARY)),
+        route_of(&network::PEERS, [], Reply::json(200, "[]")),
+        route_of(&network::ME, [], Reply::json(200, SUMMARY)),
     ]);
     for (group, id) in [("projects", PROJECT), ("billing-accounts", BILLING)] {
         let home = Home::new();
@@ -179,9 +176,9 @@ fn every_list_prints_the_envelope() {
 /// `--all`, and an answer split into pages is `internal` rather than printed short.
 #[test]
 fn a_list_split_into_pages_is_internal_and_no_list_takes_page_flags() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/network/peers/",
+    let server = Server::start(vec![route_of(
+        &network::PEERS,
+        [],
         Reply::json(
             200,
             r#"{"count":2,"next":"{base}/api/network/peers/?page=2","results":[{"id":1}]}"#,
@@ -207,9 +204,9 @@ fn a_list_split_into_pages_is_internal_and_no_list_takes_page_flags() {
 
 #[test]
 fn an_answer_that_is_not_a_list_is_internal() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/network/groups/",
+    let server = Server::start(vec![route_of(
+        &network::GROUPS,
+        [],
         Reply::json(200, r#"{"groups":[]}"#),
     )]);
     Hipc::against(&Home::new(), &server)
@@ -220,8 +217,8 @@ fn an_answer_that_is_not_a_list_is_internal() {
 #[test]
 fn peers_get_prints_the_peer_and_a_missing_one_names_the_list() {
     let server = Server::start(vec![
-        route("GET", "/api/network/peers/12/", Reply::json(200, PEER)),
-        route("GET", "/api/network/peers/13/", Reply::not_found()),
+        route_of(&network::PEER, [&12], Reply::json(200, PEER)),
+        route_of(&network::PEER, [&13], Reply::not_found()),
     ]);
     let home = Home::new();
     let doc = Hipc::against(&home, &server)
@@ -239,9 +236,9 @@ fn peers_get_prints_the_peer_and_a_missing_one_names_the_list() {
 
 #[test]
 fn a_missing_vpc_network_names_the_list() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/network/networks/9/routers/",
+    let server = Server::start(vec![route_of(
+        &network::VPC_ROUTERS,
+        [&9],
         Reply::not_found(),
     )]);
     let error = Hipc::against(&Home::new(), &server)
@@ -293,8 +290,11 @@ fn an_id_that_could_change_the_route_is_usage() {
     }
     // The longest id is accepted.
     let widest = "a".repeat(64);
-    let path = format!("/api/network/peers/{widest}/");
-    let ok = Server::start(vec![route("GET", &path, Reply::json(200, PEER))]);
+    let ok = Server::start(vec![route_of(
+        &network::PEER,
+        [&widest],
+        Reply::json(200, PEER),
+    )]);
     Hipc::against(&home, &ok)
         .run(&["network", "peers", "get", &widest])
         .ok();
@@ -307,9 +307,9 @@ fn an_id_that_could_change_the_route_is_usage() {
 #[test]
 fn update_with_yes_sends_the_name_trimmed() {
     let renamed = r#"{"id":"12","name":"build Box","ip":"100.64.0.12","connected":true}"#;
-    let server = Server::start(vec![route(
-        "PATCH",
-        "/api/network/peers/12/",
+    let server = Server::start(vec![route_of(
+        &network::PEER_UPDATE,
+        [&12],
         Reply::json(200, renamed),
     )]);
     let home = Home::new();
@@ -335,9 +335,9 @@ fn update_with_yes_sends_the_name_trimmed() {
         r#"{"id":12,"name":"build Box"}"#,
         r#"{"id":[12],"name":"build Box"}"#,
     ] {
-        let unidentified = Server::start(vec![route(
-            "PATCH",
-            "/api/network/peers/12/",
+        let unidentified = Server::start(vec![route_of(
+            &network::PEER_UPDATE,
+            [&12],
             Reply::json(200, reply),
         )]);
         let doc = Hipc::against(&home, &unidentified)
@@ -353,9 +353,9 @@ fn update_with_yes_sends_the_name_trimmed() {
             .ok();
         assert_eq!(doc, serde_json::from_str::<Value>(reply).unwrap());
     }
-    let lowered = Server::start(vec![route(
-        "PATCH",
-        "/api/network/peers/12/",
+    let lowered = Server::start(vec![route_of(
+        &network::PEER_UPDATE,
+        [&12],
         Reply::json(200, r#"{"id":"12","name":"build box"}"#),
     )]);
     Hipc::against(&home, &lowered)
@@ -415,9 +415,9 @@ fn a_rename_answer_without_the_new_name_is_internal_and_partial() {
         ),
         (204, "", "the API answered 204 with an empty body", report),
     ] {
-        let server = Server::start(vec![route(
-            "PATCH",
-            "/api/network/peers/12/",
+        let server = Server::start(vec![route_of(
+            &network::PEER_UPDATE,
+            [&12],
             Reply::json(status, reply),
         )]);
         let run = Hipc::against(&home, &server).run(&args);
@@ -446,9 +446,9 @@ fn a_rename_answer_without_the_new_name_is_internal_and_partial() {
 fn a_peer_name_outside_one_line_of_255_characters_is_usage() {
     let widest = "é".repeat(255);
     let renamed = json!({"id": "12", "name": widest}).to_string();
-    let server = Server::start(vec![route(
-        "PATCH",
-        "/api/network/peers/12/",
+    let server = Server::start(vec![route_of(
+        &network::PEER_UPDATE,
+        [&12],
         Reply::json(200, &renamed),
     )]);
     let home = Home::new();
@@ -483,9 +483,9 @@ fn a_peer_name_outside_one_line_of_255_characters_is_usage() {
 /// The delete answers 204, so hipc prints its own document.
 #[test]
 fn delete_with_yes_prints_what_was_removed() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/network/peers/12/",
+    let server = Server::start(vec![route_of(
+        &network::PEER_DELETE,
+        [&12],
         Reply::json(204, ""),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -587,29 +587,21 @@ fn dry_runs_list_the_exact_request_and_send_nothing() {
 #[test]
 fn a_membership_sends_the_account_header_everywhere() {
     let server = Server::start(vec![
-        route("GET", "/api/network/me/", Reply::json(200, SUMMARY)),
-        route("POST", "/api/network/provision/", Reply::json(200, SUMMARY)),
-        route("GET", "/api/network/peers/", Reply::json(200, "[]")),
-        route("GET", "/api/network/peers/12/", Reply::json(200, PEER)),
-        route(
-            "PATCH",
-            "/api/network/peers/12/",
+        route_of(&network::ME, [], Reply::json(200, SUMMARY)),
+        route_of(&network::PROVISION, [], Reply::json(200, SUMMARY)),
+        route_of(&network::PEERS, [], Reply::json(200, "[]")),
+        route_of(&network::PEER, [&12], Reply::json(200, PEER)),
+        route_of(
+            &network::PEER_UPDATE,
+            [&12],
             Reply::json(200, r#"{"id":"12","name":"b"}"#),
         ),
-        route("DELETE", "/api/network/peers/12/", Reply::json(204, "")),
-        route("GET", "/api/network/groups/", Reply::json(200, "[]")),
-        route("GET", "/api/network/policies/", Reply::json(200, "[]")),
-        route("GET", "/api/network/networks/", Reply::json(200, "[]")),
-        route(
-            "GET",
-            "/api/network/networks/3/resources/",
-            Reply::json(200, "[]"),
-        ),
-        route(
-            "GET",
-            "/api/network/networks/3/routers/",
-            Reply::json(200, "[]"),
-        ),
+        route_of(&network::PEER_DELETE, [&12], Reply::json(204, "")),
+        route_of(&network::GROUPS, [], Reply::json(200, "[]")),
+        route_of(&network::POLICIES, [], Reply::json(200, "[]")),
+        route_of(&network::VPCS, [], Reply::json(200, "[]")),
+        route_of(&network::VPC_RESOURCES, [&3], Reply::json(200, "[]")),
+        route_of(&network::VPC_ROUTERS, [&3], Reply::json(200, "[]")),
     ]);
     let home = Home::new();
     for args in COMMANDS {
@@ -654,14 +646,14 @@ fn a_project_or_a_billing_account_is_refused() {
 #[test]
 fn a_failed_delete_says_what_may_have_happened() {
     let server = Server::start(vec![
-        route(
-            "DELETE",
-            "/api/network/peers/12/",
+        route_of(
+            &network::PEER_DELETE,
+            [&12],
             Reply::json(403, r#"{"detail":"suspended"}"#),
         ),
-        route(
-            "DELETE",
-            "/api/network/peers/13/",
+        route_of(
+            &network::PEER_DELETE,
+            [&13],
             Reply::json(502, r#"{"detail":"bad gateway"}"#),
         ),
     ]);

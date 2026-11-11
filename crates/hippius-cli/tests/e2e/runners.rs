@@ -1,10 +1,11 @@
 //! `hipc compute runners`: GitHub Actions runner settings, installations, jobs, and the
 //! connect URL.
 
+use hippius::routes::runners;
 use serde_json::{Value, json};
 
 use crate::common::{
-    Hipc, Home, MEMBER, PROJECT, Reply, Route, Run, Server, api, draft, parsed, route,
+    Hipc, Home, MEMBER, PROJECT, Reply, Route, Run, Server, api, draft, parsed, route, route_of,
 };
 
 /// The settings, shaped as the live answer was on 2026-10-27 (values made up).
@@ -65,9 +66,9 @@ fn jobs(query: &str, body: &str) -> Route {
 
 #[test]
 fn settings_get_prints_the_settings_as_sent() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/runners/settings/",
+    let server = Server::start(vec![route_of(
+        &runners::SETTINGS,
+        [],
         Reply::json(200, SETTINGS),
     )]);
     assert_eq!(hipc(&server, &["settings", "get"]).ok(), parsed(SETTINGS));
@@ -83,8 +84,8 @@ fn settings_get_prints_the_settings_as_sent() {
 #[test]
 fn settings_update_sends_only_the_flags_given() {
     let server = Server::start(vec![
-        route("GET", "/api/runners/settings/", Reply::json(200, SETTINGS)),
-        route("PUT", "/api/runners/settings/", Reply::json(200, SETTINGS)),
+        route_of(&runners::SETTINGS, [], Reply::json(200, SETTINGS)),
+        route_of(&runners::SETTINGS_UPDATE, [], Reply::json(200, SETTINGS)),
     ]);
     let cases: [(&[&str], Value); 6] = [
         (&["--max-concurrent", "4"], json!({"max_concurrent": 4})),
@@ -142,9 +143,9 @@ fn settings_update_sends_only_the_flags_given() {
 #[test]
 fn settings_update_needs_yes_and_its_question_names_every_change() {
     // The settings in force: off, at most 2 at once, `small` only, anywhere, no public repos.
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/runners/settings/",
+    let server = Server::start(vec![route_of(
+        &runners::SETTINGS,
+        [],
         Reply::json(200, SETTINGS),
     )]);
     let cases: [(&[&str], &str); 5] = [
@@ -193,8 +194,8 @@ fn settings_update_needs_yes_and_its_question_names_every_change() {
 fn settings_update_sends_a_cut_unasked() {
     let on = r#"{"enabled":true,"max_concurrent":4,"allowed_sizes":["small","large"],"default_region":"FR","allow_public_repos":true}"#;
     let server = Server::start(vec![
-        route("GET", "/api/runners/settings/", Reply::json(200, on)),
-        route("PUT", "/api/runners/settings/", Reply::json(200, on)),
+        route_of(&runners::SETTINGS, [], Reply::json(200, on)),
+        route_of(&runners::SETTINGS_UPDATE, [], Reply::json(200, on)),
     ]);
     for flags in [
         &["--enabled", "false"][..],
@@ -239,16 +240,16 @@ fn settings_update_sends_a_cut_unasked() {
         .fails(2, "confirmation_required");
     let zero = r#"{"enabled":true,"max_concurrent":0}"#;
     let at_zero = Server::start(vec![
-        route("GET", "/api/runners/settings/", Reply::json(200, zero)),
-        route("PUT", "/api/runners/settings/", Reply::json(200, zero)),
+        route_of(&runners::SETTINGS, [], Reply::json(200, zero)),
+        route_of(&runners::SETTINGS_UPDATE, [], Reply::json(200, zero)),
     ]);
     hipc(&at_zero, &["settings", "update", "--max-concurrent", "0"]).ok();
     assert_eq!(at_zero.requests().pop().unwrap().method, "PUT");
     // A setting the read does not hold as hipc compares it may be a raise, so it asks.
     let odd = r#"{"enabled":"yes","max_concurrent":"4","allowed_sizes":"small","default_region":null,"allow_public_repos":null}"#;
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/runners/settings/",
+    let server = Server::start(vec![route_of(
+        &runners::SETTINGS,
+        [],
         Reply::json(200, odd),
     )]);
     for flags in [
@@ -264,8 +265,8 @@ fn settings_update_sends_a_cut_unasked() {
     // Turning runners off, closing public repositories, or a region never asks, whatever the
     // read holds.
     let server = Server::start(vec![
-        route("GET", "/api/runners/settings/", Reply::json(200, odd)),
-        route("PUT", "/api/runners/settings/", Reply::json(200, on)),
+        route_of(&runners::SETTINGS, [], Reply::json(200, odd)),
+        route_of(&runners::SETTINGS_UPDATE, [], Reply::json(200, on)),
     ]);
     hipc(
         &server,
@@ -282,9 +283,9 @@ fn settings_update_sends_a_cut_unasked() {
     )
     .ok();
     // A failed read sends no PUT.
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/runners/settings/",
+    let server = Server::start(vec![route_of(
+        &runners::SETTINGS,
+        [],
         Reply::json(502, r#"{"error":"x"}"#),
     )]);
     let error =
@@ -362,8 +363,8 @@ fn settings_update_errors_map_to_their_codes() {
         (502, r#"{"error":"x"}"#, "unavailable", "partial"),
     ] {
         let server = Server::start(vec![
-            route("GET", "/api/runners/settings/", Reply::json(200, SETTINGS)),
-            route("PUT", "/api/runners/settings/", Reply::json(status, body)),
+            route_of(&runners::SETTINGS, [], Reply::json(200, SETTINGS)),
+            route_of(&runners::SETTINGS_UPDATE, [], Reply::json(status, body)),
         ]);
         let error = hipc(
             &server,
@@ -378,9 +379,9 @@ fn settings_update_errors_map_to_their_codes() {
 
 #[test]
 fn installations_list_prints_the_envelope_from_a_bare_array() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/runners/installations/",
+    let server = Server::start(vec![route_of(
+        &runners::INSTALLATIONS,
+        [],
         Reply::json(200, &format!("[{INSTALLATION}]")),
     )]);
     let doc = hipc(&server, &["installations", "list"]).ok();
@@ -392,9 +393,9 @@ fn installations_list_prints_the_envelope_from_a_bare_array() {
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert!(run.stdout().contains("acme"), "{}", run.stdout());
     assert!(!run.stdout().trim_start().starts_with('{'));
-    let odd = Server::start(vec![route(
-        "GET",
-        "/api/runners/installations/",
+    let odd = Server::start(vec![route_of(
+        &runners::INSTALLATIONS,
+        [],
         Reply::json(200, r#"{"installations":[]}"#),
     )]);
     hipc(&odd, &["installations", "list"]).fails(1, "internal");
@@ -402,9 +403,9 @@ fn installations_list_prints_the_envelope_from_a_bare_array() {
 
 #[test]
 fn installations_delete_needs_yes_and_prints_a_document_on_204() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/runners/installations/7/",
+    let server = Server::start(vec![route_of(
+        &runners::INSTALLATION_DELETE,
+        [&7],
         Reply::json(204, ""),
     )]);
     let error = hipc(&server, &["installations", "delete", "7"]).fails(2, "confirmation_required");
@@ -426,16 +427,16 @@ fn installations_delete_needs_yes_and_prints_a_document_on_204() {
 
 #[test]
 fn installations_delete_prints_a_body_and_maps_a_missing_one_to_not_found() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/runners/installations/7/",
+    let server = Server::start(vec![route_of(
+        &runners::INSTALLATION_DELETE,
+        [&7],
         Reply::json(200, r#"{"id":7,"deleted":true,"note":"x"}"#),
     )]);
     let doc = hipc(&server, &["installations", "delete", "7", "--yes"]).ok();
     assert_eq!(doc["note"], "x");
-    let missing = Server::start(vec![route(
-        "DELETE",
-        "/api/runners/installations/8/",
+    let missing = Server::start(vec![route_of(
+        &runners::INSTALLATION_DELETE,
+        [&8],
         Reply::not_found(),
     )]);
     let error = hipc(&missing, &["installations", "delete", "8", "--yes"]).fails(1, "not_found");
@@ -558,9 +559,9 @@ fn jobs_refuses_a_limit_a_bad_token_and_a_page_that_is_not_a_cursor_page() {
 
 #[test]
 fn connect_prints_the_url_document_and_says_the_console_finishes_the_link() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/runners/github/connect/",
+    let server = Server::start(vec![route_of(
+        &runners::CONNECT,
+        [],
         Reply::json(201, CONNECT),
     )]);
     assert_eq!(hipc(&server, &["connect"]).ok(), parsed(CONNECT));
@@ -584,9 +585,9 @@ fn connect_prints_the_url_document_and_says_the_console_finishes_the_link() {
 #[test]
 fn connect_errors_map_to_their_codes() {
     for (status, code, effects) in [(403, "permission", "none"), (503, "unavailable", "partial")] {
-        let server = Server::start(vec![route(
-            "POST",
-            "/api/runners/github/connect/",
+        let server = Server::start(vec![route_of(
+            &runners::CONNECT,
+            [],
             Reply::json(status, r#"{"error":"x"}"#),
         )]);
         let run = text(&server, &["connect"]);
@@ -601,20 +602,12 @@ fn connect_errors_map_to_their_codes() {
 #[test]
 fn a_membership_sends_the_account_header_on_every_route() {
     let server = Server::start(vec![
-        route("GET", "/api/runners/settings/", Reply::json(200, SETTINGS)),
-        route("PUT", "/api/runners/settings/", Reply::json(200, SETTINGS)),
-        route("GET", "/api/runners/installations/", Reply::json(200, "[]")),
-        route(
-            "DELETE",
-            "/api/runners/installations/7/",
-            Reply::json(204, ""),
-        ),
+        route_of(&runners::SETTINGS, [], Reply::json(200, SETTINGS)),
+        route_of(&runners::SETTINGS_UPDATE, [], Reply::json(200, SETTINGS)),
+        route_of(&runners::INSTALLATIONS, [], Reply::json(200, "[]")),
+        route_of(&runners::INSTALLATION_DELETE, [&7], Reply::json(204, "")),
         jobs("", r#"{"results":[],"next_before":null}"#),
-        route(
-            "POST",
-            "/api/runners/github/connect/",
-            Reply::json(201, CONNECT),
-        ),
+        route_of(&runners::CONNECT, [], Reply::json(201, CONNECT)),
     ]);
     for args in [
         &["settings", "get"][..],
@@ -719,8 +712,8 @@ fn limit(credits: &str) -> String {
 /// A server whose limit reads `answer` and that answers a PUT with `put`.
 fn limit_server(answer: &str, put: &str) -> Server {
     Server::start(vec![
-        route("GET", "/api/runners/limit/", Reply::json(200, answer)),
-        route("PUT", "/api/runners/limit/", Reply::json(200, put)),
+        route_of(&runners::LIMIT, [], Reply::json(200, answer)),
+        route_of(&runners::LIMIT_UPDATE, [], Reply::json(200, put)),
     ])
 }
 
@@ -777,11 +770,7 @@ fn asks(answer: &str, cap: &str, what: &str, body: &Value) {
 
 #[test]
 fn usage_prints_the_spend_as_sent() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/runners/usage/",
-        Reply::json(200, USAGE),
-    )]);
+    let server = Server::start(vec![route_of(&runners::USAGE, [], Reply::json(200, USAGE))]);
     assert_eq!(hipc(&server, &["usage"]).ok(), parsed(USAGE));
     let request = server.only_request();
     assert_eq!(request.method, "GET");
@@ -789,9 +778,9 @@ fn usage_prints_the_spend_as_sent() {
     let run = text(&server, &["usage"]);
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert!(run.stdout().contains("3.25"), "{}", run.stdout());
-    let failing = Server::start(vec![route(
-        "GET",
-        "/api/runners/usage/",
+    let failing = Server::start(vec![route_of(
+        &runners::USAGE,
+        [],
         Reply::json(403, r#"{"error":"x"}"#),
     )]);
     let error = hipc(&failing, &["usage"]).fails(1, "permission");
@@ -801,11 +790,7 @@ fn usage_prints_the_spend_as_sent() {
 #[test]
 fn limit_get_prints_the_limit_as_sent() {
     let body = limit("\"50.000000\"");
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/runners/limit/",
-        Reply::json(200, &body),
-    )]);
+    let server = Server::start(vec![route_of(&runners::LIMIT, [], Reply::json(200, &body))]);
     assert_eq!(hipc(&server, &["limit", "get"]).ok(), parsed(&body));
     let request = server.only_request();
     assert_eq!(request.method, "GET");
@@ -819,11 +804,7 @@ fn limit_get_prints_the_limit_as_sent() {
 /// read of the limit can tell that; a 404 on the write after a good read is plain.
 #[test]
 fn a_404_on_reading_the_limit_is_not_found_with_a_hint_that_it_is_not_enabled() {
-    let off = Server::start(vec![route(
-        "GET",
-        "/api/runners/limit/",
-        Reply::not_found(),
-    )]);
+    let off = Server::start(vec![route_of(&runners::LIMIT, [], Reply::not_found())]);
     let error = hipc(&off, &["limit", "get"]).fails(1, "not_found");
     assert_eq!(error["http_status"], 404);
     assert_eq!(error["hint"], NOT_ENABLED);
@@ -840,12 +821,8 @@ fn a_404_on_reading_the_limit_is_not_found_with_a_hint_that_it_is_not_enabled() 
     assert_eq!(error["side_effects"], "none");
     assert!(methods(&off).iter().all(|m| m == "GET"));
     let late = Server::start(vec![
-        route(
-            "GET",
-            "/api/runners/limit/",
-            Reply::json(200, &limit("\"20\"")),
-        ),
-        route("PUT", "/api/runners/limit/", Reply::not_found()),
+        route_of(&runners::LIMIT, [], Reply::json(200, &limit("\"20\""))),
+        route_of(&runners::LIMIT_UPDATE, [], Reply::not_found()),
     ]);
     let error = hipc(&late, &update("5")).fails(1, "not_found");
     assert_eq!(error["http_status"], 404);
@@ -853,9 +830,9 @@ fn a_404_on_reading_the_limit_is_not_found_with_a_hint_that_it_is_not_enabled() 
     assert!(!hint.contains("not enabled"), "{error}");
     assert_eq!(methods(&late), ["GET", "PUT"]);
     // Another error on the limit keeps its own hint.
-    let denied = Server::start(vec![route(
-        "GET",
-        "/api/runners/limit/",
+    let denied = Server::start(vec![route_of(
+        &runners::LIMIT,
+        [],
         Reply::json(403, r#"{"code":"insufficient_grant","error":"x"}"#),
     )]);
     let error = hipc(&denied, &["limit", "get"]).fails(1, "insufficient_grant");
@@ -1178,14 +1155,10 @@ fn limit_update_errors_map_to_their_codes() {
         (502, "unavailable", "partial"),
     ] {
         let server = Server::start(vec![
-            route(
-                "GET",
-                "/api/runners/limit/",
-                Reply::json(200, &limit("\"20\"")),
-            ),
-            route(
-                "PUT",
-                "/api/runners/limit/",
+            route_of(&runners::LIMIT, [], Reply::json(200, &limit("\"20\""))),
+            route_of(
+                &runners::LIMIT_UPDATE,
+                [],
                 Reply::json(status, r#"{"error":"x"}"#),
             ),
         ]);
@@ -1202,15 +1175,11 @@ fn limit_update_errors_map_to_their_codes() {
 #[test]
 fn the_limit_and_usage_routes_take_a_membership_and_a_project() {
     let server = Server::start(vec![
-        route("GET", "/api/runners/usage/", Reply::json(200, USAGE)),
-        route(
-            "GET",
-            "/api/runners/limit/",
-            Reply::json(200, &limit("\"20\"")),
-        ),
-        route(
-            "PUT",
-            "/api/runners/limit/",
+        route_of(&runners::USAGE, [], Reply::json(200, USAGE)),
+        route_of(&runners::LIMIT, [], Reply::json(200, &limit("\"20\""))),
+        route_of(
+            &runners::LIMIT_UPDATE,
+            [],
             Reply::json(200, &limit("\"5\"")),
         ),
     ]);

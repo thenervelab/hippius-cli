@@ -1,11 +1,12 @@
 //! `hipc compute kubernetes`: the cluster reads, delete, backups, node pools, operations, and
 //! node removal, none of which takes the cluster key.
 
+use hippius::routes::kubernetes;
 use serde_json::{Value, json};
 
 use crate::common::{
     Hipc, Home, MEMBER, PROJECT, Recorded, Reply, Route, Run, Server, draft, one_request_dry_run,
-    parsed, route,
+    parsed, route, route_of,
 };
 
 /// The signature of the presigned snapshot link in [`backups`].
@@ -149,40 +150,40 @@ fn answer(status: u16, value: &Value) -> Reply {
 /// A route for every command of the group, each answering as the console reads it.
 fn every_route() -> Vec<Route> {
     vec![
-        route(
-            "GET",
-            "/api/kubernetes/clusters/",
+        route_of(
+            &kubernetes::CLUSTERS,
+            [],
             answer(200, &json!([cluster("running")])),
         ),
-        route(
-            "GET",
-            "/api/kubernetes/clusters/refusals/",
-            answer(200, &refusals()),
+        route_of(&kubernetes::CLUSTER_REFUSALS, [], answer(200, &refusals())),
+        route_of(&kubernetes::CLUSTER, [&7], answer(200, &cluster("running"))),
+        route_of(
+            &kubernetes::CLUSTER_DELETE,
+            [&7],
+            answer(202, &cluster("decommissioning")),
         ),
-        cluster_route("GET", "", answer(200, &cluster("running"))),
-        cluster_route("DELETE", "", answer(202, &cluster("decommissioning"))),
-        cluster_route("GET", "events/", answer(200, &events())),
-        cluster_route("GET", "backups/", answer(200, &backups())),
-        cluster_route("GET", "node-pools/", answer(200, &json!([pool()]))),
-        cluster_route("POST", "node-pools/", answer(201, &pool())),
-        cluster_route(
-            "GET",
-            "operations/",
+        route_of(&kubernetes::CLUSTER_EVENTS, [&7], answer(200, &events())),
+        route_of(&kubernetes::BACKUPS, [&7], answer(200, &backups())),
+        route_of(&kubernetes::NODE_POOLS, [&7], answer(200, &json!([pool()]))),
+        route_of(&kubernetes::NODE_POOL_CREATE, [&7], answer(201, &pool())),
+        route_of(
+            &kubernetes::OPERATIONS,
+            [&7],
             answer(200, &json!([operation("blocked")])),
         ),
-        cluster_route(
-            "POST",
-            "operations/12/cancel/",
+        route_of(
+            &kubernetes::OPERATION_CANCEL,
+            [&7, &12],
             answer(200, &operation("cancelled")),
         ),
-        cluster_route(
-            "POST",
-            "operations/12/resume/",
+        route_of(
+            &kubernetes::OPERATION_RESUME,
+            [&7, &12],
             answer(200, &operation("running")),
         ),
-        cluster_route(
-            "POST",
-            "nodes/work-3a5bf1ed/remove/",
+        route_of(
+            &kubernetes::NODE_REMOVE,
+            [&7, &"work-3a5bf1ed"],
             answer(202, &operation("queued")),
         ),
     ]
@@ -381,15 +382,11 @@ fn a_list_with_a_next_page_is_internal_and_a_last_page_keeps_its_fields() {
     let next = r#"{"count":2,"next":"{base}/api/kubernetes/clusters/?page=2","results":[]}"#;
     let last = r#"{"count":1,"next":null,"previous":null,"results":[{"id":3}]}"#;
     let server = Server::start(vec![
-        route("GET", "/api/kubernetes/clusters/", Reply::json(200, next)),
-        route(
-            "GET",
-            "/api/kubernetes/clusters/refusals/",
-            Reply::json(200, last),
-        ),
-        cluster_route("GET", "node-pools/", Reply::json(200, last)),
-        cluster_route("GET", "operations/", Reply::json(200, next)),
-        cluster_route("GET", "events/", Reply::json(200, next)),
+        route_of(&kubernetes::CLUSTERS, [], Reply::json(200, next)),
+        route_of(&kubernetes::CLUSTER_REFUSALS, [], Reply::json(200, last)),
+        route_of(&kubernetes::NODE_POOLS, [&7], Reply::json(200, last)),
+        route_of(&kubernetes::OPERATIONS, [&7], Reply::json(200, next)),
+        route_of(&kubernetes::CLUSTER_EVENTS, [&7], Reply::json(200, next)),
     ]);
     hipc(&server, &["clusters", "list"]).fails(1, "internal");
     hipc(&server, &["operations", "list", "7"]).fails(1, "internal");
@@ -410,12 +407,8 @@ fn a_list_with_a_next_page_is_internal_and_a_last_page_keeps_its_fields() {
 #[test]
 fn empty_events_and_refusals_are_envelopes() {
     let server = Server::start(vec![
-        route(
-            "GET",
-            "/api/kubernetes/clusters/refusals/",
-            Reply::json(200, "[]"),
-        ),
-        cluster_route("GET", "events/", Reply::json(200, "[]")),
+        route_of(&kubernetes::CLUSTER_REFUSALS, [], Reply::json(200, "[]")),
+        route_of(&kubernetes::CLUSTER_EVENTS, [&7], Reply::json(200, "[]")),
     ]);
     let empty = json!({ "items": [], "next_page_token": null });
     assert_eq!(hipc(&server, &["clusters", "events", "7"]).ok(), empty);
@@ -425,16 +418,16 @@ fn empty_events_and_refusals_are_envelopes() {
 #[test]
 fn reads_map_their_errors_and_name_the_list() {
     let server = Server::start(vec![
-        route(
-            "GET",
-            "/api/kubernetes/clusters/",
+        route_of(
+            &kubernetes::CLUSTERS,
+            [],
             Reply::json(503, r#"{"error":"down"}"#),
         ),
-        cluster_route("GET", "", Reply::not_found()),
-        cluster_route("GET", "events/", Reply::not_found()),
-        cluster_route("GET", "backups/", Reply::not_found()),
-        cluster_route("GET", "node-pools/", Reply::not_found()),
-        cluster_route("GET", "operations/", Reply::not_found()),
+        route_of(&kubernetes::CLUSTER, [&7], Reply::not_found()),
+        route_of(&kubernetes::CLUSTER_EVENTS, [&7], Reply::not_found()),
+        route_of(&kubernetes::BACKUPS, [&7], Reply::not_found()),
+        route_of(&kubernetes::NODE_POOLS, [&7], Reply::not_found()),
+        route_of(&kubernetes::OPERATIONS, [&7], Reply::not_found()),
     ]);
     let error = hipc(&server, &["clusters", "list"]).fails(1, "unavailable");
     assert_eq!(error["retryable"], true);
@@ -462,19 +455,27 @@ fn reads_map_their_errors_and_name_the_list() {
 #[test]
 fn writes_map_their_errors_and_name_the_list() {
     let server = Server::start(vec![
-        cluster_route("GET", "", answer(200, &cluster("decommissioning"))),
-        cluster_route(
-            "DELETE",
-            "",
+        route_of(
+            &kubernetes::CLUSTER,
+            [&7],
+            answer(200, &cluster("decommissioning")),
+        ),
+        route_of(
+            &kubernetes::CLUSTER_DELETE,
+            [&7],
             Reply::json(409, r#"{"error":"decommissioning"}"#),
         ),
-        cluster_route(
-            "GET",
-            "operations/",
+        route_of(
+            &kubernetes::OPERATIONS,
+            [&7],
             answer(200, &json!([operation("blocked")])),
         ),
-        cluster_route("POST", "operations/12/cancel/", Reply::not_found()),
-        cluster_route("POST", "nodes/work-1/remove/", Reply::not_found()),
+        route_of(&kubernetes::OPERATION_CANCEL, [&7, &12], Reply::not_found()),
+        route_of(
+            &kubernetes::NODE_REMOVE,
+            [&7, &"work-1"],
+            Reply::not_found(),
+        ),
     ]);
     let error = hipc(&server, &["clusters", "delete", "7", "--yes"]).fails(1, "conflict");
     assert_eq!(error["side_effects"], "none");
@@ -494,9 +495,9 @@ fn writes_map_their_errors_and_name_the_list() {
 /// sent after the read.
 #[test]
 fn an_operation_the_list_does_not_hold_is_not_found() {
-    let server = Server::start(vec![cluster_route(
-        "GET",
-        "operations/",
+    let server = Server::start(vec![route_of(
+        &kubernetes::OPERATIONS,
+        [&7],
         answer(
             200,
             &json!([{ "id": 13, "kind": "add_node", "state": "queued" }]),
@@ -527,14 +528,18 @@ fn an_account_code_on_a_403_passes_through() {
     let owner = r#"{"code":"owner_only","error":"Only the owner can do this."}"#;
     let grant = r#"{"code":"insufficient_grant","error":"Operator or above."}"#;
     let server = Server::start(vec![
-        cluster_route("GET", "", answer(200, &cluster("running"))),
-        cluster_route("DELETE", "", Reply::json(403, owner)),
-        cluster_route(
-            "GET",
-            "operations/",
+        route_of(&kubernetes::CLUSTER, [&7], answer(200, &cluster("running"))),
+        route_of(&kubernetes::CLUSTER_DELETE, [&7], Reply::json(403, owner)),
+        route_of(
+            &kubernetes::OPERATIONS,
+            [&7],
             answer(200, &json!([operation("blocked")])),
         ),
-        cluster_route("POST", "operations/12/cancel/", Reply::json(403, grant)),
+        route_of(
+            &kubernetes::OPERATION_CANCEL,
+            [&7, &12],
+            Reply::json(403, grant),
+        ),
     ]);
     let error = hipc(&server, &["clusters", "delete", "7", "--yes"]).fails(1, "owner_only");
     assert_eq!(error["http_status"], 403);
@@ -548,12 +553,16 @@ fn an_account_code_on_a_403_passes_through() {
 fn a_refused_resume_surfaces_the_server_answer() {
     let refused = r#"{"error":"the operation is no longer blocked"}"#;
     let server = Server::start(vec![
-        cluster_route(
-            "GET",
-            "operations/",
+        route_of(
+            &kubernetes::OPERATIONS,
+            [&7],
             answer(200, &json!([operation("blocked")])),
         ),
-        cluster_route("POST", "operations/12/resume/", Reply::json(400, refused)),
+        route_of(
+            &kubernetes::OPERATION_RESUME,
+            [&7, &12],
+            Reply::json(400, refused),
+        ),
     ]);
     let error = hipc(&server, &["operations", "resume", "7", "12", "--yes"]).fails(1, "validation");
     assert_eq!(error["details"], parsed(refused));
@@ -586,10 +595,14 @@ fn a_resume_of_a_local_data_block_is_refused_before_the_question() {
     });
     for blocked in [local_data_block(), drain] {
         let server = Server::start(vec![
-            cluster_route("GET", "operations/", answer(200, &json!([blocked]))),
-            cluster_route(
-                "POST",
-                "operations/12/cancel/",
+            route_of(
+                &kubernetes::OPERATIONS,
+                [&7],
+                answer(200, &json!([blocked])),
+            ),
+            route_of(
+                &kubernetes::OPERATION_CANCEL,
+                [&7, &12],
                 answer(200, &operation("cancelled")),
             ),
         ]);
@@ -627,10 +640,10 @@ fn a_queued_operation_is_not_blocked_on_data_loss() {
     by_reason["reason"] = json!("pgdata would be lost");
     for op in [by_step, by_reason] {
         let server = Server::start(vec![
-            cluster_route("GET", "operations/", answer(200, &json!([op]))),
-            cluster_route(
-                "POST",
-                "operations/12/resume/",
+            route_of(&kubernetes::OPERATIONS, [&7], answer(200, &json!([op]))),
+            route_of(
+                &kubernetes::OPERATION_RESUME,
+                [&7, &12],
                 answer(200, &operation("running")),
             ),
         ]);
@@ -667,9 +680,9 @@ fn the_question_names_the_state_of_the_operation() {
     ];
     for (verb, state) in cases {
         let server = Server::start(vec![
-            cluster_route(
-                "GET",
-                "operations/",
+            route_of(
+                &kubernetes::OPERATIONS,
+                [&7],
                 answer(200, &json!([operation(state)])),
             ),
             cluster_route(
@@ -731,7 +744,7 @@ fn a_state_the_verb_cannot_act_on_is_a_conflict_before_the_question() {
     ];
     for (verb, op, why) in cases {
         let server = Server::start(vec![
-            cluster_route("GET", "operations/", answer(200, &json!([op]))),
+            route_of(&kubernetes::OPERATIONS, [&7], answer(200, &json!([op]))),
             cluster_route(
                 "POST",
                 &format!("operations/12/{verb}/"),
@@ -773,10 +786,10 @@ fn a_state_the_verb_cannot_act_on_is_a_conflict_before_the_question() {
         empty(json!("")),
     ] {
         let server = Server::start(vec![
-            cluster_route("GET", "operations/", answer(200, &json!([op]))),
-            cluster_route(
-                "POST",
-                "operations/12/cancel/",
+            route_of(&kubernetes::OPERATIONS, [&7], answer(200, &json!([op]))),
+            route_of(
+                &kubernetes::OPERATION_CANCEL,
+                [&7, &12],
                 answer(200, &operation("cancelled")),
             ),
         ]);
@@ -849,9 +862,9 @@ fn a_write_without_yes_writes_nothing_and_says_what_it_would_do() {
 /// A cluster the read finds without a name is named by its id alone.
 #[test]
 fn a_cluster_without_a_name_is_named_by_its_id() {
-    let server = Server::start(vec![cluster_route(
-        "GET",
-        "",
+    let server = Server::start(vec![route_of(
+        &kubernetes::CLUSTER,
+        [&7],
         answer(200, &json!({ "id": 7 })),
     )]);
     let error = hipc(&server, &["clusters", "delete", "7"]).fails(2, "confirmation_required");
@@ -890,9 +903,9 @@ fn a_dry_run_lists_the_exact_requests_and_sends_nothing() {
 
 #[test]
 fn node_pool_create_sends_exactly_the_labels_and_taints() {
-    let server = Server::start(vec![cluster_route(
-        "POST",
-        "node-pools/",
+    let server = Server::start(vec![route_of(
+        &kubernetes::NODE_POOL_CREATE,
+        [&7],
         answer(201, &pool()),
     )]);
     let create = |extra: &[&str]| {
@@ -1106,9 +1119,9 @@ fn a_membership_and_a_project_go_on_every_route() {
 /// sent, a dry run needs no flag, and with it the answer goes to stdout only.
 #[test]
 fn backups_need_reveal_and_print_the_links_on_stdout_only() {
-    let server = Server::start(vec![cluster_route(
-        "GET",
-        "backups/",
+    let server = Server::start(vec![route_of(
+        &kubernetes::BACKUPS,
+        [&7],
         answer(200, &backups()),
     )]);
     let error = hipc(&server, &["backups", "list", "7"]).fails(2, "reveal_required");
@@ -1151,9 +1164,9 @@ fn backups_need_reveal_and_print_the_links_on_stdout_only() {
 /// `hipc api` needs `--reveal` on the backups route too, before anything is sent.
 #[test]
 fn hipc_api_needs_reveal_on_the_backups_route() {
-    let server = Server::start(vec![cluster_route(
-        "GET",
-        "backups/",
+    let server = Server::start(vec![route_of(
+        &kubernetes::BACKUPS,
+        [&7],
         answer(200, &backups()),
     )]);
     let api = |extra: &[&str]| {

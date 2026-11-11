@@ -1,9 +1,10 @@
 //! `hipc cdn waf` and `hipc cdn lists`: a zone's WAF settings, rules, rate limits, and
 //! versions, and the account's WAF lists.
 
+use hippius::routes::cdn;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Route, Run, Server, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Route, Run, Server, draft, route, route_of};
 
 const ZONE: &str = "zab12cd34ef56";
 
@@ -13,10 +14,6 @@ fn waf_route(method: &'static str, suffix: &str, reply: Reply) -> Route {
         &format!("/api/cdn/zones/{ZONE}/waf/{suffix}"),
         reply,
     )
-}
-
-fn list_route(method: &'static str, suffix: &str, reply: Reply) -> Route {
-    route(method, &format!("/api/cdn/lists/{suffix}"), reply)
 }
 
 fn hipc(server: &Server, args: &[&str]) -> Run {
@@ -40,12 +37,28 @@ fn waf_reads_print_as_the_server_sent_them() {
     let rules =
         r#"{"rules":[{"id":"r1","expression":"ip.src eq 1.2.3.4","action":"block"}],"version":3}"#;
     let server = Server::start(vec![
-        waf_route("GET", "", Reply::json(200, settings)),
-        waf_route("GET", "status/", Reply::json(200, r#"{"nodes":2}"#)),
-        waf_route("GET", "rules/", Reply::json(200, rules)),
-        waf_route("GET", "rate-limits/", Reply::json(200, r#"{"rules":[]}"#)),
-        waf_route("GET", "versions/3/", Reply::json(200, r#"{"number":3}"#)),
-        list_route("GET", "blocked_ips/", Reply::json(200, r#"{"items":[]}"#)),
+        route_of(&cdn::WAF, [&ZONE], Reply::json(200, settings)),
+        route_of(
+            &cdn::WAF_STATUS,
+            [&ZONE],
+            Reply::json(200, r#"{"nodes":2}"#),
+        ),
+        route_of(&cdn::WAF_RULES, [&ZONE], Reply::json(200, rules)),
+        route_of(
+            &cdn::WAF_RATE_LIMITS,
+            [&ZONE],
+            Reply::json(200, r#"{"rules":[]}"#),
+        ),
+        route_of(
+            &cdn::WAF_VERSION,
+            [&ZONE, &3],
+            Reply::json(200, r#"{"number":3}"#),
+        ),
+        route_of(
+            &cdn::LIST,
+            [&"blocked_ips"],
+            Reply::json(200, r#"{"items":[]}"#),
+        ),
     ]);
     assert_eq!(
         hipc(&server, &["waf", "get", ZONE]).stdout().trim_end(),
@@ -77,15 +90,15 @@ fn waf_reads_print_as_the_server_sent_them() {
 #[test]
 fn version_and_list_lists_read_an_object_or_a_bare_array() {
     let server = Server::start(vec![
-        waf_route(
-            "GET",
-            "versions/",
+        route_of(
+            &cdn::WAF_VERSIONS,
+            [&ZONE],
             Reply::json(
                 200,
                 r#"{"versions":[{"number":2},{"number":1}],"active":2}"#,
             ),
         ),
-        list_route("GET", "", Reply::json(200, r#"[{"name":"a"}]"#)),
+        route_of(&cdn::LISTS, [], Reply::json(200, r#"[{"name":"a"}]"#)),
     ]);
     assert_eq!(
         hipc(&server, &["waf", "versions", "list", ZONE]).ok(),
@@ -100,10 +113,10 @@ fn version_and_list_lists_read_an_object_or_a_bare_array() {
 #[test]
 fn analytics_and_events_send_only_the_query_parameters_given() {
     let server = Server::start(vec![
-        waf_route("GET", "analytics/", Reply::json(200, "{}")),
-        waf_route(
-            "GET",
-            "events/",
+        route_of(&cdn::WAF_ANALYTICS, [&ZONE], Reply::json(200, "{}")),
+        route_of(
+            &cdn::WAF_EVENTS,
+            [&ZONE],
             Reply::json(200, r#"{"events":[],"cursor":null}"#),
         ),
     ]);
@@ -163,9 +176,9 @@ fn analytics_and_events_send_only_the_query_parameters_given() {
 
 #[test]
 fn waf_update_sends_only_the_settings_given_and_always_needs_yes() {
-    let server = Server::start(vec![waf_route(
-        "PATCH",
-        "",
+    let server = Server::start(vec![route_of(
+        &cdn::WAF_UPDATE,
+        [&ZONE],
         Reply::json(200, r#"{"mode":"on"}"#),
     )]);
     let home = Home::new();
@@ -338,9 +351,9 @@ fn waf_update_refuses_a_block_body_past_4_kb_or_not_text() {
 
 #[test]
 fn waf_test_sends_the_request_and_changes_nothing() {
-    let server = Server::start(vec![waf_route(
-        "POST",
-        "test/",
+    let server = Server::start(vec![route_of(
+        &cdn::WAF_TEST,
+        [&ZONE],
         Reply::json(201, r#"{"match":true}"#),
     )]);
     let request = r#"{"ip":"1.2.3.4","path":"/admin","headers":{"user-agent":"x"}}"#;
@@ -407,9 +420,9 @@ fn waf_test_sends_the_request_and_changes_nothing() {
 /// read's: nothing changed, and a retry is safe.
 #[test]
 fn a_failed_test_is_a_read_that_changed_nothing() {
-    let server = Server::start(vec![waf_route(
-        "POST",
-        "test/",
+    let server = Server::start(vec![route_of(
+        &cdn::WAF_TEST,
+        [&ZONE],
         Reply::json(503, r#"{"error":"busy","code":"waf_unavailable"}"#),
     )]);
     let error =
@@ -528,8 +541,8 @@ fn update_check_sends_the_list_with_dry_run_and_publishes_nothing() {
 fn update_check_keeps_the_whole_list_guard() {
     let answer = r#"{"valid":true,"size":1,"limit":65536}"#;
     let server = Server::start(vec![
-        waf_route("GET", "rules/", Reply::json(200, CUSTOM_RULES)),
-        waf_route("PUT", "rules/", Reply::json(200, answer)),
+        route_of(&cdn::WAF_RULES, [&ZONE], Reply::json(200, CUSTOM_RULES)),
+        route_of(&cdn::WAF_RULES_UPDATE, [&ZONE], Reply::json(200, answer)),
     ]);
     let file = r#"{"rules":[]}"#;
     let args = [
@@ -574,8 +587,8 @@ fn update_check_fails_on_an_invalid_list_and_on_an_answer_that_may_have_publishe
     let invalid = r#"{"valid":false,"size":12,"limit":65536,"rule_id":0}"#;
     let current = versioned(r#"{"rules":[]}"#);
     let server = Server::start(vec![
-        waf_route("GET", "rules/", Reply::json(200, &current)),
-        waf_route("PUT", "rules/", Reply::json(200, invalid)),
+        route_of(&cdn::WAF_RULES, [&ZONE], Reply::json(200, &current)),
+        route_of(&cdn::WAF_RULES_UPDATE, [&ZONE], Reply::json(200, invalid)),
     ]);
     let error = piped(&server, file, &args).fails(1, "validation");
     assert_eq!(
@@ -596,8 +609,8 @@ fn update_check_fails_on_an_invalid_list_and_on_an_answer_that_may_have_publishe
         "{}",
     ] {
         let server = Server::start(vec![
-            waf_route("GET", "rules/", Reply::json(200, &current)),
-            waf_route("PUT", "rules/", Reply::json(200, answer)),
+            route_of(&cdn::WAF_RULES, [&ZONE], Reply::json(200, &current)),
+            route_of(&cdn::WAF_RULES_UPDATE, [&ZONE], Reply::json(200, answer)),
         ]);
         let error = piped(&server, file, &args).fails(1, "internal");
         assert_eq!(error["side_effects"], "partial", "{answer}");
@@ -1008,9 +1021,9 @@ fn rules_update_dry_run_names_the_read_and_an_unreadable_answer_is_internal() {
 
 #[test]
 fn rollback_needs_yes_and_sends_an_empty_object() {
-    let server = Server::start(vec![waf_route(
-        "POST",
-        "versions/3/rollback/",
+    let server = Server::start(vec![route_of(
+        &cdn::WAF_ROLLBACK,
+        [&ZONE, &3],
         Reply::json(201, r#"{"number":8}"#),
     )]);
     let error = hipc(&server, &["waf", "versions", "rollback", ZONE, "3"])
@@ -1043,13 +1056,17 @@ fn rollback_needs_yes_and_sends_an_empty_object() {
 #[test]
 fn lists_create_update_and_delete() {
     let server = Server::start(vec![
-        list_route("POST", "", Reply::json(201, r#"{"name":"bad_ips"}"#)),
-        list_route(
-            "PATCH",
-            "bad_ips/",
+        route_of(
+            &cdn::LIST_CREATE,
+            [],
+            Reply::json(201, r#"{"name":"bad_ips"}"#),
+        ),
+        route_of(
+            &cdn::LIST_UPDATE,
+            [&"bad_ips"],
             Reply::json(200, r#"{"description":"x"}"#),
         ),
-        list_route("DELETE", "bad_ips/", Reply::json(204, "")),
+        route_of(&cdn::LIST_DELETE, [&"bad_ips"], Reply::json(204, "")),
     ]);
     // Items are one per line; `#` starts a comment, and blank lines are skipped.
     let items = "203.0.113.7\n# office\n  198.51.100.0/24  # vpn\n\n";
@@ -1147,12 +1164,12 @@ fn list_names_and_descriptions_are_checked_without_a_request() {
 #[test]
 fn list_items_add_and_remove_send_the_items_in_the_body() {
     let server = Server::start(vec![
-        list_route(
-            "POST",
-            "bad_ips/items/",
+        route_of(
+            &cdn::LIST_ITEMS_ADD,
+            [&"bad_ips"],
             Reply::json(201, r#"{"items":["1.2.3.4"]}"#),
         ),
-        list_route("DELETE", "bad_ips/items/", Reply::json(204, "")),
+        route_of(&cdn::LIST_ITEMS_REMOVE, [&"bad_ips"], Reply::json(204, "")),
     ]);
     // An added item changes what every zone using the list lets through, so it is confirmed.
     let refused = piped(
@@ -1285,8 +1302,12 @@ fn an_item_file_with_no_item_or_not_text_is_refused() {
 fn list_items_update_is_refused_when_it_drops_an_item() {
     let current = r#"{"name":"bad_ips","kind":"ip","items":["198.51.100.0/24","203.0.113.7"]}"#;
     let server = Server::start(vec![
-        list_route("GET", "bad_ips/", Reply::json(200, current)),
-        list_route("PUT", "bad_ips/items/", Reply::json(200, r#"{"items":[]}"#)),
+        route_of(&cdn::LIST, [&"bad_ips"], Reply::json(200, current)),
+        route_of(
+            &cdn::LIST_ITEMS_REPLACE,
+            [&"bad_ips"],
+            Reply::json(200, r#"{"items":[]}"#),
+        ),
     ]);
     let update = |items: &str, extra: &[&str]| {
         let mut argv = vec!["lists", "items", "update", "bad_ips", "--items-file", "-"];
@@ -1319,9 +1340,9 @@ fn list_items_update_is_refused_when_it_drops_an_item() {
     let doc = update("1.1.1.1", &["--dry-run"]).ok();
     assert_eq!(doc["reads_first"]["method"], "GET");
     for answer in [r#"{"items":[1]}"#, "{}", "[]"] {
-        let server = Server::start(vec![list_route(
-            "GET",
-            "bad_ips/",
+        let server = Server::start(vec![route_of(
+            &cdn::LIST,
+            [&"bad_ips"],
             Reply::json(200, answer),
         )]);
         let error = piped(
@@ -1347,11 +1368,7 @@ fn list_items_update_is_refused_when_it_drops_an_item() {
 
 #[test]
 fn estimate_sends_waf_zones_by_tier() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/cdn/estimate/",
-        Reply::json(201, "{}"),
-    )]);
+    let server = Server::start(vec![route_of(&cdn::ESTIMATE, [], Reply::json(201, "{}"))]);
     hipc(
         &server,
         &["estimate", "--waf", "standard=2", "--waf", "advanced=0"],
@@ -1508,27 +1525,35 @@ fn every_command() -> (Vec<(Vec<&'static str>, &'static str)>, Vec<Route>) {
         ),
     ];
     let routes = vec![
-        waf_route("GET", "", Reply::json(200, "{}")),
-        waf_route("PATCH", "", Reply::json(200, "{}")),
-        waf_route("GET", "status/", Reply::json(200, "{}")),
-        waf_route("GET", "analytics/", Reply::json(200, "{}")),
-        waf_route("GET", "events/", Reply::json(200, "{}")),
-        waf_route("POST", "test/", Reply::json(201, "{}")),
-        waf_route("GET", "rules/", Reply::json(200, &versioned(rule))),
-        waf_route("PUT", "rules/", Reply::json(200, "{}")),
-        waf_route("GET", "rate-limits/", Reply::json(200, &versioned(limit))),
-        waf_route("PUT", "rate-limits/", Reply::json(200, "{}")),
-        waf_route("GET", "versions/", Reply::json(200, "[]")),
-        waf_route("GET", "versions/1/", Reply::json(200, "{}")),
-        waf_route("POST", "versions/1/rollback/", Reply::json(201, "{}")),
-        list_route("GET", "", Reply::json(200, "[]")),
-        list_route("GET", "l/", Reply::json(200, r#"{"items":["1"]}"#)),
-        list_route("POST", "", Reply::json(201, "{}")),
-        list_route("PATCH", "l/", Reply::json(200, "{}")),
-        list_route("DELETE", "l/", Reply::json(204, "")),
-        list_route("POST", "l/items/", Reply::json(201, "{}")),
-        list_route("PUT", "l/items/", Reply::json(200, "{}")),
-        list_route("DELETE", "l/items/", Reply::json(204, "")),
+        route_of(&cdn::WAF, [&ZONE], Reply::json(200, "{}")),
+        route_of(&cdn::WAF_UPDATE, [&ZONE], Reply::json(200, "{}")),
+        route_of(&cdn::WAF_STATUS, [&ZONE], Reply::json(200, "{}")),
+        route_of(&cdn::WAF_ANALYTICS, [&ZONE], Reply::json(200, "{}")),
+        route_of(&cdn::WAF_EVENTS, [&ZONE], Reply::json(200, "{}")),
+        route_of(&cdn::WAF_TEST, [&ZONE], Reply::json(201, "{}")),
+        route_of(&cdn::WAF_RULES, [&ZONE], Reply::json(200, &versioned(rule))),
+        route_of(&cdn::WAF_RULES_UPDATE, [&ZONE], Reply::json(200, "{}")),
+        route_of(
+            &cdn::WAF_RATE_LIMITS,
+            [&ZONE],
+            Reply::json(200, &versioned(limit)),
+        ),
+        route_of(
+            &cdn::WAF_RATE_LIMITS_UPDATE,
+            [&ZONE],
+            Reply::json(200, "{}"),
+        ),
+        route_of(&cdn::WAF_VERSIONS, [&ZONE], Reply::json(200, "[]")),
+        route_of(&cdn::WAF_VERSION, [&ZONE, &1], Reply::json(200, "{}")),
+        route_of(&cdn::WAF_ROLLBACK, [&ZONE, &1], Reply::json(201, "{}")),
+        route_of(&cdn::LISTS, [], Reply::json(200, "[]")),
+        route_of(&cdn::LIST, [&"l"], Reply::json(200, r#"{"items":["1"]}"#)),
+        route_of(&cdn::LIST_CREATE, [], Reply::json(201, "{}")),
+        route_of(&cdn::LIST_UPDATE, [&"l"], Reply::json(200, "{}")),
+        route_of(&cdn::LIST_DELETE, [&"l"], Reply::json(204, "")),
+        route_of(&cdn::LIST_ITEMS_ADD, [&"l"], Reply::json(201, "{}")),
+        route_of(&cdn::LIST_ITEMS_REPLACE, [&"l"], Reply::json(200, "{}")),
+        route_of(&cdn::LIST_ITEMS_REMOVE, [&"l"], Reply::json(204, "")),
     ];
     (commands, routes)
 }

@@ -5,10 +5,11 @@
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
+use hippius::routes::cdn;
 use serde_json::{Value, json};
 
 use crate::common::{
-    Hipc, Home, MEMBER, PROJECT, Reply, Run, Server, TOKEN, draft, no_server, route,
+    Hipc, Home, MEMBER, PROJECT, Reply, Run, Server, TOKEN, draft, no_server, route_of,
 };
 
 const ZONE: &str = "zab12cd34ef56";
@@ -75,7 +76,11 @@ fn path_text(path: &Path) -> String {
 #[test]
 fn the_credential_is_sent_in_the_body_and_printed_nowhere() {
     let answer = r#"{"provider":"cloudflare","mode":"all","replace":false}"#;
-    let server = Server::start(vec![route("POST", PATH, Reply::json(201, answer))]);
+    let server = Server::start(vec![route_of(
+        &cdn::HOSTNAME_DNS_SETUP,
+        [&ZONE, &HOST],
+        Reply::json(201, answer),
+    )]);
     let home = Home::new();
     let file = path_text(&home.file("cf.json", cloudflare().as_bytes()));
     let run = Hipc::against(&home, &server).run(&setup_args("cloudflare", &file, &["--yes"]));
@@ -106,7 +111,11 @@ fn the_credential_is_sent_in_the_body_and_printed_nowhere() {
 /// zone; `--debug` shows the request line and the status, never the body.
 #[test]
 fn route53_sends_its_fields_and_debug_shows_no_body() {
-    let server = Server::start(vec![route("POST", PATH, Reply::json(201, "{}"))]);
+    let server = Server::start(vec![route_of(
+        &cdn::HOSTNAME_DNS_SETUP,
+        [&ZONE, &HOST],
+        Reply::json(201, "{}"),
+    )]);
     let home = Home::new();
     let file = path_text(&home.file("aws.json", route53().as_bytes()));
     let run =
@@ -137,7 +146,11 @@ fn the_answer_keeps_only_values_hip_can_check() {
     let home = Home::new();
     let file = path_text(&home.file("cf.json", cloudflare().as_bytes()));
     let run_with = |answer: &str| {
-        let server = Server::start(vec![route("POST", PATH, Reply::json(201, answer))]);
+        let server = Server::start(vec![route_of(
+            &cdn::HOSTNAME_DNS_SETUP,
+            [&ZONE, &HOST],
+            Reply::json(201, answer),
+        )]);
         let run = Hipc::against(&home, &server).run(&setup_args("cloudflare", &file, &["--yes"]));
         assert_run_clean(&run);
         run.ok()
@@ -169,19 +182,19 @@ fn the_answer_keeps_only_values_hip_can_check() {
 fn an_error_says_only_its_status() {
     let refusal = format!(r#"{{"detail":"Cloudflare refused the token {CF_TOKEN}"}}"#);
     let server = Server::start(vec![
-        route(
-            "POST",
-            PATH,
+        route_of(
+            &cdn::HOSTNAME_DNS_SETUP,
+            [&ZONE, &HOST],
             Reply::json(400, &refusal).header("X-Request-Id", &format!("req-{CF_TOKEN}")),
         ),
-        route(
-            "POST",
-            "/api/cdn/zones/zab12cd34ef56/hostnames/www.example.com/dns-setup/",
+        route_of(
+            &cdn::HOSTNAME_DNS_SETUP,
+            [&ZONE, &"www.example.com"],
             Reply::json(404, r#"{"detail":"Not found."}"#),
         ),
-        route(
-            "POST",
-            "/api/cdn/zones/zab12cd34ef56/hostnames/api.example.com/dns-setup/",
+        route_of(
+            &cdn::HOSTNAME_DNS_SETUP,
+            [&ZONE, &"api.example.com"],
             Reply::json(502, "{}"),
         ),
     ]);
@@ -481,7 +494,11 @@ const LINK: &str =
 #[test]
 fn domain_connect_prints_the_link_and_the_next_step() {
     let path = "/api/cdn/zones/zab12cd34ef56/hostnames/cdn.example.com/domain-connect/";
-    let server = Server::start(vec![route("GET", path, Reply::json(200, LINK))]);
+    let server = Server::start(vec![route_of(
+        &cdn::HOSTNAME_DOMAIN_CONNECT,
+        [&ZONE, &HOST],
+        Reply::json(200, LINK),
+    )]);
     let home = Home::new();
     let args = ["cdn", "hostnames", "domain-connect", ZONE, HOST];
     let doc = Hipc::against(&home, &server).run(&args).ok();
@@ -510,8 +527,11 @@ fn domain_connect_prints_the_link_and_the_next_step() {
 /// this one did; when one of them is not a plain word, both leave the command out.
 #[test]
 fn domain_connect_next_step_carries_the_selectors_of_the_run() {
-    let path = "/api/cdn/zones/zab12cd34ef56/hostnames/cdn.example.com/domain-connect/";
-    let server = Server::start(vec![route("GET", path, Reply::json(200, LINK))]);
+    let server = Server::start(vec![route_of(
+        &cdn::HOSTNAME_DOMAIN_CONNECT,
+        [&ZONE, &HOST],
+        Reply::json(200, LINK),
+    )]);
     let home = Home::new();
     let args = [
         "--api-url",
@@ -562,31 +582,30 @@ fn domain_connect_next_step_carries_the_selectors_of_the_run() {
 /// is `not_found` with a hint that says so.
 #[test]
 fn domain_connect_without_a_url_or_a_template() {
-    let path = |host: &str| format!("/api/cdn/zones/{ZONE}/hostnames/{host}/domain-connect/");
     let server = Server::start(vec![
-        route(
-            "GET",
-            &path("a.example.com"),
+        route_of(
+            &cdn::HOSTNAME_DOMAIN_CONNECT,
+            [&ZONE, &"a.example.com"],
             Reply::json(200, r#""https://dns.example.net/x""#),
         ),
-        route(
-            "GET",
-            &path("b.example.com"),
+        route_of(
+            &cdn::HOSTNAME_DOMAIN_CONNECT,
+            [&ZONE, &"b.example.com"],
             Reply::json(200, r#"{"available":false}"#),
         ),
-        route(
-            "GET",
-            &path("c.example.com"),
+        route_of(
+            &cdn::HOSTNAME_DOMAIN_CONNECT,
+            [&ZONE, &"c.example.com"],
             Reply::json(200, r#"{"url":7}"#),
         ),
-        route(
-            "GET",
-            &path("d.example.com"),
+        route_of(
+            &cdn::HOSTNAME_DOMAIN_CONNECT,
+            [&ZONE, &"d.example.com"],
             Reply::json(403, r#"{"detail":"No."}"#),
         ),
-        route(
-            "GET",
-            &path("www.example.com"),
+        route_of(
+            &cdn::HOSTNAME_DOMAIN_CONNECT,
+            [&ZONE, &"www.example.com"],
             Reply::json(404, r#"{"detail":"Not found."}"#),
         ),
     ]);
@@ -661,10 +680,14 @@ fn echoes_in_unforeseen_forms_reach_no_output() {
         "note": forms.join(" "),
     });
     let server = Server::start(vec![
-        route("POST", PATH, Reply::json(201, &echo.to_string())),
-        route(
-            "POST",
-            "/api/cdn/zones/zab12cd34ef56/hostnames/www.example.com/dns-setup/",
+        route_of(
+            &cdn::HOSTNAME_DNS_SETUP,
+            [&ZONE, &HOST],
+            Reply::json(201, &echo.to_string()),
+        ),
+        route_of(
+            &cdn::HOSTNAME_DNS_SETUP,
+            [&ZONE, &"www.example.com"],
             Reply::json(400, &echo.to_string()),
         ),
     ]);

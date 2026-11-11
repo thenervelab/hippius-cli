@@ -1,8 +1,9 @@
 //! `hipc cdn`: zones, the spend cap, hostnames, purges, rules, and stats.
 
+use hippius::routes::cdn;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Route, Run, Server, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Route, Run, Server, draft, route_of};
 
 const ZONE: &str = "zab12cd34ef56";
 
@@ -10,10 +11,6 @@ const ZONE_BODY: &str = concat!(
     r#"{"id":"zab12cd34ef56","name":"site","state":"active","#,
     r#""origin":{"kind":"s3","bucket":"web","prefix":"site/","private":false}}"#
 );
-
-fn zone_route(method: &'static str, suffix: &str, reply: Reply) -> Route {
-    route(method, &format!("/api/cdn/zones/{ZONE}/{suffix}"), reply)
-}
 
 fn hipc(server: &Server, args: &[&str]) -> Run {
     let mut argv = vec!["cdn"];
@@ -34,11 +31,7 @@ fn prices_need_no_token_and_print_as_sent() {
         r#"{"at":"2026-10-27T00:00:00Z","regions":["FR","AU"],"#,
         r#""requests":{"unit":"10000 requests","unit_price":"2000000000000000"}}"#
     );
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/cdn/prices/",
-        Reply::json(200, prices),
-    )]);
+    let server = Server::start(vec![route_of(&cdn::PRICES, [], Reply::json(200, prices))]);
     let run = Hipc::tokenless(&Home::new(), &server).run(&["cdn", "prices"]);
     assert_eq!(run.stdout().trim_end(), prices);
     assert_eq!(run.code(), Some(0));
@@ -50,18 +43,18 @@ fn objects_print_as_the_server_sent_them() {
     let regions = r#"{"regions":[{"code":"FR","nodes_reporting":3,"status":"up"}],"domain":"c.x"}"#;
     let cap = r#"{"monthly_cap":"20000000000000000000","monthly_cap_credits":"20.000000"}"#;
     let server = Server::start(vec![
-        route("GET", "/api/cdn/regions/", Reply::json(200, regions)),
-        zone_route("GET", "", Reply::json(200, ZONE_BODY)),
-        zone_route("GET", "cap/", Reply::json(200, cap)),
-        zone_route("GET", "rules/", Reply::json(200, r#"{"rules":[]}"#)),
-        zone_route(
-            "GET",
-            "purges/7/",
+        route_of(&cdn::REGIONS, [], Reply::json(200, regions)),
+        route_of(&cdn::ZONE, [&ZONE], Reply::json(200, ZONE_BODY)),
+        route_of(&cdn::CAP, [&ZONE], Reply::json(200, cap)),
+        route_of(&cdn::RULES, [&ZONE], Reply::json(200, r#"{"rules":[]}"#)),
+        route_of(
+            &cdn::PURGE,
+            [&ZONE, &7],
             Reply::json(200, r#"{"id":7,"status":"done"}"#),
         ),
-        zone_route(
-            "GET",
-            "stats/",
+        route_of(
+            &cdn::STATS,
+            [&ZONE],
             Reply::json(200, r#"{"step_s":3600,"series":[]}"#),
         ),
     ]);
@@ -97,11 +90,7 @@ fn objects_print_as_the_server_sent_them() {
 #[test]
 fn zones_list_keeps_beta_beside_the_items() {
     let body = format!(r#"{{"zones":[{ZONE_BODY}],"beta":false}}"#);
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/cdn/zones/",
-        Reply::json(200, &body),
-    )]);
+    let server = Server::start(vec![route_of(&cdn::ZONES, [], Reply::json(200, &body))]);
     let doc = hipc(&server, &["zones", "list"]).ok();
     assert_eq!(doc["items"][0]["id"], ZONE);
     assert_eq!(doc["beta"], false);
@@ -112,15 +101,19 @@ fn zones_list_keeps_beta_beside_the_items() {
 #[test]
 fn hostname_and_purge_lists_read_an_object_or_a_bare_array() {
     let server = Server::start(vec![
-        zone_route(
-            "GET",
-            "hostnames/",
+        route_of(
+            &cdn::HOSTNAMES,
+            [&ZONE],
             Reply::json(
                 200,
                 r#"{"hostnames":[{"hostname":"cdn.example.com"}],"count":1}"#,
             ),
         ),
-        zone_route("GET", "purges/", Reply::json(200, r#"[{"id":7},{"id":8}]"#)),
+        route_of(
+            &cdn::PURGES,
+            [&ZONE],
+            Reply::json(200, r#"[{"id":7},{"id":8}]"#),
+        ),
     ]);
     let hostnames = hipc(&server, &["hostnames", "list", ZONE]).ok();
     assert_eq!(
@@ -138,9 +131,9 @@ fn hostname_and_purge_lists_read_an_object_or_a_bare_array() {
 
 #[test]
 fn a_list_object_without_its_key_is_internal() {
-    let server = Server::start(vec![zone_route(
-        "GET",
-        "purges/",
+    let server = Server::start(vec![route_of(
+        &cdn::PURGES,
+        [&ZONE],
         Reply::json(200, r#"{"items":[]}"#),
     )]);
     let error = hipc(&server, &["purges", "list", ZONE]).fails(1, "internal");
@@ -237,14 +230,14 @@ fn zones_create_dry_run_sends_only_the_flags_given() {
 #[test]
 fn zones_create_says_in_text_mode_when_it_made_the_prefix_public() {
     let private = ZONE_BODY.replace(r#""private":false"#, r#""private":true"#);
-    let public = Server::start(vec![route(
-        "POST",
-        "/api/cdn/zones/",
+    let public = Server::start(vec![route_of(
+        &cdn::ZONE_CREATE,
+        [],
         Reply::json(201, ZONE_BODY),
     )]);
-    let made_public = Server::start(vec![route(
-        "POST",
-        "/api/cdn/zones/",
+    let made_public = Server::start(vec![route_of(
+        &cdn::ZONE_CREATE,
+        [],
         Reply::json(201, &private),
     )]);
     let create = [
@@ -279,7 +272,7 @@ fn zones_create_says_in_text_mode_when_it_made_the_prefix_public() {
 
 #[test]
 fn zones_create_answered_with_an_empty_body_is_internal_and_partial() {
-    let server = Server::start(vec![route("POST", "/api/cdn/zones/", Reply::json(201, ""))]);
+    let server = Server::start(vec![route_of(&cdn::ZONE_CREATE, [], Reply::json(201, ""))]);
     let error = hipc(
         &server,
         &[
@@ -292,7 +285,11 @@ fn zones_create_answered_with_an_empty_body_is_internal_and_partial() {
 
 #[test]
 fn zones_update_sends_only_the_keys_passed() {
-    let server = Server::start(vec![zone_route("PATCH", "", Reply::json(200, ZONE_BODY))]);
+    let server = Server::start(vec![route_of(
+        &cdn::ZONE_UPDATE,
+        [&ZONE],
+        Reply::json(200, ZONE_BODY),
+    )]);
     let doc = hipc(
         &server,
         &["zones", "update", ZONE, "--name", "new", "--yes"],
@@ -366,8 +363,8 @@ fn a_zone_name_outside_the_label_rules_is_usage() {
 #[test]
 fn zones_update_of_the_prefix_alone_sends_the_whole_origin() {
     let server = Server::start(vec![
-        zone_route("GET", "", Reply::json(200, ZONE_BODY)),
-        zone_route("PATCH", "", Reply::json(200, ZONE_BODY)),
+        route_of(&cdn::ZONE, [&ZONE], Reply::json(200, ZONE_BODY)),
+        route_of(&cdn::ZONE_UPDATE, [&ZONE], Reply::json(200, ZONE_BODY)),
     ]);
     let doc = hipc(
         &server,
@@ -409,9 +406,9 @@ fn zones_update_of_the_prefix_alone_sends_the_whole_origin() {
         json!({"origin": {"kind": "s3", "bucket": "web", "prefix": "www/"}})
     );
     // A zone whose origin names no bucket is not sent a partial origin.
-    let bare = Server::start(vec![zone_route(
-        "GET",
-        "",
+    let bare = Server::start(vec![route_of(
+        &cdn::ZONE,
+        [&ZONE],
         Reply::json(200, r#"{"id":"zab12cd34ef56","origin":{"kind":"s3"}}"#),
     )]);
     let error = hipc(
@@ -435,7 +432,11 @@ const CORS: &str = concat!(
 /// removes it. The question says the policy is replaced whole.
 #[test]
 fn zones_take_a_whole_cors_policy_from_a_file() {
-    let server = Server::start(vec![zone_route("PATCH", "", Reply::json(200, ZONE_BODY))]);
+    let server = Server::start(vec![route_of(
+        &cdn::ZONE_UPDATE,
+        [&ZONE],
+        Reply::json(200, ZONE_BODY),
+    )]);
     let home = Home::new();
     let cors = home.file("cors.json", CORS.as_bytes());
     let cors = cors.to_str().unwrap();
@@ -583,7 +584,11 @@ fn zones_update_with_nothing_to_change_is_usage_and_always_needs_yes() {
 /// would publish, so the refusal an agent reads says what `--yes` would do.
 #[test]
 fn zones_update_names_each_change_in_the_question() {
-    let server = Server::start(vec![zone_route("GET", "", Reply::json(200, ZONE_BODY))]);
+    let server = Server::start(vec![route_of(
+        &cdn::ZONE,
+        [&ZONE],
+        Reply::json(200, ZONE_BODY),
+    )]);
     let refused = |args: &[&str]| {
         let args = [&["zones", "update", ZONE][..], args].concat();
         hipc(&server, &args).fails(2, "confirmation_required")["message"]
@@ -634,16 +639,20 @@ fn zones_update_names_each_change_in_the_question() {
 
 #[test]
 fn zones_delete_prints_a_document_for_204_and_maps_404() {
-    let server = Server::start(vec![zone_route("DELETE", "", Reply::json(204, ""))]);
+    let server = Server::start(vec![route_of(
+        &cdn::ZONE_DELETE,
+        [&ZONE],
+        Reply::json(204, ""),
+    )]);
     assert_eq!(
         hipc(&server, &["zones", "delete", ZONE, "--yes"]).ok(),
         json!({"zone_id": ZONE, "deleted": true})
     );
     hipc(&server, &["zones", "delete", ZONE]).fails(2, "confirmation_required");
     assert_eq!(server.requests().len(), 1);
-    let gone = Server::start(vec![zone_route(
-        "DELETE",
-        "",
+    let gone = Server::start(vec![route_of(
+        &cdn::ZONE_DELETE,
+        [&ZONE],
         Reply::json(404, r#"{"error":"zone not found","code":"not_found"}"#),
     )]);
     hipc(&gone, &["zones", "delete", ZONE, "--yes"]).fails(1, "not_found");
@@ -654,8 +663,8 @@ fn cap_update_sends_the_cap_as_a_string_and_nothing_else() {
     let cap = r#"{"monthly_cap":"25000000000000000000","monthly_cap_credits":"25.000000"}"#;
     let in_force = r#"{"monthly_cap":"20000000000000000000","monthly_cap_credits":"20.000000"}"#;
     let server = Server::start(vec![
-        zone_route("GET", "cap/", Reply::json(200, in_force)),
-        zone_route("PATCH", "cap/", Reply::json(200, cap)),
+        route_of(&cdn::CAP, [&ZONE], Reply::json(200, in_force)),
+        route_of(&cdn::CAP_UPDATE, [&ZONE], Reply::json(200, cap)),
     ]);
     let run = hipc(
         &server,
@@ -722,8 +731,12 @@ fn cap_update_asks_only_for_a_raise() {
         ("null", "20", "20", "20"),
     ] {
         let server = Server::start(vec![
-            zone_route("GET", "cap/", Reply::json(200, &in_force(base, credits))),
-            zone_route("PATCH", "cap/", Reply::json(200, "{}")),
+            route_of(
+                &cdn::CAP,
+                [&ZONE],
+                Reply::json(200, &in_force(base, credits)),
+            ),
+            route_of(&cdn::CAP_UPDATE, [&ZONE], Reply::json(200, "{}")),
         ]);
         hipc(&server, &["cap", "update", ZONE, "--monthly-cap", cap]).ok();
         let sent = server.requests();
@@ -757,9 +770,9 @@ fn cap_update_asks_only_for_a_raise() {
             "where `monthly_cap_credits` is `twenty`, which is not an amount",
         ),
     ] {
-        let server = Server::start(vec![zone_route(
-            "GET",
-            "cap/",
+        let server = Server::start(vec![route_of(
+            &cdn::CAP,
+            [&ZONE],
             Reply::json(200, &in_force(base, credits)),
         )]);
         let error = hipc(&server, &["cap", "update", ZONE, "--monthly-cap", cap])
@@ -769,10 +782,10 @@ fn cap_update_asks_only_for_a_raise() {
         assert_eq!(server.only_request().method, "GET");
     }
     // A read without either field is unknown too.
-    let server = Server::start(vec![zone_route("GET", "cap/", Reply::json(200, "{}"))]);
+    let server = Server::start(vec![route_of(&cdn::CAP, [&ZONE], Reply::json(200, "{}"))]);
     hipc(&server, &["cap", "update", ZONE, "--monthly-cap", "1"]).fails(2, "confirmation_required");
     // A failed read sends no PATCH.
-    let server = Server::start(vec![zone_route("GET", "cap/", Reply::not_found())]);
+    let server = Server::start(vec![route_of(&cdn::CAP, [&ZONE], Reply::not_found())]);
     hipc(
         &server,
         &["cap", "update", ZONE, "--monthly-cap", "1", "--yes"],
@@ -801,7 +814,11 @@ fn cap_update_dry_run_lists_the_read_and_the_patch() {
 #[test]
 fn purge_needs_exactly_one_target_and_no_confirmation() {
     let purge = r#"{"id":9,"kind":"all","status":"pending"}"#;
-    let server = Server::start(vec![zone_route("POST", "purge/", Reply::json(201, purge))]);
+    let server = Server::start(vec![route_of(
+        &cdn::PURGE_CREATE,
+        [&ZONE],
+        Reply::json(201, purge),
+    )]);
     for args in [
         &["purges", "create", ZONE][..],
         &["purges", "create", ZONE, "--everything", "--path", "/a"],
@@ -845,7 +862,11 @@ fn refused(server: &Server, args: &[&str]) -> String {
 /// prefix ends in `/`. Each is checked before anything is sent.
 #[test]
 fn purge_paths_and_prefixes_are_checked_without_a_request() {
-    let server = Server::start(vec![zone_route("POST", "purge/", Reply::json(201, "{}"))]);
+    let server = Server::start(vec![route_of(
+        &cdn::PURGE_CREATE,
+        [&ZONE],
+        Reply::json(201, "{}"),
+    )]);
     let encoded_rule = "is percent-encoded, such as `/img/a%20b.jpg`: a space, `?`, `#`, `%` \
                         itself, and every byte that is not ASCII are written as `%XX`";
     let path_rule = format!("a purge path starts with `/` and {encoded_rule}");
@@ -1004,9 +1025,9 @@ fn estimate_values_past_the_api_limits_are_usage_without_a_request() {
 fn rules_update_sends_the_file_bytes_unchanged() {
     let rules =
         b"{ \"rules\" : [ {\"match\":{\"glob\":\"*.jpg\"},\"actions\":{\"edge_ttl\":60}} ] }\n";
-    let server = Server::start(vec![zone_route(
-        "PUT",
-        "rules/",
+    let server = Server::start(vec![route_of(
+        &cdn::RULES_UPDATE,
+        [&ZONE],
         Reply::json(200, r#"{"rules":[]}"#),
     )]);
     let home = Home::new();
@@ -1158,13 +1179,17 @@ fn rules_update_refuses_a_file_that_is_not_json_or_cannot_be_read() {
 fn hostnames_create_verify_and_delete() {
     let host = r#"{"hostname":"cdn.example.com","status":"pending_dns","dns":{"records":[]}}"#;
     let server = Server::start(vec![
-        zone_route("POST", "hostnames/", Reply::json(201, host)),
-        zone_route(
-            "POST",
-            "hostnames/cdn.example.com/verify/",
+        route_of(&cdn::HOSTNAME_CREATE, [&ZONE], Reply::json(201, host)),
+        route_of(
+            &cdn::HOSTNAME_VERIFY,
+            [&ZONE, &"cdn.example.com"],
             Reply::json(201, host),
         ),
-        zone_route("DELETE", "hostnames/cdn.example.com/", Reply::json(204, "")),
+        route_of(
+            &cdn::HOSTNAME_DELETE,
+            [&ZONE, &"cdn.example.com"],
+            Reply::json(204, ""),
+        ),
     ]);
     hipc(&server, &["hostnames", "create", ZONE, "cdn.example.com"])
         .fails(2, "confirmation_required");
@@ -1260,9 +1285,9 @@ fn a_zone_id_or_hostname_that_could_change_the_route_is_refused() {
 /// checks the records again and stays a write.
 #[test]
 fn a_failed_estimate_is_a_read_that_changed_nothing() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/cdn/estimate/",
+    let server = Server::start(vec![route_of(
+        &cdn::ESTIMATE,
+        [],
         Reply::json(503, r#"{"detail":"Busy"}"#),
     )]);
     let error = hipc(&server, &["estimate", "--requests", "5"]).fails(1, "unavailable");
@@ -1272,9 +1297,9 @@ fn a_failed_estimate_is_a_read_that_changed_nothing() {
 
 #[test]
 fn estimate_sends_only_the_keys_given_without_confirmation() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/cdn/estimate/",
+    let server = Server::start(vec![route_of(
+        &cdn::ESTIMATE,
+        [],
         Reply::json(201, r#"{"total":"1000000000000000000"}"#),
     )]);
     let run = hipc(
@@ -1332,7 +1357,7 @@ fn estimate_sends_only_the_keys_given_without_confirmation() {
 
 #[test]
 fn stats_sends_only_the_query_parameters_given() {
-    let server = Server::start(vec![zone_route("GET", "stats/", Reply::json(200, "{}"))]);
+    let server = Server::start(vec![route_of(&cdn::STATS, [&ZONE], Reply::json(200, "{}"))]);
     hipc(&server, &["stats", ZONE]).ok();
     hipc(
         &server,
@@ -1376,30 +1401,38 @@ fn stats_sends_only_the_query_parameters_given() {
 #[test]
 fn a_membership_sends_the_account_header_on_every_route() {
     let server = Server::start(vec![
-        route("GET", "/api/cdn/prices/", Reply::json(200, "{}")),
-        route("GET", "/api/cdn/regions/", Reply::json(200, "{}")),
-        route("POST", "/api/cdn/estimate/", Reply::json(201, "{}")),
-        route(
-            "GET",
-            "/api/cdn/zones/",
+        route_of(&cdn::PRICES, [], Reply::json(200, "{}")),
+        route_of(&cdn::REGIONS, [], Reply::json(200, "{}")),
+        route_of(&cdn::ESTIMATE, [], Reply::json(201, "{}")),
+        route_of(
+            &cdn::ZONES,
+            [],
             Reply::json(200, r#"{"zones":[],"beta":true}"#),
         ),
-        route("POST", "/api/cdn/zones/", Reply::json(201, ZONE_BODY)),
-        zone_route("GET", "", Reply::json(200, ZONE_BODY)),
-        zone_route("PATCH", "", Reply::json(200, ZONE_BODY)),
-        zone_route("DELETE", "", Reply::json(204, "")),
-        zone_route("GET", "cap/", Reply::json(200, "{}")),
-        zone_route("PATCH", "cap/", Reply::json(200, "{}")),
-        zone_route("GET", "hostnames/", Reply::json(200, "[]")),
-        zone_route("POST", "hostnames/", Reply::json(201, "{}")),
-        zone_route("POST", "hostnames/a.com/verify/", Reply::json(201, "{}")),
-        zone_route("DELETE", "hostnames/a.com/", Reply::json(204, "")),
-        zone_route("POST", "purge/", Reply::json(201, "{}")),
-        zone_route("GET", "purges/", Reply::json(200, "[]")),
-        zone_route("GET", "purges/1/", Reply::json(200, "{}")),
-        zone_route("GET", "rules/", Reply::json(200, r#"{"rules":[]}"#)),
-        zone_route("PUT", "rules/", Reply::json(200, "{}")),
-        zone_route("GET", "stats/", Reply::json(200, "{}")),
+        route_of(&cdn::ZONE_CREATE, [], Reply::json(201, ZONE_BODY)),
+        route_of(&cdn::ZONE, [&ZONE], Reply::json(200, ZONE_BODY)),
+        route_of(&cdn::ZONE_UPDATE, [&ZONE], Reply::json(200, ZONE_BODY)),
+        route_of(&cdn::ZONE_DELETE, [&ZONE], Reply::json(204, "")),
+        route_of(&cdn::CAP, [&ZONE], Reply::json(200, "{}")),
+        route_of(&cdn::CAP_UPDATE, [&ZONE], Reply::json(200, "{}")),
+        route_of(&cdn::HOSTNAMES, [&ZONE], Reply::json(200, "[]")),
+        route_of(&cdn::HOSTNAME_CREATE, [&ZONE], Reply::json(201, "{}")),
+        route_of(
+            &cdn::HOSTNAME_VERIFY,
+            [&ZONE, &"a.com"],
+            Reply::json(201, "{}"),
+        ),
+        route_of(
+            &cdn::HOSTNAME_DELETE,
+            [&ZONE, &"a.com"],
+            Reply::json(204, ""),
+        ),
+        route_of(&cdn::PURGE_CREATE, [&ZONE], Reply::json(201, "{}")),
+        route_of(&cdn::PURGES, [&ZONE], Reply::json(200, "[]")),
+        route_of(&cdn::PURGE, [&ZONE, &1], Reply::json(200, "{}")),
+        route_of(&cdn::RULES, [&ZONE], Reply::json(200, r#"{"rules":[]}"#)),
+        route_of(&cdn::RULES_UPDATE, [&ZONE], Reply::json(200, "{}")),
+        route_of(&cdn::STATS, [&ZONE], Reply::json(200, "{}")),
     ]);
     let home = Home::new();
     let rules = home.file("rules.json", br#"{"rules":[]}"#);
@@ -1459,9 +1492,9 @@ fn a_membership_sends_the_account_header_on_every_route() {
 
 #[test]
 fn a_server_refusal_passes_through_by_its_code() {
-    let server = Server::start(vec![zone_route(
-        "PATCH",
-        "",
+    let server = Server::start(vec![route_of(
+        &cdn::ZONE_UPDATE,
+        [&ZONE],
         Reply::json(
             403,
             r#"{"code":"insufficient_grant","error":"needs S3 admin"}"#,
@@ -1547,8 +1580,8 @@ fn rules_update(server: &Server, rules: &str, extra: &[&str]) -> Run {
 /// The rules routes, with `current` as the zone's rules.
 fn rules_routes(current: &str) -> Vec<Route> {
     vec![
-        zone_route("GET", "rules/", Reply::json(200, current)),
-        zone_route("PUT", "rules/", Reply::json(200, current)),
+        route_of(&cdn::RULES, [&ZONE], Reply::json(200, current)),
+        route_of(&cdn::RULES_UPDATE, [&ZONE], Reply::json(200, current)),
     ]
 }
 
@@ -1762,9 +1795,9 @@ fn rules_update_whose_read_has_another_shape_is_internal_without_a_put() {
 #[test]
 fn a_zone_that_may_publish_a_bucket_needs_public() {
     let server = Server::start(vec![
-        route("POST", "/api/cdn/zones/", Reply::json(201, ZONE_BODY)),
-        zone_route("GET", "", Reply::json(200, ZONE_BODY)),
-        zone_route("PATCH", "", Reply::json(200, ZONE_BODY)),
+        route_of(&cdn::ZONE_CREATE, [], Reply::json(201, ZONE_BODY)),
+        route_of(&cdn::ZONE, [&ZONE], Reply::json(200, ZONE_BODY)),
+        route_of(&cdn::ZONE_UPDATE, [&ZONE], Reply::json(200, ZONE_BODY)),
     ]);
     let create = [
         "zones", "create", "--name", "site", "--bucket", "web", "--prefix", "site/", "--yes",

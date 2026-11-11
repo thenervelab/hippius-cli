@@ -1,11 +1,12 @@
 //! `hipc network create`, the `POST /api/network/provision/` that sets up the account's
 //! private network, and the error every network command gives while it is not set up.
 
+use hippius::routes::network;
 use serde_json::{Value, json};
 
 use crate::common::{
     BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Server, draft, one_request_dry_run, route,
-    route_each,
+    route_each, route_of,
 };
 use crate::network::{COMMANDS, SUMMARY};
 
@@ -26,7 +27,11 @@ fn create_hint(server: &Server, globals: &str) -> String {
 
 #[test]
 fn create_with_yes_sends_a_post_without_a_body_and_prints_the_summary() {
-    let server = Server::start(vec![route("POST", PROVISION, Reply::json(200, SUMMARY))]);
+    let server = Server::start(vec![route_of(
+        &network::PROVISION,
+        [],
+        Reply::json(200, SUMMARY),
+    )]);
     let doc = Hipc::against(&Home::new(), &server)
         .run(&["network", "create", "--yes"])
         .ok();
@@ -90,7 +95,11 @@ fn create_without_yes_is_refused_and_sends_nothing() {
 /// request carries its header.
 #[test]
 fn a_membership_is_named_in_the_question_and_sent_as_the_header() {
-    let server = Server::start(vec![route("POST", PROVISION, Reply::json(200, SUMMARY))]);
+    let server = Server::start(vec![route_of(
+        &network::PROVISION,
+        [],
+        Reply::json(200, SUMMARY),
+    )]);
     let home = Home::new();
     let error = Hipc::against(&home, &server)
         .run(&["--account", MEMBER, "network", "create"])
@@ -174,9 +183,9 @@ fn a_stored_project_is_refused_and_a_stored_billing_account_skipped() {
 #[test]
 fn a_failed_create_says_what_may_have_happened() {
     let home = Home::new();
-    let server = Server::start(vec![route(
-        "POST",
-        PROVISION,
+    let server = Server::start(vec![route_of(
+        &network::PROVISION,
+        [],
         Reply::json(502, r#"{"detail":"bad gateway"}"#),
     )]);
     let error = Hipc::against(&home, &server)
@@ -184,9 +193,9 @@ fn a_failed_create_says_what_may_have_happened() {
         .fails(1, "unavailable");
     assert_eq!(error["side_effects"], "partial");
     assert_eq!(error["retryable"], false);
-    let suspended = Server::start(vec![route(
-        "POST",
-        PROVISION,
+    let suspended = Server::start(vec![route_of(
+        &network::PROVISION,
+        [],
         Reply::json(403, r#"{"detail":"suspended"}"#),
     )]);
     let error = Hipc::against(&home, &suspended)
@@ -206,45 +215,17 @@ fn a_failed_create_says_what_may_have_happened() {
 fn every_command_on_a_network_not_set_up_names_the_create() {
     let home = Home::new();
     let server = Server::start(vec![
-        route("GET", "/api/network/me/", Reply::json(403, NOT_SET_UP)),
-        route("POST", PROVISION, Reply::json(403, NOT_SET_UP)),
-        route("GET", "/api/network/peers/", Reply::json(403, NOT_SET_UP)),
-        route(
-            "GET",
-            "/api/network/peers/12/",
-            Reply::json(403, NOT_SET_UP),
-        ),
-        route(
-            "PATCH",
-            "/api/network/peers/12/",
-            Reply::json(403, NOT_SET_UP),
-        ),
-        route(
-            "DELETE",
-            "/api/network/peers/12/",
-            Reply::json(403, NOT_SET_UP),
-        ),
-        route("GET", "/api/network/groups/", Reply::json(403, NOT_SET_UP)),
-        route(
-            "GET",
-            "/api/network/policies/",
-            Reply::json(403, NOT_SET_UP),
-        ),
-        route(
-            "GET",
-            "/api/network/networks/",
-            Reply::json(403, NOT_SET_UP),
-        ),
-        route(
-            "GET",
-            "/api/network/networks/3/resources/",
-            Reply::json(403, NOT_SET_UP),
-        ),
-        route(
-            "GET",
-            "/api/network/networks/3/routers/",
-            Reply::json(403, NOT_SET_UP),
-        ),
+        route_of(&network::ME, [], Reply::json(403, NOT_SET_UP)),
+        route_of(&network::PROVISION, [], Reply::json(403, NOT_SET_UP)),
+        route_of(&network::PEERS, [], Reply::json(403, NOT_SET_UP)),
+        route_of(&network::PEER, [&12], Reply::json(403, NOT_SET_UP)),
+        route_of(&network::PEER_UPDATE, [&12], Reply::json(403, NOT_SET_UP)),
+        route_of(&network::PEER_DELETE, [&12], Reply::json(403, NOT_SET_UP)),
+        route_of(&network::GROUPS, [], Reply::json(403, NOT_SET_UP)),
+        route_of(&network::POLICIES, [], Reply::json(403, NOT_SET_UP)),
+        route_of(&network::VPCS, [], Reply::json(403, NOT_SET_UP)),
+        route_of(&network::VPC_RESOURCES, [&3], Reply::json(403, NOT_SET_UP)),
+        route_of(&network::VPC_ROUTERS, [&3], Reply::json(403, NOT_SET_UP)),
     ]);
     let mapped: Vec<&[&str]> = COMMANDS
         .into_iter()
@@ -288,9 +269,9 @@ fn every_command_on_a_network_not_set_up_names_the_create() {
 /// such as a rename to a name that quotes them, keeps them.
 #[test]
 fn the_message_keeps_an_action_that_holds_the_servers_phrase() {
-    let server = Server::start(vec![route(
-        "PATCH",
-        "/api/network/peers/12/",
+    let server = Server::start(vec![route_of(
+        &network::PEER_UPDATE,
+        [&12],
         Reply::json(403, NOT_SET_UP),
     )]);
     let name = "a: the API says b";
@@ -311,9 +292,9 @@ fn the_message_keeps_an_action_that_holds_the_servers_phrase() {
 /// missing.
 #[test]
 fn the_hint_carries_the_runs_account_and_profile() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/network/peers/",
+    let server = Server::start(vec![route_of(
+        &network::PEERS,
+        [],
         Reply::json(403, NOT_SET_UP),
     )]);
     let home = Home::new();
@@ -459,9 +440,9 @@ fn any_other_refusal_keeps_the_servers_words() {
         (404, NOT_SET_UP, "not_found"),
         (409, NOT_SET_UP, "conflict"),
     ] {
-        let server = Server::start(vec![route(
-            "GET",
-            "/api/network/peers/",
+        let server = Server::start(vec![route_of(
+            &network::PEERS,
+            [],
             Reply::json(status, body),
         )]);
         let error = Hipc::against(&home, &server)
@@ -481,7 +462,11 @@ fn any_other_refusal_keeps_the_servers_words() {
 /// as on every write, while a stored billing account is left off it.
 #[test]
 fn hipc_api_confirms_the_provision_post_and_refuses_a_stored_project() {
-    let server = Server::start(vec![route("POST", PROVISION, Reply::json(200, SUMMARY))]);
+    let server = Server::start(vec![route_of(
+        &network::PROVISION,
+        [],
+        Reply::json(200, SUMMARY),
+    )]);
     let home = Home::new();
     for path in ["/network/provision/", "/network/provision", PROVISION] {
         Hipc::against(&home, &server)

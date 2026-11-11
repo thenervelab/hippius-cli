@@ -1,9 +1,12 @@
 //! `hipc compute public-ip` and `hipc compute firewall`: a VM's public IPv4 and the inbound
 //! rules on it.
 
+use hippius::routes::compute;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Run, Server, VM, draft, parsed, route};
+use crate::common::{
+    Hipc, Home, MEMBER, Recorded, Reply, Run, Server, VM, draft, parsed, route_of,
+};
 
 /// The attach answer, shaped as swagger documents it.
 const ATTACHED: &str = concat!(
@@ -21,10 +24,6 @@ const RULES: &str = concat!(
     r#""applied_revision":"r1","applied_at":null,"state":"applying","#,
     r#""guest_inbound":{"state":"active","last_seen_at":null},"network_ready":false}"#
 );
-
-fn vm_route(method: &'static str, suffix: &str, reply: Reply) -> crate::common::Route {
-    route(method, &format!("/api/compute/vms/{VM}/{suffix}"), reply)
-}
 
 fn hipc(server: &Server, args: &[&str]) -> Run {
     let mut argv = vec!["compute"];
@@ -51,9 +50,9 @@ fn update(server: &Server, contents: &str, extra: &[&str]) -> Run {
 #[test]
 fn availability_sends_the_region_only_when_given() {
     let body = r#"{"total_free":3,"regions":[],"price_hourly":"0.5","currency":"USD"}"#;
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/compute/public-ip/availability/",
+    let server = Server::start(vec![route_of(
+        &compute::PUBLIC_IP_AVAILABILITY,
+        [],
         Reply::json(200, body),
     )]);
     assert_eq!(
@@ -72,9 +71,9 @@ fn availability_sends_the_region_only_when_given() {
         hipc(&server, &["public-ip", "availability", "--region", bad]).fails(2, "usage");
     }
     assert_eq!(server.requests().len(), 2);
-    let failing = Server::start(vec![route(
-        "GET",
-        "/api/compute/public-ip/availability/",
+    let failing = Server::start(vec![route_of(
+        &compute::PUBLIC_IP_AVAILABILITY,
+        [],
         Reply::json(400, r#"{"error":"Malformed region"}"#),
     )]);
     hipc(&failing, &["public-ip", "availability", "--region", "ZZ"]).fails(1, "validation");
@@ -83,17 +82,25 @@ fn availability_sends_the_region_only_when_given() {
 #[test]
 fn get_prints_the_document_as_sent_and_a_missing_vm_is_not_found() {
     let none = r#"{"public_ip":null,"price_hourly":"0.5","currency":"USD"}"#;
-    let server = Server::start(vec![vm_route("GET", "public-ip/", Reply::json(200, none))]);
+    let server = Server::start(vec![route_of(
+        &compute::PUBLIC_IP,
+        [&VM],
+        Reply::json(200, none),
+    )]);
     assert_eq!(hipc(&server, &["public-ip", "get", VM]).ok(), parsed(none));
-    let missing = Server::start(vec![vm_route("GET", "public-ip/", Reply::not_found())]);
+    let missing = Server::start(vec![route_of(
+        &compute::PUBLIC_IP,
+        [&VM],
+        Reply::not_found(),
+    )]);
     hipc(&missing, &["public-ip", "get", VM]).fails(1, "not_found");
 }
 
 #[test]
 fn create_needs_yes_and_sends_an_empty_post() {
-    let server = Server::start(vec![vm_route(
-        "POST",
-        "public-ip/",
+    let server = Server::start(vec![route_of(
+        &compute::PUBLIC_IP_CREATE,
+        [&VM],
         Reply::json(201, ATTACHED),
     )]);
     let error = hipc(&server, &["public-ip", "create", VM]).fails(2, "confirmation_required");
@@ -113,9 +120,9 @@ fn create_needs_yes_and_sends_an_empty_post() {
 
 #[test]
 fn create_says_inbound_is_blocked_only_in_text_mode() {
-    let server = Server::start(vec![vm_route(
-        "POST",
-        "public-ip/",
+    let server = Server::start(vec![route_of(
+        &compute::PUBLIC_IP_CREATE,
+        [&VM],
         Reply::json(201, ATTACHED),
     )]);
     let text = |extra: &[&str]| {
@@ -141,9 +148,9 @@ fn create_says_inbound_is_blocked_only_in_text_mode() {
     assert_eq!(text(&["--yes", "--quiet"]).stderr(), "");
     // An id that reads as a flag, given after `--`, goes after `--` in the warning too, so
     // the command it names runs as written.
-    let dashed = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/-vm1/public-ip/",
+    let dashed = Server::start(vec![route_of(
+        &compute::PUBLIC_IP_CREATE,
+        [&"-vm1"],
         Reply::json(201, ATTACHED),
     )]);
     let argv = [
@@ -186,9 +193,9 @@ fn create_errors_map_to_their_codes() {
         (503, r#"{"error":"Not available"}"#, "unavailable"),
     ];
     for (status, body, code) in cases {
-        let server = Server::start(vec![vm_route(
-            "POST",
-            "public-ip/",
+        let server = Server::start(vec![route_of(
+            &compute::PUBLIC_IP_CREATE,
+            [&VM],
             Reply::json(status, body),
         )]);
         let error = hipc(&server, &["public-ip", "create", VM, "--yes"]).fails(1, code);
@@ -203,7 +210,11 @@ fn create_errors_map_to_their_codes() {
 
 #[test]
 fn delete_needs_yes_and_names_the_vm_on_204() {
-    let server = Server::start(vec![vm_route("DELETE", "public-ip/", Reply::json(204, ""))]);
+    let server = Server::start(vec![route_of(
+        &compute::PUBLIC_IP_DELETE,
+        [&VM],
+        Reply::json(204, ""),
+    )]);
     let error = hipc(&server, &["public-ip", "delete", VM]).fails(2, "confirmation_required");
     assert_eq!(
         error["message"],
@@ -213,9 +224,9 @@ fn delete_needs_yes_and_names_the_vm_on_204() {
     let doc = hipc(&server, &["public-ip", "delete", VM, "--yes"]).ok();
     assert_eq!(doc, json!({ "vm_id": VM, "public_ip": null }));
     assert_eq!(server.only_request().method, "DELETE");
-    let with_body = Server::start(vec![vm_route(
-        "DELETE",
-        "public-ip/",
+    let with_body = Server::start(vec![route_of(
+        &compute::PUBLIC_IP_DELETE,
+        [&VM],
         Reply::json(200, r#"{"vm_id":"x","public_ip":null,"note":"y"}"#),
     )]);
     let doc = hipc(&with_body, &["public-ip", "delete", VM, "--yes"]).ok();
@@ -229,9 +240,9 @@ fn delete_errors_map_to_their_codes() {
         (502, "unavailable", "partial"),
         (503, "unavailable", "partial"),
     ] {
-        let server = Server::start(vec![vm_route(
-            "DELETE",
-            "public-ip/",
+        let server = Server::start(vec![route_of(
+            &compute::PUBLIC_IP_DELETE,
+            [&VM],
             Reply::json(status, r#"{"error":"x"}"#),
         )]);
         let error = hipc(&server, &["public-ip", "delete", VM, "--yes"]).fails(1, code);
@@ -242,9 +253,9 @@ fn delete_errors_map_to_their_codes() {
 
 #[test]
 fn usage_sends_the_range_only_when_given_and_refuses_an_unknown_one() {
-    let server = Server::start(vec![vm_route(
-        "GET",
-        "public-ip/usage/",
+    let server = Server::start(vec![route_of(
+        &compute::PUBLIC_IP_USAGE,
+        [&VM],
         Reply::json(200, r#"{"range":"24h","step_s":300,"points":[]}"#),
     )]);
     assert_eq!(
@@ -293,17 +304,17 @@ fn a_vm_id_that_could_change_the_route_is_usage_without_a_request() {
 #[test]
 fn a_membership_sends_the_header_on_every_route() {
     let server = Server::start(vec![
-        route(
-            "GET",
-            "/api/compute/public-ip/availability/",
-            Reply::json(200, "{}"),
+        route_of(&compute::PUBLIC_IP_AVAILABILITY, [], Reply::json(200, "{}")),
+        route_of(&compute::PUBLIC_IP, [&VM], Reply::json(200, ATTACHED)),
+        route_of(
+            &compute::PUBLIC_IP_CREATE,
+            [&VM],
+            Reply::json(201, ATTACHED),
         ),
-        vm_route("GET", "public-ip/", Reply::json(200, ATTACHED)),
-        vm_route("POST", "public-ip/", Reply::json(201, ATTACHED)),
-        vm_route("DELETE", "public-ip/", Reply::json(204, "")),
-        vm_route("GET", "public-ip/usage/", Reply::json(200, "{}")),
-        vm_route("GET", "firewall/", Reply::json(200, RULES)),
-        vm_route("PUT", "firewall/", Reply::json(200, RULES)),
+        route_of(&compute::PUBLIC_IP_DELETE, [&VM], Reply::json(204, "")),
+        route_of(&compute::PUBLIC_IP_USAGE, [&VM], Reply::json(200, "{}")),
+        route_of(&compute::FIREWALL, [&VM], Reply::json(200, RULES)),
+        route_of(&compute::FIREWALL_UPDATE, [&VM], Reply::json(200, RULES)),
     ]);
     let home = Home::new();
     // The rule `RULES` holds, so the update removes nothing, and both its read and its PUT
@@ -352,14 +363,22 @@ fn a_membership_sends_the_header_on_every_route() {
 
 #[test]
 fn firewall_get_prints_the_rules_as_sent() {
-    let server = Server::start(vec![vm_route("GET", "firewall/", Reply::json(200, RULES))]);
+    let server = Server::start(vec![route_of(
+        &compute::FIREWALL,
+        [&VM],
+        Reply::json(200, RULES),
+    )]);
     assert_eq!(hipc(&server, &["firewall", "get", VM]).ok(), parsed(RULES));
     let text = Hipc::against(&Home::new(), &server)
         .run(&["--output", "text", "compute", "firewall", "get", VM]);
     assert_eq!(text.code(), Some(0), "{}", text.stderr());
     assert!(text.stdout().contains("r2"), "{}", text.stdout());
     assert!(!text.stdout().trim_start().starts_with('{'));
-    let missing = Server::start(vec![vm_route("GET", "firewall/", Reply::not_found())]);
+    let missing = Server::start(vec![route_of(
+        &compute::FIREWALL,
+        [&VM],
+        Reply::not_found(),
+    )]);
     hipc(&missing, &["firewall", "get", VM]).fails(1, "not_found");
 }
 
@@ -576,9 +595,9 @@ fn firewall_update_dry_run_shows_the_body_without_a_request() {
 
 #[test]
 fn a_changed_firewall_is_conflict_and_the_hint_names_firewall_get() {
-    let server = Server::start(vec![vm_route(
-        "PUT",
-        "firewall/",
+    let server = Server::start(vec![route_of(
+        &compute::FIREWALL_UPDATE,
+        [&VM],
         Reply::json(409, r#"{"error":"firewall-changed"}"#),
     )]);
     let error = update(
@@ -601,8 +620,12 @@ fn a_changed_firewall_is_conflict_and_the_hint_names_firewall_get() {
         (503, "unavailable", "partial"),
     ] {
         let server = Server::start(vec![
-            vm_route("GET", "firewall/", Reply::json(200, RULES)),
-            vm_route("PUT", "firewall/", Reply::json(status, r#"{"error":"x"}"#)),
+            route_of(&compute::FIREWALL, [&VM], Reply::json(200, RULES)),
+            route_of(
+                &compute::FIREWALL_UPDATE,
+                [&VM],
+                Reply::json(status, r#"{"error":"x"}"#),
+            ),
         ]);
         let error =
             update(&server, r#"{"rules":[]}"#, &["--yes", "--remove-others"]).fails(1, code);
@@ -874,8 +897,8 @@ fn puts(server: &Server) -> Vec<Value> {
 /// The firewall routes, with `RULES` as the current list.
 fn firewall_routes() -> Vec<crate::common::Route> {
     vec![
-        vm_route("GET", "firewall/", Reply::json(200, RULES)),
-        vm_route("PUT", "firewall/", Reply::json(200, RULES)),
+        route_of(&compute::FIREWALL, [&VM], Reply::json(200, RULES)),
+        route_of(&compute::FIREWALL_UPDATE, [&VM], Reply::json(200, RULES)),
     ]
 }
 
@@ -968,8 +991,8 @@ fn firewall_update_compares_rules_by_what_they_accept() {
     );
     let routes = || {
         vec![
-            vm_route("GET", "firewall/", Reply::json(200, current)),
-            vm_route("PUT", "firewall/", Reply::json(200, current)),
+            route_of(&compute::FIREWALL, [&VM], Reply::json(200, current)),
+            route_of(&compute::FIREWALL_UPDATE, [&VM], Reply::json(200, current)),
         ]
     };
     let rest = r#"{"protocol":"tcp","ports":["80","443"],"source_cidrs":["203.0.113.0/24"]}]"#;
@@ -1006,7 +1029,11 @@ fn firewall_update_compares_rules_by_what_they_accept() {
     for port in ["http", "080-http"] {
         let odd =
             format!(r#"{{"rules":[{{"protocol":"tcp","ports":["{port}"]}}],"revision":"r4"}}"#);
-        let server = Server::start(vec![vm_route("GET", "firewall/", Reply::json(200, &odd))]);
+        let server = Server::start(vec![route_of(
+            &compute::FIREWALL,
+            [&VM],
+            Reply::json(200, &odd),
+        )]);
         let error = update_stdin(
             &server,
             r#"[{"protocol":"tcp","ports":["80"]}]"#,
@@ -1033,8 +1060,8 @@ fn firewall_update_keeps_a_repeated_rule_only_with_as_many_copies() {
     );
     let routes = || {
         vec![
-            vm_route("GET", "firewall/", Reply::json(200, twice)),
-            vm_route("PUT", "firewall/", Reply::json(200, twice)),
+            route_of(&compute::FIREWALL, [&VM], Reply::json(200, twice)),
+            route_of(&compute::FIREWALL_UPDATE, [&VM], Reply::json(200, twice)),
         ]
     };
     let server = Server::start(routes());
@@ -1168,8 +1195,8 @@ fn firewall_update_dry_run_names_the_read_that_finds_what_it_removes() {
 #[test]
 fn firewall_update_whose_read_fails_sends_no_put() {
     let missing = Server::start(vec![
-        vm_route("GET", "firewall/", Reply::not_found()),
-        vm_route("PUT", "firewall/", Reply::json(200, RULES)),
+        route_of(&compute::FIREWALL, [&VM], Reply::not_found()),
+        route_of(&compute::FIREWALL_UPDATE, [&VM], Reply::json(200, RULES)),
     ]);
     update_stdin(&missing, r#"{"rules":[]}"#, &["--yes"]).fails(1, "not_found");
     assert_eq!(missing.only_request().method, "GET");
@@ -1185,8 +1212,8 @@ fn firewall_update_whose_read_fails_sends_no_put() {
         r#"{"rules":[],"revision":7}"#,
     ] {
         let odd = Server::start(vec![
-            vm_route("GET", "firewall/", Reply::json(200, answer)),
-            vm_route("PUT", "firewall/", Reply::json(200, RULES)),
+            route_of(&compute::FIREWALL, [&VM], Reply::json(200, answer)),
+            route_of(&compute::FIREWALL_UPDATE, [&VM], Reply::json(200, RULES)),
         ]);
         let error = update_stdin(&odd, r#"{"rules":[]}"#, &["--yes"]).fails(1, "internal");
         assert_eq!(
@@ -1201,8 +1228,12 @@ fn firewall_update_whose_read_fails_sends_no_put() {
     }
     // With `--base-revision` the read's revision is not needed.
     let given = Server::start(vec![
-        vm_route("GET", "firewall/", Reply::json(200, r#"{"rules":[]}"#)),
-        vm_route("PUT", "firewall/", Reply::json(200, RULES)),
+        route_of(
+            &compute::FIREWALL,
+            [&VM],
+            Reply::json(200, r#"{"rules":[]}"#),
+        ),
+        route_of(&compute::FIREWALL_UPDATE, [&VM], Reply::json(200, RULES)),
     ]);
     update_stdin(
         &given,
@@ -1218,10 +1249,10 @@ fn firewall_update_whose_read_fails_sends_no_put() {
 #[test]
 fn a_conflict_after_the_guards_read_says_to_run_the_command_again() {
     let server = Server::start(vec![
-        vm_route("GET", "firewall/", Reply::json(200, RULES)),
-        vm_route(
-            "PUT",
-            "firewall/",
+        route_of(&compute::FIREWALL, [&VM], Reply::json(200, RULES)),
+        route_of(
+            &compute::FIREWALL_UPDATE,
+            [&VM],
             Reply::json(409, r#"{"error":"firewall-changed"}"#),
         ),
     ]);
@@ -1242,10 +1273,10 @@ fn a_conflict_after_the_guards_read_says_to_run_the_command_again() {
 #[test]
 fn a_conflict_with_remove_others_says_where_the_revision_comes_from() {
     let server = Server::start(vec![
-        vm_route("GET", "firewall/", Reply::json(200, RULES)),
-        vm_route(
-            "PUT",
-            "firewall/",
+        route_of(&compute::FIREWALL, [&VM], Reply::json(200, RULES)),
+        route_of(
+            &compute::FIREWALL_UPDATE,
+            [&VM],
             Reply::json(409, r#"{"error":"firewall-changed"}"#),
         ),
     ]);

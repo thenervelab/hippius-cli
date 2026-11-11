@@ -6,10 +6,11 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 
+use hippius::routes::compute;
 use serde_json::{Value, json};
 
 use crate::common::{
-    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Run, Server, draft, route, route_each,
+    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Run, Server, draft, route_each, route_of,
 };
 
 const VALIDATE: &str = "/api/compute/app-engine/validate/";
@@ -122,13 +123,21 @@ fn with_secrets<'a>(files: &'a Files, extra: &[&'a str]) -> Vec<&'a str> {
 
 /// A server that validates with both names declared and launches.
 fn launching_server() -> Server {
+    answering_server(
+        &["DB_PASSWORD", "API_KEY"],
+        Reply::json(202, &launched("provisioning")),
+    )
+}
+
+/// A server that validates with `secret_names` declared and answers the launch with `launch`.
+fn answering_server(secret_names: &[&str], launch: Reply) -> Server {
     Server::start(vec![
-        route(
-            "POST",
-            VALIDATE,
-            Reply::json(200, &validated(&["DB_PASSWORD", "API_KEY"])),
+        route_of(
+            &compute::APP_ENGINE_VALIDATE,
+            [],
+            Reply::json(200, &validated(secret_names)),
         ),
-        route("POST", APPS, Reply::json(202, &launched("provisioning"))),
+        route_of(&compute::APP_ENGINE_APP_CREATE, [], launch),
     ])
 }
 
@@ -168,10 +177,7 @@ fn create_validates_the_compose_alone_then_launches_with_the_secrets() {
 fn the_flags_go_in_the_body_and_an_empty_or_absent_file_sends_no_secrets() {
     let files = files();
     let empty = path_text(&files.home.file("empty.json", b"{}"));
-    let server = Server::start(vec![
-        route("POST", VALIDATE, Reply::json(200, &validated(&[]))),
-        route("POST", APPS, Reply::json(202, &launched("provisioning"))),
-    ]);
+    let server = answering_server(&[], Reply::json(202, &launched("provisioning")));
     let flags = [
         "--name",
         "web",
@@ -435,9 +441,9 @@ fn the_dry_run_lists_both_requests_with_placeholders() {
 fn the_secrets_must_be_the_ones_the_compose_declares() {
     let files = files();
     let declares = |names: &[&str]| {
-        Server::start(vec![route(
-            "POST",
-            VALIDATE,
+        Server::start(vec![route_of(
+            &compute::APP_ENGINE_VALIDATE,
+            [],
             Reply::json(200, &validated(names)),
         )])
     };
@@ -528,9 +534,9 @@ fn a_validate_answer_without_its_secret_names_is_internal() {
             with_secrets(&files, &["--yes"]),
             create_args(&files.compose, &["--yes"]),
         ] {
-            let server = Server::start(vec![route(
-                "POST",
-                VALIDATE,
+            let server = Server::start(vec![route_of(
+                &compute::APP_ENGINE_VALIDATE,
+                [],
                 Reply::json(200, &bare.to_string()),
             )]);
             let error = Hipc::against(&files.home, &server)
@@ -547,9 +553,9 @@ fn a_validate_answer_without_its_secret_names_is_internal() {
         }
     }
     let odd = json!({ "compose_sha256": COMPOSE_SHA256, "secret_names": "DB_PASSWORD" });
-    let server = Server::start(vec![route(
-        "POST",
-        VALIDATE,
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_VALIDATE,
+        [],
         Reply::json(200, &odd.to_string()),
     )]);
     let error = Hipc::against(&files.home, &server)
@@ -563,9 +569,9 @@ fn a_validate_answer_without_its_secret_names_is_internal() {
         "{error}"
     );
     let numbers = json!({ "compose_sha256": COMPOSE_SHA256, "secret_names": [1] });
-    let server = Server::start(vec![route(
-        "POST",
-        VALIDATE,
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_VALIDATE,
+        [],
         Reply::json(200, &numbers.to_string()),
     )]);
     Hipc::against(&files.home, &server)
@@ -583,9 +589,9 @@ fn a_refused_or_misread_compose_stops_before_the_launch() {
         "detail": "the compose has 1 problem",
         "issues": [{"rule": "image-digest", "line": 3, "column": 12, "message": "pin it"}],
     });
-    let server = Server::start(vec![route(
-        "POST",
-        VALIDATE,
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_VALIDATE,
+        [],
         Reply::json(400, &refused.to_string()),
     )]);
     let error = Hipc::against(&files.home, &server)
@@ -595,9 +601,9 @@ fn a_refused_or_misread_compose_stops_before_the_launch() {
     assert_eq!(server.only_request().path(), VALIDATE);
 
     let other = json!({ "compose_sha256": "00".repeat(32), "secret_names": [] });
-    let server = Server::start(vec![route(
-        "POST",
-        VALIDATE,
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_VALIDATE,
+        [],
         Reply::json(200, &other.to_string()),
     )]);
     let error = Hipc::against(&files.home, &server)
@@ -613,7 +619,11 @@ fn a_refused_or_misread_compose_stops_before_the_launch() {
     assert_eq!(server.only_request().path(), VALIDATE);
 
     let unavailable = r#"{"error":"app-engine-unavailable","detail":"not on this account"}"#;
-    let server = Server::start(vec![route("POST", VALIDATE, Reply::json(403, unavailable))]);
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_VALIDATE,
+        [],
+        Reply::json(403, unavailable),
+    )]);
     let error = Hipc::against(&files.home, &server)
         .run(&with_secrets(&files, &["--yes"]))
         .fails(1, "permission");
@@ -764,12 +774,16 @@ fn no_secret_value_reaches_any_output() {
     for (status, body) in &answers {
         for mode in ["json", "text"] {
             let server = Server::start(vec![
-                route(
-                    "POST",
-                    VALIDATE,
+                route_of(
+                    &compute::APP_ENGINE_VALIDATE,
+                    [],
                     Reply::json(200, &validated(&["DB_PASSWORD", "API_KEY"])),
                 ),
-                route("POST", APPS, Reply::json(*status, body)),
+                route_of(
+                    &compute::APP_ENGINE_APP_CREATE,
+                    [],
+                    Reply::json(*status, body),
+                ),
             ]);
             let mut args = vec!["--output", mode, "--debug"];
             args.extend(with_secrets(&files, &["--yes"]));
@@ -814,14 +828,10 @@ fn a_refused_launch_keeps_what_to_fix_with_every_value_redacted() {
             "extra": 1,
         }],
     });
-    let server = Server::start(vec![
-        route(
-            "POST",
-            VALIDATE,
-            Reply::json(200, &validated(&["DB_PASSWORD", "API_KEY"])),
-        ),
-        route("POST", APPS, Reply::json(400, &refused.to_string())),
-    ]);
+    let server = answering_server(
+        &["DB_PASSWORD", "API_KEY"],
+        Reply::json(400, &refused.to_string()),
+    );
     let run = Hipc::against(&files.home, &server).run(&with_secrets(&files, &["--yes"]));
     assert_run_clean(&run);
     let error = run.fails(1, "validation");
@@ -848,28 +858,17 @@ fn a_refused_launch_keeps_what_to_fix_with_every_value_redacted() {
     );
 
     // A launch that carried no secret keeps the server's body as it came.
-    let server = Server::start(vec![
-        route("POST", VALIDATE, Reply::json(200, &validated(&[]))),
-        route("POST", APPS, Reply::json(400, &refused.to_string())),
-    ]);
+    let server = answering_server(&[], Reply::json(400, &refused.to_string()));
     let error = Hipc::against(&files.home, &server)
         .run(&create_args(&files.compose, &["--yes"]))
         .fails(1, "validation");
     assert_eq!(error["details"]["value"], SENTINEL);
 
     // A 403 outside the feature gets the hint on the launch too.
-    let server = Server::start(vec![
-        route(
-            "POST",
-            VALIDATE,
-            Reply::json(200, &validated(&["DB_PASSWORD", "API_KEY"])),
-        ),
-        route(
-            "POST",
-            APPS,
-            Reply::json(403, r#"{"error":"app-engine-unavailable"}"#),
-        ),
-    ]);
+    let server = answering_server(
+        &["DB_PASSWORD", "API_KEY"],
+        Reply::json(403, r#"{"error":"app-engine-unavailable"}"#),
+    );
     let error = Hipc::against(&files.home, &server)
         .run(&with_secrets(&files, &["--yes"]))
         .fails(1, "permission");
@@ -879,18 +878,10 @@ fn a_refused_launch_keeps_what_to_fix_with_every_value_redacted() {
     );
     // The slug in `code`, as compute bodies may carry it, is kept with secrets sent too, so
     // the message names what the hint is about.
-    let server = Server::start(vec![
-        route(
-            "POST",
-            VALIDATE,
-            Reply::json(200, &validated(&["DB_PASSWORD", "API_KEY"])),
-        ),
-        route(
-            "POST",
-            APPS,
-            Reply::json(403, r#"{"code":"app-engine-unavailable"}"#),
-        ),
-    ]);
+    let server = answering_server(
+        &["DB_PASSWORD", "API_KEY"],
+        Reply::json(403, r#"{"code":"app-engine-unavailable"}"#),
+    );
     let error = Hipc::against(&files.home, &server)
         .run(&with_secrets(&files, &["--yes"]))
         .fails(1, "permission");
@@ -912,14 +903,7 @@ fn a_refused_launch_keeps_what_to_fix_with_every_value_redacted() {
 fn a_launch_answer_that_hashed_other_bytes_prints_the_app_and_fails() {
     let files = files();
     let other = launched("provisioning").replace(COMPOSE_SHA256, &"ab".repeat(32));
-    let server = Server::start(vec![
-        route(
-            "POST",
-            VALIDATE,
-            Reply::json(200, &validated(&["DB_PASSWORD", "API_KEY"])),
-        ),
-        route("POST", APPS, Reply::json(202, &other)),
-    ]);
+    let server = answering_server(&["DB_PASSWORD", "API_KEY"], Reply::json(202, &other));
     let run = Hipc::against(&files.home, &server).run(&with_secrets(&files, &["--yes"]));
     assert_run_clean(&run);
     assert_eq!(run.code(), Some(1));
@@ -930,8 +914,12 @@ fn a_launch_answer_that_hashed_other_bytes_prints_the_app_and_fails() {
 
     let bare = r#"{"vm_id":"vm-1a2b","status":"provisioning","compose_sha256":null}"#;
     let server = Server::start(vec![
-        route("POST", VALIDATE, Reply::json(200, &validated(&[]))),
-        route("POST", APPS, Reply::json(202, bare)),
+        route_of(
+            &compute::APP_ENGINE_VALIDATE,
+            [],
+            Reply::json(200, &validated(&[])),
+        ),
+        route_of(&compute::APP_ENGINE_APP_CREATE, [], Reply::json(202, bare)),
     ]);
     let doc = Hipc::against(&files.home, &server)
         .run(&create_args(&files.compose, &["--yes"]))
@@ -941,8 +929,16 @@ fn a_launch_answer_that_hashed_other_bytes_prints_the_app_and_fails() {
 
 fn waiting_server(polls: Vec<Reply>) -> Server {
     Server::start(vec![
-        route("POST", VALIDATE, Reply::json(200, &validated(&[]))),
-        route("POST", APPS, Reply::json(202, &launched("provisioning"))),
+        route_of(
+            &compute::APP_ENGINE_VALIDATE,
+            [],
+            Reply::json(200, &validated(&[])),
+        ),
+        route_of(
+            &compute::APP_ENGINE_APP_CREATE,
+            [],
+            Reply::json(202, &launched("provisioning")),
+        ),
         route_each("GET", APP, polls),
     ])
 }
@@ -1044,8 +1040,16 @@ fn a_launch_answer_the_wait_cannot_follow_is_printed() {
         ),
     ] {
         let server = Server::start(vec![
-            route("POST", VALIDATE, Reply::json(200, &validated(&[]))),
-            route("POST", APPS, Reply::json(202, answer)),
+            route_of(
+                &compute::APP_ENGINE_VALIDATE,
+                [],
+                Reply::json(200, &validated(&[])),
+            ),
+            route_of(
+                &compute::APP_ENGINE_APP_CREATE,
+                [],
+                Reply::json(202, answer),
+            ),
         ]);
         let run = Hipc::against(&files.home, &server)
             .run(&create_args(&files.compose, &["--wait", "--yes"]));
@@ -1055,10 +1059,7 @@ fn a_launch_answer_the_wait_cannot_follow_is_printed() {
         assert_eq!(server.requests().len(), 2);
     }
     let running = r#"{"vm_id":"vm/1","status":"running","boot_phase":"running"}"#;
-    let server = Server::start(vec![
-        route("POST", VALIDATE, Reply::json(200, &validated(&[]))),
-        route("POST", APPS, Reply::json(202, running)),
-    ]);
+    let server = answering_server(&[], Reply::json(202, running));
     let doc = Hipc::against(&files.home, &server)
         .run(&create_args(&files.compose, &["--wait", "--yes"]))
         .ok();
@@ -1092,11 +1093,23 @@ fn a_vm_id_that_is_a_secret_value_is_never_printed() {
     for (launch, polls, code) in &cases {
         for mode in ["json", "text"] {
             let mut routes = vec![
-                route("POST", VALIDATE, Reply::json(200, &validated(&["API_KEY"]))),
-                route("POST", APPS, Reply::json(202, launch)),
+                route_of(
+                    &compute::APP_ENGINE_VALIDATE,
+                    [],
+                    Reply::json(200, &validated(&["API_KEY"])),
+                ),
+                route_of(
+                    &compute::APP_ENGINE_APP_CREATE,
+                    [],
+                    Reply::json(202, launch),
+                ),
             ];
             if let Some(poll) = polls {
-                routes.push(route("GET", APP, Reply::json(200, poll)));
+                routes.push(route_of(
+                    &compute::APP_ENGINE_APP,
+                    [&"vm-1a2b"],
+                    Reply::json(200, poll),
+                ));
             }
             let server = Server::start(routes);
             let mut args = vec!["--output", mode, "--debug"];
@@ -1140,12 +1153,16 @@ fn a_launch_answer_without_a_vm_id_fails_with_or_without_a_wait() {
     let answer = json!({"status": "provisioning", "note": SENTINEL}).to_string();
     for wait in ["--wait", "--no-wait"] {
         let server = Server::start(vec![
-            route(
-                "POST",
-                VALIDATE,
+            route_of(
+                &compute::APP_ENGINE_VALIDATE,
+                [],
                 Reply::json(200, &validated(&["DB_PASSWORD", "API_KEY"])),
             ),
-            route("POST", APPS, Reply::json(202, &answer)),
+            route_of(
+                &compute::APP_ENGINE_APP_CREATE,
+                [],
+                Reply::json(202, &answer),
+            ),
         ]);
         let run = Hipc::against(&files.home, &server).run(&with_secrets(&files, &[wait, "--yes"]));
         assert_run_clean(&run);
@@ -1237,12 +1254,16 @@ fn hipc_api_refuses_a_body_with_secrets() {
 /// each poll in turn.
 fn short_value_server(launch: &str, polls: Vec<Reply>) -> Server {
     let mut routes = vec![
-        route(
-            "POST",
-            VALIDATE,
+        route_of(
+            &compute::APP_ENGINE_VALIDATE,
+            [],
             Reply::json(200, &validated(&["DB_PASSWORD", "API_KEY", "OTHER"])),
         ),
-        route("POST", APPS, Reply::json(202, launch)),
+        route_of(
+            &compute::APP_ENGINE_APP_CREATE,
+            [],
+            Reply::json(202, launch),
+        ),
     ];
     if !polls.is_empty() {
         routes.push(route_each("GET", APP, polls));
@@ -1320,14 +1341,10 @@ fn a_short_secret_value_changes_no_id_hash_or_status() {
         "detail": "an a",
         "issues": [{"rule": "secret-name", "line": 1, "column": 2, "message": "a"}],
     });
-    let server = Server::start(vec![
-        route(
-            "POST",
-            VALIDATE,
-            Reply::json(200, &validated(&["DB_PASSWORD", "API_KEY", "OTHER"])),
-        ),
-        route("POST", APPS, Reply::json(400, &refused.to_string())),
-    ]);
+    let server = answering_server(
+        &["DB_PASSWORD", "API_KEY", "OTHER"],
+        Reply::json(400, &refused.to_string()),
+    );
     let error = Hipc::against(&files.home, &server)
         .run(&args(&["--yes"]))
         .fails(1, "validation");
@@ -1357,12 +1374,16 @@ fn a_dropped_field_never_reaches_the_message() {
         json!({"detail": 7, "error": "Not A Code", "title": upper}),
     ] {
         let server = Server::start(vec![
-            route(
-                "POST",
-                VALIDATE,
+            route_of(
+                &compute::APP_ENGINE_VALIDATE,
+                [],
                 Reply::json(200, &validated(&["DB_PASSWORD", "API_KEY"])),
             ),
-            route("POST", APPS, Reply::json(400, &body.to_string())),
+            route_of(
+                &compute::APP_ENGINE_APP_CREATE,
+                [],
+                Reply::json(400, &body.to_string()),
+            ),
         ]);
         for mode in ["json", "text"] {
             let mut all = vec!["--output", mode];
@@ -1374,14 +1395,10 @@ fn a_dropped_field_never_reaches_the_message() {
     }
     // With the code dropped, a kept `detail` speaks, redacted, and nothing else.
     let body = json!({"detail": format!("{SENTINEL} is bad"), "message": upper});
-    let server = Server::start(vec![
-        route(
-            "POST",
-            VALIDATE,
-            Reply::json(200, &validated(&["DB_PASSWORD", "API_KEY"])),
-        ),
-        route("POST", APPS, Reply::json(400, &body.to_string())),
-    ]);
+    let server = answering_server(
+        &["DB_PASSWORD", "API_KEY"],
+        Reply::json(400, &body.to_string()),
+    );
     let error = Hipc::against(&files.home, &server)
         .run(&with_secrets(&files, &["--yes"]))
         .fails(1, "validation");
@@ -1411,14 +1428,7 @@ fn a_value_with_control_characters_is_redacted_in_every_spelling() {
             {"message": r"esc\x1bnul\x00-Zq81", "hint": r"esc\u001bnul\u0000-Zq81"},
         ],
     });
-    let server = Server::start(vec![
-        route(
-            "POST",
-            VALIDATE,
-            Reply::json(200, &validated(&["DB_PASSWORD"])),
-        ),
-        route("POST", APPS, Reply::json(400, &echoed.to_string())),
-    ]);
+    let server = answering_server(&["DB_PASSWORD"], Reply::json(400, &echoed.to_string()));
     for mode in ["json", "text"] {
         let run = Hipc::against(&files.home, &server).run(&create_args(
             &files.compose,
@@ -1488,8 +1498,12 @@ fn launch_with(secrets: &str, names: &[&str], reply: Reply) -> Run {
     let files = files();
     let path = path_text(&files.home.file("given.json", secrets.as_bytes()));
     let server = Server::start(vec![
-        route("POST", VALIDATE, Reply::json(200, &validated(names))),
-        route("POST", APPS, reply),
+        route_of(
+            &compute::APP_ENGINE_VALIDATE,
+            [],
+            Reply::json(200, &validated(names)),
+        ),
+        route_of(&compute::APP_ENGINE_APP_CREATE, [], reply),
     ]);
     Hipc::against(&files.home, &server).run(&create_args(
         &files.compose,
