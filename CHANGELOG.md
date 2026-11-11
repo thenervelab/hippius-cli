@@ -101,6 +101,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - The database credentials `--credentials-dir` moves to files are redacted from the field names and numbers of the rest of the answer too, as tenet 9 says: a number that is one of them becomes the string `"<redacted>"`.
 - The request body of an App Engine launch and of a DNS setup is cleared from memory when the request is dropped, and so is the token each profile of the config file stores.
 - A validation message kept under a secret field of an error body, such as `{"password": ["... is too common."]}`, has every value the request sent in a secret field redacted from it.
+- An error body drops a field whose name ends as a secret field's name does, in camelCase too, such as `authToken`, `APIKey`, or `newPassword`, as it drops the spellings it listed before; a bare `token` stays, as before.
 
 ## [0.15.0] - 2026-11-09
 

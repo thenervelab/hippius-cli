@@ -28,7 +28,7 @@ use crate::error::{Code, Error, Result, SideEffects};
 use crate::method::{Access, Method};
 use crate::phrase::quote;
 use crate::project;
-use crate::redact::token_spellings;
+use crate::redact::{is_secret_field, token_spellings};
 use crate::routes::{API_BASE, Endpoint, Guard, Route, RouteFlag};
 use crate::selector::{BillingId, ProjectId, Selection};
 use crate::source::{Given, Source};
@@ -1704,13 +1704,13 @@ fn sent_secret_spellings(body: Option<&[u8]>) -> zeroize::Zeroizing<Vec<String>>
 }
 
 /// The values `body`, a request's JSON, holds as strings in a field named as a secret
-/// ([`is_error_body_secret`]), at any depth.
+/// ([`is_secret_field`]), at any depth.
 fn sent_secrets(body: &Value) -> Vec<&str> {
     match body {
         Value::Object(fields) => fields
             .iter()
             .flat_map(|(key, value)| match value {
-                Value::String(text) if is_error_body_secret(key) => vec![text.as_str()],
+                Value::String(text) if is_secret_field(key) => vec![text.as_str()],
                 other => sent_secrets(other),
             })
             .collect(),
@@ -1857,56 +1857,8 @@ fn refusal(method: Method, route: &str, key: Option<&str>, why: &str, hint: &'st
     )
 }
 
-/// The fields that hold a secret in a Hippius answer, dropped from an error body (tenet 9).
-/// A bare `token` is deliberately kept: the API keys its validation errors by field name
-/// (`{"token": ["Invalid invite."]}`), and dropping it would hide why an invite was refused.
-/// A route whose answer holds a real `token` is in the secret table, so its error body is
-/// printed only to a caller who passed `--reveal`. The API token itself is redacted by value
-/// from every answer the client quotes ([`Client::send`], [`Response::refused`]).
-///
-/// A field matches in any letter case and with or without `_` or `-` between its words
-/// ([`is_error_body_secret`]), so `secretKey`, `Secret-Key`, and `secret_key` are one name.
-const ERROR_BODY_SECRET_FIELDS: [&str; 21] = [
-    "secret",
-    "robot_secret",
-    "credentials",
-    "access_token",
-    "refresh_token",
-    "ticket",
-    "setup_key",
-    "join_command",
-    "netbird_setup_key",
-    "client_secret",
-    "encrypted_secret",
-    "password",
-    "secret_key",
-    "secret_access_key",
-    "private_key",
-    "access_key",
-    "api_key",
-    "api_token",
-    "session_token",
-    "passphrase",
-    "aws_secret_access_key",
-];
-
-/// Whether `key` is one of [`ERROR_BODY_SECRET_FIELDS`], compared in lowercase without `_`
-/// and `-`.
-fn is_error_body_secret(key: &str) -> bool {
-    let folded = |name: &str| -> String {
-        name.chars()
-            .filter(|c| !matches!(c, '_' | '-'))
-            .map(|c| c.to_ascii_lowercase())
-            .collect()
-    };
-    let key = folded(key);
-    ERROR_BODY_SECRET_FIELDS
-        .iter()
-        .any(|name| folded(name) == key)
-}
-
-/// `body` without any of [`ERROR_BODY_SECRET_FIELDS`], at any depth, but for Django REST
-/// framework's field errors: a secret field whose value is a list of strings is a validation
+/// `body` without any field named as a secret ([`is_secret_field`]), at any depth, but for
+/// Django REST framework's field errors: a secret field whose value is a list of strings is a validation
 /// error about the field, such as `{"secret_access_key": ["This field may not be blank."]}`,
 /// which says why the request was refused, so it stays. Such a message may quote the value
 /// sent in the field (`'hunter2' is too common`), so each of `sent_secrets` is redacted from
@@ -1916,9 +1868,9 @@ fn without_secret_fields(body: Value, sent_secrets: &[String]) -> Value {
         Value::Object(fields) => Value::Object(
             fields
                 .into_iter()
-                .filter(|(key, value)| !is_error_body_secret(key) || is_field_error(value))
+                .filter(|(key, value)| !is_secret_field(key) || is_field_error(value))
                 .map(|(key, value)| {
-                    let value = if is_error_body_secret(&key) {
+                    let value = if is_secret_field(&key) {
                         crate::redact::redact_value_all(value, sent_secrets)
                     } else {
                         without_secret_fields(value, sent_secrets)
@@ -3539,6 +3491,24 @@ mod tests {
                 "password_set": true,
                 "secret_access_key": ["This field may not be blank."]
             })
+        );
+        // A spelling no list names is dropped by how it ends: camelCase and acronyms fold
+        // like `_`, so `authToken` is `auth_token`, and a name ending in a secret's word is
+        // one; a name that only starts with one, or a bare `key`, is kept.
+        let error = answer(
+            false,
+            400,
+            concat!(
+                r#"{"authToken":"s3cr3t","AuthToken":"s3cr3t","sessionToken":"s3cr3t","#,
+                r#""APIKey":"s3cr3t","user_password":"s3cr3t","dbPassphrase":"s3cr3t","#,
+                r#""secret_name":"API_KEY","key":"k1","token":"t1"}"#
+            ),
+        );
+        let json = error.to_json();
+        assert!(!json.to_string().contains("s3cr3t"), "{json}");
+        assert_eq!(
+            json["error"]["details"],
+            serde_json::json!({"secret_name": "API_KEY", "key": "k1", "token": "t1"})
         );
     }
 
