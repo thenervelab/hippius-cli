@@ -14,7 +14,7 @@
 use std::path::Path;
 
 use hippius::routes::billing;
-use hippius::{Error, Hotkey, Request, Result, SideEffects, Source, phrase};
+use hippius::{Error, Hotkey, Request, Result, SideEffects, Source, phrase, view_of};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
@@ -134,14 +134,14 @@ fn link(ctx: &Context<'_>, path: &Path) -> Result<Printed> {
     let hotkey = hotkey.as_str();
     let client = ctx.load_authed_client()?;
     let challenge = Request::to(&billing::GAMMA_HOTKEY_CHALLENGE, [])
-        .json(&json!({ "hotkey": hotkey }))
+        .json(&billing::HotkeyChallengeBody { hotkey })
         .about(format!(
             "ask for a link challenge for the hotkey {}",
             phrase::quote(hotkey)
         ));
     let submit = |nonce: &str, signature: &str| {
         Request::to(&billing::GAMMA_HOTKEY_CREATE, [])
-            .json(&json!({ "nonce": nonce, "signature": signature }))
+            .json(&billing::HotkeyCreateBody { nonce, signature })
             .about(format!("link the hotkey {}", phrase::quote(hotkey)))
     };
     if ctx.dry_run() {
@@ -149,26 +149,24 @@ fn link(ctx: &Context<'_>, path: &Path) -> Result<Printed> {
             "<the challenge's nonce>",
             "<the hotkey's sr25519 signature of the challenge message>",
         );
-        let mut doc = ctx.dry_run_document(&client, &challenge)?;
-        doc["requests"] = json!([
-            ctx.describe(&client, &challenge)?,
-            ctx.describe(&client, &unsigned)?,
-        ]);
-        return Ok(Printed::Document(doc));
+        return ctx
+            .dry_run_of(&client, &[&challenge, &unsigned])
+            .map(Printed::Document);
     }
-    let answer = ctx.send(&client, &challenge)?.document()?;
-    let (Some(message), Some(nonce)) = (
-        answer.get("message").and_then(Value::as_str),
-        answer.get("nonce").and_then(Value::as_str),
-    ) else {
+    let answer = view_of(&ctx.send(&client, &challenge)?.document()?);
+    let billing::HotkeyChallenge {
+        message: Some(message),
+        nonce: Some(nonce),
+    } = answer
+    else {
         return Err(crate::commands::unreadable(
             "ask for a gamma link challenge",
         ));
     };
-    let signature = key.sign_gamma_link(message, nonce)?;
+    let signature = key.sign_gamma_link(&message, &nonce)?;
     // The keys are not needed for the link itself, so they are cleared before it is sent.
     drop(key);
-    print_body(ctx, &client, &submit(nonce, &signature), Gate::Open)
+    print_body(ctx, &client, &submit(&nonce, &signature), Gate::Open)
 }
 
 /// Burns `amount` gamma of `hotkey`'s deposit for the same amount in USD, once confirmed,
@@ -176,7 +174,7 @@ fn link(ctx: &Context<'_>, path: &Path) -> Result<Printed> {
 fn convert(ctx: &Context<'_>, hotkey: &str, amount: &str) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
     let request = Request::to(&billing::GAMMA_CONVERSION_CREATE, [])
-        .json(&json!({ "hotkey": hotkey, "amount": amount }))
+        .json(&billing::GammaConversionBody { hotkey, amount })
         .about(format!(
             "burn `{amount}` gamma of the hotkey {} for `{amount}` USD of credits",
             phrase::quote(hotkey)
@@ -189,9 +187,10 @@ fn convert(ctx: &Context<'_>, hotkey: &str, amount: &str) -> Result<Printed> {
     };
     print_with(ctx, &client, &request, gate, |response| {
         let body = response.document()?;
-        let Some(id) = body
-            .get("id")
-            .and_then(Value::as_str)
+        let conversion: billing::GammaConversion = view_of(&body);
+        let Some(id) = conversion
+            .id
+            .as_deref()
             .and_then(|id| crate::cli::as_argument(id, crate::cli::conversion_id))
         else {
             // The API took the conversion, and may burn the gamma, but its answer names no

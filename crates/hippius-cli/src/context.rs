@@ -17,7 +17,7 @@ use hippius::{
     BillingId, Client, ConfigFile, Error, Given, Overrides, ProjectId, Request, Response, Result,
     Selection, Settings, SideEffects, Source, Token,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::cli::Global;
 use crate::output::{self, Mode, Terminal};
@@ -386,25 +386,25 @@ impl<'a> Context<'a> {
         Ok(doc)
     }
 
-    /// The `--dry-run` document of a command that sends `request`: `dry_run`, then
-    /// `requests`, every request a real run sends, in order, each its [`Context::describe`]
-    /// document; for one request that is `request` alone. A command whose real run sends more
-    /// replaces `requests` with [`Context::describe_each`]. So every dry run that would send
-    /// anything has `requests`, and a reader finds the requests in one place (tenet 5).
+    /// The `--dry-run` document of a command that sends `request` alone:
+    /// [`Context::dry_run_of`] that one request.
     pub(crate) fn dry_run_document(&self, client: &Client, request: &Request) -> Result<Value> {
-        let mut doc = serde_json::Map::new();
-        doc.insert("dry_run".to_owned(), Value::Bool(true));
-        doc.insert(
-            "requests".to_owned(),
-            Value::Array(vec![self.describe(client, request)?]),
-        );
-        Ok(Value::Object(doc))
+        self.dry_run_of(client, &[request])
     }
 
-    /// The `requests` list of the dry run of a command whose real run sends more than one
-    /// request: the [`Context::describe`] document of each of `requests`, in the order a
-    /// real run sends them, reads included. A value only a read can give is a
-    /// `<...>` placeholder in the request that uses it.
+    /// The `--dry-run` document of a command whose real run sends `requests`: `dry_run`, then
+    /// `requests`, the [`Context::describe`] document of each, in the order a real run sends
+    /// them, reads included. A value only a read can give is a `<...>` placeholder in the
+    /// request that uses it. Every dry run that would send anything is built here, so each has
+    /// `requests`, and a reader finds the requests in one place (tenet 5). A field a command
+    /// adds, such as `reads_first`, goes after them.
+    pub(crate) fn dry_run_of(&self, client: &Client, requests: &[&Request]) -> Result<Value> {
+        let requests = self.describe_each(client, requests)?;
+        Ok(json!({ "dry_run": true, "requests": requests }))
+    }
+
+    /// The [`Context::describe`] document of each of `requests`, in order: the `requests` of
+    /// [`Context::dry_run_of`].
     pub(crate) fn describe_each(&self, client: &Client, requests: &[&Request]) -> Result<Value> {
         requests
             .iter()

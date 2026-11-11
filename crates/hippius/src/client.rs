@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use serde::Serialize;
 use serde_json::Value;
 use zeroize::Zeroizing;
 
@@ -206,10 +207,18 @@ impl Request {
         self
     }
 
-    /// Sets a JSON body, sent with `Content-Type: application/json`.
+    /// Sets a JSON body, sent with `Content-Type: application/json`: a route's body type
+    /// (beside its route in [`crate::routes`]), or a `Value` `hipc api` was given.
+    ///
+    /// # Panics
+    ///
+    /// When `body` cannot be written as JSON: a map whose keys are not strings, or a
+    /// `Serialize` impl that fails. A route's body is strings, numbers, booleans, lists and
+    /// structs of them, so it always can.
     #[must_use]
-    pub fn json(mut self, body: &Value) -> Self {
-        self.body = Some(Zeroizing::new(body.to_string().into_bytes()));
+    pub fn json(mut self, body: &impl Serialize) -> Self {
+        let bytes = serde_json::to_vec(body).expect("a request body is plain JSON data");
+        self.body = Some(Zeroizing::new(bytes));
         self
     }
 

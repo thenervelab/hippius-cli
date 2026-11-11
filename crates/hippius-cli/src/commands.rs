@@ -28,8 +28,10 @@ use std::os::fd::AsFd as _;
 use std::path::{Path, PathBuf};
 
 use hippius::routes::{self, Route};
-use hippius::{Client, ConfigFile, Error, Overrides, Request, Response, Result, Source, phrase};
-use serde_json::{Value, json};
+use hippius::{
+    Client, ConfigFile, Error, Overrides, Page, Request, Response, Result, Source, phrase, view_of,
+};
+use serde_json::{Map, Value};
 use zeroize::Zeroizing;
 
 use crate::cli::{Funding, PlanSetting, StorageCap};
@@ -477,25 +479,35 @@ pub(crate) fn print_envelope(
     })
 }
 
+/// One setting of a Drive or S3 plan that a `change` without `--plan` sends: how renewals are
+/// paid, or the cap on storage billed past the quota (`None` is the default cap). Each
+/// service writes it into its own route's body.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SettingChange {
+    Funding(&'static str),
+    StorageCap(Option<u64>),
+}
+
 /// `route`, the PATCH of a Drive or S3 subscription, that keeps the plan: `--pay-from` or
-/// `--storage-cap`. The command's `change` group takes one of them when `--plan` is
-/// absent. `service` names the plan in the question, as `Drive` or `S3`. Both change what
-/// later renewals or storage cost, so both are confirmed, and the action an agent reads in
-/// the refusal names the money.
-pub(crate) fn plan_setting(
+/// `--storage-cap`, sent as `body` writes it. The command's `change` group takes one of them
+/// when `--plan` is absent. `service` names the plan in the question, as `Drive` or `S3`. Both
+/// change what later renewals or storage cost, so both are confirmed, and the action an agent
+/// reads in the refusal names the money.
+pub(crate) fn plan_setting<B: serde::Serialize>(
     route: &Route<0>,
     service: &str,
     setting: &PlanSetting,
+    body: fn(SettingChange) -> B,
 ) -> Result<(Request, Gate<'static>)> {
-    let (body, action, consequence) = if let Some(funding) = setting.pay_from {
+    let (change, action, consequence) = if let Some(funding) = setting.pay_from {
         let action = match funding {
             Funding::Credits => format!("pay each renewal of the {service} plan from the balance"),
             Funding::Card => {
                 format!("charge each renewal of the {service} plan to the card saved at Stripe")
             }
         };
-        let body = json!({ "funding": funding.code() });
-        (body, action, "it changes how every later renewal is paid")
+        let change = SettingChange::Funding(funding.code());
+        (change, action, "it changes how every later renewal is paid")
     } else {
         // The `change` group takes `--plan`, `--pay-from`, or `--storage-cap`, and the
         // caller handled `--plan`; this holds if the group ever changes.
@@ -506,18 +518,18 @@ pub(crate) fn plan_setting(
             )
         })?;
         let (cap, up_to) = match cap {
-            StorageCap::Bytes(bytes) => (Value::from(bytes), format!("`{bytes}` bytes")),
+            StorageCap::Bytes(bytes) => (Some(bytes), format!("`{bytes}` bytes")),
             StorageCap::Default => (
-                Value::Null,
+                None,
                 "the default cap of twice the plan's storage".to_owned(),
             ),
         };
         let action =
             format!("bill the storage of the {service} plan past its quota, up to {up_to}");
-        let body = json!({ "storage_cap_bytes": cap });
-        (body, action, "storage past the quota is billed")
+        let change = SettingChange::StorageCap(cap);
+        (change, action, "storage past the quota is billed")
     };
-    let request = Request::to(route, []).json(&body).about(action);
+    let request = Request::to(route, []).json(&body(change)).about(action);
     Ok((
         request,
         Gate::Confirm {
@@ -567,14 +579,15 @@ pub(crate) fn subscribed(ctx: &Context<'_>, response: &Response, service: &str) 
     if response.status() != 202 {
         return Ok(body);
     }
-    let next_step = body
-        .get("intent_id")
-        .and_then(Value::as_str)
+    let checkout: routes::billing::Checkout = view_of(&body);
+    let next_step = checkout
+        .intent_id
+        .as_deref()
         .and_then(|id| crate::cli::as_argument(id, crate::cli::intent_id))
         .and_then(|id| ctx.next_command(&format!("{service} subscription checkout {id}")));
     // The URL is not repeated here: it is on stdout, and a quoted URL would have its query
     // values, which can hold the checkout session's secret, redacted (tenet 9).
-    let start = if body.get("checkout_url").and_then(Value::as_str).is_some() {
+    let start = if checkout.checkout_url.is_some() {
         "nothing has been bought yet: the plan starts once the checkout at `checkout_url` in \
          the output is paid"
     } else {
@@ -591,16 +604,21 @@ pub(crate) fn subscribed(ctx: &Context<'_>, response: &Response, service: &str) 
 }
 
 /// The `--dry-run` document of a command that changes a local file and sends nothing:
-/// `dry_run` first, then `action`, what it would do, then the fields of the document a real
-/// run prints, which name the profile it would change.
-pub(crate) fn local_dry_run(action: &str, fields: Value) -> Value {
-    let mut doc = serde_json::Map::new();
-    doc.insert("dry_run".to_owned(), Value::Bool(true));
-    doc.insert("action".to_owned(), action.into());
-    if let Value::Object(fields) = fields {
-        doc.extend(fields);
-    }
+/// `dry_run` first, then `action`, what it would do, then `fields`, the fields of the document
+/// a real run prints, which name the profile it would change. `fields` is an object by its
+/// type, so none of them can be dropped.
+pub(crate) fn local_dry_run(action: &str, fields: Map<String, Value>) -> Value {
+    let mut doc = object([("dry_run", true.into()), ("action", action.into())]);
+    doc.extend(fields);
     Value::Object(doc)
+}
+
+/// A JSON object of `fields`, in order: a document `hipc` builds whole.
+pub(crate) fn object<const N: usize>(fields: [(&str, Value); N]) -> Map<String, Value> {
+    fields
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect()
 }
 
 /// Stores a selection in the profile with `set`, and prints `{"profile", <field>: <value>}`:
@@ -617,40 +635,17 @@ pub(crate) fn store_selection(
 ) -> Result<Printed> {
     let path = context::config_path()?;
     let overrides = ctx.overrides()?;
+    let document = |profile: String| object([("profile", profile.into()), (field, value.into())]);
     if ctx.dry_run() {
         let profile = profile(&ConfigFile::load(path)?, &overrides)?;
-        return Ok(Printed::Document(local_dry_run(
-            action,
-            json!({ "profile": profile, field: value }),
-        )));
+        return Ok(Printed::Document(local_dry_run(action, document(profile))));
     }
     let profile = ConfigFile::edit(path, |config| {
         let profile = profile(config, &overrides)?;
         set(config, &profile);
         Ok(profile)
     })?;
-    Ok(Printed::Document(
-        json!({ "profile": profile, field: value }),
-    ))
-}
-
-/// The `--dry-run` document of a command that would send several requests: `dry_run`
-/// first, then the requests of each dry-run document in `documents`, in order. Each comes
-/// from [`Context::call`], whose `requests` names only its own request.
-pub(crate) fn dry_run_requests(documents: Vec<Value>) -> Value {
-    let requests: Vec<Value> = documents
-        .into_iter()
-        .flat_map(|mut doc| {
-            doc["requests"]
-                .as_array_mut()
-                .map(std::mem::take)
-                .unwrap_or_default()
-        })
-        .collect();
-    let mut doc = serde_json::Map::new();
-    doc.insert("dry_run".to_owned(), Value::Bool(true));
-    doc.insert("requests".to_owned(), Value::Array(requests));
-    Value::Object(doc)
+    Ok(Printed::Document(Value::Object(document(profile))))
 }
 
 /// One failed part of a partial failure, for `error.details`: the part's name under `key`,
@@ -691,16 +686,26 @@ pub(crate) fn print_keyed_list(
 /// `internal` for an object without a `key` list, for a `next` link (a later page this
 /// command does not read), or for any other shape.
 pub(crate) fn keyed_list(answer: Value, request: &Request, key: &str) -> Result<Value> {
-    let Value::Object(mut body) = answer else {
+    let Value::Object(body) = answer else {
         return hippius::page(answer)?.complete_envelope(request.target());
     };
-    let Some(Value::Array(items)) = body.shift_remove(key) else {
+    let Some(page) = keyed_page(body, key) else {
         return Err(Error::internal(format!(
             "cannot {}: the API answered without a `{key}` list",
             request.action()
         )));
     };
-    hippius::page_beside(items, body)?.complete_envelope(request.target())
+    page?.complete_envelope(request.target())
+}
+
+/// The list an answer `body` holds under `key`, with `body`'s other fields beside it
+/// ([`hippius::page_beside`]), or `None` when `key` is not a list: [`keyed_list`], and the
+/// accounts answer, which is read the same way and named in its own error.
+pub(crate) fn keyed_page(mut body: Map<String, Value>, key: &str) -> Option<Result<Page>> {
+    let Some(Value::Array(items)) = body.shift_remove(key) else {
+        return None;
+    };
+    Some(hippius::page_beside(items, body))
 }
 
 /// `hipc status`: `GET /api/services/status/` (swagger `services_status_list`), the state of
@@ -858,6 +863,17 @@ mod tests {
         assert!(found.is_empty(), "{found:?}");
     }
 
+    /// `dry_run` comes first, then `action`, then every field of the real run's document, in
+    /// order: the fields are an object by their type, so none can be dropped.
+    #[test]
+    fn a_local_dry_run_keeps_every_field_after_its_action() {
+        let fields = object([("profile", "default".into()), ("token_stored", true.into())]);
+        assert_eq!(
+            local_dry_run("store_token", fields).to_string(),
+            r#"{"dry_run":true,"action":"store_token","profile":"default","token_stored":true}"#
+        );
+    }
+
     /// The `change` group of clap guarantees one setting; without one, the PATCH is refused
     /// as `usage` rather than a panic.
     #[test]
@@ -866,11 +882,23 @@ mod tests {
             pay_from: None,
             storage_cap: None,
         };
-        let error = plan_setting(&routes::s3::SUBSCRIPTION_CHANGE, "S3", &setting).unwrap_err();
+        let body = |change| format!("{change:?}");
+        let error =
+            plan_setting(&routes::s3::SUBSCRIPTION_CHANGE, "S3", &setting, body).unwrap_err();
         assert_eq!(error.code(), Code::Usage);
         assert_eq!(
             error.message(),
             "nothing to change in the S3 plan was given"
+        );
+        let card = PlanSetting {
+            pay_from: Some(Funding::Card),
+            storage_cap: None,
+        };
+        let (request, _) =
+            plan_setting(&routes::s3::SUBSCRIPTION_CHANGE, "S3", &card, body).unwrap();
+        assert_eq!(
+            request.action(),
+            "charge each renewal of the S3 plan to the card saved at Stripe"
         );
     }
 

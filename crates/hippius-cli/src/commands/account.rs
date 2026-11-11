@@ -14,21 +14,21 @@
 use std::fmt;
 use std::path::Path;
 
-use hippius::routes;
+use hippius::routes::account;
 use hippius::{
     BillingId, Client, Code, ConfigFile, Error, Given, Overrides, ProjectId, Request, Result,
-    Selection, Settings, Source, phrase, redact_value,
+    Selection, Settings, Source, phrase, redact_value, view_of,
 };
 use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
 
 use crate::cli::{
-    Access, Grant, GrantArg, InviteCreate, Invites, MarketingConsent, MemberUpdate, Members,
-    Notifications,
+    Access, Grant, GrantArg, GrantTarget, InviteCreate, Invites, MarketingConsent, MemberUpdate,
+    Members, Notifications,
 };
 use crate::commands::replace::{Entry, Found, Replace, replace_list};
 use crate::commands::{
-    Input, Printed, print_body, print_body_or, print_keyed_list, store_selection,
+    Input, Printed, keyed_page, print_body, print_body_or, print_keyed_list, store_selection,
 };
 use crate::context::{self, Context, Gate, Step, Write};
 
@@ -41,25 +41,30 @@ enum Fetched {
     DryRun(Value),
 }
 
-/// `GET /api/accounts/`.
-fn accounts_request() -> Request {
-    Request::to(&routes::account::ACCOUNTS, []).about("list the accounts the token can act in")
+/// `GET /api/accounts/`: `hipc account list` and `get`, and the read of the token's own
+/// account before a project transfer.
+pub(crate) fn accounts_request() -> Request {
+    Request::to(&account::ACCOUNTS, []).about("list the accounts the token can act in")
 }
 
 fn accounts(ctx: &Context<'_>, client: &Client) -> Result<Fetched> {
-    let response = match ctx.call(client, &accounts_request(), Gate::Open)? {
-        Step::Sent(response) => response,
-        Step::DryRun(doc) => return Ok(Fetched::DryRun(doc)),
-    };
-    match response.json()? {
-        Value::Object(mut body) => match body.shift_remove("accounts") {
-            Some(Value::Array(accounts)) => {
-                Ok(Fetched::Accounts(hippius::page_beside(accounts, body)?))
-            }
-            _ => Err(unexpected()),
-        },
-        _ => Err(unexpected()),
+    match ctx.call(client, &accounts_request(), Gate::Open)? {
+        Step::Sent(response) => accounts_page(response.json()?).map(Fetched::Accounts),
+        Step::DryRun(doc) => Ok(Fetched::DryRun(doc)),
     }
+}
+
+/// The `accounts` of an answer of `GET /api/accounts/`, with the answer's other fields
+/// beside them.
+///
+/// # Errors
+///
+/// `internal` for an answer that is not an object holding an `accounts` list.
+pub(crate) fn accounts_page(answer: Value) -> Result<hippius::Page> {
+    let Value::Object(body) = answer else {
+        return Err(unexpected());
+    };
+    keyed_page(body, "accounts").ok_or_else(unexpected)?
 }
 
 /// Where the token's own account is in the `accounts` of `GET /api/accounts/`: the one entry
@@ -71,7 +76,7 @@ pub(crate) fn own_account(accounts: &[Value]) -> Option<usize> {
     let mut owned = accounts
         .iter()
         .enumerate()
-        .filter(|(_, account)| account.get("is_owner") == Some(&Value::Bool(true)));
+        .filter(|(_, entry)| view_of::<account::AccountEntry>(entry).is_owner == Some(true));
     match (owned.next(), owned.next()) {
         (Some((at, _)), None) => Some(at),
         _ => None,
@@ -116,7 +121,7 @@ pub(crate) fn get(ctx: &Context<'_>) -> Result<Printed> {
         Selection::Member(id) => page
             .items
             .iter()
-            .position(|a| a.get("id").and_then(Value::as_str) == Some(id.as_str())),
+            .position(|a| view_of::<account::AccountEntry>(a).id.as_deref() == Some(id.as_str())),
     };
     if let Some(at) = found {
         // The account is on the page read, so a later page cannot change the answer.
@@ -191,7 +196,7 @@ pub(crate) fn notifications(ctx: &Context<'_>, command: &Notifications) -> Resul
     let mut off = Vec::new();
     let request = match command {
         Notifications::Get => {
-            Request::to(&routes::account::NOTIFICATIONS, []).about("read the notification settings")
+            Request::to(&account::NOTIFICATIONS, []).about("read the notification settings")
         }
         Notifications::Update(args) => {
             off = args
@@ -200,14 +205,21 @@ pub(crate) fn notifications(ctx: &Context<'_>, command: &Notifications) -> Resul
                 .filter(|(key, given)| *given == Some(false) && ALERTS.contains(key))
                 .map(|(key, _)| key)
                 .collect();
-            let given: Map<String, Value> = args
+            let given = args
                 .fields()
                 .into_iter()
-                .filter_map(|(key, given)| given.map(|on| (key.to_owned(), Value::from(on))))
-                .collect();
-            let named = phrase::ticked(given.keys(), "and");
-            Request::to(&routes::account::NOTIFICATIONS_UPDATE, [])
-                .json(&Value::Object(given))
+                .filter_map(|(key, given)| given.map(|_| key));
+            let named = phrase::ticked(given, "and");
+            let body = account::NotificationsUpdateBody {
+                email_enabled: args.email_enabled,
+                low_credit_alerts: args.low_credit_alerts,
+                zero_balance_alerts: args.zero_balance_alerts,
+                file_status_updates: args.file_status_updates,
+                marketing_emails: args.marketing_emails,
+                provider_advice_emails: args.provider_advice_emails,
+            };
+            Request::to(&account::NOTIFICATIONS_UPDATE, [])
+                .json(&body)
                 .about(format!("update the notification settings {named}"))
         }
     };
@@ -266,13 +278,14 @@ pub(crate) fn marketing_consent(ctx: &Context<'_>, command: &MarketingConsent) -
     let client = ctx.load_authed_client()?;
     let request = match command {
         MarketingConsent::Get => {
-            Request::to(&routes::account::MARKETING_CONSENT, []).about("read the marketing consent")
+            Request::to(&account::MARKETING_CONSENT, []).about("read the marketing consent")
         }
-        MarketingConsent::Update { .. } => {
-            Request::to(&routes::account::MARKETING_CONSENT_UPDATE, [])
-                .json(&json!({ "granted": false, "source": "settings" }))
-                .about("withdraw the marketing consent")
-        }
+        MarketingConsent::Update { .. } => Request::to(&account::MARKETING_CONSENT_UPDATE, [])
+            .json(&account::MarketingConsentUpdateBody {
+                granted: false,
+                source: "settings",
+            })
+            .about("withdraw the marketing consent"),
     };
     print_body(ctx, &client, &request, Gate::Open)
 }
@@ -294,7 +307,7 @@ const MEMBERS: &str = "hipc account members list";
 
 /// `GET /api/accounts/members/`: every member, with their grants.
 fn members_list() -> Request {
-    Request::to(&routes::account::MEMBERS, []).about("list the team members")
+    Request::to(&account::MEMBERS, []).about("list the team members")
 }
 
 /// `hipc account members`.
@@ -306,7 +319,7 @@ pub(crate) fn members(ctx: &Context<'_>, command: &Members) -> Result<Printed> {
         }
         Members::Update(args) => update_member(ctx, args),
         Members::Delete { member_id } => {
-            let request = Request::to(&routes::account::MEMBER_DELETE, [member_id])
+            let request = Request::to(&account::MEMBER_DELETE, [member_id])
                 .listed_by(MEMBERS)
                 .about(format!("remove the member `{member_id}` from the team"));
             let done = json!({ "id": member_id, "deleted": true });
@@ -329,7 +342,7 @@ pub(crate) fn invites(ctx: &Context<'_>, command: &Invites) -> Result<Printed> {
         Invites::List => print_keyed_list(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::to(&routes::account::INVITES, []).about("list the pending invites"),
+            &Request::to(&account::INVITES, []).about("list the pending invites"),
             "invites",
         ),
         Invites::Create(args) => create_invite(ctx, args),
@@ -346,7 +359,7 @@ pub(crate) fn invites(ctx: &Context<'_>, command: &Invites) -> Result<Printed> {
             accept(ctx, &client, &settings, &invite)
         }
         Invites::Revoke { invite_id } => {
-            let request = Request::to(&routes::account::INVITE_REVOKE, [invite_id])
+            let request = Request::to(&account::INVITE_REVOKE, [invite_id])
                 .listed_by("hipc account invites list")
                 .about(format!("revoke the invite `{invite_id}`"));
             let done = json!({ "id": invite_id, "revoked": true });
@@ -416,8 +429,8 @@ impl fmt::Debug for InviteToken {
 /// `POST /api/accounts/invites/preview/ {"token"}`, the console's shape. The token is in the
 /// body, so it stays out of access logs.
 fn preview_request(token: &str) -> Request {
-    Request::to(&routes::account::INVITE_PREVIEW, [])
-        .json(&json!({ "token": token }))
+    Request::to(&account::INVITE_PREVIEW, [])
+        .json(&account::InvitePreviewBody { token })
         .about("preview the invite")
         .changes_nothing()
 }
@@ -425,10 +438,10 @@ fn preview_request(token: &str) -> Request {
 /// `POST /api/accounts/invites/accept/`, with `confirm_without_email` always false: joining
 /// as a user whose address the invite was not sent to is the console's question to ask.
 fn accept_request(token: &str) -> Request {
-    Request::to(&routes::account::INVITE_ACCEPT, []).json(&json!({
-        "token": token,
-        "confirm_without_email": false,
-    }))
+    Request::to(&account::INVITE_ACCEPT, []).json(&account::InviteAcceptBody {
+        token,
+        confirm_without_email: false,
+    })
 }
 
 /// `hipc account invites preview`: what the invite offers, as the server sent it. A dry run
@@ -486,19 +499,20 @@ fn accept(
 ) -> Result<Printed> {
     let draft = accept_request(TOKEN_PLACEHOLDER);
     let checked = match ctx.check_write(client, &draft)? {
-        Write::DryRun(mut doc) => {
+        Write::DryRun(_) => {
             let preview = preview_request(TOKEN_PLACEHOLDER);
-            doc["requests"] = ctx.describe_each(client, &[&preview, &draft])?;
-            return Ok(Printed::Document(doc));
+            return ctx
+                .dry_run_of(client, &[&preview, &draft])
+                .map(Printed::Document);
         }
         Write::Checked(checked) => checked,
     };
-    let offer = read_preview(ctx, client, settings, invite)?;
+    let offer: account::InviteOffer = view_of(&read_preview(ctx, client, settings, invite)?);
     // The preview says when an invite can no longer be used (`valid`, with `reason`
     // `accepted`, `revoked`, or `expired`), so the person is not asked to join an account
     // the accept would refuse.
-    if offer.get("valid") == Some(&Value::Bool(false)) {
-        let why = match offer.get("reason").and_then(Value::as_str) {
+    if offer.valid == Some(false) {
+        let why = match offer.reason {
             Some(reason) => format!("the API says it is {}", phrase::quote(reason)),
             None => "the API says it is not valid".to_owned(),
         };
@@ -507,13 +521,13 @@ fn accept(
             format!("cannot accept the invite: {why}"),
         ));
     }
-    let Some(account) = offer.get("account_name").and_then(Value::as_str) else {
+    let Some(account) = offer.account_name else {
         return Err(Error::internal(
             "the invite preview has no `account_name`, so the confirmation cannot name the \
              account to join",
         ));
     };
-    let action = match offer.get("invited_by").and_then(Value::as_str) {
+    let action = match offer.invited_by {
         Some(by) => format!(
             "join the account {}, invited by {}",
             phrase::quote(account),
@@ -544,10 +558,11 @@ fn accept(
 /// invite as a failure. Reading the flags and the environment can only fail as it already
 /// did before the accept, so a failure skips the note instead.
 fn use_note(ctx: &Context<'_>, joined: &Value) {
-    let Some(id) = joined.pointer("/account/id").and_then(Value::as_str) else {
+    let joined: account::InviteAccepted = view_of(joined);
+    let Some(id) = joined.account.and_then(|account| account.id) else {
         return;
     };
-    let Ok(Selection::Member(id)) = Selection::parse(id, &Source::Argument) else {
+    let Ok(Selection::Member(id)) = Selection::parse(&id, &Source::Argument) else {
         return;
     };
     let words = format!("account use {}", id.as_str());
@@ -597,7 +612,6 @@ fn with_accept_hint(error: Error) -> Error {
 /// unless `--remove-others` is passed, so a grant the member has now that the `--grant`s
 /// leave out is refused ([`replace_list`]).
 fn update_member(ctx: &Context<'_>, args: &MemberUpdate) -> Result<Printed> {
-    let mut body = Map::new();
     let mut changes = Vec::new();
     let grants = grant_list(&args.access.grants)?;
     if let Some(grants) = &grants {
@@ -609,15 +623,13 @@ fn update_member(ctx: &Context<'_>, args: &MemberUpdate) -> Result<Printed> {
                 phrase::join(&labels(grants), "and")
             )
         });
-        body.insert("grants".to_owned(), grants_json(grants));
     }
     for (key, value) in permissions(&args.access) {
         if let Some(value) = value {
             changes.push(format!("set `{key}` to `{value}`"));
-            body.insert(key.to_owned(), value.into());
         }
     }
-    if body.is_empty() {
+    if changes.is_empty() {
         // An empty PATCH changes nothing and only returns the member.
         return Err(Error::usage(
             "`hipc account members update` was given nothing to change",
@@ -625,9 +637,14 @@ fn update_member(ctx: &Context<'_>, args: &MemberUpdate) -> Result<Printed> {
         ));
     }
     let id = args.member_id;
-    let request = Request::to(&routes::account::MEMBER_UPDATE, [&id])
+    let body = account::MemberUpdateBody {
+        grants: grants.as_deref().map(grant_bodies),
+        can_manage_team: args.access.manage_team,
+        can_billing: args.access.billing_permission,
+    };
+    let request = Request::to(&account::MEMBER_UPDATE, [&id])
         .listed_by(MEMBERS)
-        .json(&Value::Object(body))
+        .json(&body)
         .about(format!(
             "update the member `{id}`: {}",
             phrase::join(&changes, "and")
@@ -740,24 +757,25 @@ fn member_grants(answer: &Value, id: u64) -> Option<Result<Vec<Entry>>> {
 /// `--grant` is an empty list, and a permission not given is `false`.
 fn create_invite(ctx: &Context<'_>, args: &InviteCreate) -> Result<Printed> {
     let grants = grant_list(&args.access.grants)?.unwrap_or_default();
-    let mut body = Map::new();
-    body.insert("email".to_owned(), args.email.as_str().into());
-    body.insert("grants".to_owned(), grants_json(&grants));
     let mut given = labels(&grants);
     for (key, value) in permissions(&args.access) {
-        let value = value.unwrap_or(false);
-        if value {
+        if value == Some(true) {
             given.push(format!("`{key}`"));
         }
-        body.insert(key.to_owned(), value.into());
     }
+    let body = account::InviteCreateBody {
+        email: &args.email,
+        grants: grant_bodies(&grants),
+        can_manage_team: args.access.manage_team.unwrap_or(false),
+        can_billing: args.access.billing_permission.unwrap_or(false),
+    };
     let granted = if given.is_empty() {
         "nothing".to_owned()
     } else {
         phrase::join(&given, "and")
     };
-    let request = Request::to(&routes::account::INVITE_CREATE, [])
-        .json(&Value::Object(body))
+    let request = Request::to(&account::INVITE_CREATE, [])
+        .json(&body)
         .about(format!(
             "email an invite to `{}` that grants {granted}",
             args.email
@@ -809,7 +827,7 @@ fn grant_list(args: &[GrantArg]) -> Result<Option<Vec<Grant>>> {
     Ok((!args.is_empty()).then_some(grants))
 }
 
-/// The two permissions, by their body keys.
+/// The two permissions, by their body keys, for a confirmation.
 fn permissions(access: &Access) -> [(&'static str, Option<bool>); 2] {
     [
         ("can_manage_team", access.manage_team),
@@ -819,15 +837,21 @@ fn permissions(access: &Access) -> [(&'static str, Option<bool>); 2] {
 
 /// Each grant as the console sends it: `scope` and `level`, and `project` or `billing`
 /// for a grant on one of them.
-fn grants_json(grants: &[Grant]) -> Value {
+fn grant_bodies(grants: &[Grant]) -> Vec<account::GrantBody<'_>> {
     grants
         .iter()
         .map(|g| {
-            let mut grant = json!({ "scope": g.scope, "level": g.level });
-            if let Some((key, id)) = g.target.key_and_id() {
-                grant[key] = id.into();
+            let (project, billing) = match &g.target {
+                GrantTarget::Account => (None, None),
+                GrantTarget::Project(id) => (Some(id.as_str()), None),
+                GrantTarget::Billing(id) => (None, Some(id.as_str())),
+            };
+            account::GrantBody {
+                scope: g.scope,
+                level: g.level,
+                project,
+                billing,
             }
-            grant
         })
         .collect()
 }

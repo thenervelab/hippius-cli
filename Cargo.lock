@@ -486,6 +486,7 @@ dependencies = [
  "ed25519-dalek",
  "hippius",
  "rustix",
+ "serde",
  "serde_json",
  "toml",
  "yaml-rust2",

@@ -1,6 +1,8 @@
 //! S3 storage: plans, the subscription, buckets and their objects and policies, and access
 //! keys.
 
+use serde::Serialize;
+
 use crate::routes::{Guard, Route, RouteFlag};
 
 routes! {
@@ -91,4 +93,109 @@ routes! {
     SUB_TOKEN_REVOKE: 1 = Route::post("/api/objectstore/sub-tokens/{token_id}/revoke/")
         .scoped()
         .project();
+}
+
+/// The body of [`SUBSCRIBE`].
+#[derive(Debug, Serialize)]
+pub struct SubscribeBody<'a> {
+    /// The plan's code.
+    pub plan: &'a str,
+    /// How it is paid, such as `credits`.
+    pub rail: &'a str,
+}
+
+/// The body of [`SUBSCRIPTION_CHANGE`] that switches the plan.
+#[derive(Debug, Serialize)]
+pub struct PlanChangeBody<'a> {
+    /// The new plan's code.
+    pub plan: &'a str,
+}
+
+/// The body of [`SUBSCRIPTION_CHANGE`] that keeps the plan and changes one setting.
+#[derive(Debug, Default, Serialize)]
+#[expect(
+    clippy::option_option,
+    reason = "a cap left out keeps its value, and `null` is the default cap"
+)]
+pub struct SettingChangeBody<'a> {
+    /// How each later renewal is paid: `credits` or `card`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub funding: Option<&'a str>,
+    /// The cap on bytes stored past the quota; `null` is the default cap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_cap_bytes: Option<Option<u64>>,
+}
+
+/// The body of [`BUCKET_CREATE`].
+#[derive(Debug, Serialize)]
+pub struct BucketCreateBody<'a> {
+    /// The bucket's name.
+    pub name: &'a str,
+    /// Its region, when one is chosen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<&'a str>,
+}
+
+/// The body of [`BUCKET_ACL_SET`].
+#[derive(Debug, Serialize)]
+pub struct BucketAclSetBody<'a> {
+    /// The bucket policy, a JSON object, which replaces the whole policy.
+    pub policy: &'a serde_json::Value,
+}
+
+/// The body of [`MASTER_TOKEN_CREATE`] and [`SUB_TOKEN_CREATE`]: only the fields given. The
+/// limits are a sub token's only.
+#[derive(Debug, Default, Serialize)]
+pub struct TokenCreateBody<'a> {
+    /// The token's name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<&'a str>,
+    /// When it expires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<&'a str>,
+    /// What it may reach.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_type: Option<&'a str>,
+    /// The buckets it may reach.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    pub bucket_names: &'a [String],
+    /// The S3 actions it may take.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    pub actions: &'a [String],
+    /// The key prefixes it may reach.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    pub allowed_prefixes: &'a [String],
+    /// The addresses it may be used from.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    pub ip_allowlist: &'a [String],
+    /// When it starts to work.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<&'a str>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_token_body_sends_only_the_fields_given() {
+        let buckets = ["logs".to_owned()];
+        let body = TokenCreateBody {
+            name: Some("ci"),
+            bucket_names: &buckets,
+            ..TokenCreateBody::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&body).unwrap(),
+            r#"{"name":"ci","bucket_names":["logs"]}"#
+        );
+        let cap = SettingChangeBody {
+            storage_cap_bytes: Some(None),
+            ..SettingChangeBody::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&cap).unwrap(),
+            r#"{"storage_cap_bytes":null}"#
+        );
+    }
 }

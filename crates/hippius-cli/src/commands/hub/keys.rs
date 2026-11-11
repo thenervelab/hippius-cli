@@ -8,8 +8,8 @@
 use std::path::Path;
 
 use hippius::routes::hub;
-use hippius::{Error, Request, Result, phrase};
-use serde_json::{Map, Value, json};
+use hippius::{Error, Request, Result, phrase, view_of};
+use serde_json::{Value, json};
 
 use crate::cli::{HubKeys, KeyCreate};
 use crate::commands::files::shown_once;
@@ -102,19 +102,16 @@ fn listed_key(row: Value, what: &str) -> Result<Value> {
 /// expires_days?}` as swagger's description gives it, `expires_days` only when the flag is.
 fn create(ctx: &Context<'_>, args: &KeyCreate) -> Result<Printed> {
     require_reveal_or_file(ctx, args.reveal, args.secret_file.path.is_some())?;
-    let mut body = Map::new();
-    body.insert("name".to_owned(), args.name.as_str().into());
-    body.insert("role".to_owned(), args.role.code().into());
-    if let Some(days) = args.expires_in {
-        body.insert("expires_days".to_owned(), days.into());
-    }
-    let request = Request::to(&hub::KEY_CREATE, [])
-        .json(&Value::Object(body))
-        .about(format!(
-            "create the Hub key {} with the role `{}`",
-            phrase::quote(&args.name),
-            args.role.code()
-        ));
+    let body = hub::KeyCreateBody {
+        name: &args.name,
+        role: args.role.code(),
+        expires_days: args.expires_in,
+    };
+    let request = Request::to(&hub::KEY_CREATE, []).json(&body).about(format!(
+        "create the Hub key {} with the role `{}`",
+        phrase::quote(&args.name),
+        args.role.code()
+    ));
     let secret_file = args.secret_file.path.as_deref();
     let consequence = shown_once("its secret", secret_file);
     let gate = Gate::Confirm {
@@ -128,9 +125,8 @@ fn create(ctx: &Context<'_>, args: &KeyCreate) -> Result<Printed> {
         |response| {
             let body = response.document()?;
             // The key's id, for the rotate that issues it a new secret.
-            let rotate = body
-                .get("id")
-                .and_then(Value::as_u64)
+            let rotate = view_of::<hub::Key>(&body)
+                .id
                 .map(|id| format!("hub keys rotate {id} --reveal --yes"));
             issued_robot(
                 ctx,

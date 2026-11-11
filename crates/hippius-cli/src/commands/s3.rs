@@ -21,7 +21,7 @@ use crate::cli::{
 };
 use crate::commands::files::{save_secret, shown_once};
 use crate::commands::{
-    Input, Pages, Printed, dry_run_requests, list, local_dry_run, plan_setting, print_body,
+    Input, Pages, Printed, SettingChange, list, local_dry_run, object, plan_setting, print_body,
     print_body_or, print_envelope, print_keyed_list, print_with, require_public, require_reveal,
     require_reveal_or_file, subscribed,
 };
@@ -59,7 +59,10 @@ fn subscription(ctx: &Context<'_>, client: &Client, command: &S3Subscription) ->
             list::run(ctx, client, &request, args)
         }
         S3Subscription::Subscribe(args) => {
-            let body = json!({ "plan": args.plan.code(), "rail": args.pay_from.code() });
+            let body = s3::SubscribeBody {
+                plan: args.plan.code(),
+                rail: args.pay_from.code(),
+            };
             let request = Request::to(&s3::SUBSCRIBE, [])
                 .json(&body)
                 .about(format!("buy the S3 plan `{}`", args.plan.code()));
@@ -72,13 +75,13 @@ fn subscription(ctx: &Context<'_>, client: &Client, command: &S3Subscription) ->
             let (request, gate) = match args.plan {
                 Some(plan) => (
                     Request::to(&s3::SUBSCRIPTION_CHANGE, [])
-                        .json(&json!({ "plan": plan.code() }))
+                        .json(&s3::PlanChangeBody { plan: plan.code() })
                         .about(format!("switch the S3 plan to `{}`", plan.code())),
                     Gate::Confirm {
                         consequence: Some("a plan below the current usage pauses uploads"),
                     },
                 ),
-                None => plan_setting(&s3::SUBSCRIPTION_CHANGE, "S3", &args.setting)?,
+                None => plan_setting(&s3::SUBSCRIPTION_CHANGE, "S3", &args.setting, setting_body)?,
             };
             print_body(ctx, client, &request, gate)
         }
@@ -96,6 +99,20 @@ fn subscription(ctx: &Context<'_>, client: &Client, command: &S3Subscription) ->
                 Ok(cancelled)
             })
         }
+    }
+}
+
+/// The S3 plan PATCH that keeps the plan and changes `change`.
+fn setting_body(change: SettingChange) -> s3::SettingChangeBody<'static> {
+    match change {
+        SettingChange::Funding(funding) => s3::SettingChangeBody {
+            funding: Some(funding),
+            ..s3::SettingChangeBody::default()
+        },
+        SettingChange::StorageCap(cap) => s3::SettingChangeBody {
+            storage_cap_bytes: Some(cap),
+            ..s3::SettingChangeBody::default()
+        },
     }
 }
 
@@ -118,13 +135,12 @@ fn buckets(ctx: &Context<'_>, command: &Buckets) -> Result<Printed> {
             region,
         } => {
             check_bucket(bucket_name)?;
-            let mut body = Map::new();
-            body.insert("name".to_owned(), bucket_name.as_str().into());
-            if let Some(region) = region {
-                body.insert("region".to_owned(), region.as_str().into());
-            }
+            let body = s3::BucketCreateBody {
+                name: bucket_name,
+                region: region.as_deref(),
+            };
             let request = Request::to(&s3::BUCKET_CREATE, [])
-                .json(&Value::Object(body))
+                .json(&body)
                 .about(format!("create the bucket `{bucket_name}`"));
             let client = ctx.load_authed_client()?;
             print_body(ctx, &client, &request, Gate::Confirm { consequence: None })
@@ -381,7 +397,7 @@ fn update_acl(ctx: &Context<'_>, args: &AclUpdate) -> Result<Printed> {
     }
     let request = Request::to(&s3::BUCKET_ACL_SET, [name])
         .listed_by("hipc s3 buckets list")
-        .json(&json!({ "policy": policy }))
+        .json(&s3::BucketAclSetBody { policy: &policy })
         .about(format!(
             "replace the whole policy of the bucket `{name}` with the one in {}, which can make \
              it readable by anyone",
@@ -459,28 +475,29 @@ impl TokenRoutes {
 /// `page` and `page_size`, so its `next` links are followed; the first request carries no
 /// parameters, and the server picks the page size.
 fn list_tokens(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
+    let first_page = |kind: TokenKind| {
+        Request::to(&TokenRoutes::of(kind).list, [])
+            .about(format!("list the S3 `{}` tokens", kind.code()))
+    };
+    if ctx.dry_run() {
+        let [master, sub] = [TokenKind::Master, TokenKind::Sub].map(first_page);
+        return ctx
+            .dry_run_of(client, &[&master, &sub])
+            .map(Printed::Document);
+    }
     let mut items = Vec::new();
-    let mut dry_runs = Vec::new();
     for kind in [TokenKind::Master, TokenKind::Sub] {
         let mut pages = Pages::starting_at("1");
         let mut page_number: Option<String> = None;
         loop {
-            let request = Request::to(&TokenRoutes::of(kind).list, [])
-                .about(format!("list the S3 `{}` tokens", kind.code()));
+            let request = first_page(kind);
             let request = match &page_number {
                 Some(number) => request.query("page", number),
                 None => request,
             };
-            let page = match ctx.call(client, &request, Gate::Open)? {
-                Step::Sent(response) => {
-                    pages.read(response.bytes().len())?;
-                    hippius::page(response.json()?)?
-                }
-                Step::DryRun(doc) => {
-                    dry_runs.push(doc);
-                    break;
-                }
-            };
+            let response = ctx.send(client, &request)?;
+            pages.read(response.bytes().len())?;
+            let page = hippius::page(response.json()?)?;
             // A server that ignores `page` and answers page 1 again, with a `next` that
             // keeps rising, would repeat the list on every page; a later page that names
             // another `page` than the one asked is refused.
@@ -500,11 +517,7 @@ fn list_tokens(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
             page_number = Some(number);
         }
     }
-    if dry_runs.is_empty() {
-        Ok(Printed::List(hippius::envelope(items)))
-    } else {
-        Ok(Printed::Document(dry_run_requests(dry_runs)))
-    }
+    Ok(Printed::List(hippius::envelope(items)))
 }
 
 fn create_token(ctx: &Context<'_>, args: &TokenCreate) -> Result<Printed> {
@@ -545,14 +558,12 @@ fn issued_token(
 
 /// The create body: only the flags the caller set. A sub-token flag on a master token is a
 /// usage error, not a field the server would ignore.
-fn token_body(args: &TokenCreate) -> Result<Value> {
-    let mut body = Map::new();
-    if let Some(name) = &args.name {
-        body.insert("name".to_owned(), name.as_str().into());
-    }
-    if let Some(expires_at) = &args.expires_at {
-        body.insert("expires_at".to_owned(), expires_at.as_str().into());
-    }
+fn token_body(args: &TokenCreate) -> Result<s3::TokenCreateBody<'_>> {
+    let body = s3::TokenCreateBody {
+        name: args.name.as_deref(),
+        expires_at: args.expires_at.as_deref(),
+        ..s3::TokenCreateBody::default()
+    };
     let sub_flags = args.scope_type.is_some()
         || !args.buckets.is_empty()
         || !args.actions.is_empty()
@@ -560,34 +571,22 @@ fn token_body(args: &TokenCreate) -> Result<Value> {
         || !args.ips.is_empty()
         || args.not_before.is_some();
     match args.kind {
-        TokenKind::Master if sub_flags => {
-            return Err(Error::usage(
-                "`--scope-type`, `--bucket`, `--action`, `--prefix`, `--ip`, and \
-                 `--not-before` are for sub tokens, and `--kind` is `master`",
-                "pass `--kind sub` to create a token with those limits",
-            ));
-        }
-        TokenKind::Master => {}
-        TokenKind::Sub => {
-            if let Some(scope) = args.scope_type {
-                body.insert("scope_type".to_owned(), scope.code().into());
-            }
-            for (field, values) in [
-                ("bucket_names", &args.buckets),
-                ("actions", &args.actions),
-                ("allowed_prefixes", &args.prefixes),
-                ("ip_allowlist", &args.ips),
-            ] {
-                if !values.is_empty() {
-                    body.insert(field.to_owned(), values.clone().into());
-                }
-            }
-            if let Some(not_before) = &args.not_before {
-                body.insert("not_before".to_owned(), not_before.as_str().into());
-            }
-        }
+        TokenKind::Master if sub_flags => Err(Error::usage(
+            "`--scope-type`, `--bucket`, `--action`, `--prefix`, `--ip`, and `--not-before` are \
+             for sub tokens, and `--kind` is `master`",
+            "pass `--kind sub` to create a token with those limits",
+        )),
+        TokenKind::Master => Ok(body),
+        TokenKind::Sub => Ok(s3::TokenCreateBody {
+            scope_type: args.scope_type.map(crate::cli::ScopeType::code),
+            bucket_names: &args.buckets,
+            actions: &args.actions,
+            allowed_prefixes: &args.prefixes,
+            ip_allowlist: &args.ips,
+            not_before: args.not_before.as_deref(),
+            ..body
+        }),
     }
-    Ok(Value::Object(body))
 }
 
 fn revoke_token(ctx: &Context<'_>, target: &TokenTarget) -> Result<Printed> {
@@ -886,12 +885,15 @@ fn configure(ctx: &Context<'_>, args: &Configure) -> Result<Printed> {
         context::env_os("HOME").map(PathBuf::from).as_deref(),
     )?;
     let doc = |written: bool| {
-        json!({
-            "aws_profile": profile.as_str(),
-            "config_path": files.config.display().to_string(),
-            "credentials_path": files.credentials.display().to_string(),
-            "secret_written": written,
-        })
+        object([
+            ("aws_profile", profile.as_str().into()),
+            ("config_path", files.config.display().to_string().into()),
+            (
+                "credentials_path",
+                files.credentials.display().to_string().into(),
+            ),
+            ("secret_written", written.into()),
+        ])
     };
     if ctx.dry_run() {
         files.check()?;
@@ -913,7 +915,7 @@ fn configure(ctx: &Context<'_>, args: &Configure) -> Result<Printed> {
             profile.as_str()
         ));
     }
-    Ok(Printed::Document(doc(true)))
+    Ok(Printed::Document(Value::Object(doc(true))))
 }
 
 /// What an S3 plan cancel leaves, for its question and `hipc api`'s.
