@@ -453,7 +453,7 @@ fn preview(
     invite: &InviteToken,
 ) -> Result<Printed> {
     if ctx.dry_run() {
-        let doc = ctx.dry_run_document(client, &preview_request(TOKEN_PLACEHOLDER))?;
+        let doc = ctx.dry_run_of(client, &[&preview_request(TOKEN_PLACEHOLDER)])?;
         return Ok(Printed::Document(doc));
     }
     read_preview(ctx, client, settings, invite).map(Printed::Document)

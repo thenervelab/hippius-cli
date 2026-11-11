@@ -296,7 +296,7 @@ impl<'a> Context<'a> {
     pub(crate) fn call(&self, client: &Client, request: &Request, gate: Gate<'_>) -> Result<Step> {
         match gate {
             Gate::Open if self.global.dry_run => {
-                return self.dry_run_document(client, request).map(Step::DryRun);
+                return self.dry_run_of(client, &[request]).map(Step::DryRun);
             }
             // An open request meets the same refusals in `send`.
             Gate::Open => {}
@@ -319,7 +319,7 @@ impl<'a> Context<'a> {
     /// so a confirmed write never fails on either (tenet 5).
     pub(crate) fn check_write(&self, client: &Client, draft: &Request) -> Result<Write> {
         if self.global.dry_run {
-            return self.dry_run_document(client, draft).map(Write::DryRun);
+            return self.dry_run_of(client, &[draft]).map(Write::DryRun);
         }
         let account = client.account_header(draft)?;
         let project = client.project_header(draft)?;
@@ -370,12 +370,6 @@ impl<'a> Context<'a> {
         Ok(doc)
     }
 
-    /// The `--dry-run` document of a command that sends `request` alone:
-    /// [`Context::dry_run_of`] that one request.
-    pub(crate) fn dry_run_document(&self, client: &Client, request: &Request) -> Result<Value> {
-        self.dry_run_of(client, &[request])
-    }
-
     /// The `--dry-run` document of a command whose real run sends `requests`: `dry_run`, then
     /// `requests`, the [`Context::describe`] document of each, in the order a real run sends
     /// them, reads included. A value only a read can give is a `<...>` placeholder in the
@@ -383,18 +377,11 @@ impl<'a> Context<'a> {
     /// `requests`, and a reader finds the requests in one place (tenet 5). A field a command
     /// adds, such as `reads_first`, goes after them.
     pub(crate) fn dry_run_of(&self, client: &Client, requests: &[&Request]) -> Result<Value> {
-        let requests = self.describe_each(client, requests)?;
-        Ok(json!({ "dry_run": true, "requests": requests }))
-    }
-
-    /// The [`Context::describe`] document of each of `requests`, in order: the `requests` of
-    /// [`Context::dry_run_of`].
-    pub(crate) fn describe_each(&self, client: &Client, requests: &[&Request]) -> Result<Value> {
-        requests
+        let requests = requests
             .iter()
             .map(|request| self.describe(client, request))
-            .collect::<Result<Vec<_>>>()
-            .map(Value::Array)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(json!({ "dry_run": true, "requests": requests }))
     }
 
     /// Sends `request` with no dry-run check and no confirmation: for the later requests of

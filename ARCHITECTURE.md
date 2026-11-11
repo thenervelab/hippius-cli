@@ -170,14 +170,19 @@ What `hipc` sends is typed; what the server answers is printed as it came.
   sent as `null` is a plain `Option`. The end-to-end tests assert the bytes sent, so a field
   moved or renamed fails them. One shape several routes take is one struct whose doc names
   each (`NameBody`); a body that holds a secret writes its own `Debug`, which leaves it out.
-  `Request::json` takes the struct.
+  `Request::json` takes the struct. The empty body `{}` some POSTs take is
+  `routes::EmptyBody`.
 - **A view** is a small `#[derive(Deserialize)]` struct in the same file, with the fields a
   command decides on and nothing else, read from the answer's `Value` and never printed:
   `let offer: InviteOffer = hippius::view_of(&answer);`. A view that replaces
   `answer.get("field").and_then(Value::as_str)` reads each field with
   `#[serde(default, deserialize_with = "field")]` and is read with `view_of`, so a field that
   is missing, `null`, or of another type is `None`, as the `Value` read was, and an answer that
-  is not an object reads as all `None`. A view a command needs whole (the hAlpha quote) takes
+  is not an object reads as all `None`. A view inside a view reads with `nested`, and a list of
+  views with `each`, so an item that is not an object is a view of `None`s, as
+  `answer.pointer(..)` and a loop of `get`s saw them. A decision that tells a missing field from
+  `null`, or from one of another type, reads a `hippius::Slot` (the VM launch's
+  `backup_error`, an operation's `node`). A view a command needs whole (the hAlpha quote) takes
   plain fields and is read with `deserialize`, whose error the command turns into its own
   `internal`.
 - **Never** `#[serde(flatten)]`, an untagged enum, or an internally tagged one in a view:
@@ -187,15 +192,15 @@ What `hipc` sends is typed; what the server answers is printed as it came.
 - **Numbers** a decision depends on stay exact: an integer is `u64` (which takes only an
   integer that fits, as `as_u64` did), an 18-decimal amount is the digits (`planck` in
   `routes/billing.rs`), and a number kept as sent is a `serde_json::Number`.
-- **A server vocabulary** (a purchase status, an auto-reload state) is an enum in the route's
-  file with an `Other(String)` variant, so a value the server adds is not an error, and an
-  `as_str` that gives the server's spelling back for a message. A server catalog (an S3
+- **A server vocabulary** (a purchase status, an auto-reload state, a VM status, a Kubernetes
+  operation's state and kind) is an enum in the route's file with an `Other(String)` variant,
+  so a value the server adds is not an error, and an `as_str` that gives the server's spelling
+  back for a message. The `vocabulary!` macro in `routes.rs` declares one. A server catalog (an S3
   plan, a Hub key role) stays a validated string (owner decision D5).
 - **A dry run** is built by `Context::dry_run_of(client, &[&read, &write])`, every request a
   real run sends, in order; a command adds its own field (`reads_first`) after. A command
   that changes only a local file uses `commands::local_dry_run`, whose fields are a
-  `serde_json::Map`, so none can be dropped. The few commands that still set
-  `doc["requests"]` themselves move to `dry_run_of` when their service gets its bodies.
+  `serde_json::Map`, so none can be dropped. No command sets `doc["requests"]` itself.
 
 ## How to add a command (today)
 
