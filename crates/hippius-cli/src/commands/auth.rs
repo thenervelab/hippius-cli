@@ -7,6 +7,7 @@ use hippius::{ConfigFile, Error, Given, Overrides, Request, Result, Source, Toke
 use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
 
+use crate::cli::Auth;
 use crate::commands::{Input, Printed, account, local_dry_run, object};
 use crate::context::{self, Context, Question};
 use crate::hidden::{self, Typed};
@@ -14,7 +15,15 @@ use crate::output;
 
 /// `hipc auth login`: `--token-file <path>`, or at a terminal the token typed at a prompt,
 /// stores a token the caller holds.
-pub(crate) fn login(ctx: &Context<'_>, token_file: Option<&Path>) -> Result<Printed> {
+pub(crate) fn run(ctx: &Context<'_>, command: &Auth) -> Result<Printed> {
+    match command {
+        Auth::Login { token_file } => login(ctx, token_file.as_deref()),
+        Auth::Status => status(ctx),
+        Auth::Logout => logout(ctx),
+    }
+}
+
+fn login(ctx: &Context<'_>, token_file: Option<&Path>) -> Result<Printed> {
     let login = Login::new(ctx)?;
     // A token bound to any origin but the default one is sent there from now on. Asked
     // before the hidden prompt, the question says the token comes next: this answer is
@@ -243,7 +252,7 @@ fn token_from(typed: std::io::Result<Typed>, retry: &str) -> Result<Token> {
 /// The token check decides the exit code. A failed user read does not undo it: the
 /// command still exits 0, with `user` null and `user_error` saying what failed, and text
 /// mode warns on stderr.
-pub(crate) fn status(ctx: &Context<'_>) -> Result<Printed> {
+fn status(ctx: &Context<'_>) -> Result<Printed> {
     let config = context::config()?;
     let overrides = ctx.overrides()?;
     let (settings, client) = ctx.authed(&config)?;
@@ -329,7 +338,7 @@ fn user(answer: &Value) -> Result<Value> {
 }
 
 /// `hipc auth logout`: removes the stored token. Nothing is revoked on the server.
-pub(crate) fn logout(ctx: &Context<'_>) -> Result<Printed> {
+fn logout(ctx: &Context<'_>) -> Result<Printed> {
     let path = context::config_path()?;
     let overrides = ctx.overrides()?;
     let config = ConfigFile::load(path.clone())?;
