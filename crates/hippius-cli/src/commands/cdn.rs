@@ -10,6 +10,7 @@
 //! the DNS records again, which `hipc schema` calls idempotent, not read-only, so it stays a
 //! write.
 
+mod rule_list;
 pub(crate) mod waf;
 use hippius::routes::cdn::{self, Origin, ZoneUpdateBody};
 use hippius::{Client, DnsCredentials, Error, Request, Result, phrase, view_of};
@@ -20,8 +21,8 @@ use crate::cli::{
     Cdn, CdnCap, CdnEstimate, CdnHostnames, CdnPurge, CdnPurges, CdnRules, CdnStats, CdnZones,
     DnsSetup, StatsStep, ZoneCreate, ZoneSettings, ZoneUpdate,
 };
+use crate::commands::cdn::rule_list::{CACHE_RULES, ListUpdate, read_rules, update_rules};
 use crate::commands::credits::{DECIMALS, amount, compare};
-use crate::commands::replace::{self, Entry, Found, Replace, replace_list};
 use crate::commands::spend_cap::{self, InForce, NewCap};
 use crate::commands::{
     Input, Printed, print_body, print_body_or, print_keyed_list, print_with, require_public,
@@ -31,10 +32,6 @@ use crate::context::{self, Context, Gate, Write};
 /// The largest `--cors-file` read, in bytes. Arbitrary: swagger's limits (32 origins, and
 /// 32 headers each way) fit in a few kilobytes, and a wrong path is refused rather than sent.
 const MAX_CORS_BYTES: u64 = 64 * 1024;
-
-/// The largest `--rules-file` read, in bytes. Arbitrary: 50 rules, the server's limit, fit
-/// in a few kilobytes, and a wrong path is refused rather than sent.
-const MAX_RULES_BYTES: u64 = 1024 * 1024;
 
 pub(crate) fn run(ctx: &Context<'_>, command: &Cdn) -> Result<Printed> {
     match command {
@@ -185,190 +182,21 @@ fn purges(ctx: &Context<'_>, client: &Client, command: &CdnPurges) -> Result<Pri
 
 fn rules(ctx: &Context<'_>, command: &CdnRules) -> Result<Printed> {
     match command {
-        CdnRules::Get { zone_id } => print_body(
-            ctx,
-            &ctx.load_authed_client()?,
-            &rules_get(zone_id),
-            Gate::Open,
-        ),
+        CdnRules::Get { zone_id } => read_rules(ctx, zone_id, &CACHE_RULES),
         CdnRules::Update {
             zone_id,
             rules_file,
             remove_others,
         } => {
-            let rules = Input {
-                path: rules_file,
-                flag: "--rules-file",
-                what: "cache rules",
-            };
-            let (body, parsed) = rules.read_json(MAX_RULES_BYTES)?;
-            check_cache_rules(&parsed, &rules.name())?;
-            let Some(entries) = cache_rule_entries(&parsed) else {
-                return Err(Error::usage(
-                    format!(
-                        "the cache rules from {} are not a JSON object with a `rules` array, \
-                         or an array, of rules that each have a `match` object",
-                        rules.name()
-                    ),
-                    "write the rules as `{\"rules\": [...]}`, the shape `hipc cdn rules get` \
-                     prints",
-                ));
-            };
-            let read = rules_get(zone_id);
-            let read_action = read.action();
-            let replace = Replace {
-                write: Request::to(&cdn::RULES_UPDATE, [zone_id])
-                    .listed_by(ZONES)
-                    .raw_json(body)
-                    .about(format!(
-                        "replace every cache rule of the CDN zone `{zone_id}` with the rules \
-                         from {}",
-                        rules.name()
-                    )),
-                consequence: None,
-                entries,
+            let update = ListUpdate {
+                zone_id,
+                rules_file,
                 remove_others: *remove_others,
-                read,
-                draft_body: None,
-                // The rules route has no version: swagger gives `If-Match` only for a zone's
-                // WAF version, so this PUT cannot be made conditional, and a rule another
-                // client saves between the read and the PUT is written over unseen. The help
-                // says so; send `If-Match` here once the route takes one.
-                draft_if_match: None,
-                noun: "cache rule",
-                owner: format!("the CDN zone `{zone_id}`"),
+                check: false,
             };
-            let current = |answer: Value| {
-                cache_rule_entries(&answer)
-                    .map(Found::new)
-                    .ok_or_else(|| crate::commands::unreadable(&read_action))
-            };
-            replace_list(ctx, &ctx.load_authed_client()?, &replace, current)
+            update_rules(ctx, &update, &CACHE_RULES)
         }
     }
-}
-
-fn rules_get(zone_id: &str) -> Request {
-    Request::to(&cdn::RULES, [&zone_id])
-        .about(format!("get the cache rules of the CDN zone `{zone_id}`"))
-        .listed_by(ZONES)
-}
-
-/// The keys swagger lists for a cache rule (`PUT /api/cdn/zones/{zone_id}/rules/`).
-const CACHE_RULE_KEYS: [&str; 2] = ["match", "actions"];
-
-/// The keys swagger lists for a cache rule's `match`.
-const MATCH_KEYS: [&str; 3] = ["path_prefix", "glob", "extensions"];
-
-/// The keys swagger lists for a cache rule's `actions`.
-const ACTION_KEYS: [&str; 5] = [
-    "edge_ttl",
-    "browser_ttl",
-    "query_string",
-    "bypass",
-    "ignore_set_cookie",
-];
-
-/// Refuses a rule of the file that has a key swagger does not list, in the rule, its
-/// `match`, or its `actions`, so a misspelled key cannot make the rule do something other
-/// than what was written. The values, and the shape of the list itself, are left to
-/// [`cache_rule_entries`] and the server.
-fn check_cache_rules(list: &Value, file: &str) -> Result<()> {
-    let Some(rules) = cache_rules(list) else {
-        return Ok(());
-    };
-    for (index, rule) in rules.iter().enumerate() {
-        if let Some(problem) = unknown_cache_key(rule) {
-            return Err(Error::usage(
-                format!("`rules[{index}]` from {file} {problem}"),
-                format!("fix `rules[{index}]`; the zone keeps its rules until then"),
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// The first key of `rule` that swagger does not list, as the end of a sentence that starts
-/// with the rule's place in the file; `None` when every key is listed.
-fn unknown_cache_key(rule: &Value) -> Option<String> {
-    let listed = |keys: &[&str]| phrase::ticked(keys, "and");
-    let unknown = |object: &Value, keys: &[&str]| {
-        object
-            .as_object()?
-            .keys()
-            .find(|key| !keys.contains(&key.as_str()))
-            .cloned()
-    };
-    if let Some(key) = unknown(rule, &CACHE_RULE_KEYS) {
-        return Some(format!(
-            "has the key `{key}`, which a cache rule does not have: a rule has only {}",
-            listed(&CACHE_RULE_KEYS)
-        ));
-    }
-    for (part, keys, noun) in [
-        ("match", &MATCH_KEYS[..], "a `match`"),
-        ("actions", &ACTION_KEYS[..], "`actions`"),
-    ] {
-        if let Some(key) = rule.get(part).and_then(|object| unknown(object, keys)) {
-            return Some(format!(
-                "has the key `{key}` in its `{part}`: {noun} has only {}",
-                listed(keys)
-            ));
-        }
-    }
-    None
-}
-
-/// The rules of a cache rule list: `{"rules": [...]}`, or a bare array, which swagger says
-/// the PUT accepts too; `None` for any other shape.
-fn cache_rules(list: &Value) -> Option<&Vec<Value>> {
-    match list {
-        Value::Array(rules) => Some(rules),
-        list => list.get("rules")?.as_array(),
-    }
-}
-
-/// The entries of a cache rule list: `{"rules": [...]}`, or a bare array, which swagger
-/// says the PUT accepts too; `None` for any other shape, or for a rule without a `match`
-/// object.
-///
-/// The list is ordered and the first match wins (swagger), so a rule is one entry by its
-/// place and its `match`: `{"position", "match"}`. Moving a rule, or putting a new one ahead
-/// of it, changes which rule a path meets first, so it counts as removing the rule from its
-/// old place. Changing a rule's `actions` in place edits it. Of two rules that share a
-/// `match` only the first ever applies, so the place tells them apart and their `actions`
-/// need not. Swagger says a leading dot of an extension is dropped, so `extensions` is
-/// compared without one, as a set. A rule without a `match` makes the list unreadable
-/// rather than a shared `null` key.
-fn cache_rule_entries(list: &Value) -> Option<Vec<Entry>> {
-    let rules = cache_rules(list)?;
-    let matches = rules
-        .iter()
-        .map(|rule| cache_match(rule.get("match")?))
-        .collect::<Option<Vec<Value>>>()?;
-    let entries = matches
-        .into_iter()
-        .enumerate()
-        .map(|(position, key)| Entry::new(json!({ "position": position, "match": key })))
-        .collect();
-    Some(entries)
-}
-
-/// A rule's `match` as a key: the object with `extensions` as a set without leading dots;
-/// `None` for a `match` that is not an object.
-fn cache_match(found: &Value) -> Option<Value> {
-    let mut key = found.as_object()?.clone();
-    if let Some(Value::Array(extensions)) = key.get("extensions") {
-        let bare = extensions
-            .iter()
-            .map(|e| match e.as_str() {
-                Some(text) => text.strip_prefix('.').unwrap_or(text).into(),
-                None => e.clone(),
-            })
-            .collect();
-        key.insert("extensions".to_owned(), replace::set(bare));
-    }
-    Some(Value::Object(key))
 }
 
 /// `POST /api/cdn/estimate/` with only the keys given. It changes nothing, so it is not
