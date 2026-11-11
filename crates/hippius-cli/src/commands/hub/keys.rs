@@ -7,7 +7,8 @@
 
 use std::path::Path;
 
-use hippius::{Error, Method, Request, Result, phrase};
+use hippius::routes::hub;
+use hippius::{Error, Request, Result, phrase};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{HubKeys, KeyCreate};
@@ -17,8 +18,6 @@ use crate::commands::hub::{
 };
 use crate::commands::{Printed, print_list_with, print_with, require_reveal_or_file};
 use crate::context::{Context, Gate};
-
-const KEYS: &str = "/registry/keys/";
 
 const LIST: &str = "hipc hub keys list";
 
@@ -40,7 +39,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &HubKeys) -> Result<Printed> {
 /// `GET /api/registry/keys/` (swagger `registry_keys_list`), read whole: swagger lists no
 /// page parameter, so a `next` link is `internal` rather than a list cut short.
 fn list(ctx: &Context<'_>) -> Result<Printed> {
-    let request = Request::get(KEYS).about("list the Hub keys");
+    let request = Request::to(&hub::KEYS, []).about("list the Hub keys");
     print_list_with(ctx, &ctx.load_authed_client()?, &request, |response| {
         let mut page = hippius::page(response.json()?)?;
         page.items = page
@@ -55,7 +54,7 @@ fn list(ctx: &Context<'_>) -> Result<Printed> {
 /// `GET /api/registry/keys/<id>/` (swagger `registry_keys_read`, "show metadata"), printed
 /// as the list prints a row: a preview with `secret: null`.
 fn get(ctx: &Context<'_>, id: u64) -> Result<Printed> {
-    let request = Request::new(Method::Get, format!("{KEYS}{id}/"))
+    let request = Request::to(&hub::KEY, [&id])
         .listed_by(LIST)
         .about(format!("get the Hub key `{id}`"));
     print_with(
@@ -109,7 +108,7 @@ fn create(ctx: &Context<'_>, args: &KeyCreate) -> Result<Printed> {
     if let Some(days) = args.expires_in {
         body.insert("expires_days".to_owned(), days.into());
     }
-    let request = Request::new(Method::Post, KEYS)
+    let request = Request::to(&hub::KEY_CREATE, [])
         .json(&Value::Object(body))
         .about(format!(
             "create the Hub key {} with the role `{}`",
@@ -150,7 +149,7 @@ fn create(ctx: &Context<'_>, args: &KeyCreate) -> Result<Printed> {
 /// `POST /api/registry/keys/<id>/rotate/` (swagger `registry_keys_rotate_create`), no body.
 fn rotate(ctx: &Context<'_>, id: u64, reveal: bool, secret_file: Option<&Path>) -> Result<Printed> {
     require_reveal_or_file(ctx, reveal, secret_file.is_some())?;
-    let request = Request::new(Method::Post, format!("{KEYS}{id}/rotate/"))
+    let request = Request::to(&hub::KEY_ROTATE, [&id])
         .listed_by(LIST)
         .about(format!("rotate the secret of the Hub key `{id}`"));
     let consequence = format!(
@@ -185,7 +184,7 @@ fn rotate(ctx: &Context<'_>, id: u64, reveal: bool, secret_file: Option<&Path>) 
 /// 204. A body the server sends anyway is printed as the key list prints a row, without any
 /// secret field or `docker login` command (tenet 9).
 fn delete(ctx: &Context<'_>, id: u64) -> Result<Printed> {
-    let request = Request::new(Method::Delete, format!("{KEYS}{id}/"))
+    let request = Request::to(&hub::KEY_DELETE, [&id])
         .listed_by(LIST)
         .about(format!("delete the Hub key `{id}`"));
     let gate = Gate::Confirm {

@@ -8,9 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
+use hippius::routes::{API_BASE, Route, hub};
 use hippius::{
-    CHECK_FIRST_HINT, Client, Code, ConfigFile, Error, HubMarker, Method, Request, Result,
-    SideEffects, Source, phrase,
+    CHECK_FIRST_HINT, Client, Code, ConfigFile, Error, HubMarker, Request, Result, SideEffects,
+    Source, phrase,
 };
 use serde_json::{Map, Value, json};
 
@@ -43,12 +44,12 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Hub) -> Result<Printed> {
         Hub::Plans => print_envelope(
             ctx,
             &ctx.client(&context::config()?)?,
-            &Request::get(PLANS).about("list the Hub plans"),
+            &Request::to(&hub::PLANS, []).about("list the Hub plans"),
         ),
         Hub::Subscription(HubSubscription::Get) => print_envelope(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get(SUBSCRIPTIONS).about("list the Hub subscriptions"),
+            &Request::to(&hub::SUBSCRIPTIONS, []).about("list the Hub subscriptions"),
         ),
         Hub::Subscription(HubSubscription::Subscribe(args)) => subscribe(ctx, args),
         Hub::Subscription(HubSubscription::Cancel { subscription_id }) => {
@@ -70,26 +71,23 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Hub) -> Result<Printed> {
     }
 }
 
-/// The namespace's repositories (`registry_repositories_list`).
-const REPOSITORIES: &str = "/registry/repositories/";
-
 /// `hipc hub repositories`. Swagger lists no page parameter for the list, so it is read
 /// whole: a `next` link is `internal`. It has no GET of one repository either, so `get`
 /// reads the list and picks the row by `name`.
 fn repositories(ctx: &Context<'_>, command: &HubRepositories) -> Result<Printed> {
-    let list = Request::get(REPOSITORIES).about("list the Hub repositories");
+    let list = Request::to(&hub::REPOSITORIES, []).about("list the Hub repositories");
     match command {
         HubRepositories::List => print_envelope(ctx, &ctx.load_authed_client()?, &list),
         HubRepositories::Get { repository } => {
             let client = ctx.load_authed_client()?;
             print_with(ctx, &client, &list, Gate::Open, |response| {
-                let rows = hippius::page(response.json()?)?.into_complete(REPOSITORIES)?;
+                let rows = hippius::page(response.json()?)?.into_complete(list.target())?;
                 repository_named(rows, repository)
             })
         }
         HubRepositories::Delete { repository } => {
             let client = ctx.load_authed_client()?;
-            let request = Request::new(Method::Delete, format!("{REPOSITORIES}{repository}/"))
+            let request = Request::to(&hub::REPOSITORY_DELETE, [repository])
                 .listed_by("hipc hub repositories list")
                 .about(format!(
                     "delete the Hub repository `{repository}` with every artifact and tag in it"
@@ -132,7 +130,7 @@ fn artifacts(ctx: &Context<'_>, command: &HubArtifacts) -> Result<Printed> {
         HubArtifacts::List { repository } => {
             let client = ctx.load_authed_client()?;
             let action = format!("list the artifacts of the Hub repository `{repository}`");
-            let request = Request::get(format!("{REPOSITORIES}{repository}/artifacts/"))
+            let request = Request::to(&hub::ARTIFACTS, [repository])
                 .listed_by("hipc hub repositories list")
                 .about(action);
             print_envelope(ctx, &client, &request)
@@ -142,7 +140,7 @@ fn artifacts(ctx: &Context<'_>, command: &HubArtifacts) -> Result<Printed> {
             reference,
         } => {
             let client = ctx.load_authed_client()?;
-            let request = artifact(repository, reference, Method::Get).about(format!(
+            let request = artifact(&hub::ARTIFACT, repository, reference).about(format!(
                 "get the artifact `{reference}` of the Hub repository `{repository}`"
             ));
             print_body(ctx, &client, &request, Gate::Open)
@@ -153,7 +151,7 @@ fn artifacts(ctx: &Context<'_>, command: &HubArtifacts) -> Result<Printed> {
         } => {
             let client = ctx.load_authed_client()?;
             // Deleting by a tag deletes the artifact it points at, so its other tags go too.
-            let request = artifact(repository, reference, Method::Delete).about(format!(
+            let request = artifact(&hub::ARTIFACT_DELETE, repository, reference).about(format!(
                 "delete the artifact `{reference}` from the Hub repository `{repository}`, \
                  with every tag on it"
             ));
@@ -163,14 +161,12 @@ fn artifacts(ctx: &Context<'_>, command: &HubArtifacts) -> Result<Printed> {
     }
 }
 
-/// A request for one artifact. Both names were checked when argv was parsed, so neither can
-/// change the route, and the hint of a 404 can repeat them as words.
-fn artifact(repository: &str, reference: &str, method: Method) -> Request {
-    Request::new(
-        method,
-        format!("{REPOSITORIES}{repository}/artifacts/{reference}/"),
-    )
-    .listed_by(format!("hipc hub artifacts list {repository}"))
+/// A request to `route`, a read or a delete of one artifact. Both names were checked when
+/// argv was parsed, so neither can change the route, and the hint of a 404 can repeat them as
+/// words.
+fn artifact(route: &Route<2>, repository: &str, reference: &str) -> Request {
+    Request::to(route, [&repository, &reference])
+        .listed_by(format!("hipc hub artifacts list {repository}"))
 }
 
 /// `GET /api/registry/usage/`, an object printed as sent, or with `--repositories` the
@@ -180,10 +176,10 @@ fn usage(ctx: &Context<'_>, repositories: bool) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
     let printed = if repositories {
         let request =
-            Request::get("/registry/usage/repositories/").about("list the Hub usage by repository");
+            Request::to(&hub::USAGE_BY_REPOSITORY, []).about("list the Hub usage by repository");
         print_envelope(ctx, &client, &request)
     } else {
-        let request = Request::get("/registry/usage/").about("get the Hub usage");
+        let request = Request::to(&hub::USAGE, []).about("get the Hub usage");
         print_body(ctx, &client, &request, Gate::Open)
     };
     printed.map_err(|error| with_provision_hint(ctx, error))
@@ -205,11 +201,10 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
         Ok(id) => Value::from(id),
         Err(_) => Value::from(format!("<looked up from {}>", args.plan)),
     };
-    let draft =
-        Request::new(Method::Post, "/registry/subscribe/").json(&json!({ "plan_id": plan_id }));
+    let draft = Request::to(&hub::SUBSCRIBE, []).json(&json!({ "plan_id": plan_id }));
     // The reads a real run sends after the question, which a dry run lists.
-    let plans = Request::get(PLANS).about("list the Hub plans");
-    let subscriptions = Request::get(SUBSCRIPTIONS).about("list the Hub subscriptions");
+    let plans = Request::to(&hub::PLANS, []).about("list the Hub plans");
+    let subscriptions = Request::to(&hub::SUBSCRIPTIONS, []).about("list the Hub subscriptions");
     let checked = match ctx.check_write(&client, &draft)? {
         Write::DryRun(mut doc) => {
             // Which subscriptions a real run cancels is known only after it reads them, which
@@ -218,7 +213,16 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
             // `requests` between the reads and the POST.
             // `{subscription_id}` is the one placeholder not written `<...>`: it shipped
             // before the style was set, and changing a field's value is a break (tenet 15).
-            let cancel = Request::new(Method::Delete, "/registry/subscriptions/{subscription_id}/");
+            // The template goes as it is: `Request::to` would percent-encode a stand-in, and
+            // the client refuses a path with an encoding.
+            let route = hub::SUBSCRIPTION_CANCEL;
+            let template = route.endpoint().template();
+            let cancel = Request::new(
+                route.method(),
+                template
+                    .strip_prefix(API_BASE)
+                    .expect("a route's template starts with the API base"),
+            );
             let mut requests = vec![&plans, &subscriptions];
             if args.replace {
                 doc["may_cancel_first"] = ctx.describe(&client, &cancel)?;
@@ -255,14 +259,14 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
     let mark = Mark::set(ctx, &client, &settings.profile, &paid)?;
     let mut cancelled = Vec::new();
     for id in &paid {
-        let request = Request::new(Method::Delete, format!("/registry/subscriptions/{id}/"))
+        let request = Request::to(&hub::SUBSCRIPTION_CANCEL, [id])
             .about(format!("cancel the Hub subscription `{id}`"));
         if let Err(error) = ctx.send(&client, &request) {
             return Err(mark.fail(&cancelled, error, "cancel"));
         }
         cancelled.push(*id);
     }
-    let request = Request::new(Method::Post, "/registry/subscribe/")
+    let request = Request::to(&hub::SUBSCRIBE, [])
         .json(&json!({ "plan_id": plan_id }))
         .about(format!("subscribe to the Hub plan `{}`", args.plan));
     // A body that is not JSON, or none, goes through `after_cancels` too, so the cancels
@@ -503,13 +507,6 @@ fn subscriptions_named(ids: &[u64]) -> String {
     )
 }
 
-/// The Hub plan catalog, which a subscribe reads to resolve the plan and to price the active
-/// subscriptions.
-const PLANS: &str = "/registry/plans/";
-
-/// The caller's Hub subscriptions, which a subscribe reads for the paid-plan guard.
-const SUBSCRIPTIONS: &str = "/registry/subscriptions/";
-
 /// Sends `request`, a GET whose answer is a list, after the command's dry-run check and
 /// confirmation.
 fn read_list(ctx: &Context<'_>, client: &Client, request: &Request) -> Result<Vec<Value>> {
@@ -584,12 +581,9 @@ fn active_paid(plans: &[Value], subscriptions: &[Value]) -> Result<Vec<u64>> {
 }
 
 fn cancel(ctx: &Context<'_>, client: &Client, subscription_id: u64) -> Result<Printed> {
-    let request = Request::new(
-        Method::Delete,
-        format!("/registry/subscriptions/{subscription_id}/"),
-    )
-    .listed_by("hipc hub subscription get")
-    .about(format!("cancel the Hub subscription `{subscription_id}`"));
+    let request = Request::to(&hub::SUBSCRIPTION_CANCEL, [&subscription_id])
+        .listed_by("hipc hub subscription get")
+        .about(format!("cancel the Hub subscription `{subscription_id}`"));
     let done = json!({ "subscription_id": subscription_id, "status": "cancel_submitted" });
     let gate = Gate::Confirm {
         consequence: Some(CANCELLED),
@@ -601,7 +595,7 @@ fn namespace(ctx: &Context<'_>, command: &HubNamespace) -> Result<Printed> {
     match command {
         HubNamespace::Availability { namespace } => {
             check_namespace(namespace)?;
-            let request = Request::get("/registry/namespaces/check/")
+            let request = Request::to(&hub::NAMESPACE_CHECK, [])
                 .query("name", namespace)
                 .about(format!("check the Hub namespace `{namespace}`"));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
@@ -610,14 +604,14 @@ fn namespace(ctx: &Context<'_>, command: &HubNamespace) -> Result<Printed> {
         HubNamespace::Status => print_with(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/registry/provision/status/").about("get the Hub namespace status"),
+            &Request::to(&hub::NAMESPACE_STATUS, []).about("get the Hub namespace status"),
             Gate::Open,
             |r| namespace_read(r.document()?, "the Hub namespace status"),
         ),
         HubNamespace::Get => print_with(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/registry/me/").about("get the Hub namespace"),
+            &Request::to(&hub::NAMESPACE, []).about("get the Hub namespace"),
             Gate::Open,
             |r| namespace_read(r.document()?, "the Hub namespace"),
         )
@@ -627,7 +621,7 @@ fn namespace(ctx: &Context<'_>, command: &HubNamespace) -> Result<Printed> {
         HubNamespace::Robot(HubRobot::Get) => print_with(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/registry/me/robot/").about("get the Hub robot login"),
+            &Request::to(&hub::ROBOT, []).about("get the Hub robot login"),
             Gate::Open,
             |r| robot_login(ctx, r.document()?),
         )
@@ -671,7 +665,7 @@ fn update_namespace(ctx: &Context<'_>, visibility: Visibility, public: bool) -> 
     } else {
         ("private", "only logins with access can pull from it")
     };
-    let request = Request::new(Method::Patch, "/registry/me/publicity/")
+    let request = Request::to(&hub::PUBLICITY_UPDATE, [])
         .json(&json!({ "public": opens }))
         .about(format!("make the Hub namespace {word}"));
     let consequence = format!("{who}, and its storage allowance changes");
@@ -694,7 +688,7 @@ fn update_namespace(ctx: &Context<'_>, visibility: Visibility, public: bool) -> 
 /// `--secret-file` names the file it goes to instead.
 fn rotate_robot(ctx: &Context<'_>, reveal: bool, secret_file: Option<&Path>) -> Result<Printed> {
     require_reveal_or_file(ctx, reveal, secret_file.is_some())?;
-    let request = Request::new(Method::Post, "/registry/robot/rotate/")
+    let request = Request::to(&hub::ROBOT_ROTATE, [])
         .listed_by("hipc hub namespace robot get")
         .about("rotate the Hub robot secret");
     let consequence = format!(
@@ -1069,7 +1063,7 @@ fn provision(
 ) -> Result<Printed> {
     check_namespace(name)?;
     require_reveal_or_file(ctx, reveal, secret_file.is_some())?;
-    let request = Request::new(Method::Post, "/registry/provision/")
+    let request = Request::to(&hub::NAMESPACE_CREATE, [])
         .json(&json!({ "namespace": name }))
         .about(format!("create the Hub namespace `{name}`"));
     // Without a file the question says nothing of the secret, as it always has.

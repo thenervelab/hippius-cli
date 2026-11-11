@@ -13,7 +13,8 @@
 
 use std::path::Path;
 
-use hippius::{Code, Error, Method, Request, Result, Selection, SideEffects, phrase};
+use hippius::routes::{self, Route};
+use hippius::{Code, Error, Request, Result, Selection, SideEffects, phrase};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
@@ -27,9 +28,6 @@ use crate::commands::{
 };
 use crate::context::{Context, Gate, Step, Write};
 
-const PROFILE: &str = "/billing/profile/";
-const AUTO_RELOAD: &str = "/billing/auto-reload/";
-
 pub(crate) fn run(ctx: &Context<'_>, command: &Billing) -> Result<Printed> {
     // The config file is read only once a command needs a client, after its argv checks, such
     // as the top-up amount (tenet 5).
@@ -38,31 +36,31 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Billing) -> Result<Printed> {
         Billing::Balance => print_body(
             ctx,
             &client()?,
-            &Request::get("/billing/credits/balance/").about("get the balance"),
+            &Request::to(&routes::billing::BALANCE, []).about("get the balance"),
             Gate::Open,
         ),
         Billing::Stripe => print_body(
             ctx,
             &client()?,
-            &Request::get("/billing/stripe/active-subscription/")
+            &Request::to(&routes::billing::STRIPE_SUBSCRIPTION, [])
                 .about("get the legacy Stripe top-up plan"),
             Gate::Open,
         ),
         Billing::Transactions(args) => list::run(
             ctx,
             &client()?,
-            &Request::get("/billing/transactions/").about("list the transactions"),
+            &Request::to(&routes::billing::TRANSACTIONS, []).about("list the transactions"),
             args,
         ),
         Billing::Subscriptions => subscriptions(ctx, &client()?),
         Billing::Summary => print_in_credits(
             ctx,
             &client()?,
-            &Request::get("/compute/billing/summary/").about("get the compute burn rate"),
+            &Request::to(&routes::compute::BILLING_SUMMARY, []).about("get the compute burn rate"),
             SUMMARY_AMOUNTS,
         ),
         Billing::Usage { month } => {
-            let request = Request::get("/compute/usage/");
+            let request = Request::to(&routes::compute::USAGE, []);
             let request = match month {
                 Some(month) => request
                     .query("month", month)
@@ -74,7 +72,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Billing) -> Result<Printed> {
         Billing::Invoices(Invoices::List(args)) => list::run(
             ctx,
             &client()?,
-            &Request::get("/billing/invoices/").about("list the invoices"),
+            &Request::to(&routes::billing::INVOICES, []).about("list the invoices"),
             args,
         ),
         Billing::Invoices(Invoices::Get {
@@ -95,7 +93,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Billing) -> Result<Printed> {
         // the route does not say (tenet 6).
         Billing::AutoReload(AutoReload::History { limit }) => billing_read(
             ctx,
-            &Request::get("/billing/auto-reload/history/")
+            &Request::to(&routes::billing::AUTO_RELOAD_HISTORY, [])
                 .query("limit", &limit.to_string())
                 .about("list the auto-reload attempts"),
             "an auto-reload history read",
@@ -143,17 +141,17 @@ fn print_in_credits(
 ///
 /// A hAlpha top-up has no rail, so it is `None`: no caller can send hAlpha to a checkout
 /// route, and [`start_top_up`] sends it to [`halpha_top_up`] instead.
-const fn rail(method: TopUpMethod) -> Option<(&'static str, &'static str, Usd, Usd)> {
+const fn rail(method: TopUpMethod) -> Option<(&'static str, &'static Route<0>, Usd, Usd)> {
     match method {
         TopUpMethod::Card => Some((
             "card",
-            "/billing/stripe/create-checkout-session/",
+            &routes::billing::CARD_CHECKOUT,
             Usd::from_cents(10 * 100),
             Usd::from_cents(10_000 * 100),
         )),
         TopUpMethod::Bitcoin => Some((
             "bitcoin",
-            "/billing/btcpay/create-invoice/",
+            &routes::billing::BITCOIN_INVOICE,
             Usd::from_cents(20 * 100),
             Usd::from_cents(100_000 * 100),
         )),
@@ -205,7 +203,7 @@ fn halpha_top_up(ctx: &Context<'_>, top_up: &TopUp) -> Result<Printed> {
 /// passes through a float. No return URL is sent: the server falls back to its own, and
 /// ignores one off the console origin.
 fn start_top_up(ctx: &Context<'_>, top_up: &TopUp) -> Result<Printed> {
-    let Some((name, path, least, most)) = rail(top_up.method) else {
+    let Some((name, route, least, most)) = rail(top_up.method) else {
         return halpha_top_up(ctx, top_up);
     };
     let amount = match (top_up.amount, top_up.alpha) {
@@ -248,7 +246,7 @@ fn start_top_up(ctx: &Context<'_>, top_up: &TopUp) -> Result<Printed> {
         ));
     }
     let client = &ctx.load_authed_client()?;
-    let request = Request::new(Method::Post, path)
+    let request = Request::to(route, [])
         .json(&json!({ "amount": amount.to_string() }))
         .about(format!("start a {name} top-up of `{amount}` USD"));
     require_billing_account(client, &request, "a top-up")?;
@@ -316,11 +314,11 @@ fn check_first(error: Error, read: &str) -> Error {
 }
 
 fn read_profile() -> Request {
-    Request::get(PROFILE).about("get the billing profile")
+    Request::to(&routes::billing::PROFILE, []).about("get the billing profile")
 }
 
 fn read_auto_reload() -> Request {
-    Request::get(AUTO_RELOAD).about("get the auto-reload setting")
+    Request::to(&routes::billing::AUTO_RELOAD, []).about("get the auto-reload setting")
 }
 
 /// Starts a Stripe checkout in setup mode that saves the card auto-reload charges, and prints
@@ -334,7 +332,7 @@ fn read_auto_reload() -> Request {
 /// document that waits for a person, since JSON mode prints no note. It repeats the run's
 /// selectors, or is left out when one is not printable ASCII ([`Context::next_command`]).
 fn card_setup(ctx: &Context<'_>, client: &hippius::Client) -> Result<Printed> {
-    let request = Request::new(Method::Post, format!("{AUTO_RELOAD}card-setup/"))
+    let request = Request::to(&routes::billing::AUTO_RELOAD_CARD_SETUP, [])
         .json(&json!({}))
         .about("start saving a card for auto-reload");
     require_billing_account(client, &request, "a card setup")?;
@@ -354,9 +352,9 @@ fn card_setup(ctx: &Context<'_>, client: &hippius::Client) -> Result<Printed> {
     })
 }
 
-/// The `PUT` of `path` with `body`.
-fn put(path: &str, body: Map<String, Value>) -> Request {
-    Request::new(Method::Put, path).json(&Value::Object(body))
+/// The `PUT` of `route` with `body`.
+fn put(route: &Route<0>, body: Map<String, Value>) -> Request {
+    Request::to(route, []).json(&Value::Object(body))
 }
 
 /// `PUT /api/billing/profile/` with only the fields given. Swagger says the `PUT` creates or
@@ -379,7 +377,8 @@ fn update_profile(ctx: &Context<'_>, args: &ProfileUpdate) -> Result<Printed> {
         .filter_map(|(key, given)| given.map(|value| (key.to_owned(), Value::from(value))))
         .collect();
     let named = phrase::ticked(given.keys(), "and");
-    let request = put(PROFILE, given).about(format!("update the billing profile's {named}"));
+    let request = put(&routes::billing::PROFILE_UPDATE, given)
+        .about(format!("update the billing profile's {named}"));
     require_billing_account(&client, &request, "a billing profile update")?;
     let check = |error| check_first(error, "hipc billing profile get");
     let Some(email) = args.billing_email.as_deref() else {
@@ -464,7 +463,7 @@ fn update_auto_reload(ctx: &Context<'_>, args: &AutoReloadUpdate) -> Result<Prin
         })
         .collect();
     let save = "save the auto-reload setting";
-    let draft = put(AUTO_RELOAD, draft).about(save);
+    let draft = put(&routes::billing::AUTO_RELOAD_UPDATE, draft).about(save);
     require_billing_account(&client, &draft, "an auto-reload update")?;
     let checked = match ctx.check_write(&client, &draft)? {
         Write::DryRun(mut doc) => {
@@ -515,11 +514,11 @@ fn update_auto_reload(ctx: &Context<'_>, args: &AutoReloadUpdate) -> Result<Prin
         .collect();
     let request = match charges_more(&current, &body) {
         Some((action, consequence)) => {
-            let request = put(AUTO_RELOAD, body).about(action);
+            let request = put(&routes::billing::AUTO_RELOAD_UPDATE, body).about(action);
             ctx.confirm_write(checked, &request.action(), Some(consequence))?;
             request
         }
-        None => put(AUTO_RELOAD, body).about(save),
+        None => put(&routes::billing::AUTO_RELOAD_UPDATE, body).about(save),
     };
     ctx.send(&client, &request)
         .and_then(|response| response.document())
@@ -668,7 +667,7 @@ fn limit(key: &str, value: &Value) -> Option<Limit> {
 /// terminal. `path` was checked at parse time to hold nothing; the file is created only
 /// after the PDF arrived, so a failed request leaves nothing behind.
 fn download(ctx: &Context<'_>, client: &hippius::Client, id: u64, path: &Path) -> Result<Printed> {
-    let request = Request::get(format!("/billing/invoices/{id}/pdf/"))
+    let request = Request::to(&routes::billing::INVOICE_PDF, [&id])
         .accept("application/pdf")
         .about(format!("download the invoice `{id}`"))
         .listed_by("hipc billing invoices list");
@@ -680,11 +679,11 @@ fn download(ctx: &Context<'_>, client: &hippius::Client, id: u64, path: &Path) -
 }
 
 /// The four plan lists `hipc billing subscriptions` reads, one per service, in order.
-const LEGS: [(&str, &str); 4] = [
-    ("drive", "/drive/subscription/"),
-    ("s3", "/s3/subscription/"),
-    ("hub", "/registry/subscriptions/"),
-    ("stripe", "/billing/stripe/active-subscription/"),
+const LEGS: [(&str, &Route<0>); 4] = [
+    ("drive", &routes::drive::SUBSCRIPTION),
+    ("s3", &routes::s3::SUBSCRIPTION),
+    ("hub", &routes::hub::SUBSCRIPTIONS),
+    ("stripe", &routes::billing::STRIPE_SUBSCRIPTION),
 ];
 
 /// Reads every plan source and lists them as rows `{service, subscription}`, each with the
@@ -695,18 +694,18 @@ const LEGS: [(&str, &str); 4] = [
 /// rows that succeeded are still printed and the command exits 1 with `partial_failure`.
 /// When every leg fails, the first failure is the error, because then nothing is partial.
 fn subscriptions(ctx: &Context<'_>, client: &hippius::Client) -> Result<Printed> {
-    for (_, path) in LEGS {
-        client.url(&Request::get(path))?;
+    for (_, route) in LEGS {
+        client.url(&Request::to(route, []))?;
     }
     let mut rows = Vec::new();
     let mut dry_runs = Vec::new();
     let mut failures = Vec::new();
     let mut failed = Vec::new();
     let mut first_error = None;
-    for (service, path) in LEGS {
+    for (service, route) in LEGS {
         let error = match ctx.call(
             client,
-            &Request::get(path).about(format!("get the `{service}` plans")),
+            &Request::to(route, []).about(format!("get the `{service}` plans")),
             Gate::Open,
         ) {
             Ok(Step::Sent(response)) => match response.document() {

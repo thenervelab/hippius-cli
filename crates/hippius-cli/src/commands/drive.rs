@@ -4,7 +4,8 @@
 //! membership before anything is sent. The catalog is public: with a membership it is sent
 //! without the account header. Drive file bytes stay in the Drive apps and SDK.
 
-use hippius::{Method, Request, Result};
+use hippius::routes::drive;
+use hippius::{Request, Result};
 use serde_json::{Map, Value};
 
 use crate::cli::{Drive, DriveChange, DriveSubscribe, DriveSubscription};
@@ -19,7 +20,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Drive) -> Result<Printed> {
             print_envelope(
                 ctx,
                 &ctx.client(&config)?,
-                &Request::get("/drive/plans/").about("list the Drive plans"),
+                &Request::to(&drive::PLANS, []).about("list the Drive plans"),
             )
         }
         Drive::Subscription(command) => {
@@ -36,7 +37,7 @@ fn subscription(
 ) -> Result<Printed> {
     let (request, gate) = match command {
         DriveSubscription::Get => (
-            Request::get("/drive/subscription/").about("get the Drive plan"),
+            Request::to(&drive::SUBSCRIPTION, []).about("get the Drive plan"),
             Gate::Open,
         ),
         DriveSubscription::Subscribe(args) => (
@@ -47,20 +48,19 @@ fn subscription(
         ),
         DriveSubscription::Change(args) => change_request(args)?,
         DriveSubscription::Cancel => (
-            Request::new(Method::Delete, "/drive/subscription/").about("cancel the Drive plan"),
+            Request::to(&drive::SUBSCRIPTION_CANCEL, []).about("cancel the Drive plan"),
             Gate::Confirm {
                 // A wallet-only account has no Free plan to go back to.
                 consequence: Some(CANCELLED),
             },
         ),
         DriveSubscription::Checkout { intent_id } => (
-            Request::get(format!("/drive/subscription/checkout/{intent_id}/"))
+            Request::to(&drive::CHECKOUT, [intent_id])
                 .about(format!("get the card checkout `{intent_id}`")),
             Gate::Open,
         ),
         DriveSubscription::History(args) => {
-            let request =
-                Request::get("/drive/subscription/history/").about("list the Drive plan history");
+            let request = Request::to(&drive::HISTORY, []).about("list the Drive plan history");
             return list::run(ctx, client, &request, args);
         }
     };
@@ -86,7 +86,7 @@ fn subscribe_request(args: &DriveSubscribe) -> Request {
     if let Some(period) = args.period {
         body.insert("period".to_owned(), period.code().into());
     }
-    Request::new(Method::Post, "/drive/subscription/")
+    Request::to(&drive::SUBSCRIBE, [])
         .json(&Value::Object(body))
         .about(format!("buy the Drive plan `{}`", args.plan.code()))
 }
@@ -96,14 +96,14 @@ fn subscribe_request(args: &DriveSubscribe) -> Request {
 /// balance.
 fn change_request(args: &DriveChange) -> Result<(Request, Gate<'static>)> {
     let Some(plan) = args.plan else {
-        return plan_setting("/drive/subscription/", "Drive", &args.setting);
+        return plan_setting(&drive::SUBSCRIPTION_CHANGE, "Drive", &args.setting);
     };
     let mut body = Map::new();
     body.insert("plan".to_owned(), plan.code().into());
     if let Some(period) = args.period {
         body.insert("period".to_owned(), period.code().into());
     }
-    let request = Request::new(Method::Patch, "/drive/subscription/")
+    let request = Request::to(&drive::SUBSCRIPTION_CHANGE, [])
         .json(&Value::Object(body))
         .about(format!("switch the Drive plan to `{}`", plan.code()));
     let gate = Gate::Confirm {
