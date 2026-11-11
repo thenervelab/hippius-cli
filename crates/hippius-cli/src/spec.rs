@@ -4,6 +4,8 @@
 //! parser and fails when a command has no row here, so a new command cannot ship without
 //! an effect.
 
+#[cfg(test)]
+mod help_agrees;
 mod routes;
 mod rows;
 
