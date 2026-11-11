@@ -309,7 +309,7 @@ const ROUTE_RULES: &[(Method, &str, Guard)] = &[
 /// Every route `hipc api` has a rule for, with its method, template, and guard: each row,
 /// then each route with no row in the guard table. A write method with no entry of its own
 /// borrows the guard of another write method of its template when that guard lends
-/// ([`Guard::lends`]), as [`route_rules`] applies it.
+/// ([`Guard::lends`]), as the client applies it.
 pub fn api_routes() -> impl Iterator<Item = (Method, &'static str, Guard)> {
     routes::all()
         .map(|row| (row.method(), row.template(), row.guard()))
@@ -317,10 +317,11 @@ pub fn api_routes() -> impl Iterator<Item = (Method, &'static str, Guard)> {
 }
 
 /// The guard `hipc api` applies to `method` on the route `template`, one of
-/// [`api_routes`]: its own entry's (a `HEAD` reaches the `GET` row, as [`routes::row`] has
-/// it), else one a write method borrows from another write method of the template, as
-/// [`route_rules`] lends it, else [`Guard::None`]. The help and the schema say the rules of
-/// `hipc api` from it; a test holds it to `route_rules` on a path that fills each template.
+/// [`api_routes`]: its own entry's (a `HEAD` reaches the `GET` row, as the route lookup has
+/// it), else one a write method borrows from another write method of the template, as the
+/// client lends it, else [`Guard::None`]. The help and the schema say the rules of
+/// `hipc api` from it; a test holds it to the rule the client applies on a path that fills
+/// each template.
 pub fn api_guard(method: Method, template: &str) -> Guard {
     let entries = || api_routes().filter(|&(_, route, _)| route == template);
     let own = entries()
