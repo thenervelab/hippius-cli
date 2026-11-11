@@ -471,7 +471,7 @@ fn is_missing_subcommand(error: &clap::Error) -> bool {
 /// cannot forge a line of their own. Elsewhere an apostrophe inside a word stays, and a
 /// numeric range clap names bare outside a literal (`0 is not in 1..=500`) is a literal too,
 /// so it gains backticks. A value a validator refused that is [`token_shaped`] is left out,
-/// and the validator's reason kept (`invalid value for `--name <NAME>`: ...`): it may be a
+/// and the validator's reason kept (``invalid value for `--name <NAME>`: ...``): it may be a
 /// secret given to the wrong flag (tenet 9).
 fn usage_message(error: &clap::Error) -> String {
     let quoted: Vec<&str> = [

@@ -98,7 +98,7 @@ pub(super) fn create(ctx: &Context<'_>, client: &Client, args: &VmCreate) -> Res
     // early alike, so a JSON caller sees what was opened without another read.
     let firewall = (!ports.is_empty()).then(|| open_ports_rules(&ports));
     if firewall.is_some() {
-        open_launched_ports(ctx, client, &confirmed, &launched, args, &ports)?;
+        open_launched_ports(ctx, client, &confirmed, &launched, args)?;
     }
     // Kept before the wait takes the 202: a polled document that omits the field must not
     // turn a failed attach into a warning about an address that does not exist.
@@ -281,8 +281,8 @@ fn open_launched_ports(
     confirmed: &Confirmed,
     launched: &Value,
     args: &VmCreate,
-    ports: &[u16],
 ) -> Result<()> {
+    let ports = &open_ports(args);
     let public_ip = args.public_ip;
     // The id goes into the PUT's path, so it is held to the rule of the `vm_id` argument; a
     // leading `-` is fine there, and only matters to a printed command (the hint below).

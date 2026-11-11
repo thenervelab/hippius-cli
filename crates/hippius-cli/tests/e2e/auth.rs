@@ -246,11 +246,12 @@ fn a_seed_phrase_on_the_command_line_is_refused_without_being_repeated() {
     let upper = phrase.to_uppercase();
     // Joined to its flag with `=`, or numbered as a paste from a list would be.
     let joined = format!("--name={phrase}");
-    let numbered: String = words
+    let numbered = words
         .iter()
         .enumerate()
-        .map(|(at, word)| format!("{}. {word} ", at + 1))
-        .collect();
+        .map(|(at, word)| format!("{}. {word}", at + 1))
+        .collect::<Vec<String>>()
+        .join(" ");
     for args in [
         vec!["cdn", "zones", "create", &joined, "--yes"],
         vec!["cdn", "zones", "create", "--name", &numbered, "--yes"],

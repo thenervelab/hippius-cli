@@ -492,9 +492,10 @@ pub struct EmptyBody {}
 /// A field of a write body that is left out, cleared, or set. A field left out keeps the
 /// server's value, so it is not sent (`#[serde(skip_serializing_if = "Change::is_keep")]`), and
 /// a cleared one is sent as `null`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Change<T> {
     /// Not sent: the server keeps what it holds.
+    #[default]
     Keep,
     /// Sent as `null`, which the route reads as none, or as its default.
     Clear,
@@ -506,12 +507,6 @@ impl<T> Change<T> {
     /// Whether the field is left out of the body.
     pub fn is_keep(&self) -> bool {
         matches!(self, Self::Keep)
-    }
-}
-
-impl<T> Default for Change<T> {
-    fn default() -> Self {
-        Self::Keep
     }
 }
 
