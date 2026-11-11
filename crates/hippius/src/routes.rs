@@ -387,12 +387,6 @@ impl Endpoint {
         path
     }
 
-    /// Whether the server pages the list this route answers, so a command that reads it
-    /// takes the page flags.
-    pub fn paged(&self) -> bool {
-        self.paging.is_some()
-    }
-
     /// How the server pages the list this route answers, or `None` for a route it does not
     /// page.
     pub fn paging(&self) -> Option<Paging> {
@@ -400,7 +394,10 @@ impl Endpoint {
     }
 
     /// Whether `path` (no query) is this template with a non-empty value in each
-    /// placeholder, for a test that finds the route a recorded request reached.
+    /// placeholder: the match the route lookup makes for every request the client
+    /// classifies, and the end-to-end tests' check of the route a recorded request reached.
+    /// It splits both into segments on each call, a few small allocations, which is nothing
+    /// beside the request it classifies.
     pub fn matches(&self, path: &str) -> bool {
         let segments: Vec<&str> = path.split('/').collect();
         let parts: Vec<&str> = self.template.split('/').collect();
@@ -480,7 +477,8 @@ impl Placeholder {
 }
 
 /// The body of a POST that carries nothing, `{}`, as the console sends it: a Kubernetes node
-/// removal, an operation's cancel and resume, and a WAF version's rollback.
+/// removal, an operation's cancel and resume, a WAF version's rollback, and an auto-reload
+/// card setup outside a billing account's page.
 #[derive(Debug, Serialize)]
 #[expect(
     clippy::empty_structs_with_brackets,

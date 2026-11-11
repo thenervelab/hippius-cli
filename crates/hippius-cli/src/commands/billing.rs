@@ -338,7 +338,7 @@ fn read_auto_reload() -> Request {
 /// selectors, or is left out when one is not printable ASCII ([`Context::next_command`]).
 fn card_setup(ctx: &Context<'_>, client: &hippius::Client) -> Result<Printed> {
     let request = Request::to(&billing::AUTO_RELOAD_CARD_SETUP, [])
-        .json(&billing::CardSetupBody {})
+        .json(&routes::EmptyBody {})
         .about("start saving a card for auto-reload");
     require_billing_account(client, &request, "a card setup")?;
     print_with(ctx, client, &request, Gate::Open, |response| {

@@ -400,7 +400,7 @@ fn every_route_here_pages_as_its_row_says() {
             .filter(|row| row.method() == hippius::Method::Get && row.matches(path))
             .collect();
         assert!(!rows.is_empty(), "{path} has no row");
-        rows.iter().any(|row| row.paged())
+        rows.iter().any(|row| row.paging().is_some())
     };
     for (_, path, _) in READ_WHOLE {
         assert!(!paged(path), "{path} is read whole");

@@ -1937,7 +1937,7 @@ mod tests {
                 assert!(listed.iter().all(|route| !curated.contains(route)));
                 continue;
             }
-            let paged = listed.iter().any(|endpoint| endpoint.paged());
+            let paged = listed.iter().any(|endpoint| endpoint.paging().is_some());
             assert_eq!(pages(leaf(&root, &path)), paged, "{path:?}");
         }
     }

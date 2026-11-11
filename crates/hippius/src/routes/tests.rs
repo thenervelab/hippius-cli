@@ -260,7 +260,9 @@ fn each_builder_method_sets_its_part_of_the_policy() {
         (Take::Send, Take::Send)
     );
     assert!(endpoint.reveals && endpoint.provisions && endpoint.permanent);
-    assert!(endpoint.undone_on_503 && endpoint.paged() && endpoint.account_beside_billing);
+    assert!(
+        endpoint.undone_on_503 && endpoint.paging().is_some() && endpoint.account_beside_billing
+    );
     assert_eq!(endpoint.paging(), Some(Paging::Cursor));
     assert_eq!(
         endpoint.guard(),

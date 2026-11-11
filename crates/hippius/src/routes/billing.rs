@@ -93,16 +93,6 @@ pub struct TopUpBody<'a> {
     pub amount: &'a str,
 }
 
-/// The body of [`AUTO_RELOAD_CARD_SETUP`]: empty, as the console sends it outside a billing
-/// account's page.
-#[derive(Debug, Serialize)]
-#[expect(
-    clippy::empty_structs_with_brackets,
-    reason = "a struct with braces is written as `{}`, the empty body the route takes; a unit \
-              struct would be `null`"
-)]
-pub struct CardSetupBody {}
-
 /// The body of [`PROFILE_UPDATE`]: only the fields given, so one left out keeps its value. An
 /// empty string clears a field.
 #[derive(Debug, Default, Serialize)]
@@ -449,7 +439,6 @@ mod tests {
             serde_json::to_string(&body).unwrap(),
             r#"{"enabled":true,"threshold":"5.00","target":"20.00","monthly_cap":null}"#
         );
-        assert_eq!(serde_json::to_string(&CardSetupBody {}).unwrap(), "{}");
     }
 
     /// Each state swagger lists reads as its variant and back; another is `Other`, not an
