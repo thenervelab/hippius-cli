@@ -4,7 +4,11 @@ use std::os::unix::fs::PermissionsExt as _;
 
 use serde_json::json;
 
-use crate::common::{self, Hipc, Home, Reply, Server, TOKEN, no_server, route, status_routes};
+use hippius::routes::billing;
+
+use crate::common::{
+    self, Hipc, Home, Reply, Server, TOKEN, no_server, route, route_of, status_routes,
+};
 
 fn chmod(path: &std::path::Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
@@ -166,6 +170,41 @@ fn a_result_with_no_place_for_warnings_keeps_its_shape_and_warns_on_stderr() {
         );
         assert!(!run.stderr().contains("s3cr3t"), "{}", run.stderr());
     }
+}
+
+/// A document whose own `warnings` field the server sent keeps it as it came: the run's
+/// warnings go beside it on stderr, never over it. A document without one gains `warnings`.
+#[test]
+fn a_server_warnings_field_is_kept_and_the_runs_warnings_go_to_stderr() {
+    let home = Home::new();
+    home.write_config("[profiles.default]\nsurprise = \"s3cr3t-value\"\n");
+    let answer = r#"{"balance":"1","warnings":["port 22 exposed"]}"#;
+    let server = Server::start(vec![route_of(
+        &billing::BALANCE,
+        [],
+        Reply::json(200, answer),
+    )]);
+    let run = Hipc::against(&home, &server).run(&["billing", "balance"]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(run.stdout(), format!("{answer}\n"));
+    let warned: serde_json::Value = serde_json::from_str(run.stderr()).unwrap();
+    let texts = warned["warnings"].as_array().unwrap();
+    assert_eq!(texts.len(), 1, "{warned}");
+    assert!(
+        texts[0]
+            .as_str()
+            .unwrap()
+            .contains("holds keys this hipc does not know"),
+        "{warned}"
+    );
+    let server = Server::start(vec![route_of(
+        &billing::BALANCE,
+        [],
+        Reply::json(200, r#"{"balance":"1"}"#),
+    )]);
+    let run = Hipc::against(&home, &server).run(&["billing", "balance"]);
+    assert_eq!(run.stderr(), "");
+    assert_eq!(run.json()["warnings"], json!([texts[0]]));
 }
 
 #[test]

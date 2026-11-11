@@ -288,12 +288,18 @@ pub(crate) fn failure_warned(mode: Mode, error: &Error, warnings: &[String]) -> 
 
 /// Adds the run's `warnings` to a JSON-mode document as a top-level `warnings` array of their
 /// texts, the `warning:` lines text mode writes on stderr. A document only gains fields
-/// (tenet 15), and the array is there only when there is a warning. A document that is not
-/// an object, such as the array `--all` prints, has no place for a field and keeps its shape
-/// (tenet 3), so its warnings go to stderr ([`warnings_aside`]).
+/// (tenet 15), and the array is there only when there is a warning. A document with no place
+/// for the field keeps its shape (tenet 3), and its warnings go to stderr
+/// ([`warnings_aside`]): one that is not an object, such as the array `--all` prints, and one
+/// that holds a `warnings` field of its own, such as a server answer's, which is never
+/// overwritten.
 pub(crate) fn add_warnings(mode: Mode, document: &mut Value, warnings: &[String]) {
     match document {
-        Value::Object(fields) if matches!(mode, Mode::Json) && !warnings.is_empty() => {
+        Value::Object(fields)
+            if matches!(mode, Mode::Json)
+                && !warnings.is_empty()
+                && !fields.contains_key("warnings") =>
+        {
             fields.insert("warnings".to_owned(), warnings.into());
         }
         _ => warnings_aside(mode, warnings),

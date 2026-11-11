@@ -239,8 +239,8 @@ impl<'a> Context<'a> {
     }
 
     /// Prints a `note:` line for a person on stderr: a fact about a result that succeeded
-    /// (tenet 15). Text mode only, and not with `--quiet`: JSON mode stays silent on stderr
-    /// except for the error object (tenet 3).
+    /// (tenet 15). Text mode only, and not with `--quiet`: JSON mode writes no notes, only
+    /// the error object or the `warnings` object of tenet 3 on stderr.
     pub(crate) fn note(&self, text: &str) {
         self.aside("note", text);
     }
