@@ -324,7 +324,7 @@ fn require_route_flag(
 /// `--all` does on every list command. A bare array is one page.
 ///
 /// A `next` link must stay on the origin of the first page ([`hippius::follow`]) and on its
-/// path, and [`Pages`] refuses a loop and a list past its page cap.
+/// path, and the page loop ([`list::walk`]) refuses a loop and a list past its page cap.
 fn every_page(ctx: &Context<'_>, client: &Client, first: Request) -> Result<Printed> {
     // The first URL is the caller's: a refusal of it is their usage error.
     let mut url = client.url(&first)?;

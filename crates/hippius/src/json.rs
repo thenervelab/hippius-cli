@@ -89,7 +89,7 @@ pub fn page(answer: Value) -> Result<Page> {
 /// # Errors
 ///
 /// `internal` when `next` is neither a string nor null, and when there is no `next` link but
-/// a cursor field ([`CURSOR_FIELDS`]) names a next page.
+/// a cursor field (`next_before`, `next_cursor`, or `cursor`) names a next page.
 pub fn page_beside(items: Vec<Value>, mut fields: Map<String, Value>) -> Result<Page> {
     let next = match fields.shift_remove("next") {
         None | Some(Value::Null) => None,
