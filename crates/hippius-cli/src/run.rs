@@ -35,6 +35,10 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         Err(error) => return output::clap_error(terminal.resolve_from_args(args), &error, args),
     };
     let mode = terminal.resolve(&cli.global);
+    let row = match spec::row(&path) {
+        Ok(row) => row,
+        Err(error) => return output::failure(mode, &error),
+    };
     if let Some(name) = crate::cli::repeated_global(args) {
         let flag = if name == "output" {
             "`--output` or `--json`".to_owned()
@@ -82,7 +86,7 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
             ctx.note(note);
         }
         if layout == Layout::DryRun {
-            spec::add_confirmation(&path, &mut document);
+            spec::add_confirmation(&row, &mut document);
         }
         output::add_warnings(mode, &mut document, &warnings);
         output::document(mode, &document, ctx.side_effects(), layout)

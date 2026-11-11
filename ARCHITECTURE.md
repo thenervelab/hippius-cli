@@ -22,7 +22,8 @@ crates/hippius-cli   the `hipc` binary: argv, the output mode, every byte of out
                      the steps of each command, one module per group; each returns `Printed`
   context.rs         what a command runs with: global flags, the terminal, and the steps of
                      every request (dry run, confirmation, then the network; tenet 5)
-  spec.rs            what each command does to the server, for `hipc schema` (tenet 7)
+  spec.rs, spec/     what each command does to the server, for `hipc schema` (tenet 7): one
+                     function of rows per command group (`spec/rows.rs`), and its routes
   output.rs          every byte written to stdout and stderr (tenets 3, 4 and 15)
   hidden.rs          a secret typed at the terminal, read without echo
 crates/hippius       the library: never prints, never reads argv
@@ -220,7 +221,8 @@ What `hipc` sends is typed; what the server answers is printed as it came.
    reads first and refuses, then examples that parse (CONTRIBUTING, "Docs").
 2. The steps in `commands/<group>.rs`, returning `Printed`; dispatch from the group's `run`
    (or `run.rs` for `auth` and `account`).
-3. Its row in `spec.rs`. A test walks the parser and fails when a command has no row.
+3. Its row in its group's function in `spec/rows.rs`. A test walks the parser and fails when
+   a command has no row, and the `hipc schema` snapshot shows the row.
 4. Its routes: a constant in `hippius::routes` for each, built with `Request::to`, and the
    command's arm in `spec/routes.rs` (see "How to add a route"). A write's body is a struct
    beside the route, and a field it decides on is read through a view ("Bodies and views").
