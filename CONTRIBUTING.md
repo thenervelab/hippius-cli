@@ -38,6 +38,11 @@ cargo test --workspace --locked
 cargo deny check
 ```
 
+The `hipc schema` document, its error table and a set of dry runs are held by `insta`
+snapshots (ARCHITECTURE.md, "Tests"). A change that moves any of them fails until the
+snapshot is refreshed with `INSTA_UPDATE=always cargo test -p hippius-cli`; read the diff of
+the `.snap` files and commit it with the change, so a reviewer sees every changed line.
+
 `cargo deny` comes from `cargo install --locked cargo-deny`. A change to a shell script also
 passes `shellcheck` and `shfmt -d -i 2`, and a change to a workflow passes `actionlint` and
 `zizmor`; so does a change to the release action in `.github/actions`. CI runs all four as the lint job, with shellcheck 0.11.0, shfmt 3.14.1, actionlint

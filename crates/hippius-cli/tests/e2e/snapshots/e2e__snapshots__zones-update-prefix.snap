@@ -1,0 +1,33 @@
+---
+source: crates/hippius-cli/tests/e2e/snapshots.rs
+expression: dry_run(args)
+---
+{
+  "dry_run": true,
+  "requests": [
+    {
+      "method": "GET",
+      "url": "[origin]/api/cdn/zones/zab12cd34ef56/",
+      "account_header": null,
+      "project_header": null,
+      "billing_header": null,
+      "body": null
+    },
+    {
+      "method": "PATCH",
+      "url": "[origin]/api/cdn/zones/zab12cd34ef56/",
+      "account_header": null,
+      "project_header": null,
+      "billing_header": null,
+      "body": {
+        "origin": {
+          "kind": "<the zone's origin kind>",
+          "bucket": "<the zone's bucket>",
+          "prefix": "img/"
+        }
+      }
+    }
+  ],
+  "confirmation": true,
+  "confirmation_when": null
+}

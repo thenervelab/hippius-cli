@@ -41,6 +41,8 @@ ed25519-dalek.workspace = true
 # tree, through the library.
 toml.workspace = true
 yaml-rust2.workspace = true
+# Snapshots of `hipc schema`, its error table and the dry-run documents (owner decision D7).
+insta.workspace = true
 
 [lints]
 workspace = true

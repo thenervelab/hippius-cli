@@ -317,8 +317,13 @@ and `--debug` lines go to stderr through `context`.
   (`unwrap_or_else(|_| dir.clone())` where the error cannot be produced in a test) raises
   the uncovered-function count; borrow the fallback (`.ok()`, then `unwrap_or(&dir)`) or pass
   a function item (`map_or(Ok(()), create_private_dirs)`).
-- **Planned**: snapshots (`insta`) only for documents `hipc` wholly owns: `hipc schema`, the
-  error table, and dry-run documents. Anything else is checked by the fields that matter.
+- **Snapshots** (`insta`) hold only documents `hipc` wholly owns: the whole `hipc schema`
+  document and its error table (`spec.rs`, kept in `src/snapshots/`), and the dry runs of a
+  set of commands that covers each way a dry run is built (`tests/e2e/snapshots.rs`, kept in
+  `tests/e2e/snapshots/`). A change to a row, a help line, a route or a dry run shows there
+  as one diff; refresh with `INSTA_UPDATE=always cargo test -p hippius-cli`, then read the
+  diff before committing it. Anything that carries the server's fields is checked by the
+  fields that matter, never by a snapshot.
 
 ## Lint, format and comment policy
 

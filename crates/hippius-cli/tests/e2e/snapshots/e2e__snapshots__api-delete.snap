@@ -1,0 +1,19 @@
+---
+source: crates/hippius-cli/tests/e2e/snapshots.rs
+expression: dry_run(args)
+---
+{
+  "dry_run": true,
+  "requests": [
+    {
+      "method": "DELETE",
+      "url": "[origin]/api/compute/vms/vm_1/",
+      "account_header": null,
+      "project_header": null,
+      "billing_header": null,
+      "body": null
+    }
+  ],
+  "confirmation": true,
+  "confirmation_when": "the method is not `GET` or `HEAD`, or the path is `/api/network/me/`, whose first call creates the network, with or without the trailing slash or a format suffix; a write to a route no command lists in its `routes` also warns that `hipc` does not know it"
+}

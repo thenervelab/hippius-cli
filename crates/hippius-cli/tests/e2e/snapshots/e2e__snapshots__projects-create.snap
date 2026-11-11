@@ -1,0 +1,22 @@
+---
+source: crates/hippius-cli/tests/e2e/snapshots.rs
+expression: dry_run(args)
+---
+{
+  "dry_run": true,
+  "requests": [
+    {
+      "method": "POST",
+      "url": "[origin]/api/accounts/projects/",
+      "account_header": null,
+      "project_header": null,
+      "billing_header": null,
+      "body": {
+        "name": "web",
+        "billing": null
+      }
+    }
+  ],
+  "confirmation": false,
+  "confirmation_when": null
+}

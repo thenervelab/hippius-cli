@@ -83,6 +83,12 @@ schnorrkel = { version = "0.11.5", default-features = false, features = ["std", 
 # Rust; without default features it takes no encoding_rs, which only decodes input that is
 # not UTF-8.
 yaml-rust2 = { version = "0.13", default-features = false }
+# Tests only: snapshots of the documents hipc wholly owns, the `hipc schema` document, its
+# error table and the dry runs, so a change to any of them shows as one reviewed diff. The
+# tests snapshot the pretty-printed JSON text, which keeps an `arbitrary_precision` number as
+# hipc prints it, so no serde feature is needed. No default features: colors only paint a
+# terminal diff.
+insta = { version = "1.49", default-features = false }
 # PBKDF2-HMAC-SHA512 of the phrase's entropy, the Substrate mini secret as Substrate's
 # `from_phrase` makes it, into a buffer hipc clears (substrate-bip39 returns it in a plain
 # array). hmac: the HMAC form. 0.13 shares digest 0.11 with sha2.

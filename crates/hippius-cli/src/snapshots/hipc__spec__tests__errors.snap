@@ -1,0 +1,162 @@
+---
+source: crates/hippius-cli/src/spec.rs
+expression: "serde_json::to_string_pretty(errors).unwrap()"
+---
+[
+  {
+    "code": "usage",
+    "exit": 2,
+    "meaning": "the invocation is wrong: a flag, an argument, a variable, or a local file it reads",
+    "flag": null
+  },
+  {
+    "code": "confirmation_required",
+    "exit": 2,
+    "meaning": "the command needs a confirmation, and `--yes` was not passed",
+    "flag": "--yes"
+  },
+  {
+    "code": "reveal_required",
+    "exit": 2,
+    "meaning": "the call returns a secret, and `--reveal` was not passed",
+    "flag": "--reveal"
+  },
+  {
+    "code": "replace_required",
+    "exit": 2,
+    "meaning": "a paid Hub plan is active and `--replace` was not passed, or a Hub subscribe was sent in the last 10 minutes and no paid plan is listed that it did not cancel",
+    "flag": "--replace"
+  },
+  {
+    "code": "remove_others_required",
+    "exit": 2,
+    "meaning": "the new list leaves out entries the list has now, and `--remove-others` was not passed",
+    "flag": "--remove-others"
+  },
+  {
+    "code": "public_required",
+    "exit": 2,
+    "meaning": "the write may publish a private bucket or open the Hub namespace to anyone, and `--public` was not passed",
+    "flag": "--public"
+  },
+  {
+    "code": "change_isolation_required",
+    "exit": 2,
+    "meaning": "the call changes which peers of the network can reach each other, and `--change-isolation` was not passed",
+    "flag": "--change-isolation"
+  },
+  {
+    "code": "auth",
+    "exit": 1,
+    "meaning": "401, or no token is configured for the API origin",
+    "flag": null
+  },
+  {
+    "code": "permission",
+    "exit": 1,
+    "meaning": "403 with no account code",
+    "flag": null
+  },
+  {
+    "code": "not_found",
+    "exit": 1,
+    "meaning": "404",
+    "flag": null
+  },
+  {
+    "code": "conflict",
+    "exit": 1,
+    "meaning": "409, or 412: another client changed the resource first; or a state `hipc` read that rules the write out, sent nothing, with `http_status` null",
+    "flag": null
+  },
+  {
+    "code": "payment_required",
+    "exit": 1,
+    "meaning": "402",
+    "flag": null
+  },
+  {
+    "code": "validation",
+    "exit": 1,
+    "meaning": "400, 422, or any other status this table does not name",
+    "flag": null
+  },
+  {
+    "code": "rate_limited",
+    "exit": 1,
+    "meaning": "429",
+    "flag": null
+  },
+  {
+    "code": "timeout",
+    "exit": 1,
+    "meaning": "the request or the wait ran out of time",
+    "flag": null
+  },
+  {
+    "code": "unavailable",
+    "exit": 1,
+    "meaning": "the connection failed, or 425, 502, 503, or 504",
+    "flag": null
+  },
+  {
+    "code": "partial_failure",
+    "exit": 1,
+    "meaning": "part of a multi-call command failed, and stdout holds what was done",
+    "flag": null
+  },
+  {
+    "code": "internal",
+    "exit": 1,
+    "meaning": "500, 501, a 5xx not listed under `unavailable`, a redirect (never followed), an answer `hipc` cannot read, or output `hipc` could not write",
+    "flag": null
+  },
+  {
+    "code": "not_a_member",
+    "exit": 1,
+    "meaning": "the caller is not a member of the selected account",
+    "flag": null
+  },
+  {
+    "code": "account_scope_unsupported",
+    "exit": 2,
+    "meaning": "the route cannot be used in another account, so `--account` must select the token's own",
+    "flag": "--account"
+  },
+  {
+    "code": "project_scope_unsupported",
+    "exit": 2,
+    "meaning": "the route does not take a project, so `--project` must select the Default one",
+    "flag": "--project"
+  },
+  {
+    "code": "billing_scope_unsupported",
+    "exit": 2,
+    "meaning": "the route does not take a billing account, so `--billing` must select the Default one",
+    "flag": "--billing"
+  },
+  {
+    "code": "owner_only",
+    "exit": 1,
+    "meaning": "only the account owner can do this",
+    "flag": null
+  },
+  {
+    "code": "insufficient_grant",
+    "exit": 1,
+    "meaning": "the member's grant on the product is too low",
+    "flag": null
+  },
+  {
+    "code": "team_management_required",
+    "exit": 1,
+    "meaning": "the member needs the Manage the team permission",
+    "flag": null
+  },
+  {
+    "code": "billing_required",
+    "exit": 1,
+    "meaning": "the member needs the Billing permission",
+    "flag": null
+  }
+]

@@ -2649,6 +2649,23 @@ mod tests {
         );
     }
 
+    /// The whole `hipc schema` document, which `hipc` wholly owns (tenet 7), so a change to any
+    /// row, argument, help line, route, or code shows as one diff to review. Refresh it with
+    /// `INSTA_UPDATE=always cargo test -p hippius-cli --bin hipc spec::`, then read the diff.
+    #[test]
+    fn the_schema_document_is_its_snapshot() {
+        let document = schema(&[]).unwrap();
+        insta::assert_snapshot!("schema", serde_json::to_string_pretty(&document).unwrap());
+    }
+
+    /// The error table of tenet 4 alone, so a change to a code, its exit code, meaning, or
+    /// flag is a short diff of its own.
+    #[test]
+    fn the_error_table_is_its_snapshot() {
+        let errors = &schema(&[]).unwrap()["errors"];
+        insta::assert_snapshot!("errors", serde_json::to_string_pretty(errors).unwrap());
+    }
+
     #[test]
     fn schema_document_shape() {
         let doc = schema(&[]).unwrap();

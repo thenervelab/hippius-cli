@@ -56,6 +56,7 @@ mod s3;
 mod s3_objects;
 mod secret_file;
 mod server_words;
+mod snapshots;
 mod sources;
 mod status;
 mod support;

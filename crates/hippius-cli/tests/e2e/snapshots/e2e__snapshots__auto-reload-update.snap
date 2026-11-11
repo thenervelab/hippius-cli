@@ -1,0 +1,32 @@
+---
+source: crates/hippius-cli/tests/e2e/snapshots.rs
+expression: dry_run(args)
+---
+{
+  "dry_run": true,
+  "requests": [
+    {
+      "method": "GET",
+      "url": "[origin]/api/billing/auto-reload/",
+      "account_header": null,
+      "project_header": null,
+      "billing_header": null,
+      "body": null
+    },
+    {
+      "method": "PUT",
+      "url": "[origin]/api/billing/auto-reload/",
+      "account_header": null,
+      "project_header": null,
+      "billing_header": null,
+      "body": {
+        "enabled": true,
+        "threshold": "<the setting's threshold>",
+        "target": "<the setting's target>",
+        "monthly_cap": "<the setting's monthly_cap>"
+      }
+    }
+  ],
+  "confirmation": true,
+  "confirmation_when": "the update leaves auto-reload on, and the setting it reads first is off, is in a state other than `armed`, has a lower `threshold`, `target`, or `monthly_cap` (`null` is no cap, the highest), or holds one of those in a shape hipc cannot compare"
+}

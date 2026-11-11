@@ -1,0 +1,10 @@
+---
+source: crates/hippius-cli/tests/e2e/snapshots.rs
+expression: dry_run(args)
+---
+{
+  "dry_run": true,
+  "action": "select_account",
+  "profile": "default",
+  "account": "acct_0123456789abcdef0123"
+}
