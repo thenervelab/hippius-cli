@@ -12,6 +12,9 @@
 
 mod rule_list;
 pub(crate) mod waf;
+
+use std::cmp::Ordering;
+
 use hippius::routes::cdn::{self, Origin, ZoneUpdateBody};
 use hippius::{Client, DnsCredentials, Error, Request, Result, phrase, view_of};
 use serde::Serialize;
@@ -25,9 +28,10 @@ use crate::commands::cdn::rule_list::{CACHE_RULES, ListUpdate, read_rules, updat
 use crate::commands::credits::{DECIMALS, amount, compare};
 use crate::commands::spend_cap::{self, InForce, NewCap};
 use crate::commands::{
-    Input, Printed, print_body, print_body_or, print_keyed_list, print_with, require_public,
+    Decided, Input, Printed, print_body, print_body_or, print_keyed_list, print_with,
+    read_then_write, require_public,
 };
-use crate::context::{self, Context, Gate, Write};
+use crate::context::{self, Context, Gate, Write, WritePlan};
 
 /// The largest `--cors-file` read, in bytes. Arbitrary: swagger's limits (32 origins, and
 /// 32 headers each way) fit in a few kilobytes, and a wrong path is refused rather than sent.
@@ -115,16 +119,32 @@ fn cap_update(
         .about(format!("get the spend cap of the CDN zone `{zone_id}`"))
         .listed_by(ZONES);
     let draft = patch(&format!("set {named} to `{monthly_cap}` credits"));
-    let checked = match ctx.check_write(client, &draft)? {
-        Write::DryRun(_) => {
-            return ctx
-                .dry_run_of(client, &[&read, &draft])
-                .map(Printed::Document);
-        }
-        Write::Checked(checked) => checked,
+    let decide = || {
+        let current: cdn::Cap = view_of(&ctx.send(client, &read)?.document()?);
+        let in_force = current
+            .monthly_cap_credits
+            .clone()
+            .map_or(InForce::Unknown, InForce::Credits);
+        let zone_cap = spend_cap::Cap {
+            named: &named,
+            read: "the cap",
+            spender: "the zone",
+        };
+        let order = cap_order(&current, monthly_cap);
+        let question =
+            spend_cap::question(zone_cap, NewCap::Credits(monthly_cap), &in_force, order);
+        Ok(match question {
+            Some((action, consequence)) => Decided::asked(patch(&action), Some(&consequence)),
+            None => Decided::unasked(draft.clone()),
+        })
     };
-    let current: cdn::Cap = view_of(&ctx.send(client, &read)?.document()?);
-    let old = current.monthly_cap_credits;
+    let plan = WritePlan::new(&[&read], &draft);
+    read_then_write(ctx, client, &plan, decide, |sent| sent?.document())
+}
+
+/// How `monthly_cap`, a new cap in credits, compares with `current`, the cap in force; `None`
+/// when the read holds no amount to compare with.
+fn cap_order(current: &cdn::Cap, monthly_cap: &str) -> Option<Ordering> {
     // `monthly_cap_credits` is rounded to a few decimals, so a cap just above the one in force
     // could read as equal; `monthly_cap` holds it exactly, in base units, and decides when it
     // is a digit string. The parser refuses a new cap with more decimals than base units
@@ -134,28 +154,13 @@ fn cap_update(
         .monthly_cap
         .as_deref()
         .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()));
-    let order = match (base, base_units(monthly_cap)) {
+    match (base, base_units(monthly_cap)) {
         (Some(base), Some(new)) => compare(&new, base),
-        _ => old.as_deref().and_then(|old| compare(monthly_cap, old)),
-    };
-    let in_force = old.map_or(InForce::Unknown, InForce::Credits);
-    let zone_cap = spend_cap::Cap {
-        named: &named,
-        read: "the cap",
-        spender: "the zone",
-    };
-    let question = spend_cap::question(zone_cap, NewCap::Credits(monthly_cap), &in_force, order);
-    let (request, confirmed) = match question {
-        Some((action, consequence)) => {
-            let request = patch(&action);
-            let confirmed = ctx.confirm_write(checked, &request.action(), Some(&consequence))?;
-            (request, confirmed)
-        }
-        None => (draft, ctx.unasked(checked)),
-    };
-    ctx.send_confirmed(client, &request, &confirmed)?
-        .document()
-        .map(Printed::Document)
+        _ => current
+            .monthly_cap_credits
+            .as_deref()
+            .and_then(|old| compare(monthly_cap, old)),
+    }
 }
 
 fn purges(ctx: &Context<'_>, client: &Client, command: &CdnPurges) -> Result<Printed> {
@@ -399,25 +404,18 @@ fn update_zone(ctx: &Context<'_>, args: &ZoneUpdate) -> Result<Printed> {
         bucket: Some("<the zone's bucket>"),
         prefix,
     }))?;
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(_) => {
-            return ctx
-                .dry_run_of(&client, &[&read, &draft])
-                .map(Printed::Document);
-        }
-        Write::Checked(checked) => checked,
+    let decide = || {
+        let zone = ctx.send(&client, &read)?.document()?;
+        let (kind, bucket) = zone_origin(&zone, &args.zone_id)?;
+        let request = patch(Some(Origin {
+            kind: kind.as_deref(),
+            bucket: Some(&bucket),
+            prefix,
+        }))?;
+        Ok(Decided::asked(request, None))
     };
-    let zone = ctx.send(&client, &read)?.document()?;
-    let (kind, bucket) = zone_origin(&zone, &args.zone_id)?;
-    let request = patch(Some(Origin {
-        kind: kind.as_deref(),
-        bucket: Some(&bucket),
-        prefix,
-    }))?;
-    let confirmed = ctx.confirm_write(checked, &request.action(), None)?;
-    ctx.send_confirmed(&client, &request, &confirmed)?
-        .document()
-        .map(Printed::Document)
+    let plan = WritePlan::new(&[&read], &draft);
+    read_then_write(ctx, &client, &plan, decide, |sent| sent?.document())
 }
 
 /// The `kind`, when it is text, and the `bucket` of the `origin` of `zone`, a zone read, which
@@ -747,15 +745,16 @@ fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
     };
     let client = ctx.load_authed_client()?;
     let draft = request(&credentials.placeholder_body());
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(doc) => return Ok(Printed::Document(doc)),
+    let checked = match ctx.check_write(&client, &WritePlan::new(&[], &draft))? {
+        Write::DryRun(doc) => return Ok(doc.into()),
         Write::Checked(checked) => checked,
     };
     let consequence = "it adds or changes records in the domain's DNS zone at the provider";
     let confirmed = ctx.confirm_write(checked, &draft.action(), Some(consequence))?;
     let action = draft.action();
-    // The body's copies of the credential are cleared once it is serialized, and the request's
-    // bytes when it is dropped (tenet 8).
+    // The credential is put in a body only once the write is confirmed. The body's copies of
+    // it are cleared once it is serialized, and the request's bytes when it is dropped
+    // (tenet 8).
     let request = request(credentials.body().as_value());
     ctx.send_confirmed(&client, &request, &confirmed)
         .and_then(|response| response.document())

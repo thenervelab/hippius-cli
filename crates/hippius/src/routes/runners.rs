@@ -3,7 +3,7 @@
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
-use crate::routes::Route;
+use crate::routes::{Paging, Route};
 use crate::view::{Slot, TextOrNumber, field};
 
 routes! {
@@ -19,7 +19,7 @@ routes! {
         .project();
 
     /// The runner jobs.
-    JOBS: 0 = Route::get("/api/runners/jobs/").scoped().project().paged();
+    JOBS: 0 = Route::get("/api/runners/jobs/").scoped().project().paged(Paging::Cursor);
 
     /// The runner spend limit.
     LIMIT: 0 = Route::get("/api/runners/limit/").scoped().project();

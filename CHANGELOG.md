@@ -96,6 +96,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - Backspace at the hidden token prompt erases the last character whole, not its last byte.
 - A note after `hipc hub namespace create` no longer says no `robot_secret` was issued when the answer holds the secret under another of its names.
 - A redacted all-digit value no longer turns a number into `<redacted>` when only zeros differ: numbers are compared with it by value, so a value `1000` leaves the counts `1` and `10` as they are.
+- A list answer that names its next page in `next_before`, `next_cursor`, or `cursor` and has no `next` link, where `hipc` reads a `next` link (a list command's page, a list read whole, or `hipc api --all`), exits 1 `internal` rather than being printed as the whole list. TENETS tenet 6 says so.
 
 ### Security
 

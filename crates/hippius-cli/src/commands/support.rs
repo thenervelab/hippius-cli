@@ -15,8 +15,8 @@ use zeroize::Zeroizing;
 use crate::cli::{
     Support, TicketBody, TicketCreate, TicketList, TicketMessages, TicketUpdateStatus, Tickets,
 };
-use crate::commands::{Input, Printed, list, print_body};
-use crate::context::{self, Context, Gate, Write};
+use crate::commands::{Decided, Input, Printed, list, print_body, read_then_write};
+use crate::context::{self, Context, Gate, WritePlan};
 
 /// The largest message read, in bytes. Swagger sets no maximum on a ticket's `description`
 /// or a message's `body`; the limit is arbitrary, far above a written message, and stops a
@@ -81,32 +81,25 @@ fn close(ctx: &Context<'_>, ticket_id: u64, status: TicketUpdateStatus) -> Resul
         })
         .listed_by("hipc support tickets list")
         .about(format!("close the ticket `{ticket_id}`"));
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(_) => {
-            return ctx
-                .dry_run_of(&client, &[&read, &draft])
-                .map(Printed::Document);
+    let decide = || {
+        let ticket: support::Ticket = view_of(&ctx.send(&client, &read)?.document()?);
+        if ticket.status.as_deref() == Some(status.code()) {
+            return Err(Error::new(
+                Failure::Conflict,
+                format!("the ticket `{ticket_id}` is already closed"),
+            ));
         }
-        Write::Checked(checked) => checked,
+        // Swagger requires a subject; a ticket without one is still closed, named by its id.
+        let action = match ticket.subject {
+            Some(subject) => format!("close the ticket `{ticket_id}`, {}", phrase::quote(subject)),
+            None => format!("close the ticket `{ticket_id}`"),
+        };
+        let consequence = "the support team stops working on it";
+        Ok(Decided::asked_as(draft.clone(), action, Some(consequence)))
     };
-    let ticket: support::Ticket = view_of(&ctx.send(&client, &read)?.document()?);
-    if ticket.status.as_deref() == Some(status.code()) {
-        return Err(Error::new(
-            Failure::Conflict,
-            format!("the ticket `{ticket_id}` is already closed"),
-        ));
-    }
-    // Swagger requires a subject; a ticket without one is still closed, named by its id.
-    let action = match ticket.subject {
-        Some(subject) => format!("close the ticket `{ticket_id}`, {}", phrase::quote(subject)),
-        None => format!("close the ticket `{ticket_id}`"),
-    };
-    let consequence = "the support team stops working on it";
-    let confirmed = ctx.confirm_write(checked, &action, Some(consequence))?;
     // Swagger answers the whole ticket, printed as sent.
-    ctx.send_confirmed(&client, &draft, &confirmed)?
-        .document()
-        .map(Printed::Document)
+    let plan = WritePlan::new(&[&read], &draft);
+    read_then_write(ctx, &client, &plan, decide, |sent| sent?.document())
 }
 
 /// `GET /api/support/tickets/`, with `status` only when `--status` is given.

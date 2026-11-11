@@ -37,8 +37,10 @@ use crate::cli::{
 };
 use crate::commands::credits::compare;
 use crate::commands::spend_cap::{self, InForce, NewCap};
-use crate::commands::{Printed, list, print_body, print_body_or, print_envelope, print_with};
-use crate::context::{Context, Gate, Write};
+use crate::commands::{
+    Decided, Printed, list, print_body, print_body_or, print_envelope, print_with, read_then_write,
+};
+use crate::context::{Context, Gate, WritePlan};
 
 pub(super) fn run(ctx: &Context<'_>, command: &Runners) -> Result<Printed> {
     match command {
@@ -67,7 +69,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Runners) -> Result<Printed> {
         }
         Runners::Jobs(args) => {
             let request = Request::to(&runners::JOBS, []).about("list the runner jobs");
-            list::run_cursor(ctx, &ctx.load_authed_client()?, &request, args)
+            list::run(ctx, &ctx.load_authed_client()?, &request, args)
         }
         Runners::Connect => connect(ctx, &ctx.load_authed_client()?),
         Runners::Usage => {
@@ -119,44 +121,44 @@ fn update_limit(ctx: &Context<'_>, cap: &MonthlyCap) -> Result<Printed> {
             .json(&runners::LimitUpdateBody { monthly_cap: sent })
     };
     let draft = put().about(format!("set the monthly runner spend cap to {shown}"));
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(_) => {
-            return ctx
-                .dry_run_of(&client, &[&read_limit(), &draft])
-                .map(Printed::Document);
-        }
-        Write::Checked(checked) => checked,
-    };
-    let limit = ctx
-        .send(&client, &read_limit())
-        .and_then(|response| response.document())
-        .map_err(not_enabled)?;
-    let new = match cap {
-        MonthlyCap::Credits(credits) => NewCap::Credits(credits),
-        MonthlyCap::None => NewCap::None,
-    };
-    let in_force = current_cap(&limit);
-    let order = match (new, &in_force) {
-        (NewCap::Credits(new), InForce::Credits(old)) => compare(new, old),
-        _ => None,
-    };
-    let runners_cap = spend_cap::Cap {
-        named: "the monthly runner spend cap",
-        read: "the limit",
-        spender: "runners",
-    };
-    let question = spend_cap::question(runners_cap, new, &in_force, order);
-    let (request, confirmed) = match question {
-        Some((action, consequence)) => {
-            let request = put().about(action);
-            let confirmed = ctx.confirm_write(checked, &request.action(), Some(&consequence))?;
-            (request, confirmed)
-        }
-        None => (draft, ctx.unasked(checked)),
+    let read = read_limit();
+    let decide = || {
+        let limit = ctx
+            .send(&client, &read)
+            .and_then(|response| response.document())
+            .map_err(not_enabled)?;
+        let new = match cap {
+            MonthlyCap::Credits(credits) => NewCap::Credits(credits),
+            MonthlyCap::None => NewCap::None,
+        };
+        let in_force = current_cap(&limit);
+        let order = match (new, &in_force) {
+            (NewCap::Credits(new), InForce::Credits(old)) => compare(new, old),
+            _ => None,
+        };
+        let runners_cap = spend_cap::Cap {
+            named: "the monthly runner spend cap",
+            read: "the limit",
+            spender: "runners",
+        };
+        Ok(
+            match spend_cap::question(runners_cap, new, &in_force, order) {
+                Some((action, consequence)) => {
+                    Decided::asked(put().about(action), Some(&consequence))
+                }
+                None => Decided::unasked(draft.clone()),
+            },
+        )
     };
     // Only the read's 404 is the switch being off: a 404 after a good read is plain.
-    let response = ctx.send_confirmed(&client, &request, &confirmed)?;
-    applied(&response, cap).map(Printed::Document)
+    let render = |sent: Result<Response>| applied(&sent?, cap);
+    read_then_write(
+        ctx,
+        &client,
+        &WritePlan::new(&[&read], &draft),
+        decide,
+        render,
+    )
 }
 
 /// The answer to the `PUT`, checked. `monthly_cap` is an unverified name for this route, and a
@@ -275,23 +277,16 @@ fn update(ctx: &Context<'_>, args: &RunnerSettingsUpdate) -> Result<Printed> {
         .about(action);
     let read = Request::to(&runners::SETTINGS, []).about("get the runner settings");
     let client = ctx.load_authed_client()?;
-    let checked = match ctx.check_write(&client, &request)? {
-        Write::DryRun(_) => {
-            return ctx
-                .dry_run_of(&client, &[&read, &request])
-                .map(Printed::Document);
-        }
-        Write::Checked(checked) => checked,
+    let decide = || {
+        let current = view_of(&ctx.send(&client, &read)?.document()?);
+        Ok(if may_spend_more(args, &current) {
+            Decided::asked(request.clone(), Some(consequence))
+        } else {
+            Decided::unasked(request.clone())
+        })
     };
-    let current = view_of(&ctx.send(&client, &read)?.document()?);
-    let confirmed = if may_spend_more(args, &current) {
-        ctx.confirm_write(checked, &request.action(), Some(consequence))?
-    } else {
-        ctx.unasked(checked)
-    };
-    ctx.send_confirmed(&client, &request, &confirmed)?
-        .document()
-        .map(Printed::Document)
+    let plan = WritePlan::new(&[&read], &request);
+    read_then_write(ctx, &client, &plan, decide, |sent| sent?.document())
 }
 
 /// Whether the settings `args` sets may let runners spend more than the settings in force,

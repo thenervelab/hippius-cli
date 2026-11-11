@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::routes::Route;
+use crate::routes::{Paging, Route};
 
 routes! {
     /// The Drive plans.
@@ -24,7 +24,7 @@ routes! {
     CHECKOUT: 1 = Route::get("/api/drive/subscription/checkout/{intent_id}/").own_account();
 
     /// The Drive subscription's history.
-    HISTORY: 0 = Route::get("/api/drive/subscription/history/").own_account().paged();
+    HISTORY: 0 = Route::get("/api/drive/subscription/history/").own_account().paged(Paging::Numbered);
 }
 
 /// The body of [`SUBSCRIBE`].

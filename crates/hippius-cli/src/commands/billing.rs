@@ -15,7 +15,9 @@ use std::path::Path;
 
 use hippius::routes::billing::{self, AutoReloadState, AutoReloadUpdateBody};
 use hippius::routes::{self, Route};
-use hippius::{Code, Error, Failure, Request, Result, Selection, SideEffects, phrase, view_of};
+use hippius::{
+    Code, Error, Failure, Request, Response, Result, Selection, SideEffects, phrase, view_of,
+};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
@@ -24,8 +26,10 @@ use crate::cli::{
 };
 use crate::commands::credits::{AmountPath, shown_in_credits};
 use crate::commands::files::write_output_file;
-use crate::commands::{Printed, failed_part, gamma, halpha, list, print_body, print_with};
-use crate::context::{Context, Gate, Write};
+use crate::commands::{
+    Decided, Printed, failed_part, gamma, halpha, list, print_body, print_with, read_then_write,
+};
+use crate::context::{Context, Gate, WritePlan};
 
 pub(crate) fn run(ctx: &Context<'_>, command: &Billing) -> Result<Printed> {
     // The config file is read only once a command needs a client, after its argv checks, such
@@ -390,23 +394,43 @@ fn update_profile(ctx: &Context<'_>, args: &ProfileUpdate) -> Result<Printed> {
     let Some(email) = args.billing_email.as_deref() else {
         return print_body(ctx, &client, &request, Gate::Open).map_err(check);
     };
-    let checked = match ctx.check_write(&client, &request)? {
-        Write::DryRun(_) => {
-            return ctx
-                .dry_run_of(&client, &[&read_profile(), &request])
-                .map(Printed::Document);
-        }
-        Write::Checked(checked) => checked,
+    let read = read_profile();
+    let decide = || {
+        let current = match ctx.send(&client, &read) {
+            Ok(response) => view_of::<billing::Profile>(&response.document()?)
+                .billing_email
+                .filter(|email| !email.is_empty()),
+            Err(error) if error.code() == Code::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        Ok(email_change(current.as_deref(), email).map_or_else(
+            || Decided::unasked(request.clone()),
+            |action| {
+                let consequence = if email.is_empty() {
+                    "the invoices and billing emails no longer go to that address"
+                } else {
+                    "the invoices and billing emails go to the new address"
+                };
+                Decided::asked_as(request.clone(), action, Some(consequence))
+            },
+        ))
     };
-    let current = match ctx.send(&client, &read_profile()) {
-        Ok(response) => view_of::<billing::Profile>(&response.document()?)
-            .billing_email
-            .filter(|email| !email.is_empty()),
-        Err(error) if error.code() == Code::NotFound => None,
-        Err(error) => return Err(error),
-    };
-    // Clearing an email the profile does not hold sends invoices nowhere new.
-    let action = match (current.as_deref(), email) {
+    let render =
+        |sent: Result<Response>| sent.and_then(|response| response.document()).map_err(check);
+    read_then_write(
+        ctx,
+        &client,
+        &WritePlan::new(&[&read], &request),
+        decide,
+        render,
+    )
+}
+
+/// The question of a billing email change from `current`, the email the profile holds, to
+/// `email`, empty to clear it; `None` when the change sends invoices nowhere new, so it is
+/// not asked about.
+fn email_change(current: Option<&str>, email: &str) -> Option<String> {
+    match (current, email) {
         (Some(old), _) if old == email => None,
         (None, "") => None,
         (Some(old), "") => Some(format!("clear the billing email {}", phrase::quote(old))),
@@ -416,22 +440,7 @@ fn update_profile(ctx: &Context<'_>, args: &ProfileUpdate) -> Result<Printed> {
             phrase::quote(email)
         )),
         (None, _) => Some(format!("set the billing email to {}", phrase::quote(email))),
-    };
-    let confirmed = match action {
-        Some(action) => {
-            let consequence = if email.is_empty() {
-                "the invoices and billing emails no longer go to that address"
-            } else {
-                "the invoices and billing emails go to the new address"
-            };
-            ctx.confirm_write(checked, &action, Some(consequence))?
-        }
-        None => ctx.unasked(checked),
-    };
-    ctx.send_confirmed(&client, &request, &confirmed)
-        .and_then(|response| response.document())
-        .map(Printed::Document)
-        .map_err(check)
+    }
 }
 
 /// `PUT /api/billing/auto-reload/` with the whole setting: the flags given, and the rest as
@@ -466,39 +475,37 @@ fn update_auto_reload(ctx: &Context<'_>, args: &AutoReloadUpdate) -> Result<Prin
         .json(&draft)
         .about(save);
     require_billing_account(&client, &draft, "an auto-reload update")?;
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(_) => {
-            return ctx
-                .dry_run_of(&client, &[&read_auto_reload(), &draft])
-                .map(Printed::Document);
+    let read = read_auto_reload();
+    let decide = || {
+        let read = ctx.send(&client, &read)?.document()?;
+        let current: billing::AutoReload = view_of(&read);
+        // Swagger: `available: false`, and nothing else, while the feature is off on the
+        // server. No flag can fix that, so it is said before any field is checked.
+        if current.available == Some(false) {
+            return Err(Error::new(
+                Failure::Conflict,
+                "auto-reload is not available on this server: the setting reads `available` \
+                 `false`",
+            ));
         }
-        Write::Checked(checked) => checked,
+        let body = given.kept_from(&current)?;
+        let request = Request::to(&billing::AUTO_RELOAD_UPDATE, []).json(&body);
+        Ok(match charges_more(&read, &current, &body) {
+            Some((action, consequence)) => Decided::asked(request.about(action), Some(consequence)),
+            None => Decided::unasked(request.about(save)),
+        })
     };
-    let read = ctx.send(&client, &read_auto_reload())?.document()?;
-    let current: billing::AutoReload = view_of(&read);
-    // Swagger: `available: false`, and nothing else, while the feature is off on the server.
-    // No flag can fix that, so it is said before any field is checked.
-    if current.available == Some(false) {
-        return Err(Error::new(
-            Failure::Conflict,
-            "auto-reload is not available on this server: the setting reads `available` \
-             `false`",
-        ));
-    }
-    let body = given.kept_from(&current)?;
-    let request = Request::to(&billing::AUTO_RELOAD_UPDATE, []).json(&body);
-    let (request, confirmed) = match charges_more(&read, &current, &body) {
-        Some((action, consequence)) => {
-            let request = request.about(action);
-            let confirmed = ctx.confirm_write(checked, &request.action(), Some(consequence))?;
-            (request, confirmed)
-        }
-        None => (request.about(save), ctx.unasked(checked)),
+    let render = |sent: Result<Response>| {
+        sent.and_then(|response| response.document())
+            .map_err(|error| check_first(error, "hipc billing auto-reload get"))
     };
-    ctx.send_confirmed(&client, &request, &confirmed)
-        .and_then(|response| response.document())
-        .map(Printed::Document)
-        .map_err(|error| check_first(error, "hipc billing auto-reload get"))
+    read_then_write(
+        ctx,
+        &client,
+        &WritePlan::new(&[&read], &draft),
+        decide,
+        render,
+    )
 }
 
 /// A field of the auto-reload setting: its key in the route's body, and the flag that sets
@@ -826,7 +833,7 @@ fn subscriptions(ctx: &Context<'_>, client: &hippius::Client) -> Result<Printed>
     });
     if ctx.dry_run() {
         let requests: Vec<&Request> = reads.iter().map(|(_, request)| request).collect();
-        return ctx.dry_run_of(client, &requests).map(Printed::Document);
+        return ctx.dry_run_of(client, &requests).map(Printed::from);
     }
     let mut rows = Vec::new();
     let mut failures = Vec::new();

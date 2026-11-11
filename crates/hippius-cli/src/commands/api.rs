@@ -12,9 +12,8 @@ use hippius::{Client, Error, Method, Request, Result, RouteFlag};
 use serde_json::Value;
 
 use crate::cli::Api;
-use crate::commands::{
-    Input, Pages, Printed, cdn, compute, drive, hub, network, require_reveal, s3,
-};
+use crate::commands::list::{self, Turn};
+use crate::commands::{Input, Printed, cdn, compute, drive, hub, network, require_reveal, s3};
 use crate::context::{self, Context, Gate, Step};
 
 /// The largest `--body-file` body read, in bytes. Arbitrary: far above any console request
@@ -131,7 +130,7 @@ pub(crate) fn run(ctx: &Context<'_>, args: &Api) -> Result<Printed> {
     let gate = gate(&request, provisions, permanent, consequence);
     match ctx.call(&client, &request, gate)? {
         Step::Sent(response) => Ok(Printed::Body(response.into_bytes())),
-        Step::DryRun(doc) => Ok(Printed::Document(doc)),
+        Step::DryRun(doc) => Ok(doc.into()),
     }
 }
 
@@ -327,26 +326,24 @@ fn require_route_flag(
 /// A `next` link must stay on the origin of the first page ([`hippius::follow`]) and on its
 /// path, and [`Pages`] refuses a loop and a list past its page cap.
 fn every_page(ctx: &Context<'_>, client: &Client, first: Request) -> Result<Printed> {
-    let mut items = Vec::new();
     // The first URL is the caller's: a refusal of it is their usage error.
     let mut url = client.url(&first)?;
+    if ctx.dry_run() {
+        return ctx.dry_run_of(client, &[&first]).map(Printed::from);
+    }
     let list_path = path_of(&url).to_owned();
-    let mut pages = Pages::starting_at(&url);
-    let mut request = first;
-    loop {
-        let page = match ctx.call(client, &request, Gate::Open)? {
-            Step::Sent(response) => {
-                pages.read(response.bytes().len())?;
-                response.json()?
-            }
-            Step::DryRun(doc) => return Ok(Printed::Document(doc)),
-        };
-        let page = hippius::page(page).map_err(|_| not_a_list(&url))?;
+    let mut items = Vec::new();
+    let start = url.clone();
+    list::walk(ctx, client, first, &start, |answer| {
+        let page = hippius::page(answer).map_err(|_| not_a_list(&url))?;
         items.extend(page.items);
         let Some(next) = page.next else {
-            break;
+            return Ok(Turn::Done(Printed::Document(Value::Array(std::mem::take(
+                &mut items,
+            )))));
         };
-        request = hippius::follow(&url, &next)?;
+        // `hippius::page` reads a `next` link; it gives no other kind of next page.
+        let request = hippius::follow(&url, next.as_str())?;
         // Later URLs come from the server, so a refusal of one is not the caller's to fix
         // (tenet 4: exit 2 means the invocation must change): whatever `url` refuses it with
         // is `internal`. That holds for `account_scope_unsupported` too: `--account self`
@@ -365,12 +362,14 @@ fn every_page(ctx: &Context<'_>, client: &Client, first: Request) -> Result<Prin
             return Err(Error::internal(format!(
                 "the API's `next` link {} leaves {}, the path of the list",
                 hippius::phrase::quote(hippius::without_query_values(&url)),
-                hippius::phrase::quote(list_path)
+                hippius::phrase::quote(&list_path)
             )));
         }
-        pages.admit(&url)?;
-    }
-    Ok(Printed::Document(Value::Array(items)))
+        Ok(Turn::Next {
+            token: url.clone(),
+            request,
+        })
+    })
 }
 
 /// The path of `url`, a URL from [`Client::url`], without its query.

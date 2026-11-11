@@ -25,7 +25,7 @@ use crate::commands::{
     Printed, failed_part, print_body, print_body_or, print_envelope, print_with, require_public,
     require_reveal_or_file, run_hint, set_up_first,
 };
-use crate::context::{self, Context, Gate, Write};
+use crate::context::{self, Context, Gate, Write, WritePlan};
 
 pub(crate) mod keys;
 mod models;
@@ -205,33 +205,35 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
     // The reads a real run sends after the question, which a dry run lists.
     let plans = Request::to(&hub::PLANS, []).about("list the Hub plans");
     let subscriptions = Request::to(&hub::SUBSCRIPTIONS, []).about("list the Hub subscriptions");
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(_) => {
-            // Which subscriptions a real run cancels is known only after it reads them, which
-            // a dry run does not do: the document adds the DELETE it may send first, once per
-            // active paid subscription, with the id left as a placeholder, and lists it in
-            // `requests` between the reads and the POST.
-            // `{subscription_id}` is the one placeholder not written `<...>`: it shipped
-            // before the style was set, and changing a field's value is a break (tenet 15).
-            // The template goes as it is: `Request::to` would percent-encode a stand-in, and
-            // the client refuses a path with an encoding.
-            let route = hub::SUBSCRIPTION_CANCEL;
-            let template = route.endpoint().template();
-            let cancel = Request::new(
-                route.method(),
-                template
-                    .strip_prefix(API_BASE)
-                    .expect("a route's template starts with the API base"),
-            );
-            if !args.replace {
-                return ctx
-                    .dry_run_of(&client, &[&plans, &subscriptions, &draft])
-                    .map(Printed::Document);
-            }
-            let mut doc = ctx.dry_run_of(&client, &[&plans, &subscriptions, &cancel, &draft])?;
-            doc["may_cancel_first"] = ctx.describe(&client, &cancel)?;
-            return Ok(Printed::Document(doc));
+    // Which subscriptions a real run cancels is known only after it reads them, which a dry
+    // run does not do: with `--replace` its document adds the DELETE it may send first, once
+    // per active paid subscription, with the id left as a placeholder, and lists it in
+    // `requests` between the reads and the POST.
+    // `{subscription_id}` is the one placeholder not written `<...>`: it shipped before the
+    // style was set, and changing a field's value is a break (tenet 15). The template goes as
+    // it is: `Request::to` would percent-encode a stand-in, and the client refuses a path with
+    // an encoding.
+    let route = hub::SUBSCRIPTION_CANCEL;
+    let cancel = Request::new(
+        route.method(),
+        route
+            .endpoint()
+            .template()
+            .strip_prefix(API_BASE)
+            .expect("a route's template starts with the API base"),
+    );
+    let before: &[&Request] = if args.replace {
+        &[&plans, &subscriptions, &cancel]
+    } else {
+        &[&plans, &subscriptions]
+    };
+    // Not `read_then_write`: the reads come after the question, and one question covers the
+    // cancels and the subscribe.
+    let checked = match ctx.check_write(&client, &WritePlan::new(before, &draft))? {
+        Write::DryRun(doc) if args.replace => {
+            return Ok(doc.may_cancel_first(ctx.describe(&client, &cancel)?).into());
         }
+        Write::DryRun(doc) => return Ok(doc.into()),
         Write::Checked(checked) => checked,
     };
     let action = if args.replace {

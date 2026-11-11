@@ -17,7 +17,7 @@ use hippius::{
     BillingId, Client, ConfigFile, Error, Given, Overrides, ProjectId, Request, Response, Result,
     Selection, Settings, SideEffects, Source, Token,
 };
-use serde_json::{Value, json};
+use serde_json::{Map, Value};
 
 use crate::cli::Global;
 use crate::output::{self, Mode, Terminal};
@@ -29,7 +29,7 @@ pub(crate) enum Step {
     /// The request was sent and the answer was a 2xx.
     Sent(Response),
     /// `--dry-run`: this document describes the request, and nothing was sent.
-    DryRun(Value),
+    DryRun(DryRun),
 }
 
 /// The outcome of [`Context::call_confirmed`].
@@ -39,7 +39,7 @@ pub(crate) enum ConfirmedStep {
     /// the later writes its question named.
     Sent(Response, Confirmed),
     /// `--dry-run`: this document describes the request, and nothing was sent.
-    DryRun(Value),
+    DryRun(DryRun),
 }
 
 /// Whether a request needs a confirmation before it is sent.
@@ -62,11 +62,113 @@ pub(crate) struct Question<'a> {
     pub(crate) consequence: Option<&'a str>,
 }
 
+/// The `--dry-run` document of a command that sends requests (tenet 5): `dry_run`, then
+/// `requests`, every request a real run sends, reads included, in the order it sends them,
+/// then the fields only some commands add. Only [`Context::dry_run_of`] makes one, so every
+/// dry run that would send anything lists its requests in one place, and no command writes a
+/// field of it by name.
+#[derive(Debug)]
+#[must_use = "a dry run is the document the command prints"]
+pub(crate) struct DryRun {
+    /// The [`Context::describe`] document of each request.
+    requests: Vec<Value>,
+    /// The read a real run sends before its question, described again on its own: the list a
+    /// replace compares, or the hAlpha quote ([`DryRun::reads_first`]).
+    reads_first: Option<Value>,
+    /// The cancel a Hub subscribe with `--replace` may send before its `POST`
+    /// ([`DryRun::may_cancel_first`]).
+    may_cancel_first: Option<Value>,
+}
+
+impl DryRun {
+    /// The dry run of `requests`, each described by [`Context::describe`].
+    fn of(requests: Vec<Value>) -> Self {
+        Self {
+            requests,
+            reads_first: None,
+            may_cancel_first: None,
+        }
+    }
+
+    /// Adds `reads_first`, `read` as [`Context::describe`] describes it: a read a real run
+    /// sends before its question because the question depends on it (TENETS tenet 5).
+    pub(crate) fn reads_first(mut self, read: Value) -> Self {
+        self.reads_first = Some(read);
+        self
+    }
+
+    /// Adds `may_cancel_first`, `cancel` as [`Context::describe`] describes it: the `DELETE`
+    /// a Hub subscribe with `--replace` sends once per active paid plan before its `POST`.
+    pub(crate) fn may_cancel_first(mut self, cancel: Value) -> Self {
+        self.may_cancel_first = Some(cancel);
+        self
+    }
+
+    /// Writes `placeholder` where a request's `url` holds the path segment `stand_in`: a
+    /// value only a real run learns, which the URL could not be built with, since the HTTP
+    /// library takes no `<` in a path.
+    pub(crate) fn with_placeholder_in_urls(mut self, stand_in: &str, placeholder: &str) -> Self {
+        let (stand_in, placeholder) = (format!("/{stand_in}/"), format!("/{placeholder}/"));
+        for request in &mut self.requests {
+            if let Some(Value::String(url)) = request.get_mut("url") {
+                *url = url.replace(&stand_in, &placeholder);
+            }
+        }
+        self
+    }
+}
+
+impl From<DryRun> for Value {
+    fn from(dry_run: DryRun) -> Self {
+        let DryRun {
+            requests,
+            reads_first,
+            may_cancel_first,
+        } = dry_run;
+        let mut doc = Map::new();
+        doc.insert("dry_run".to_owned(), true.into());
+        doc.insert("requests".to_owned(), requests.into());
+        let added = [
+            ("reads_first", reads_first),
+            ("may_cancel_first", may_cancel_first),
+        ];
+        doc.extend(
+            added
+                .into_iter()
+                .filter_map(|(field, value)| Some((field.to_owned(), value?))),
+        );
+        Self::Object(doc)
+    }
+}
+
+/// A write and the requests a real run sends before it (tenet 5): the reads that name its
+/// target or decide its question, and for a Hub subscribe the cancels. A dry run lists them,
+/// then the write; the checks before the question use the write.
+#[derive(Debug)]
+pub(crate) struct WritePlan<'r> {
+    before: Vec<&'r Request>,
+    /// The write as the dry run describes it, with a placeholder where a value comes from a
+    /// read. It has the path of every write the command then sends, because the account the
+    /// question names is this one's.
+    draft: &'r Request,
+}
+
+impl<'r> WritePlan<'r> {
+    /// `draft`, sent after `before`, in that order; `&[]` when the write is all a real run
+    /// sends.
+    pub(crate) fn new(before: &[&'r Request], draft: &'r Request) -> Self {
+        Self {
+            before: before.to_vec(),
+            draft,
+        }
+    }
+}
+
 /// The outcome of [`Context::check_write`].
 #[derive(Debug)]
 pub(crate) enum Write {
-    /// `--dry-run`: this document describes the request, and nothing was sent.
-    DryRun(Value),
+    /// `--dry-run`: this document describes the requests, and nothing was sent.
+    DryRun(DryRun),
     /// The write may be confirmed.
     Checked(Checked),
 }
@@ -368,7 +470,7 @@ impl<'a> Context<'a> {
         request: &Request,
         consequence: Option<&str>,
     ) -> Result<ConfirmedStep> {
-        match self.check_write(client, request)? {
+        match self.check_write(client, &WritePlan::new(&[], request))? {
             Write::DryRun(doc) => Ok(ConfirmedStep::DryRun(doc)),
             Write::Checked(checked) => {
                 let confirmed = self.confirm_write(checked, &request.action(), consequence)?;
@@ -379,15 +481,24 @@ impl<'a> Context<'a> {
     }
 
     /// The checks before a write's question: [`Context::call`] makes them for one request,
-    /// and a command that reads before or after its question calls this itself. `draft` is
-    /// the write as the dry run describes it, with a placeholder where a value comes from a
-    /// read; it has the path of every write the command then sends, because the account the
-    /// question names is `draft`'s. Under `--dry-run` this is its document. Otherwise the
-    /// write's own refusals come first (a membership the route cannot use), then the token,
-    /// so a confirmed write never fails on either (tenet 5).
-    pub(crate) fn check_write(&self, client: &Client, draft: &Request) -> Result<Write> {
+    /// `commands::read_then_write` for a write that reads first, and a command whose steps
+    /// those do not fit calls this itself. Under `--dry-run` this is the document of `plan`,
+    /// every request it sends. Otherwise the draft write's own refusals come first (a
+    /// membership the route cannot use), then the token, so a confirmed write never fails on
+    /// either (tenet 5), and nothing has been sent yet.
+    pub(crate) fn check_write(&self, client: &Client, plan: &WritePlan<'_>) -> Result<Write> {
+        let draft = plan.draft;
         if self.global.dry_run {
-            return self.dry_run_of(client, &[draft]).map(Write::DryRun);
+            // The write is described first, so its own refusal (a selector its route does not
+            // take) is the one a dry run names, as a real run's checks name it before any read.
+            let write = self.describe(client, draft)?;
+            let mut requests = plan
+                .before
+                .iter()
+                .map(|request| self.describe(client, request))
+                .collect::<Result<Vec<_>>>()?;
+            requests.push(write);
+            return Ok(Write::DryRun(DryRun::of(requests)));
         }
         let account = client.account_header(draft)?;
         let project = client.project_header(draft)?;
@@ -456,18 +567,16 @@ impl<'a> Context<'a> {
         Ok(doc)
     }
 
-    /// The `--dry-run` document of a command whose real run sends `requests`: `dry_run`, then
-    /// `requests`, the [`Context::describe`] document of each, in the order a real run sends
-    /// them, reads included. A value only a read can give is a `<...>` placeholder in the
-    /// request that uses it. Every dry run that would send anything is built here, so each has
-    /// `requests`, and a reader finds the requests in one place (tenet 5). A field a command
-    /// adds, such as `reads_first`, goes after them.
-    pub(crate) fn dry_run_of(&self, client: &Client, requests: &[&Request]) -> Result<Value> {
+    /// The `--dry-run` document of a command whose real run sends `requests`, the
+    /// [`Context::describe`] document of each, in the order a real run sends them, reads
+    /// included. A value only a read can give is a `<...>` placeholder in the request that
+    /// uses it. Every dry run that would send anything is built here ([`DryRun`]).
+    pub(crate) fn dry_run_of(&self, client: &Client, requests: &[&Request]) -> Result<DryRun> {
         let requests = requests
             .iter()
             .map(|request| self.describe(client, request))
             .collect::<Result<Vec<_>>>()?;
-        Ok(json!({ "dry_run": true, "requests": requests }))
+        Ok(DryRun::of(requests))
     }
 
     /// Sends `request` with no dry-run check and no confirmation: a read, or a write of a

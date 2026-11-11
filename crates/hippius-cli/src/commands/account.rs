@@ -16,8 +16,8 @@ use std::path::Path;
 
 use hippius::routes::account;
 use hippius::{
-    BillingId, Client, ConfigFile, Error, Failure, Given, Overrides, ProjectId, Request, Result,
-    Selection, Settings, Source, phrase, redact_value, view_of,
+    BillingId, Client, ConfigFile, Error, Failure, Given, Overrides, ProjectId, Request, Response,
+    Result, Selection, Settings, Source, phrase, redact_value, view_of,
 };
 use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
@@ -28,10 +28,10 @@ use crate::cli::{
 };
 use crate::commands::replace::{Entry, Found, Replace, replace_list};
 use crate::commands::{
-    Input, Printed, keyed_page, print_body, print_body_or, print_keyed_list, projects, referrals,
-    store_selection,
+    Decided, Input, Printed, keyed_page, print_body, print_body_or, print_keyed_list, projects,
+    read_then_write, referrals, store_selection,
 };
-use crate::context::{self, Context, Gate, Step, Write};
+use crate::context::{self, Context, DryRun, Gate, Step, WritePlan};
 
 /// The answer to `GET /api/accounts/`, or the `--dry-run` document in its place.
 #[derive(Debug)]
@@ -39,7 +39,7 @@ enum Fetched {
     /// The `accounts` array (the caller's own account, then memberships; see
     /// [`own_account`]), and the answer's other fields, such as `sharing_enabled`.
     Accounts(hippius::Page),
-    DryRun(Value),
+    DryRun(DryRun),
 }
 
 /// `GET /api/accounts/`: `hipc account list` and `get`, and the read of the token's own
@@ -119,7 +119,7 @@ fn list(ctx: &Context<'_>) -> Result<Printed> {
             Fetched::Accounts(page) => {
                 Printed::List(page.complete_envelope(accounts_request().target())?)
             }
-            Fetched::DryRun(doc) => Printed::Document(doc),
+            Fetched::DryRun(doc) => doc.into(),
         },
     )
 }
@@ -131,7 +131,7 @@ fn get(ctx: &Context<'_>) -> Result<Printed> {
     let selection = settings.account;
     let mut page = match accounts(ctx, &client)? {
         Fetched::Accounts(page) => page,
-        Fetched::DryRun(doc) => return Ok(Printed::Document(doc)),
+        Fetched::DryRun(doc) => return Ok(doc.into()),
     };
     let found = match &selection {
         Selection::Own => own_account(&page.items),
@@ -471,7 +471,7 @@ fn preview(
 ) -> Result<Printed> {
     if ctx.dry_run() {
         let doc = ctx.dry_run_of(client, &[&preview_request(TOKEN_PLACEHOLDER)])?;
-        return Ok(Printed::Document(doc));
+        return Ok(doc.into());
     }
     read_preview(ctx, client, settings, invite).map(Printed::Document)
 }
@@ -515,19 +515,43 @@ fn accept(
     invite: &InviteToken,
 ) -> Result<Printed> {
     let draft = accept_request(TOKEN_PLACEHOLDER);
-    let checked = match ctx.check_write(client, &draft)? {
-        Write::DryRun(_) => {
-            let preview = preview_request(TOKEN_PLACEHOLDER);
-            return ctx
-                .dry_run_of(client, &[&preview, &draft])
-                .map(Printed::Document);
-        }
-        Write::Checked(checked) => checked,
+    let preview = preview_request(TOKEN_PLACEHOLDER);
+    let decide = || {
+        let offer: account::InviteOffer = view_of(&read_preview(ctx, client, settings, invite)?);
+        let action = joined_account(offer)?;
+        let consequence = "the token then acts in that account with the access the invite grants";
+        Ok(Decided::asked(
+            accept_request(&invite.0).about(action),
+            Some(consequence),
+        ))
     };
-    let offer: account::InviteOffer = view_of(&read_preview(ctx, client, settings, invite)?);
-    // The preview says when an invite can no longer be used (`valid`, with `reason`
-    // `accepted`, `revoked`, or `expired`), so the person is not asked to join an account
-    // the accept would refuse.
+    let render = |sent: Result<Response>| {
+        let joined = sent
+            .and_then(|response| response.document())
+            .map(|joined| redact_value(joined, &invite.0))
+            .map_err(|error| with_accept_hint(error.redacted(&invite.0)))?;
+        use_note(ctx, &joined);
+        Ok(joined)
+    };
+    read_then_write(
+        ctx,
+        client,
+        &WritePlan::new(&[&preview], &draft),
+        decide,
+        render,
+    )
+}
+
+/// The question's action for `offer`, the invite's preview: the account to join, and who
+/// invited the caller. The preview says when an invite can no longer be used (`valid`, with
+/// `reason` `accepted`, `revoked`, or `expired`), so the person is not asked to join an
+/// account the accept would refuse.
+///
+/// # Errors
+///
+/// `conflict` for an invite the preview says is not valid, and `internal` for a preview
+/// without `account_name`.
+fn joined_account(offer: account::InviteOffer) -> Result<String> {
     if offer.valid == Some(false) {
         let why = match offer.reason {
             Some(reason) => format!("the API says it is {}", phrase::quote(reason)),
@@ -544,24 +568,14 @@ fn accept(
              account to join",
         ));
     };
-    let action = match offer.invited_by {
+    Ok(match offer.invited_by {
         Some(by) => format!(
             "join the account {}, invited by {}",
             phrase::quote(account),
             phrase::quote(by)
         ),
         None => format!("join the account {}", phrase::quote(account)),
-    };
-    let request = accept_request(&invite.0).about(action);
-    let consequence = "the token then acts in that account with the access the invite grants";
-    let confirmed = ctx.confirm_write(checked, &request.action(), Some(consequence))?;
-    let joined = ctx
-        .send_confirmed(client, &request, &confirmed)
-        .and_then(|response| response.document())
-        .map(|joined| redact_value(joined, &invite.0))
-        .map_err(|error| with_accept_hint(error.redacted(&invite.0)))?;
-    use_note(ctx, &joined);
-    Ok(Printed::Document(joined))
+    })
 }
 
 /// The note after an invite is accepted: the `hipc account use` that makes later commands act

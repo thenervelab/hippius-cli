@@ -253,9 +253,58 @@ pub struct Endpoint {
     permanent: bool,
     /// A 503 with `Retry-After` means nothing was done.
     undone_on_503: bool,
-    /// The server pages the list it answers, so a command takes the page flags on it.
-    paged: bool,
+    /// How the server pages the list it answers; a command takes the page flags on a paged
+    /// route.
+    paging: Option<Paging>,
     guard: Guard,
+}
+
+/// How the server pages the list a route answers (tenet 6): the query that asks for a page,
+/// and the shape of the answer, which `hipc`'s page loop reads by it. A route that changes
+/// how it pages changes its row, and a list read the old way is never taken for complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Paging {
+    /// Django REST framework's page numbers: `page` and `page_size`, answered `{count, next,
+    /// previous, results}`; the next page is the number in the `next` link.
+    Numbered,
+    /// Page numbers without a `next` link: `page` and `page_size`, answered `{page,
+    /// page_size, total, <items>}` with the items under `items`, as the Hub model index
+    /// answers; the next page follows while `total` says items remain.
+    Totalled {
+        /// The key that holds the items, such as `results` or `artifacts`.
+        items: &'static str,
+    },
+    /// A cursor: `before`, answered `{results, next_before}`; the server fixes the page size.
+    Cursor,
+    /// S3's `ListObjectsV2`: `max_keys` and `continuation_token`, answered `{Contents,
+    /// NextContinuationToken, IsTruncated}`.
+    Continuation,
+}
+
+impl Paging {
+    /// Whether the pages are numbered, so the first is page `1` and an answer may name the
+    /// page it is; the others go on from a token the previous page gave.
+    pub const fn numbered(self) -> bool {
+        matches!(self, Self::Numbered | Self::Totalled { .. })
+    }
+
+    /// The query parameter that names the page to read: its number or its token.
+    pub const fn token_query(self) -> &'static str {
+        match self {
+            Self::Numbered | Self::Totalled { .. } => "page",
+            Self::Cursor => "before",
+            Self::Continuation => "continuation_token",
+        }
+    }
+
+    /// The query parameter of the page size, or `None` where the server fixes it.
+    pub const fn size_query(self) -> Option<&'static str> {
+        match self {
+            Self::Numbered | Self::Totalled { .. } => Some("page_size"),
+            Self::Cursor => None,
+            Self::Continuation => Some("max_keys"),
+        }
+    }
 }
 
 impl Endpoint {
@@ -341,7 +390,13 @@ impl Endpoint {
     /// Whether the server pages the list this route answers, so a command that reads it
     /// takes the page flags.
     pub fn paged(&self) -> bool {
-        self.paged
+        self.paging.is_some()
+    }
+
+    /// How the server pages the list this route answers, or `None` for a route it does not
+    /// page.
+    pub fn paging(&self) -> Option<Paging> {
+        self.paging
     }
 
     /// Whether `path` (no query) is this template with a non-empty value in each
@@ -477,7 +532,7 @@ impl<const N: usize> Route<N> {
                 provisions: false,
                 permanent: false,
                 undone_on_503: false,
-                paged: false,
+                paging: None,
                 guard: Guard::None,
             },
         }
@@ -573,9 +628,9 @@ impl<const N: usize> Route<N> {
         self
     }
 
-    /// The server pages its list.
-    pub(crate) const fn paged(mut self) -> Self {
-        self.endpoint.paged = true;
+    /// The server pages its list as `paging` says.
+    pub(crate) const fn paged(mut self, paging: Paging) -> Self {
+        self.endpoint.paging = Some(paging);
         self
     }
 

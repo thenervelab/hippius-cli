@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 use crate::commands::cdn::ZONES;
 use crate::commands::replace::{self, Entry, Found, Replace, replace_list};
 use crate::commands::{Input, Printed, print_body};
-use crate::context::{Context, Gate, Step, Write};
+use crate::context::{Context, Gate, Step, Write, WritePlan};
 
 /// The largest `--rules-file` read, in bytes. Arbitrary: 50 rules, the server's limit, fit
 /// in a few kilobytes, and a wrong path is refused rather than sent.
@@ -268,7 +268,7 @@ pub(super) fn update_rules(
             .changes_nothing();
         match check_rules(ctx, &client, &replace, write, current)? {
             Step::Sent(response) => checked(&response, zone_id, list).map(Printed::Document),
-            Step::DryRun(doc) => Ok(Printed::Document(doc)),
+            Step::DryRun(doc) => Ok(doc.into()),
         }
     } else {
         replace_list(ctx, &client, &replace, current)
@@ -305,10 +305,12 @@ fn check_rules(
     current: impl FnOnce(Value) -> Result<Found>,
 ) -> Result<Step> {
     let draft = write.clone().if_match(VERSION_PLACEHOLDER);
-    if let Write::DryRun(_) = ctx.check_write(client, &draft)? {
-        let mut doc = ctx.dry_run_of(client, &[&replace.read, &draft])?;
-        doc["reads_first"] = ctx.describe(client, &replace.read)?;
-        return Ok(Step::DryRun(doc));
+    if let Write::DryRun(doc) =
+        ctx.check_write(client, &WritePlan::new(&[&replace.read], &draft))?
+    {
+        return Ok(Step::DryRun(
+            doc.reads_first(ctx.describe(client, &replace.read)?),
+        ));
     }
     let found = current(ctx.send(client, &replace.read)?.document()?)?;
     replace::refuse_removal(ctx, replace, &found)?;

@@ -12,8 +12,8 @@
 
 use hippius::routes::{self, account::NameBody};
 use hippius::{
-    BillingId, Client, ConfigFile, Error, Failure, ProjectId, Request, Result, Selection, Source,
-    phrase, view_of,
+    BillingId, Client, ConfigFile, Error, Failure, ProjectId, Request, Response, Result, Selection,
+    Source, phrase, view_of,
 };
 use serde_json::{Value, json};
 
@@ -24,10 +24,10 @@ use crate::cli::{
 use crate::commands::account;
 use crate::commands::credits::{AmountPath, shown_in_credits};
 use crate::commands::{
-    Printed, keyed_list, print_body, print_body_or, print_keyed_list, print_list_with, print_with,
-    store_selection,
+    Decided, Printed, keyed_list, print_body, print_body_or, print_keyed_list, print_list_with,
+    print_with, read_then_write, store_selection,
 };
-use crate::context::{Context, Gate, Write};
+use crate::context::{Context, Gate, WritePlan};
 use crate::output::Mode;
 
 /// The command that lists the billing account ids, for the hint of a 404.
@@ -270,63 +270,54 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
         .about("list the projects")
         .listed_by(PROJECTS);
     let accounts = account::accounts_request();
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(_) => {
-            let reads: &[&Request] = if member.is_some() {
-                &[&projects, &draft]
-            } else {
-                &[&projects, &accounts, &draft]
-            };
-            return ctx.dry_run_of(&client, reads).map(Printed::Document);
-        }
-        Write::Checked(checked) => checked,
-    };
-    let list = keyed_list(ctx.send(&client, &projects)?.json()?, &projects, "projects")?;
-    let project = list["items"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(view_of::<routes::account::ProjectEntry>)
-        .find(|project| project.id.as_deref() == Some(args.project_id.as_str()));
-    let Some(project) = project else {
-        let account = member.as_ref().map_or_else(
-            || "the token's own account".to_owned(),
-            |id| format!("the account `{id}`"),
-        );
-        // Decided by what the server listed, not by the command line (tenet 4).
-        let missing = Error::new(
-            Failure::NotFound,
-            format!(
-                "the project `{}` is not one of the projects of {account}",
-                args.project_id
-            ),
-        );
-        return Err(missing.with_hint(format!("run `{PROJECTS}` to see the project ids")));
-    };
-    let named = match project.name {
-        Some(name) => format!("{} ({shown_id})", phrase::quote(name)),
-        None => shown_id,
-    };
-    let from = if member.is_some() {
-        String::new()
+    let reads: &[&Request] = if member.is_some() {
+        &[&projects]
     } else {
-        let id = own_account_id(ctx.send(&client, &accounts)?.json()?)?;
-        // A state `hipc` read that rules the write out (tenet 4): `conflict`.
-        if id == args.to_account {
-            let same = Error::new(Failure::Conflict, same_account(&args.to_account));
-            return Err(same.with_hint(SAME_ACCOUNT_HINT));
-        }
-        format!("{own} {}", phrase::quote(&id))
+        &[&projects, &accounts]
     };
-    let request = write(&named, &from);
-    let confirmed = ctx.confirm_write(
-        checked,
-        &request.action(),
-        Some("the project moves to that account once it accepts"),
-    )?;
-    ctx.send_confirmed(&client, &request, &confirmed)?
-        .document()
-        .map(Printed::Document)
+    let decide = || {
+        let list = keyed_list(ctx.send(&client, &projects)?.json()?, &projects, "projects")?;
+        let project = list["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(view_of::<routes::account::ProjectEntry>)
+            .find(|project| project.id.as_deref() == Some(args.project_id.as_str()));
+        let Some(project) = project else {
+            let account = member.as_ref().map_or_else(
+                || "the token's own account".to_owned(),
+                |id| format!("the account `{id}`"),
+            );
+            // Decided by what the server listed, not by the command line (tenet 4).
+            let missing = Error::new(
+                Failure::NotFound,
+                format!(
+                    "the project `{}` is not one of the projects of {account}",
+                    args.project_id
+                ),
+            );
+            return Err(missing.with_hint(format!("run `{PROJECTS}` to see the project ids")));
+        };
+        let named = match project.name {
+            Some(name) => format!("{} ({shown_id})", phrase::quote(name)),
+            None => shown_id.clone(),
+        };
+        let from = if member.is_some() {
+            String::new()
+        } else {
+            let id = own_account_id(ctx.send(&client, &accounts)?.json()?)?;
+            // A state `hipc` read that rules the write out (tenet 4): `conflict`.
+            if id == args.to_account {
+                let same = Error::new(Failure::Conflict, same_account(&args.to_account));
+                return Err(same.with_hint(SAME_ACCOUNT_HINT));
+            }
+            format!("{own} {}", phrase::quote(&id))
+        };
+        let consequence = "the project moves to that account once it accepts";
+        Ok(Decided::asked(write(&named, &from), Some(consequence)))
+    };
+    let plan = WritePlan::new(reads, &draft);
+    read_then_write(ctx, &client, &plan, decide, |sent| sent?.document())
 }
 
 /// The token's own account's id, from the account the answer marks with `is_owner`
@@ -658,15 +649,33 @@ fn decide(
 ) -> Result<Printed> {
     let read = transfers_read();
     let draft = write(&format!("`{id}`")).listed_by(TRANSFERS);
-    let checked = match ctx.check_write(client, &draft)? {
-        Write::DryRun(_) => {
-            return ctx
-                .dry_run_of(client, &[&read, &draft])
-                .map(Printed::Document);
-        }
-        Write::Checked(checked) => checked,
+    let named_write = || {
+        let named = transfer_named(id, side, ctx.send(client, &read)?.json()?)?;
+        Ok(Decided::asked(write(&named).listed_by(TRANSFERS), None))
     };
-    let lists = transfer_lists(ctx.send(client, &read)?.json()?)?;
+    // The server may answer 204, so `done` stands for the body it does not send.
+    let render = |sent: Result<Response>| {
+        let response = sent?;
+        match done {
+            Some(done) => {
+                let body = response.json()?;
+                Ok(if body.is_null() { done } else { body })
+            }
+            None => response.document(),
+        }
+    };
+    let plan = WritePlan::new(&[&read], &draft);
+    read_then_write(ctx, client, &plan, named_write, render)
+}
+
+/// The transfer `id` as a question names it, `` `<id>` `` with its project and its other
+/// account, from `answer`, the transfers read; refused when it is not on `side`.
+///
+/// # Errors
+///
+/// `not_found` when the transfers hold no `id` on `side`, and the errors of reading `answer`.
+fn transfer_named(id: u64, side: Side, answer: Value) -> Result<String> {
+    let lists = transfer_lists(answer)?;
     let (list, missing) = match side {
         Side::Incoming => (
             lists.incoming,
@@ -699,16 +708,7 @@ fn decide(
     if let Some(account) = principal(other.as_ref()) {
         named.push_str(&format!(" {by} the account {account}"));
     }
-    let request = write(&named).listed_by(TRANSFERS);
-    let confirmed = ctx.confirm_write(checked, &request.action(), None)?;
-    let response = ctx.send_confirmed(client, &request, &confirmed)?;
-    match done {
-        Some(done) => {
-            let body = response.json()?;
-            Ok(Printed::Document(if body.is_null() { done } else { body }))
-        }
-        None => response.document().map(Printed::Document),
-    }
+    Ok(named)
 }
 
 /// A project or account as a transfer names it, `{id, name}`, for a message: its name and

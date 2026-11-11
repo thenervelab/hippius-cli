@@ -99,8 +99,9 @@ MEMBER_DELETE: 1 = Route::delete("/api/accounts/members/{member_id}/")
   `own_account`, which refuses a membership; the `routes!` table refuses a row without one),
   how it takes a project and a billing account (`project`, `billing`, `names_one`,
   `beside_billing`), whether its answer `reveals` a secret, whether a read `provisions`,
-  whether it is `permanent`, whether its 503 means it was `undone_on_503`, whether the server
-  `paged` its list, and the `guard` `hipc api` holds it back with.
+  whether it is `permanent`, whether its 503 means it was `undone_on_503`, how the server
+  pages its list (`paged(Paging::Numbered)`, `Totalled`, `Cursor`, `Continuation`: the query
+  that asks for a page and the answer's shape), and the `guard` `hipc api` holds it back with.
 - Names: a list is the plural (`MEMBERS`), one item the singular (`MEMBER`), and a write the
   noun and its verb (`MEMBER_UPDATE`, `MEMBER_DELETE`, `INVITE_CREATE`).
 
@@ -215,10 +216,11 @@ What `hipc` sends is typed; what the server answers is printed as it came.
   so a value the server adds is not an error, and an `as_str` that gives the server's spelling
   back for a message. The `vocabulary!` macro in `routes.rs` declares one. A server catalog (an S3
   plan, a Hub key role) stays a validated string (owner decision D5).
-- **A dry run** is built by `Context::dry_run_of(client, &[&read, &write])`, every request a
-  real run sends, in order; a command adds its own field (`reads_first`) after. A command
-  that changes only a local file uses `commands::local_dry_run`, whose fields are a
-  `serde_json::Map`, so none can be dropped. No command sets `doc["requests"]` itself.
+- **A dry run** is a `context::DryRun`, which only `Context::dry_run_of(client, &[&read,
+  &write])` builds: every request a real run sends, in order, then the fields some commands
+  add through its methods (`reads_first`, `may_cancel_first`). A command that changes only a
+  local file uses `commands::local_dry_run`, whose fields are a `serde_json::Map`, so none
+  can be dropped. No command writes a field of a dry run by name.
 
 ## Confirmations
 
@@ -231,6 +233,22 @@ command that forgets its question fails in the tests rather than sending. A row 
 when a condition holds says it did not ask with `Context::unasked`. `Context::call` and
 `call_confirmed` (which keeps the `Confirmed` for the later writes one question covered) do the
 whole sequence for one request.
+
+A write that reads first, to name its target in the question or to decide whether to ask, goes
+through `commands::read_then_write`: a `WritePlan` lists the reads and the write a dry run
+shows, and a `decide` closure, run after the write's checks, sends the reads and returns the
+write with its question (`Decided::asked`, `asked_as`, or `unasked`), so tenet 5's order holds
+by construction. A command whose steps that does not fit (one that reads again after the
+question, one question for several writes, a secret put in a body only once confirmed) calls
+`Context::check_write` with its `WritePlan` itself, and says why beside the call.
+
+## Lists
+
+`commands::list::walk` is the one page loop: it sends each page, counts it against the caps of
+tenet 3 (`Pages`), and admits each next page, so a loop or a list past a cap is refused the same
+way everywhere. `list::run` reads a list the way its route's row says the server pages it
+(`Request::paging`), into one `hippius::Page` whose `Next` is a link or a token;
+`hipc s3 tokens list` and `hipc api --all` walk their pages through the same loop.
 
 ## How `hipc api` says its rules
 

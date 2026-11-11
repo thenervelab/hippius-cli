@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use hippius::routes::{Route, s3};
+use hippius::routes::{Paging, Route, s3};
 use hippius::{
     AccessKeyId, AwsFiles, AwsProfile, Client, Error, Request, Response, Result, SecretKey,
     SecretValue, phrase, without_fields,
@@ -15,17 +15,16 @@ use serde_json::{Map, Value, json};
 
 use crate::cli::values::{Charset, Dash, is_word};
 use crate::cli::{
-    AclUpdate, BucketAcl, BucketObjects, Buckets, Configure, MAX_CONTINUATION_TOKEN_BYTES,
-    ObjectsList, Presign, S3, S3Subscription, TokenCreate, TokenKind, TokenRotate, TokenTarget,
-    Tokens, continuation_token,
+    AclUpdate, BucketAcl, BucketObjects, Buckets, Configure, ObjectsList, Presign, S3,
+    S3Subscription, TokenCreate, TokenKind, TokenRotate, TokenTarget, Tokens,
 };
 use crate::commands::files::{save_secret, shown_once};
 use crate::commands::{
-    Input, Pages, Printed, SettingChange, list, local_dry_run, object, plan_setting, print_body,
+    Input, Printed, SettingChange, list, local_dry_run, object, plan_setting, print_body,
     print_body_or, print_envelope, print_keyed_list, print_with, require_public, require_reveal,
     require_reveal_or_file, subscribed,
 };
-use crate::context::{self, Context, Gate, Question, Step};
+use crate::context::{self, Context, Gate, Question};
 
 pub(crate) fn run(ctx: &Context<'_>, command: &S3) -> Result<Printed> {
     match command {
@@ -173,125 +172,22 @@ fn list_objects(ctx: &Context<'_>, args: &ObjectsList) -> Result<Printed> {
     let name = &args.bucket_name;
     check_bucket(name)?;
     let limit = args.limit.to_string();
+    let paging = s3::OBJECTS
+        .endpoint()
+        .paging()
+        .expect("the row of a bucket's objects says how they are paged");
     let page_request = |token: Option<&str>| {
-        let mut request = Request::to(&s3::OBJECTS, [name])
+        let request = Request::to(&s3::OBJECTS, [name])
             .listed_by("hipc s3 buckets list")
-            .about(format!("list the objects of the bucket `{name}`"))
-            .query("max_keys", &limit);
+            .about(format!("list the objects of the bucket `{name}`"));
+        let mut request = list::sized(request, paging, Some(&limit));
         if let Some(prefix) = &args.prefix {
             request = request.query("prefix", prefix);
         }
-        match token {
-            Some(token) => request.query("continuation_token", token),
-            None => request,
-        }
+        list::at_page(request, paging, token)
     };
     let client = ctx.load_authed_client()?;
-    let mut items = Vec::new();
-    // The first page has no token; `""` stands for it, as `--page-token` takes no empty one.
-    let mut pages = Pages::starting_at(args.page_token.as_deref().unwrap_or(""));
-    let mut token = args.page_token.clone();
-    loop {
-        let answer = match ctx.call(&client, &page_request(token.as_deref()), Gate::Open)? {
-            Step::Sent(response) => {
-                pages.read(response.bytes().len())?;
-                response.json()?
-            }
-            Step::DryRun(doc) => return Ok(Printed::Document(doc)),
-        };
-        let page = objects_page(answer)?;
-        if !args.all {
-            let mut doc = hippius::envelope_beside(page.items, page.fields);
-            doc["next_page_token"] = page.next.map_or(Value::Null, Value::String);
-            return Ok(Printed::List(doc));
-        }
-        items.extend(page.items);
-        let Some(next) = page.next else {
-            return Ok(Printed::List(Value::Array(items)));
-        };
-        pages.admit(&next)?;
-        token = Some(next);
-    }
-}
-
-/// One page of a bucket's objects.
-#[derive(Debug)]
-struct ObjectsPage {
-    /// `Contents`: the objects.
-    items: Vec<Value>,
-    /// `NextContinuationToken`, or `None` on the last page.
-    next: Option<String>,
-    /// The answer's other fields, such as `KeyCount` and `IsTruncated`.
-    fields: Map<String, Value>,
-}
-
-/// Reads an S3 `ListObjectsV2` answer. `Contents` may be missing, as boto3 leaves it out of
-/// an empty page. An empty `NextContinuationToken` is no token, as the AWS SDK paginators
-/// read it, so a loop never sends it and fetches the first page again.
-///
-/// # Errors
-///
-/// `internal` for an answer that is not an object, a `Contents` that is not an array, a
-/// token that is not text or that `--page-token` would refuse, and an `IsTruncated: true`
-/// page with no token or an `IsTruncated` that is neither a boolean nor `null`: reading that
-/// as the last page would print a short list as if it were complete. A page with
-/// `IsTruncated: false` is the last, whatever token it carries.
-fn objects_page(answer: Value) -> Result<ObjectsPage> {
-    let not_a_list =
-        || Error::internal("the API answered a list request with something other than a list");
-    let Value::Object(mut fields) = answer else {
-        return Err(not_a_list());
-    };
-    let items = match fields.shift_remove("Contents") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(items)) => items,
-        Some(_) => return Err(not_a_list()),
-    };
-    let next = match fields.shift_remove("NextContinuationToken") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(token)) => Some(token).filter(|token| !token.is_empty()),
-        Some(_) => {
-            return Err(Error::internal(
-                "the API's `NextContinuationToken` is not text, so the next page cannot be read",
-            ));
-        }
-    };
-    let next = match (fields.get("IsTruncated"), next) {
-        // S3 sends a token only on a truncated page; one beside `IsTruncated: false` leads
-        // nowhere, and following it would fetch a page the server says does not exist.
-        (Some(Value::Bool(false)), _) => None,
-        (Some(Value::Bool(true)), None) => {
-            return Err(Error::internal(
-                "the API says the list goes on (`IsTruncated`) but gives no \
-                 `NextContinuationToken`, so the next page cannot be read",
-            ));
-        }
-        // A string `"true"` or a number `1` is no boolean to trust either way: read as absent
-        // it would make a page without a token the last, a short list printed as complete.
-        (Some(truncated), _) if !truncated.is_null() && !truncated.is_boolean() => {
-            return Err(Error::internal(
-                "the API's `IsTruncated` is not `true` or `false`, so whether the list goes on \
-                 cannot be read",
-            ));
-        }
-        (_, next) => next,
-    };
-    // Held to the rule `--page-token` checks, so a printed `next_page_token` is always one
-    // the next call accepts. The token is not quoted: it is the server's, and may be long.
-    if let Some(token) = &next
-        && continuation_token(token).is_err()
-    {
-        return Err(Error::internal(format!(
-            "the API's `NextContinuationToken` is not one `--page-token` takes: it is empty, \
-             holds a space or a control character, or is longer than \
-             {MAX_CONTINUATION_TOKEN_BYTES} bytes"
-        )));
-    }
-    Ok(ObjectsPage {
-        items,
-        next,
-        fields,
-    })
+    list::run_with(ctx, &client, paging, args.into(), page_request)
 }
 
 /// `GET /api/objectstore/buckets/<name>/presigned-url/?key=<key>[&expires_in=<seconds>]`
@@ -481,28 +377,21 @@ fn list_tokens(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
     };
     if ctx.dry_run() {
         let [master, sub] = [TokenKind::Master, TokenKind::Sub].map(first_page);
-        return ctx
-            .dry_run_of(client, &[&master, &sub])
-            .map(Printed::Document);
+        return ctx.dry_run_of(client, &[&master, &sub]).map(Printed::from);
     }
+    // Swagger gives the sub-token list DRF's `page`, but no command takes page flags on it,
+    // so its route is not marked paged; it is read by number all the same.
+    let paging = Paging::Numbered;
     let mut items = Vec::new();
     for kind in [TokenKind::Master, TokenKind::Sub] {
-        let mut pages = Pages::starting_at("1");
-        let mut page_number: Option<String> = None;
-        loop {
-            let request = first_page(kind);
-            let request = match &page_number {
-                Some(number) => request.query("page", number),
-                None => request,
-            };
-            let response = ctx.send(client, &request)?;
-            pages.read(response.bytes().len())?;
-            let page = hippius::page(response.json()?)?;
+        let mut asked = None;
+        list::walk(ctx, client, first_page(kind), "1", |answer| {
+            let page = hippius::page(answer)?;
             // A server that ignores `page` and answers page 1 again, with a `next` that
             // keeps rising, would repeat the list on every page; a later page that names
             // another `page` than the one asked is refused.
-            let start_over = page_number.as_ref().map(|_| list::CHANGED_WHILE_READ);
-            list::answered_as_asked(&page, page_number.as_deref().unwrap_or("1"), start_over)?;
+            let start_over = asked.as_ref().map(|_| list::CHANGED_WHILE_READ);
+            list::answered_as_asked(&page, asked.as_deref().unwrap_or("1"), start_over)?;
             let next = page.next_page_token()?;
             for token in page.items {
                 let mut token = token_document(without_fields(token, &is_s3_secret), kind);
@@ -512,10 +401,16 @@ fn list_tokens(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
                 }
                 items.push(token);
             }
-            let Some(number) = next else { break };
-            pages.admit(&number)?;
-            page_number = Some(number);
-        }
+            let Some(number) = next else {
+                return Ok(list::Turn::Done(()));
+            };
+            let request = list::at_page(first_page(kind), paging, Some(&number));
+            asked = Some(number.clone());
+            Ok(list::Turn::Next {
+                token: number,
+                request,
+            })
+        })?;
     }
     Ok(Printed::List(hippius::envelope(items)))
 }

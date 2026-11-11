@@ -2,14 +2,16 @@
 
 use hippius::routes::Route;
 use hippius::routes::compute::{self, Vm};
-use hippius::{Client, Error, Request, Result, phrase, view_of};
+use hippius::{Client, Error, Request, Response, Result, phrase, view_of};
 use serde_json::{Value, json};
 
 use crate::cli::{BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, FailoverMode};
 use crate::commands::compute::launch::failover_clause;
 use crate::commands::compute::{VMS, refused_as};
-use crate::commands::{Printed, keyed_list, print_body, print_body_or, print_list_with};
-use crate::context::{Context, Gate, Write};
+use crate::commands::{
+    Decided, Printed, keyed_list, print_body, print_body_or, print_list_with, read_then_write,
+};
+use crate::context::{Context, Gate, WritePlan};
 
 pub(super) fn backups(ctx: &Context<'_>, client: &Client, command: &Backups) -> Result<Printed> {
     let get = |request: Request| print_body(ctx, client, &request, Gate::Open);
@@ -120,46 +122,48 @@ fn restore(ctx: &Context<'_>, client: &Client, args: &BackupRestore) -> Result<P
         .about(format!("get the VM `{vm_id}`"))
         .listed_by(VMS);
     let draft = post(NAME_PLACEHOLDER);
-    let checked = match ctx.check_write(client, &draft)? {
-        Write::DryRun(_) => {
-            return ctx
-                .dry_run_of(client, &[&read, &draft])
-                .map(Printed::Document);
-        }
-        Write::Checked(checked) => checked,
-    };
-    let vm: Vm = view_of(&ctx.send(client, &read)?.document()?);
-    let Some(name) = vm.name.as_deref() else {
-        return Err(Error::internal(format!(
-            "the VM `{vm_id}` has no `name`, so the restore's `confirm` cannot be filled"
-        )));
-    };
-    let rollback = if args.accept_rollback {
-        ", which may be a point from before its last reboot"
-    } else {
-        ""
-    };
-    let request = post(name).listed_by(VMS).about(format!(
-        "overwrite the disk of the VM {} (`{vm_id}`) with the backup `{point}`{rollback}",
-        phrase::quote(name)
-    ));
-    let consequence = "everything written after that backup is lost, and the VM stops for a \
-                       few minutes";
-    let confirmed = ctx.confirm_write(checked, &request.action(), Some(consequence))?;
-    let restore = ctx
-        .send_confirmed(client, &request, &confirmed)
-        .and_then(|response| response.document());
-    restore.map(Printed::Document).map_err(|error| {
-        // A 400 for a point from before the VM's last reboot sent without
-        // `accept_rollback`. Any other 400 gets no hint: a wrong hint is worse than none.
-        if refused_as(&error, 400, "rollback-not-accepted") {
-            error.with_hint(
-                "pass `--accept-rollback` to restore a point from before the VM's last reboot",
-            )
+    let decide = || {
+        let vm: Vm = view_of(&ctx.send(client, &read)?.document()?);
+        let Some(name) = vm.name.as_deref() else {
+            return Err(Error::internal(format!(
+                "the VM `{vm_id}` has no `name`, so the restore's `confirm` cannot be filled"
+            )));
+        };
+        let rollback = if args.accept_rollback {
+            ", which may be a point from before its last reboot"
         } else {
-            error
-        }
-    })
+            ""
+        };
+        let request = post(name).listed_by(VMS).about(format!(
+            "overwrite the disk of the VM {} (`{vm_id}`) with the backup `{point}`{rollback}",
+            phrase::quote(name)
+        ));
+        let consequence = "everything written after that backup is lost, and the VM stops for \
+                           a few minutes";
+        Ok(Decided::asked(request, Some(consequence)))
+    };
+    let render = |sent: Result<Response>| {
+        sent.and_then(|response| response.document())
+            .map_err(|error| {
+                // A 400 for a point from before the VM's last reboot sent without
+                // `accept_rollback`. Any other 400 gets no hint: a wrong hint is worse than none.
+                if refused_as(&error, 400, "rollback-not-accepted") {
+                    error.with_hint(
+                        "pass `--accept-rollback` to restore a point from before the VM's last \
+                         reboot",
+                    )
+                } else {
+                    error
+                }
+            })
+    };
+    read_then_write(
+        ctx,
+        client,
+        &WritePlan::new(&[&read], &draft),
+        decide,
+        render,
+    )
 }
 
 /// What a backup policy delete leaves, for its question and `hipc api`'s.

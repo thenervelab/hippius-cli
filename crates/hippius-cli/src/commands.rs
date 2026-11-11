@@ -23,7 +23,6 @@ pub(crate) mod s3;
 pub(crate) mod spend_cap;
 pub(crate) mod support;
 
-use std::collections::HashSet;
 use std::io::Read;
 use std::os::fd::AsFd as _;
 use std::path::{Path, PathBuf};
@@ -36,7 +35,7 @@ use serde_json::{Map, Value};
 use zeroize::Zeroizing;
 
 use crate::cli::{Funding, PlanSetting, StorageCap};
-use crate::context::{self, Context, Gate, Step};
+use crate::context::{self, Context, DryRun, Gate, Step, Write, WritePlan};
 
 /// Whether `error` is the API's refusal of a call made before `route` set the account's service up:
 /// a 403 whose `detail` is exactly `You must call <route> first.`, the sentence both setup routes
@@ -413,6 +412,79 @@ pub(crate) fn require_public(ctx: &Context<'_>, public: bool, exposure: &str) ->
     ))
 }
 
+impl From<DryRun> for Printed {
+    fn from(dry_run: DryRun) -> Self {
+        Self::Document(dry_run.into())
+    }
+}
+
+/// The write a command decided on after its reads, and whether it asks about it: what
+/// [`read_then_write`] sends.
+#[derive(Debug)]
+pub(crate) struct Decided {
+    write: Request,
+    /// The question's action and consequence ([`crate::context::Question`]), or `None` for a
+    /// write the command's row does not ask about this time ([`Context::unasked`]).
+    question: Option<(String, Option<String>)>,
+}
+
+impl Decided {
+    /// `write`, asked about with its own action ([`Request::action`]) and `consequence`.
+    pub(crate) fn asked(write: Request, consequence: Option<&str>) -> Self {
+        let action = write.action();
+        Self::asked_as(write, action, consequence)
+    }
+
+    /// `write`, asked about as `action`, which names what the reads found, with
+    /// `consequence`.
+    pub(crate) fn asked_as(write: Request, action: String, consequence: Option<&str>) -> Self {
+        Self {
+            write,
+            question: Some((action, consequence.map(str::to_owned))),
+        }
+    }
+
+    /// `write`, sent without a question: the command's row asks only when a condition holds,
+    /// and the reads showed that it does not ([`Context::unasked`]).
+    pub(crate) fn unasked(write: Request) -> Self {
+        Self {
+            write,
+            question: None,
+        }
+    }
+}
+
+/// A write that reads first, in the order of tenet 5: under `--dry-run` the document of
+/// `plan`, with nothing sent; otherwise the write's own refusals and the token check, then
+/// `decide`, which sends the reads and returns the write and its question, then the question,
+/// then the write. What `render` makes of the write's outcome is printed; it maps the write's
+/// own error, which no step before it can produce.
+///
+/// # Errors
+///
+/// The refusals of [`Context::check_write`] and [`Context::confirm_write`], the error of
+/// `decide`, and the error `render` returns.
+pub(crate) fn read_then_write(
+    ctx: &Context<'_>,
+    client: &Client,
+    plan: &WritePlan<'_>,
+    decide: impl FnOnce() -> Result<Decided>,
+    render: impl FnOnce(Result<Response>) -> Result<Value>,
+) -> Result<Printed> {
+    let checked = match ctx.check_write(client, plan)? {
+        Write::DryRun(doc) => return Ok(doc.into()),
+        Write::Checked(checked) => checked,
+    };
+    let Decided { write, question } = decide()?;
+    let confirmed = match question {
+        Some((action, consequence)) => {
+            ctx.confirm_write(checked, &action, consequence.as_deref())?
+        }
+        None => ctx.unasked(checked),
+    };
+    render(ctx.send_confirmed(client, &write, &confirmed)).map(Printed::Document)
+}
+
 /// Sends `request` through the `--dry-run` and confirmation gate, and prints what `render`
 /// makes of the answer, or the dry-run document: the helper for a command that sends one
 /// request and prints what it makes of the answer.
@@ -425,7 +497,7 @@ pub(crate) fn print_with(
 ) -> Result<Printed> {
     match ctx.call(client, request, gate)? {
         Step::Sent(response) => render(response).map(Printed::Document),
-        Step::DryRun(doc) => Ok(Printed::Document(doc)),
+        Step::DryRun(doc) => Ok(doc.into()),
     }
 }
 
@@ -439,7 +511,7 @@ pub(crate) fn print_list_with(
 ) -> Result<Printed> {
     match ctx.call(client, request, Gate::Open)? {
         Step::Sent(response) => render(response).map(Printed::List),
-        Step::DryRun(doc) => Ok(Printed::Document(doc)),
+        Step::DryRun(doc) => Ok(doc.into()),
     }
 }
 
@@ -737,80 +809,6 @@ pub(crate) fn require_reveal_or_file(ctx: &Context<'_>, reveal: bool, to_file: b
     }
 }
 
-/// The most pages one command follows. Arbitrary: far more than any account's list holds
-/// at the API's page sizes, and it stops a server that keeps answering a new `next` from
-/// turning one command into a request storm and an unbounded buffer.
-const MAX_PAGES: usize = 1000;
-
-/// The most bytes of answers one list keeps across its pages (`s3 tokens list` reads two
-/// lists, each held to this). Arbitrary: every page is
-/// held until the list ends, and each may be up to the client's 32 MiB body cap, so the
-/// page cap alone would allow gigabytes. No account's list comes near this.
-const MAX_LIST_BYTES: usize = 64 * 1024 * 1024;
-
-/// The pages one list has followed. Every page loop reports each page it read and admits
-/// each `next` through it, so a link back to a page already read, a page past
-/// [`MAX_PAGES`], or a list past [`MAX_LIST_BYTES`] is refused the same way everywhere.
-#[derive(Debug)]
-pub(crate) struct Pages {
-    seen: HashSet<String>,
-    bytes: usize,
-}
-
-impl Pages {
-    /// A list whose first page is `first`: a page number, a cursor, or a URL for `hipc api`.
-    pub(crate) fn starting_at(first: &str) -> Self {
-        Self {
-            seen: HashSet::from([first.to_owned()]),
-            bytes: 0,
-        }
-    }
-
-    /// Counts a page of `bytes` that was read.
-    ///
-    /// # Errors
-    ///
-    /// `internal` once the list holds more than [`MAX_LIST_BYTES`].
-    pub(crate) fn read(&mut self, bytes: usize) -> Result<()> {
-        self.bytes = self.bytes.saturating_add(bytes);
-        if self.bytes > MAX_LIST_BYTES {
-            return Err(Error::internal(format!(
-                "the list is larger than {} MiB across its pages, so reading stopped",
-                MAX_LIST_BYTES / (1024 * 1024)
-            )));
-        }
-        Ok(())
-    }
-
-    /// Admits the next page.
-    ///
-    /// # Errors
-    ///
-    /// `internal` for a page already read (a loop) or one past [`MAX_PAGES`].
-    pub(crate) fn admit(&mut self, next: &str) -> Result<()> {
-        if self.seen.len() >= MAX_PAGES {
-            return Err(Error::internal(format!(
-                "the list goes on past {MAX_PAGES} pages, so reading stopped"
-            )));
-        }
-        if !self.seen.insert(next.to_owned()) {
-            // A URL (`hipc api`'s next link) shows no query values (tenet 9); a page number or
-            // an opaque cursor is data, quoted whole, since cutting it at a `?` or `#` would
-            // name another token.
-            let shown = if next.contains("://") {
-                hippius::without_query_values(next)
-            } else {
-                next.to_owned()
-            };
-            return Err(Error::internal(format!(
-                "the API's next page leads back to {}, which was already read",
-                phrase::quote(shown)
-            )));
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -904,36 +902,6 @@ mod tests {
         assert_eq!(
             request.action(),
             "charge each renewal of the S3 plan to the card saved at Stripe"
-        );
-    }
-
-    #[test]
-    fn pages_refuse_a_loop_a_page_past_the_cap_and_a_list_past_its_bytes() {
-        let mut pages = Pages::starting_at("1");
-        assert_eq!(pages.admit("1").unwrap_err().code(), Code::Internal);
-        pages.admit("2").unwrap();
-        pages.read(MAX_LIST_BYTES).unwrap();
-        assert_eq!(pages.read(1).unwrap_err().code(), Code::Internal);
-        let mut pages = Pages::starting_at("1");
-        for n in 2..=MAX_PAGES {
-            pages.admit(&n.to_string()).unwrap();
-        }
-        assert_eq!(pages.admit("x").unwrap_err().code(), Code::Internal);
-    }
-
-    #[test]
-    fn a_loop_quotes_a_cursor_whole_and_a_url_without_its_query_values() {
-        let looped = |next: &str| {
-            let mut pages = Pages::starting_at(next);
-            pages.admit(next).unwrap_err().message().to_owned()
-        };
-        assert_eq!(
-            looped("a?b=c#d`e\n"),
-            "the API's next page leads back to `a?b=c#d\\u{60}e\\n`, which was already read"
-        );
-        assert_eq!(
-            looped("https://api.example/x/?page=2&key=s3cr3t"),
-            "the API's next page leads back to `https://api.example/x/?page=<redacted>&key=<redacted>`, which was already read"
         );
     }
 }

@@ -3,7 +3,7 @@
 
 use serde::Serialize;
 
-use crate::routes::{Guard, Route, RouteFlag};
+use crate::routes::{Guard, Paging, Route, RouteFlag};
 
 routes! {
     /// The S3 plans.
@@ -25,7 +25,7 @@ routes! {
     CHECKOUT: 1 = Route::get("/api/s3/subscription/checkout/{intent_id}/").scoped();
 
     /// The S3 subscription's history.
-    HISTORY: 0 = Route::get("/api/s3/subscription/history/").scoped().billing().paged();
+    HISTORY: 0 = Route::get("/api/s3/subscription/history/").scoped().billing().paged(Paging::Numbered);
 
     /// The buckets.
     BUCKETS: 0 = Route::get("/api/objectstore/buckets/").scoped().project();
@@ -40,7 +40,7 @@ routes! {
     OBJECTS: 1 = Route::get("/api/objectstore/buckets/{bucket_name}/objects/")
         .scoped()
         .project()
-        .paged();
+        .paged(Paging::Continuation);
 
     /// A signed URL for one object.
     PRESIGNED_URL: 1 = Route::get("/api/objectstore/buckets/{bucket_name}/presigned-url/")
