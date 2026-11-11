@@ -1,6 +1,6 @@
-//! Where a value came from, so a message about a bad value names it (`TENETS.md` tenet 15,
-//! "Name the input, where it came from, and its value"): a refusal never reads the same for
-//! a flag and for a stored value, because the fix is in different places.
+//! Where a value came from, so a message about a bad value names it (tenet 15, "Phrasing"): a
+//! refusal never reads the same for a flag and for a stored value, because the fix is in
+//! different places.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -58,7 +58,8 @@ impl Source {
 }
 
 /// The source as a message names it: `` `--account` ``, `` `HIPPIUS_ACCOUNT` ``, a path in
-/// backticks or `stdin`, or `` the `account` of the profile `default` in `<path>` ``.
+/// backticks or `stdin`, or `` the `account` of the profile `default` in `<path>` ``. Used
+/// where the source is the subject of the phrase; `Source::suffix` where it trails the value.
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

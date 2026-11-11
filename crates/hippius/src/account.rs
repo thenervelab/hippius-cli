@@ -1,5 +1,5 @@
 //! Which account a request acts in, and whether `X-Hippius-Account` goes on it
-//! (`TENETS.md` tenet 12).
+//! (tenet 12).
 //!
 //! The server sorts routes into three classes: routes that act in the selected account,
 //! personal routes that ignore the header, and routes that refuse it. A route a command
@@ -96,7 +96,7 @@ pub(crate) const PERSONAL_PATHS: &[&str] = &[
 /// row says so ([`Endpoint::undone_on_503`]). Swagger documents the Drive and S3 subscribe
 /// 503 as "Chain unreachable; retry after Retry-After seconds": the purchase never reached
 /// the chain. Only those rows, only a 503, and only with the header; every other 5xx to a
-/// write stays `partial` (TENETS 4), a path no row matches included. A path without its
+/// write stays `partial` (tenet 4), a path no row matches included. A path without its
 /// trailing `/` is the same route. A format suffix or another letter case is not read here
 /// ([`classify`]): keeping such a write `partial` is the stricter answer.
 pub(crate) fn not_done_on_503(method: Method, path: &str) -> bool {
@@ -362,9 +362,12 @@ pub(crate) fn route_rules(method: Method, path: &str) -> Vec<Rule> {
     rules
 }
 
-/// `path`, then its lowercase form when that differs: every route table matches both. The
-/// server matches letter case, but a front end that folds it would deliver
-/// `/api/Network/isolation/` to the isolation route, so a guard holds in any case.
+/// `path`, then its lowercase form when that differs: the guard and secret tables match both.
+/// The server matches letter case, but a front end that folds it would deliver
+/// `/api/Network/isolation/` to the isolation route, so a guard holds in any case. The account
+/// class ([`route_class`]) and [`not_done_on_503`] read the path as written, which is the
+/// stricter answer there: an odd-case path is refused a membership, and a write stays
+/// `partial`.
 fn folded(path: &str) -> Vec<Cow<'_, str>> {
     let lower = path.to_ascii_lowercase();
     if lower == path {
@@ -496,8 +499,8 @@ const TICKET_PUT: &str = "/api/support/tickets/{id}/";
 
 /// The class of `method` to a request path such as `/api/compute/vms/`: its row's, else the
 /// tables'. A query string is ignored. In the tables, only a PUT of one ticket depends on the
-/// method. A path with a format suffix takes
-/// the stricter class of its two forms ([`classify`]).
+/// method. A path with a format suffix takes the stricter class of its two forms
+/// ([`classify`]).
 pub(crate) fn route_class(method: Method, path: &str) -> RouteClass {
     classify(path, RouteClass::Unsupported, |form| {
         routes::row(method, form)

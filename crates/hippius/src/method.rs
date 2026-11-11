@@ -9,17 +9,17 @@ use crate::phrase::quote;
 /// The HTTP methods `hipc` sends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
-    /// GET.
+    /// Reads a resource (RFC 9110, section 9.3.1).
     Get,
-    /// HEAD.
+    /// Reads a resource's headers only (RFC 9110, section 9.3.2).
     Head,
-    /// POST.
+    /// Creates a resource or runs an action (RFC 9110, section 9.3.3).
     Post,
-    /// PUT.
+    /// Replaces a resource whole (RFC 9110, section 9.3.4).
     Put,
-    /// PATCH.
+    /// Changes part of a resource (RFC 5789).
     Patch,
-    /// DELETE.
+    /// Removes a resource (RFC 9110, section 9.3.5).
     Delete,
 }
 
@@ -62,7 +62,7 @@ impl Method {
         }
     }
 
-    /// GET and HEAD read. Every other method may change state.
+    /// Whether the method only reads: GET and HEAD. Every other method may change state.
     pub fn is_read(self) -> bool {
         matches!(self, Self::Get | Self::Head)
     }

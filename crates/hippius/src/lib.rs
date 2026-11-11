@@ -1,7 +1,8 @@
 //! Client library for the Hippius console API, used by the `hipc` command.
 //!
 //! The library owns what `TENETS.md` makes a contract: the error object and its codes, the
-//! config file, the account-header rules, and the HTTP client. It never prints. The `hipc`
+//! config file, the account-header rules, the route tables, the list shapes, and the HTTP
+//! client. It never prints. The `hipc`
 //! binary owns argv, the output mode, and every byte written to stdout or stderr.
 
 /// Ends a test that makes a file or directory unreadable or unwritable on purpose when the

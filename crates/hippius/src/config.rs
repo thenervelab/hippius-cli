@@ -1,4 +1,4 @@
-//! The config file and the settings one invocation runs with (`TENETS.md` tenet 8).
+//! The config file and the settings one invocation runs with (tenet 8).
 //!
 //! The file is `$HOME/.hippius/config.toml`, or the path in `HIPPIUS_CONFIG`. It holds API
 //! tokens, so it is guarded the way OpenSSH guards a private key:
@@ -282,6 +282,9 @@ impl Document {
     }
 }
 
+/// One profile as the file holds it. The selections (`account`, `project`, `billing`) are
+/// kept as text and parsed when a run reads them, so a hand edit is refused with its field and
+/// its source, not as a file that does not deserialize; `hipc` writes only values it checked.
 #[derive(Default, Serialize, Deserialize)]
 struct Profile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -306,7 +309,7 @@ struct Profile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     billing: Option<String>,
     /// The last Hub subscribe sent from this profile: the double-subscribe marker
-    /// (TENETS 11).
+    /// (tenet 11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hub_subscribe: Option<HubMarker>,
     #[serde(flatten)]
@@ -446,7 +449,9 @@ fn invalid_profile_name(given: &Given) -> Error {
 }
 
 /// The config path: `HIPPIUS_CONFIG` when it is set and not empty, else
-/// `$HOME/.hippius/config.toml`. The caller passes both variables.
+/// `$HOME/.hippius/config.toml`. The caller passes both variables. An empty variable counts
+/// as unset, as `hipc` reads every `HIPPIUS_*` variable; an empty AWS variable is refused
+/// instead ([`crate::AwsFiles::locate`]), since the AWS CLI, not `hipc`, defines those.
 ///
 /// # Errors
 ///
@@ -698,9 +703,10 @@ impl ConfigFile {
     ///
     /// `usage` for an account that is neither `self` nor an account id; when `HIPPIUS_TOKEN`
     /// is set, for a `HIPPIUS_TOKEN_ORIGIN` or a target `api_url` that is not an origin;
-    /// and, when `HIPPIUS_TOKEN` is unset and the profile stores a token, for a stored `token_origin`
-    /// or a target `api_url` that is not an origin, or, when the two origins match, a
-    /// stored token that is empty or not visible ASCII. A withheld token is not checked.
+    /// and, when `HIPPIUS_TOKEN` is unset and the profile stores a token, for a stored
+    /// `token_origin` or a target `api_url` that is not an origin, or, when the two origins
+    /// match, a stored token that is empty or not visible ASCII. A withheld token is not
+    /// checked.
     pub fn settings(&self, overrides: &Overrides) -> Result<Settings> {
         let profile = self.profile_name(overrides)?;
         let stored = self.document.profiles.get(&profile);

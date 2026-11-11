@@ -124,8 +124,7 @@ impl Code {
             meaning,
             flag: None,
         };
-        // An exit-2 code that names the flag which gets past it.
-        let flagged = |name, flag, meaning| Row {
+        let exit_2_naming = |name, flag, meaning| Row {
             flag: Some(flag),
             ..row(name, 2, meaning)
         };
@@ -136,36 +135,36 @@ impl Code {
                 "the invocation is wrong: a flag, an argument, a variable, or a local file it \
                  reads",
             ),
-            Self::ConfirmationRequired => flagged(
+            Self::ConfirmationRequired => exit_2_naming(
                 "confirmation_required",
                 YES,
                 "the command needs a confirmation, and `--yes` was not passed",
             ),
-            Self::RevealRequired => flagged(
+            Self::RevealRequired => exit_2_naming(
                 "reveal_required",
                 REVEAL,
                 "the call returns a secret, and `--reveal` was not passed",
             ),
-            Self::ReplaceRequired => flagged(
+            Self::ReplaceRequired => exit_2_naming(
                 "replace_required",
                 REPLACE,
                 "a paid Hub plan is active and `--replace` was not passed, or a Hub subscribe \
                  was sent in the last 10 minutes and no paid plan is listed that it did not \
                  cancel",
             ),
-            Self::RemoveOthersRequired => flagged(
+            Self::RemoveOthersRequired => exit_2_naming(
                 "remove_others_required",
                 REMOVE_OTHERS,
                 "the new list leaves out entries the list has now, and `--remove-others` was not \
                  passed",
             ),
-            Self::PublicRequired => flagged(
+            Self::PublicRequired => exit_2_naming(
                 "public_required",
                 PUBLIC,
                 "the write may publish a private bucket or open the Hub namespace to anyone, \
                  and `--public` was not passed",
             ),
-            Self::ChangeIsolationRequired => flagged(
+            Self::ChangeIsolationRequired => exit_2_naming(
                 "change_isolation_required",
                 CHANGE_ISOLATION,
                 "the call changes which peers of the network can reach each other, and \
@@ -213,21 +212,18 @@ impl Code {
                 1,
                 "the caller is not a member of the selected account",
             ),
-            // Exit 2: nothing was done, and the fix is a flag, `--account self`.
-            Self::AccountScopeUnsupported => flagged(
+            Self::AccountScopeUnsupported => exit_2_naming(
                 "account_scope_unsupported",
                 "--account",
                 "the route cannot be used in another account, so `--account` must select the \
                  token's own",
             ),
-            // Exit 2 like the account code: nothing was done, and the fix is a flag value,
-            // `--project default` or `--billing default`.
-            Self::ProjectScopeUnsupported => flagged(
+            Self::ProjectScopeUnsupported => exit_2_naming(
                 "project_scope_unsupported",
                 "--project",
                 "the route does not take a project, so `--project` must select the Default one",
             ),
-            Self::BillingScopeUnsupported => flagged(
+            Self::BillingScopeUnsupported => exit_2_naming(
                 "billing_scope_unsupported",
                 "--billing",
                 "the route does not take a billing account, so `--billing` must select the \
@@ -583,7 +579,7 @@ impl Error {
 
     /// Marks a failure that came after a write went through: `side_effects` becomes
     /// `partial`, and `done` is printed on stdout so what was created is not lost
-    /// (`TENETS.md` tenet 3; the VM launch whose wait ended without `running`). It is never
+    /// (tenet 3; the VM launch whose wait ended without `running`). It is never
     /// retryable, whatever the failed step was: a retry would repeat the write.
     #[must_use]
     pub fn after_write(mut self, done: Value) -> Self {

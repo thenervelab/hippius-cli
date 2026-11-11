@@ -123,7 +123,8 @@ impl DnsCredentials {
             }
         }
         // What is left was not asked for. Its name is not quoted: a misplaced secret can sit
-        // in a field name as well as in a value. It is cleared on the way out (`private_object::Fields`).
+        // in a field name as well as in a value. It is cleared on the way out
+        // (`private_object::Fields`).
         if !file.is_empty() {
             return Err(refuse(&format!(
                 "has a field that `--provider {}` does not take",

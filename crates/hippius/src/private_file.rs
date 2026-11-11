@@ -540,7 +540,7 @@ impl PrivateFile {
     fn replace(&self, temporary: &str, bytes: &[u8], mode: Mode) -> std::io::Result<()> {
         let flags = OFlags::WRONLY | CREATE_NEW;
         let fd = rustix::fs::openat(&self.dir, temporary, flags | OFlags::CLOEXEC, PRIVATE)?;
-        // The mode passed to open is masked by the umask. Setting it again makes it exact.
+        // The umask may have removed bits of `mode` at the open; this puts them back.
         // The descriptor was opened for writing, so a mode without the owner's write bit
         // still lets the write below go through.
         rustix::fs::fchmod(&fd, mode)?;

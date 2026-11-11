@@ -286,11 +286,10 @@ impl fmt::Debug for SecretKey {
 /// concurrent `hipc s3 configure` that shares either file cannot be lost, and the answer is
 /// about the files as they are written. Each lock is `flock` on `.<name>.lock` beside its
 /// file, created on the first run and never removed (`PrivateFile::lock_all`). A new file gets
-/// mode `0600` and a file
-/// that exists keeps its owner bits (`PrivateFile::write`), through a temporary file and a
-/// rename. Both directories are checked, since
-/// `AWS_CONFIG_FILE` can name a different one than the credentials file, and someone who can
-/// replace the config file can point the endpoint at their own host.
+/// mode `0600` and a file that exists keeps its owner bits (`PrivateFile::write`), through a
+/// temporary file and a rename. Both directories are checked, since `AWS_CONFIG_FILE` can name
+/// a different one than the credentials file, and someone who can replace the config file can
+/// point the endpoint at their own host.
 ///
 /// The config file is written first. If the credentials write then fails, a new profile
 /// names an endpoint but no key, which fails loudly rather than reaching AWS; a profile
@@ -313,13 +312,9 @@ pub fn configure(
 ) -> Result<()> {
     let config_file = PrivateFile::ensure(&files.config, AWS_CONFIG)?;
     let credentials_file = PrivateFile::ensure(&files.credentials, AWS_CREDENTIALS)?;
-    // Both texts are read before either is written, so one file named by both variables
-    // would be written twice, and the second write would drop the endpoint section. Files
-    // that exist are compared now, before any question; a missing one only once the write
-    // is certain, so declining the question creates neither file. It does not leave the
-    // disk as it was: `ensure` above has already created a missing directory, and the lock
-    // below create `.<config name>.lock` and `.<credentials name>.lock` beside the two
-    // files, which stay, as every lock file does. A refusal at that later point leaves the empty file it created.
+    // One file named by both variables would be written twice, and the second write would
+    // drop the endpoint section. Files that exist are compared before any question; a missing
+    // one once it is created (`refuse_or_take_back`), so declining creates neither file.
     refuse_one_file(files)?;
     // Both files are locked, so two runs that share only one of them cannot lose each
     // other's section. The locks also remove each file's leftover temporary files, which for
@@ -503,28 +498,20 @@ enum Kind {
 /// to the last `]`. A line indented deeper than the option above it in a section continues that
 /// option's value, as `addressing_style` continues `s3 =`, so it is never a header, however
 /// it looks; blank lines and comments in between do not end the value.
-/// Whether `line` is blank or a comment, which ends no option's value ([`lines_and_headers`]).
-fn is_blank_or_comment(line: &str) -> bool {
-    let value = line.trim();
-    value.is_empty() || value.starts_with(['#', ';'])
-}
-
 fn lines_and_headers(text: &str) -> impl Iterator<Item = (&str, Option<&str>)> {
-    // Whether a section has started, whether its last option line named an option, and the
-    // indent of the last line that was not a continuation.
     let mut in_section = false;
-    let mut option = false;
-    let mut indent = 0;
+    let mut after_named_option = false;
+    let mut indent_of_last_entry = 0;
     text.split_inclusive('\n').map(move |line| {
         if is_blank_or_comment(line) {
             return (line, None);
         }
         let value = line.trim();
         let this_indent = line.chars().take_while(|c| c.is_whitespace()).count();
-        if in_section && option && this_indent > indent {
+        if in_section && after_named_option && this_indent > indent_of_last_entry {
             return (line, None);
         }
-        indent = this_indent;
+        indent_of_last_entry = this_indent;
         let header = value
             .strip_prefix('[')
             .and_then(|rest| rest.rsplit_once(']'))
@@ -532,14 +519,20 @@ fn lines_and_headers(text: &str) -> impl Iterator<Item = (&str, Option<&str>)> {
             .filter(|header| !header.is_empty());
         if header.is_some() {
             in_section = true;
-            option = false;
+            after_named_option = false;
         } else if let Some(at) = value.find(['=', ':']) {
             // `configparser` takes `=` or `:` as the separator; a line with no name before it
             // is an error that names no option. A line with neither leaves the option as it was.
-            option = !value[..at].trim_end().is_empty();
+            after_named_option = !value[..at].trim_end().is_empty();
         }
         (line, header)
     })
+}
+
+/// Whether `line` is blank or a comment, which ends no option's value ([`lines_and_headers`]).
+fn is_blank_or_comment(line: &str) -> bool {
+    let value = line.trim();
+    value.is_empty() || value.starts_with(['#', ';'])
 }
 
 /// The profile the section `header` holds in a file of `kind`, as botocore reads it, or `None`
@@ -619,8 +612,8 @@ fn has_section(text: &str, kind: Kind, name: &str) -> bool {
 /// removed, so the AWS CLI cannot read a stale duplicate or refuse the file for holding one.
 /// Without such a section, it is appended after a blank line. Every other line is kept as it
 /// was, line endings included, and so are the blank and comment lines that end a section this
-/// replaces or removes, which by convention describe the section after them. Each string is built at its final size, so no growth leaves a
-/// copy of a key in freed memory.
+/// replaces or removes, which by convention describe the section after them. Each string is
+/// built at its final size, so no growth leaves a copy of a key in freed memory.
 fn set_section(
     text: &str,
     kind: Kind,

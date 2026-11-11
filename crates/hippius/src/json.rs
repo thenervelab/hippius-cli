@@ -1,5 +1,5 @@
 //! The list shapes of the console API, and the list envelope `hipc` prints for them
-//! (`TENETS.md` tenet 6).
+//! (tenet 6).
 //!
 //! A list endpoint answers either a bare JSON array, or Django REST framework's
 //! `{count, next, previous, results}` when it paginates. [`page`] reads either into a

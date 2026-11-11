@@ -264,9 +264,11 @@ const PHRASE_LENGTHS: [usize; 5] = [12, 15, 18, 21, 24];
 /// so a numbered or comma-separated list of the words is found.
 ///
 /// The checksum tells a key from prose: everyday words (`please`, `help`, `account`, `error`)
-/// are on the list, and twelve of them in a row are common in a message, but only one such
-/// run in 16 has a valid checksum. A key with a mistyped word fails it too, so this guards
-/// against a pasted key, not a damaged one. Every copy of the text is cleared when dropped.
+/// are on the list, and twelve of them in a row are common in a message, but only about one
+/// window of twelve in 16 has a valid checksum (its four checksum bits); every window of every
+/// BIP-39 length is tried, so a longer run of listed words is found more often. A key with a
+/// mistyped word fails it too, so this guards against a pasted key, not a damaged one. Every
+/// copy of the text is cleared when dropped.
 pub fn holds_checked_phrase(text: &str) -> bool {
     let mut words = Zeroizing::new(String::with_capacity(text.nfkd().map(char::len_utf8).sum()));
     words.extend(
