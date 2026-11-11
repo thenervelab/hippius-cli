@@ -142,12 +142,21 @@ treats a route with no row as possibly secret on a read and unknown on a write.
 
 ### Still spelled outside the table
 
-The commands of the account service (`commands/account.rs`, `projects.rs`, `referrals.rs`,
-`auth.rs`) build every request from `routes::account`, and their end-to-end tests serve the
-same constants (`common::route_of`). The other services' commands still write their paths
-as literals without `/api` (`Request::get("/compute/vms/")`); each moves to its constants
-the same way. Help prose that names a route, and the end-to-end tests' own literal paths,
-stay as written: a test that spells the path checks the constant independently.
+Every command builds its requests from `hippius::routes` with `Request::to`, and the
+end-to-end tests serve the same constants (`common::route_of`). Two kinds of request are
+still built from a written target, with `Request::new`:
+
+- `hipc api` (`commands/api.rs`), which sends the route it is given.
+- A dry-run placeholder that `Route::path` would percent-encode, and the client then
+  refuse: `hipc hub subscription subscribe --replace` sends `SUBSCRIPTION_CANCEL`'s template
+  with `{subscription_id}` as it is. (`hipc compute vms create --open-port` builds its dry
+  run from `Request::to` with a plain stand-in id, and writes `<the vm_id the launch
+  returns>` into the URL afterwards.)
+
+Help prose that names a route, and the end-to-end tests' own literal paths, stay as
+written: a test that spells the path checks the constant independently. So do the tests
+that serve a route with a query string or with several replies (`route_each`), which
+`route_of` does not cover.
 
 ## How to add a command (today)
 
