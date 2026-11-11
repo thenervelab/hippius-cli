@@ -3,6 +3,10 @@
 //! ever. The hipc config file and the AWS credentials file are refused whatever names them,
 //! a hard link or stdin included: a file flag sends what it reads, to the API, to support
 //! staff, or into a published page.
+//!
+//! The cases here run on a few commands, one per reader. That every file flag refuses the
+//! config file is checked on each one, from its help examples, by
+//! `examples::every_file_flag_refuses_the_config_file`.
 
 use std::path::Path;
 
