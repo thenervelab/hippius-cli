@@ -373,8 +373,9 @@ pub(crate) struct TopUp {
     /// printed, so the retry is not a second buy
     ///
     /// Only with --method halpha. Without it each run sends a new one. With it, the run resends
-    /// that buy as it was: it needs --min-credits from the same hint and the same --alpha, reads the quote but not the
-    /// purchases first, and refuses a --min-credits below 90 percent of what --alpha buys now.
+    /// that buy as it was: it needs --min-credits from the same hint and the same --alpha, reads
+    /// the quote but not the purchases first, and refuses a --min-credits below 90 percent of what
+    /// --alpha buys now.
     #[arg(long, value_name = "UUID", value_parser = idempotency_key)]
     pub(crate) idempotency_key: Option<String>,
     /// The min_credits of the hAlpha buy to retry, in credits, as the failed run printed it

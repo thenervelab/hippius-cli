@@ -19,7 +19,7 @@ use crate::commands::hub::{
 use crate::commands::{Printed, print_list_with, print_with, require_reveal_or_file};
 use crate::context::{Context, Gate};
 
-const LIST: &str = "hipc hub keys list";
+const KEYS_LIST_COMMAND: &str = "hipc hub keys list";
 
 pub(crate) fn run(ctx: &Context<'_>, command: &HubKeys) -> Result<Printed> {
     let printed = match command {
@@ -54,7 +54,7 @@ fn list(ctx: &Context<'_>) -> Result<Printed> {
 /// as the list prints a row: a preview with `secret: null`.
 fn get(ctx: &Context<'_>, id: u64) -> Result<Printed> {
     let request = Request::to(&hub::KEY, [&id])
-        .listed_by(LIST)
+        .listed_by(KEYS_LIST_COMMAND)
         .about(format!("get the Hub key `{id}`"));
     print_with(
         ctx,
@@ -123,7 +123,6 @@ fn create(ctx: &Context<'_>, args: &KeyCreate) -> Result<Printed> {
         gate,
         |response| {
             let body = response.document()?;
-            // The key's id, for the rotate that issues it a new secret.
             let rotate = view_of::<hub::Key>(&body)
                 .id
                 .map(|id| format!("hub keys rotate {id} --reveal --yes"));
@@ -145,7 +144,7 @@ fn create(ctx: &Context<'_>, args: &KeyCreate) -> Result<Printed> {
 fn rotate(ctx: &Context<'_>, id: u64, reveal: bool, secret_file: Option<&Path>) -> Result<Printed> {
     require_reveal_or_file(ctx, reveal, secret_file.is_some())?;
     let request = Request::to(&hub::KEY_ROTATE, [&id])
-        .listed_by(LIST)
+        .listed_by(KEYS_LIST_COMMAND)
         .about(format!("rotate the secret of the Hub key `{id}`"));
     let consequence = format!(
         "every CI job that uses its old secret stops working, and {}",
@@ -180,7 +179,7 @@ fn rotate(ctx: &Context<'_>, id: u64, reveal: bool, secret_file: Option<&Path>) 
 /// secret field or `docker login` command (tenet 9).
 fn delete(ctx: &Context<'_>, id: u64) -> Result<Printed> {
     let request = Request::to(&hub::KEY_DELETE, [&id])
-        .listed_by(LIST)
+        .listed_by(KEYS_LIST_COMMAND)
         .about(format!("delete the Hub key `{id}`"));
     let gate = Gate::Confirm {
         consequence: Some(DELETED),

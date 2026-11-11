@@ -19,8 +19,7 @@ use crate::cli::Referrals;
 use crate::commands::{Printed, print_body, print_list_with};
 use crate::context::{Context, Gate};
 
-/// The command that lists the referral link ids, for the hint of a 404.
-const LIST: &str = "hipc account referrals list";
+const REFERRALS_LIST_COMMAND: &str = "hipc account referrals list";
 
 pub(crate) fn run(ctx: &Context<'_>, command: &Referrals) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
@@ -44,7 +43,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Referrals) -> Result<Printed> {
         Referrals::Update { referral_id, name } => {
             let request = Request::to(&routes::account::REFERRAL_CODE_UPDATE, [referral_id])
                 .json(&NameBody { name })
-                .listed_by(LIST)
+                .listed_by(REFERRALS_LIST_COMMAND)
                 .about(format!(
                     "rename the referral link `{referral_id}` to {}",
                     phrase::quote(name)

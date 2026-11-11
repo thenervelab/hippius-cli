@@ -60,7 +60,7 @@ fn accounts(ctx: &Context<'_>, client: &Client) -> Result<Fetched> {
 ///
 /// # Errors
 ///
-/// `internal` for an answer that is not an object holding an `accounts` list.
+/// `internal` when the answer is not an object holding an `accounts` list.
 pub(crate) fn accounts_page(answer: Value) -> Result<hippius::Page> {
     let Value::Object(body) = answer else {
         return Err(unexpected());
@@ -319,8 +319,7 @@ fn select(ctx: &Context<'_>, id: &str) -> Result<Printed> {
     )
 }
 
-/// The command that lists the member ids, for the hint of a 404 on a member route.
-const MEMBERS: &str = "hipc account members list";
+const MEMBERS_LIST_COMMAND: &str = "hipc account members list";
 
 /// `GET /api/accounts/members/`: every member, with their grants.
 fn members_list() -> Request {
@@ -337,7 +336,7 @@ fn members(ctx: &Context<'_>, command: &Members) -> Result<Printed> {
         Members::Update(args) => update_member(ctx, args),
         Members::Delete { member_id } => {
             let request = Request::to(&account::MEMBER_DELETE, [member_id])
-                .listed_by(MEMBERS)
+                .listed_by(MEMBERS_LIST_COMMAND)
                 .about(format!("remove the member `{member_id}` from the team"));
             let done = json!({ "id": member_id, "deleted": true });
             let client = ctx.load_authed_client()?;
@@ -549,8 +548,8 @@ fn accept(
 ///
 /// # Errors
 ///
-/// `conflict` for an invite the preview says is not valid, and `internal` for a preview
-/// without `account_name`.
+/// `conflict` when the preview says the invite is not valid, and `internal` when it has no
+/// `account_name`.
 fn joined_account(offer: account::InviteOffer) -> Result<String> {
     if offer.valid == Some(false) {
         let why = match offer.reason {
@@ -674,7 +673,7 @@ fn update_member(ctx: &Context<'_>, args: &MemberUpdate) -> Result<Printed> {
         can_billing: args.access.billing_permission,
     };
     let request = Request::to(&account::MEMBER_UPDATE, [&id])
-        .listed_by(MEMBERS)
+        .listed_by(MEMBERS_LIST_COMMAND)
         .json(&body)
         .about(format!(
             "update the member `{id}`: {}",
@@ -744,9 +743,9 @@ fn member_grants(answer: &Value, id: u64) -> Option<Result<Vec<Entry>>> {
             return Some(Err(error));
         }
         let missing = Error::new(Failure::NotFound, format!("no member with id `{id}`"));
-        return Some(Err(
-            missing.with_hint(format!("run `{MEMBERS}` to see what exists"))
-        ));
+        return Some(Err(missing.with_hint(format!(
+            "run `{MEMBERS_LIST_COMMAND}` to see what exists"
+        ))));
     };
     let grants = member
         .get("grants")?
@@ -820,7 +819,7 @@ fn create_invite(ctx: &Context<'_>, args: &InviteCreate) -> Result<Printed> {
 ///
 /// # Errors
 ///
-/// `usage` for `none` beside another `--grant`, or a scope given twice for the same
+/// `usage` when `none` is beside another `--grant`, or a scope is given twice for the same
 /// account, project, or billing account: either would leave the caller guessing which list
 /// the server keeps.
 fn grant_list(args: &[GrantArg]) -> Result<Option<Vec<Grant>>> {

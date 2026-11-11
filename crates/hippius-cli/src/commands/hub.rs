@@ -193,7 +193,6 @@ fn usage(ctx: &Context<'_>, repositories: bool) -> Result<Printed> {
 /// `--dry-run` nothing is read either: a plan given by name shows as a placeholder
 /// `plan_id`, and `requests` lists the reads, the cancel `--replace` may send, and the POST.
 fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
-    // The marker is kept in the profile this client was built from.
     let (settings, client) = ctx.authed(&context::config()?)?;
     // A real run resolves a name after the question, from the catalog it reads then.
     let plan_id = match args.plan.parse::<u64>() {
@@ -201,26 +200,9 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
         Err(_) => Value::from(format!("<looked up from {}>", args.plan)),
     };
     let draft = Request::to(&hub::SUBSCRIBE, []).json(&hub::SubscribeBody { plan_id: &plan_id });
-    // The reads a real run sends after the question, which a dry run lists.
     let plans = Request::to(&hub::PLANS, []).about("list the Hub plans");
     let subscriptions = Request::to(&hub::SUBSCRIPTIONS, []).about("list the Hub subscriptions");
-    // Which subscriptions a real run cancels is known only after it reads them, which a dry
-    // run does not do: with `--replace` its document adds the DELETE it may send first, once
-    // per active paid subscription, with the id left as a placeholder, and lists it in
-    // `requests` between the reads and the POST.
-    // `{subscription_id}` is the one placeholder not written `<...>`: it shipped before the
-    // style was set, and changing a field's value is a break (tenet 15). The template goes as
-    // it is: `Request::to` would percent-encode a stand-in, and the client refuses a path with
-    // an encoding.
-    let route = hub::SUBSCRIPTION_CANCEL;
-    let cancel = Request::new(
-        route.method(),
-        route
-            .endpoint()
-            .template()
-            .strip_prefix(API_BASE)
-            .expect("a route's template starts with the API base"),
-    );
+    let cancel = any_cancel();
     let before: &[&Request] = if args.replace {
         &[&plans, &subscriptions, &cancel]
     } else {
@@ -469,6 +451,23 @@ impl Mark {
     }
 }
 
+/// The cancel a dry run of `--replace` lists between the reads and the POST: a real run sends it
+/// once for every active paid subscription, which it knows only after the reads. Its
+/// `{subscription_id}` is the one placeholder not written `<...>`: it shipped before the style was
+/// set, and changing a field's value is a break (tenet 15). The template goes as it is:
+/// `Request::to` would percent-encode a stand-in, and the client refuses a path with an encoding.
+fn any_cancel() -> Request {
+    let route = hub::SUBSCRIPTION_CANCEL;
+    Request::new(
+        route.method(),
+        route
+            .endpoint()
+            .template()
+            .strip_prefix(API_BASE)
+            .expect("a route's template starts with the API base"),
+    )
+}
+
 /// The error once a step fails. Before any cancel went through it is that step's own
 /// error. After one did, it is a partial failure whose stdout names the cancelled
 /// subscriptions. It does not say whether the subscribe went through: after a timeout or a
@@ -548,7 +547,7 @@ fn resolve_plan(plans: &[Value], wanted: &str) -> Result<u64> {
 ///
 /// # Errors
 ///
-/// `internal` for a row whose `active` is not a boolean, or an active paid row whose
+/// `internal` when a row's `active` is not a boolean, or an active paid row's
 /// `subscription_id` is not a number. Skipping such a row would let the subscribe charge
 /// twice; it cannot be cancelled by id either.
 fn active_paid(plans: &[Value], subscriptions: &[Value]) -> Result<Vec<u64>> {
@@ -1015,7 +1014,7 @@ fn holds_docker_login(text: &str) -> bool {
 ///
 /// # Errors
 ///
-/// `internal` for a login that starts with `-`: quoting does not stop `docker` reading it
+/// `internal` when the login starts with `-`: quoting does not stop `docker` reading it
 /// as a flag, so the command would not log in as the robot it names.
 fn docker_login_command(login: &str) -> Result<String> {
     if login.starts_with('-') {
@@ -1031,6 +1030,7 @@ fn docker_login_command(login: &str) -> Result<String> {
         phrase::shell_word(login)
     ))
 }
+
 /// `error` with a hint when it is the API's answer to an account that has no Hub namespace yet
 /// ([`set_up_first`]: `You must call /api/registry/provision/ first.`). The hint carries this run's
 /// profile and origin, so the namespace it creates is on the server this run read.

@@ -32,7 +32,7 @@ use hippius::{
     Client, ConfigFile, Error, Overrides, Page, Request, Response, Result, Source, phrase, view_of,
 };
 use serde_json::{Map, Value};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::cli::{Funding, PlanSetting, StorageCap};
 use crate::context::{self, Context, DryRun, Gate, Step, Write, WritePlan};
@@ -195,14 +195,13 @@ impl Input<'_> {
         Ok(Opened::File(file))
     }
 
-    /// Refuses the file whose metadata is `opened` when it is the hipc config file, which
-    /// holds the token, or the AWS credentials or config file, which can hold S3 keys: a file
-    /// flag sends what it reads, to the API, to support staff, or into a published page. Each
-    /// is matched by device and inode, so a hard link or another spelling of its path is
-    /// refused too. The files at the default
-    /// paths are refused as well as the ones the variables name, since either may hold a
-    /// secret. A file that cannot be inspected (`None`) is not refused: the read then fails,
-    /// or reads a file that is not one of them.
+    /// Refuses the file whose metadata is `opened` when it is the hipc config file, which holds the
+    /// token, or the AWS credentials or config file, which can hold S3 keys: a file flag sends what
+    /// it reads, to the API, to support staff, or into a published page. Each is matched by device
+    /// and inode, so a hard link or another spelling of its path is refused too. The files at the
+    /// default paths are refused as well as the ones the variables name, since either may hold a
+    /// secret. A file that cannot be inspected (`None`) is not refused: the read then fails, or
+    /// reads a file that is not one of them.
     fn refuse_secret_store(&self, opened: Option<&std::fs::Metadata>) -> Result<()> {
         use std::os::unix::fs::MetadataExt as _;
         let home = context::env_os("HOME").map(PathBuf::from);
@@ -210,7 +209,6 @@ impl Input<'_> {
             context::config_path().ok(),
             hippius::config_path(None, home.clone()).ok(),
         ];
-        // The AWS config file can hold keys too, so it is refused with the credentials file.
         let aws = home.as_ref().map(|home| home.join(".aws"));
         let credentials = [
             context::env_os("AWS_SHARED_CREDENTIALS_FILE").map(PathBuf::from),
@@ -295,12 +293,12 @@ impl Input<'_> {
     /// ([`Input::unquoted_if_missing`]).
     pub(crate) fn read_secret(&self) -> Result<Zeroizing<String>> {
         let mut bytes = self.read_cleared(MAX_SECRET_FILE_BYTES)?;
-        if std::str::from_utf8(&bytes).is_err() {
-            return Err(self.not_utf8());
-        }
-        Ok(Zeroizing::new(
-            String::from_utf8(std::mem::take(&mut *bytes)).expect("checked: UTF-8"),
-        ))
+        String::from_utf8(std::mem::take(&mut *bytes))
+            .map(Zeroizing::new)
+            .map_err(|refused| {
+                refused.into_bytes().zeroize();
+                self.not_utf8()
+            })
     }
 
     /// Refuses a path that names no file, such as one that does not exist, without quoting
@@ -504,9 +502,7 @@ pub(crate) fn print_with(
 /// A catalog the server owns, and the code a write takes from it (owner decision D5).
 #[derive(Debug)]
 pub(crate) struct Catalog<'a> {
-    /// The read of the catalog.
     pub(crate) read: Request,
-    /// The codes the catalog's answer lists.
     pub(crate) codes: fn(&Value) -> Vec<String>,
     /// What a code names, with its article: `an S3 plan`.
     pub(crate) what: &'a str,
@@ -696,8 +692,8 @@ pub(crate) fn drop_next_step(document: &mut Value) {
 /// `intent_id` the checkout command accepts and that cannot be read as a flag; such an id
 /// needs no shell quoting. It repeats the run's profile, origin, and selectors, quoted where
 /// a shell needs it, and is left out when one of them is not printable ASCII
-/// ([`Context::next_command`]). A field of that
-/// name in the answer is dropped first ([`drop_next_step`]).
+/// ([`Context::next_command`]). A field of that name in the answer is dropped first
+/// ([`drop_next_step`]).
 pub(crate) fn subscribed(ctx: &Context<'_>, response: &Response, service: &str) -> Result<Value> {
     let mut body = response.document()?;
     drop_next_step(&mut body);
@@ -808,8 +804,8 @@ pub(crate) fn print_keyed_list(
 ///
 /// # Errors
 ///
-/// `internal` for an object without a `key` list, for a `next` link (a later page this
-/// command does not read), or for any other shape.
+/// `internal` when the answer is an object without a `key` list, has a `next` link (a later
+/// page this command does not read), or has any other shape.
 pub(crate) fn keyed_list(answer: Value, request: &Request, key: &str) -> Result<Value> {
     let Value::Object(body) = answer else {
         return hippius::page(answer)?.complete_envelope(request.target());

@@ -52,7 +52,6 @@ fn subscription(
         DriveSubscription::Cancel => (
             Request::to(&drive::SUBSCRIPTION_CANCEL, []).about("cancel the Drive plan"),
             Gate::Confirm {
-                // A wallet-only account has no Free plan to go back to.
                 consequence: Some(CANCELLED),
             },
         ),
@@ -68,11 +67,11 @@ fn subscription(
     };
     print_with(ctx, client, &request, gate, |response| match command {
         DriveSubscription::Subscribe(_) => subscribed(ctx, &response, "drive"),
-        // History never gets here: it returned from the match above, through `list::run`.
         DriveSubscription::Get => response.document().map(|mut plan| {
             add_next_charge_date(&mut plan);
             plan
         }),
+        // `History` returned above, through `list::run`.
         DriveSubscription::History(_)
         | DriveSubscription::Change(_)
         | DriveSubscription::Cancel

@@ -102,8 +102,7 @@ pub(crate) fn run_with(
     let start = flags.page_token.unwrap_or(first_page);
     let mut asked = start.to_owned();
     let mut items = Vec::new();
-    // Whether a page came before this one, under `--all`.
-    let mut read_one = false;
+    let mut after_first_page = false;
     walk(ctx, client, first, start, |answer| {
         let page = read_page(paging, answer)?;
         if paging.numbered() {
@@ -111,7 +110,7 @@ pub(crate) fn run_with(
             // the token was printed; a later page under `--all`, because it shrank while it
             // was read. A first page asked for without a token has no such excuse: a bug, so
             // the default hint.
-            let start_over = if read_one {
+            let start_over = if after_first_page {
                 Some(CHANGED_WHILE_READ)
             } else {
                 flags.page_token.map(|_| CHANGED_SINCE_TOKEN)
@@ -127,7 +126,7 @@ pub(crate) fn run_with(
             let items = std::mem::take(&mut items);
             return Ok(Turn::Done(Printed::List(Value::Array(items))));
         };
-        read_one = true;
+        after_first_page = true;
         asked.clone_from(&token);
         let request = page_request(Some(&token));
         Ok(Turn::Next { token, request })
@@ -284,8 +283,8 @@ pub(crate) const CHANGED_WHILE_READ: &str =
 ///
 /// # Errors
 ///
-/// `internal` for a `page` that is not a whole number, and for one that is another number
-/// than `asked`, with `start_over` as its hint when given.
+/// `internal` when `page` is not a whole number or is another number than `asked`, with
+/// `start_over` as its hint when given.
 pub(crate) fn answered_as_asked(page: &Page, asked: &str, start_over: Option<&str>) -> Result<()> {
     let Some(at) = page.fields.get("page").filter(|at| !at.is_null()) else {
         return Ok(());
@@ -371,9 +370,9 @@ fn with_items_as_results(answer: Value, key: &str) -> Value {
 ///
 /// # Errors
 ///
-/// `internal` for an answer that is not an object, a `Contents` that is not an array, a
-/// token that is not text or that `--page-token` would refuse, and an `IsTruncated: true`
-/// page with no token or an `IsTruncated` that is neither a boolean nor `null`: reading that
+/// `internal` when the answer is not an object, its `Contents` is not an array, its token is
+/// not text or is one `--page-token` would refuse, or it is an `IsTruncated: true` page with
+/// no token or has an `IsTruncated` that is neither a boolean nor `null`: reading that
 /// as the last page would print a short list as if it were complete. A page with
 /// `IsTruncated: false` is the last, whatever token it carries.
 fn objects_page(answer: Value) -> Result<Page> {
@@ -483,7 +482,7 @@ impl Pages {
     ///
     /// # Errors
     ///
-    /// `internal` for a page already read (a loop) or one past [`MAX_PAGES`].
+    /// `internal` when `next` was already read (a loop) or is past [`MAX_PAGES`].
     fn admit(&mut self, next: &str) -> Result<()> {
         if self.seen.len() >= MAX_PAGES {
             return Err(Error::internal(format!(

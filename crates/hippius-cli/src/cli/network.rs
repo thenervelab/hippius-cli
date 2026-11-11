@@ -175,9 +175,10 @@ fn vpc_id(value: &str) -> Result<String, String> {
 /// file out of the request.
 const MAX_PEER_NAME: usize = 255;
 
-/// A new peer name: a [`label`], so an empty `--name` or a newline inside it is refused here
-/// rather than by the server after the question. The server judges the rest. The value is sent trimmed: the rename compares the answer's name with what it
-/// sent, and a server that trims would otherwise answer a name hipc does not recognise.
+/// A new peer name: a [`label`], so an empty `--name` or a newline inside it is refused here rather
+/// than by the server after the question. The server judges the rest. The value is sent trimmed:
+/// the rename compares the answer's name with what it sent, and a server that trims would otherwise
+/// answer a name hipc does not recognise.
 fn peer_name(value: &str) -> Result<String, String> {
     label(value, 1..=MAX_PEER_NAME, Spaces::Trimmed, "a peer name")
 }

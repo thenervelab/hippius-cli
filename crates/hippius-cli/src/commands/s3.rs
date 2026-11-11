@@ -296,7 +296,7 @@ fn update_acl(ctx: &Context<'_>, args: &AclUpdate) -> Result<Printed> {
         args.public,
         &format!("the policy may make the bucket `{name}` readable by anyone"),
     )?;
-    // A dry run sends nothing, so it removes nothing (TENETS 5).
+    // A dry run sends nothing, so it removes nothing (tenet 5).
     if !args.remove_others && !ctx.dry_run() {
         return Err(Error::remove_others_unread(
             format!(

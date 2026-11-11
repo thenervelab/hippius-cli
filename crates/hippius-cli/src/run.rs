@@ -36,8 +36,8 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
     };
     let mode = terminal.resolve(&cli.global);
     // A command the parser ran with no schema row is a bug that `spec`'s walking test keeps
-    // from shipping; should one ship, the run asks before every write and ends in the row's
-    // `internal` error object, never a panic.
+    // from shipping; should one ship, it runs nothing and ends in the `internal` error object
+    // of `spec::row`, never a panic.
     let row = spec::row(&path);
     if let Some(refusal) = repeated_global(args) {
         return output::failure(mode, &refusal);
@@ -209,15 +209,16 @@ fn split_link_warning(path: &std::path::Path) -> String {
     )
 }
 
-// `guarded` catches a command's panic to print one error object; with `panic = "abort"` the
-// process would end with no output at all, against tenet 4.
 #[cfg(not(panic = "unwind"))]
-compile_error!("hipc must be built with `panic = \"unwind\"`: `run::guarded` catches a panic");
+compile_error!(
+    "hipc must be built with `panic = \"unwind\"`: `run::guarded` turns a panic into one error \
+     object (tenet 4), and an abort would print nothing"
+);
 
 /// Runs `command`, turning a panic into an `internal` error with what the run has done to
 /// the server so far, so a bug after a write still says `side_effects: partial` (tenet 4)
-/// and the output stays one error object, without the default panic message beside it. The panic's own text is not shown:
-/// it can quote a value from the server or a file.
+/// and the output stays one error object, without the default panic message beside it. The
+/// panic's own text is not shown: it can quote a value from the server or a file.
 fn guarded(ctx: &Context<'_>, command: impl FnOnce() -> Result<Printed>) -> Result<Printed> {
     // The default message is silenced for the command alone: a panic outside it, such as
     // in printing the result, still says what it was.
@@ -240,7 +241,7 @@ fn guarded(ctx: &Context<'_>, command: impl FnOnce() -> Result<Printed>) -> Resu
     })
 }
 
-/// Whether `command` is one of the three flows that add their own `next_step` (tenet 3),
+/// Whether `command` is one of the flows tenet 3 lets add their own `next_step`,
 /// each after dropping the server's ([`commands::drop_next_step`]). Every other document
 /// loses a top-level `next_step` before it is printed.
 fn sets_next_step(command: &Command) -> bool {
