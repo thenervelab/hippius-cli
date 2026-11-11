@@ -585,6 +585,47 @@ fn all_follows_next_links_into_one_array() {
     }
 }
 
+/// `--all` on a route whose row pages it without `next` links, such as the Hub model index,
+/// reads each page as the row says: a page that says more remain is `internal`, since
+/// `hipc api` follows links only, a short page is `internal` too, and the last page is the
+/// whole list.
+#[test]
+fn all_on_a_route_paged_without_links_never_prints_part_of_the_list() {
+    let page = |total: u32, held: usize| {
+        let models = vec![json!({"repo": "m"}); held];
+        json!({"page": 1, "page_size": 2, "total": total, "results": models}).to_string()
+    };
+    for (total, held, message) in [
+        (5, 2, "names the next one by a number or a token"),
+        (
+            2,
+            1,
+            "page `1` with 1 of the 2 items its `total` of `2` puts on it",
+        ),
+    ] {
+        let server = Server::start(vec![route(
+            "GET",
+            "/api/models/",
+            Reply::json(200, &page(total, held)),
+        )]);
+        let error = Hipc::against(&Home::new(), &server)
+            .run(&["api", "GET", "/models/", "--all"])
+            .fails(1, "internal");
+        let text = error["message"].as_str().expect("a message");
+        assert!(text.contains(message), "{error}");
+        assert_eq!(server.requests().len(), 1);
+    }
+    let server = Server::start(vec![route(
+        "GET",
+        "/api/models/",
+        Reply::json(200, &page(2, 2)),
+    )]);
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&["api", "GET", "/models/", "--all"])
+        .ok();
+    assert_eq!(doc, json!([{"repo": "m"}, {"repo": "m"}]));
+}
+
 #[test]
 fn all_refuses_a_next_link_that_loops() {
     let server = Server::start(vec![route(

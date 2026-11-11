@@ -7,8 +7,8 @@
 //! escaped. `--all` is the exception: it collects the pages into one JSON array, as `--all`
 //! does on every list command.
 
-use hippius::routes::{self, Endpoint};
-use hippius::{Client, Error, Method, Request, Result, RouteFlag};
+use hippius::routes::{self, Endpoint, Paging};
+use hippius::{Client, Error, Method, Next, Request, Result, RouteFlag};
 use serde_json::Value;
 
 use crate::cli::Api;
@@ -324,8 +324,16 @@ fn require_route_flag(
 /// `--all` does on every list command. A bare array is one page.
 ///
 /// A `next` link must stay on the origin of the first page ([`hippius::follow`]) and on its
-/// path, and the page loop ([`list::walk`]) refuses a loop and a list past its page cap.
+/// path, and the page loop ([`list::walk`]) refuses a loop and a list past its page cap. A
+/// page of a route whose row pages it another way is read as its row says
+/// ([`list::read_page`]), and one that names its next page by a number or a token, not by a
+/// `next` link, is `internal` (tenet 6): `hipc api` follows links only, and reading such a
+/// page as the last would print a short list as if it were complete.
 fn every_page(ctx: &Context<'_>, client: &Client, first: Request) -> Result<Printed> {
+    let paging = client
+        .route_of(&first)?
+        .and_then(Endpoint::paging)
+        .unwrap_or(Paging::Numbered);
     // The first URL is the caller's: a refusal of it is their usage error.
     let mut url = client.url(&first)?;
     if ctx.dry_run() {
@@ -335,15 +343,21 @@ fn every_page(ctx: &Context<'_>, client: &Client, first: Request) -> Result<Prin
     let mut items = Vec::new();
     let start = url.clone();
     list::walk(ctx, client, first, &start, |answer| {
-        let page = hippius::page(answer).map_err(|_| not_a_list(&url))?;
+        let page = list::read_page(paging, answer).map_err(|error| match paging {
+            Paging::Numbered => not_a_list(&url),
+            Paging::Totalled { .. } | Paging::Cursor | Paging::Continuation => error,
+        })?;
         items.extend(page.items);
-        let Some(next) = page.next else {
-            return Ok(Turn::Done(Printed::Document(Value::Array(std::mem::take(
-                &mut items,
-            )))));
+        let next = match page.next {
+            None => {
+                return Ok(Turn::Done(Printed::Document(Value::Array(std::mem::take(
+                    &mut items,
+                )))));
+            }
+            Some(Next::Link(link)) => link,
+            Some(Next::Token(_)) => return Err(no_next_link(&url)),
         };
-        // `hippius::page` reads a `next` link; it gives no other kind of next page.
-        let request = hippius::follow(&url, next.as_str())?;
+        let request = hippius::follow(&url, &next)?;
         // Later URLs come from the server, so a refusal of one is not the caller's to fix
         // (tenet 4: exit 2 means the invocation must change): whatever `url` refuses it with
         // is `internal`. That holds for `account_scope_unsupported` too: `--account self`
@@ -379,6 +393,19 @@ fn path_of(url: &str) -> &str {
         .find('/')
         .map_or("/", |start| &after_scheme[start..]);
     path.split_once('?').map_or(path, |(path, _)| path)
+}
+
+/// The refusal of a page that says the list goes on without a `next` link to follow.
+fn no_next_link(url: &str) -> Error {
+    Error::internal(format!(
+        "{} answered a page that names the next one by a number or a token, not by a `next` \
+         link, which `--all` follows, so the rest of the list is unknown",
+        hippius::phrase::quote(hippius::without_query_values(url))
+    ))
+    .with_hint(
+        "run the `hipc` command that lists it with `--all`, which reads every page; `hipc \
+         schema` names the route in its `routes`",
+    )
 }
 
 fn not_a_list(url: &str) -> Error {

@@ -152,7 +152,7 @@ pub(crate) fn at_page(request: Request, paging: Paging, token: Option<&str>) -> 
 }
 
 /// An answer read as a page of `paging`.
-fn read_page(paging: Paging, answer: Value) -> Result<Page> {
+pub(crate) fn read_page(paging: Paging, answer: Value) -> Result<Page> {
     match paging {
         // The next page comes from the `next` link alone, never from `page_size`, so a size the
         // server names is not checked: an empty list may name 0, and `Pages` stops a repeat.
@@ -226,10 +226,11 @@ const RESULTS: &str = "results";
 /// # Errors
 ///
 /// `internal` when any of the three is missing or not a whole number, when a page of items
-/// has a `page_size` of 0, or when a page is empty though `total` says items remain past
-/// the pages before it: reading the page as the last would print a short list as if it
-/// were complete, and working out the next page from a size of 0 would hand out a next
-/// page forever.
+/// has a `page_size` of 0, or when a page holds fewer items than `total` puts on it (all of
+/// `page_size`, or what remains of `total` after the pages before it on the last page),
+/// an empty one included: reading the page as complete would print a short list as if it
+/// were, and working out the next page from a size of 0 would hand out a next page
+/// forever.
 fn next_from_total(page: &mut Page) -> Result<()> {
     if page.next.is_some() {
         return Ok(());
@@ -251,15 +252,23 @@ fn next_from_total(page: &mut Page) -> Result<()> {
              starts is unknown",
         ));
     }
+    // The items `total` puts on this page: a whole page, or on the last one what the pages
+    // before it leave. An empty page past the end ends the list.
+    let placed = total
+        .saturating_sub(at.saturating_sub(1).saturating_mul(size))
+        .min(size);
+    let held = page.items.len() as u64;
+    if held < placed {
+        let answered = if held == 0 {
+            format!("empty though its `total` of `{total}` puts {placed} items on it")
+        } else {
+            format!("with {held} of the {placed} items its `total` of `{total}` puts on it")
+        };
+        return Err(Error::internal(format!(
+            "the API answered page `{at}` {answered}, so the rest of the list is unknown"
+        )));
+    }
     if page.items.is_empty() {
-        // An empty page past the end ends the list. One that `total` puts items on, as the
-        // pages before it hold fewer than `total`, is a hole.
-        if at.saturating_sub(1).saturating_mul(size) < total {
-            return Err(Error::internal(format!(
-                "the API answered page `{at}` empty though its `total` of `{total}` puts \
-                 items on it, so the rest of the list is unknown"
-            )));
-        }
         return Ok(());
     }
     if at.saturating_mul(size) < total {
@@ -512,6 +521,38 @@ mod tests {
     use hippius::Code;
 
     use super::*;
+
+    /// A totalled page that holds fewer items than its `total` puts on it is `internal`,
+    /// whether it is empty, short of a whole page, or short of the last page's remainder; a
+    /// whole page goes on, and a last page or one past the end ends the list.
+    #[test]
+    fn a_totalled_page_short_of_what_its_total_places_on_it_is_internal() {
+        let read = |at: u64, size: u64, total: u64, held: usize| {
+            let answer = serde_json::json!({
+                "page": at,
+                "page_size": size,
+                "total": total,
+                "artifacts": vec![Value::Null; held],
+            });
+            read_page(Paging::Totalled { items: "artifacts" }, answer)
+        };
+        for (at, size, total, held) in [(1, 100, 80, 50), (1, 2, 5, 1), (3, 2, 5, 0), (2, 2, 5, 0)]
+        {
+            let error = read(at, size, total, held).unwrap_err();
+            assert_eq!(error.code(), Code::Internal, "{at} {size} {total} {held}");
+            let answered = if held == 0 {
+                format!("page `{at}` empty")
+            } else {
+                format!("page `{at}` with {held} of the")
+            };
+            assert!(error.message().contains(&answered), "{}", error.message());
+        }
+        let next = |at, size, total, held| read(at, size, total, held).unwrap().next;
+        assert_eq!(next(1, 2, 5, 2), Some(Next::Token("2".to_owned())));
+        assert_eq!(next(3, 2, 5, 1), None);
+        assert_eq!(next(1, 100, 80, 80), None);
+        assert_eq!(next(4, 2, 5, 0), None);
+    }
 
     #[test]
     fn pages_refuse_a_loop_a_page_past_the_cap_and_a_list_past_its_bytes() {

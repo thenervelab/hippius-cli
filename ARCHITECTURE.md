@@ -256,8 +256,12 @@ question, one question for several writes, a secret put in a body only once conf
 `commands::list::walk` is the one page loop: it sends each page, counts it against the caps of
 tenet 3 (`Pages`), and admits each next page, so a loop or a list past a cap is refused the same
 way everywhere. `list::run` reads a list the way its route's row says the server pages it
-(`Request::paging`), into one `hippius::Page` whose `Next` is a link or a token;
-`hipc s3 tokens list` and `hipc api --all` walk their pages through the same loop.
+(`Request::paging`), into one `hippius::Page` whose `Next` is a link or a token
+(`list::read_page`, which holds the readers of the two styles the library does not:
+`Totalled`, by `total`, and `Continuation`, held to the `--page-token` rules);
+`hipc s3 tokens list` and `hipc api --all` walk their pages through the same loop. `hipc api
+--all` follows `next` links only, so a page of a route its row says pages by number or token
+that names a next page is `internal` rather than read as the last.
 
 ## How `hipc api` says its rules
 
