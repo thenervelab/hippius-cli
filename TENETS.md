@@ -268,7 +268,7 @@ Every stderr line in text mode starts with one of these labels:
 | `error:` | What failed, in one line. | Once per failure. |
 | `hint:` | One change likely to fix it. | Only when `hipc` knows a fix; every exit-2 failure has one. |
 | `note:` | A fact about a result that succeeded. | Text mode; `--quiet` drops it. |
-| `warning:` | It worked, but may not do what the caller expects. | Text mode; `--quiet` drops it. Never changes the exit code. JSON mode puts a config file warning and `hipc api`'s warning about a route it does not know in a top-level `warnings` array of texts, on the document or beside `error`; a result with no place for a field, the array `--all` prints or a `hipc api` body, keeps its shape, and its warnings go on stderr as one `{"warnings":[...]}` object. |
+| `warning:` | It worked, but may not do what the caller expects. | Text mode; `--quiet` drops it. Never changes the exit code. JSON mode puts a config file warning, a deprecated route's warning, and `hipc api`'s warning about a route it does not know in a top-level `warnings` array of texts, on the document or beside `error`; a result with no place for a field, the array `--all` prints or a `hipc api` body, keeps its shape, and its warnings go on stderr as one `{"warnings":[...]}` object. |
 | `debug:` | A request or status line, redacted (tenet 9). | Only with `--debug`, in every mode. |
 
 The prompts are the only unlabeled lines. The confirmation prompt is `this will <what>; continue? [y/N] `, and `hipc auth login` asks for the token with ``paste the token from `https://console.hippius.com/dashboard/settings` (it is not shown): ``. Its refusal reuses it: ``this would <what>, and `--yes` was not passed``.
@@ -288,6 +288,7 @@ The JSON `message` is the exact text after `error: ` in text mode.
 ### Machine output is a contract
 
 - A JSON document only gains fields. Renaming or removing a field, or changing its type or meaning, needs a new major version and a new `schema_version`. Before 1.0.0 a minor version may remove or rename a field, always with a new `schema_version`. Ignore fields you do not know.
+- When an answer says its route is deprecated (a `Deprecation` or `Sunset` header), text mode prints a `warning:` that names the route and the dates the headers give, and JSON mode adds the text to the `warnings` array; the command does what it did before. A route the API has retired answers `410`, which fails `validation` with a hint to upgrade `hipc`.
 - Nothing in a JSON document depends on the terminal's width, the locale, or color. Whether a person may read stdout (text mode, or a terminal) changes what is shown there: a `hipc api` body's control and invisible characters are escaped (tenet 7), and a dry run's `url` shows its query names and no values (tenet 9); only JSON mode on a pipe gets the exact bytes. Whether stdout is a terminal also decides whether `hipc compute vms create` waits for `running` (below), and so which VM document it prints.
 - Output is never cut short without saying so.
 

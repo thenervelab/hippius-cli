@@ -220,8 +220,8 @@ ships `GET /api/v2/accounts/members/`, whose answer renames `members` to `result
 
 The version is never a client setting, and `hipc` never negotiates it at run time: a release
 sends the version of each route it was tested against. A `Deprecation` or `Sunset` header on
-an answer is surfaced as a warning, and a `410` on a curated route gets a hint to upgrade
-`hipc` (planned; tenet 15 gains the line when this lands).
+an answer is surfaced as a warning (`hippius::take_deprecation_warnings`, which `run.rs`
+adds to the run's warnings), and a `410` gets a hint to upgrade `hipc` (tenet 15).
 
 ## Error model
 

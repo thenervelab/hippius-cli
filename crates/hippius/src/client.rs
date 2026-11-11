@@ -32,6 +32,7 @@ use crate::redact::token_spellings;
 use crate::routes::{API_BASE, Endpoint, Guard, Route, RouteFlag};
 use crate::selector::{BillingId, ProjectId, Selection};
 use crate::source::{Given, Source};
+use crate::time::date_of_unix_day;
 use crate::url::{Origin, without_query_values};
 
 /// The largest response body `hipc` reads, in bytes. Console answers are small JSON
@@ -481,6 +482,71 @@ impl Target {
     fn api_path(&self) -> &str {
         crate::url::without_query(&self.path_and_query)
     }
+}
+
+thread_local! {
+    /// The warnings of the routes the API marked deprecated in this run's answers, each once,
+    /// in the order they came ([`take_deprecation_warnings`]).
+    static DEPRECATIONS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Takes the warnings of the routes the API marked deprecated in this run's answers, with a
+/// `Deprecation` (RFC 9745) or a `Sunset` (RFC 8594) header, each once, in the order they
+/// came, so the caller prints them as `warning:` lines or a `warnings` array (tenet 15).
+/// `hipc` surfaces them and changes nothing about the request.
+pub fn take_deprecation_warnings() -> Vec<String> {
+    DEPRECATIONS.with(|warnings| std::mem::take(&mut *warnings.borrow_mut()))
+}
+
+/// Keeps the warning of an answer to `method` to `path` whose `header`s say the route is
+/// deprecated ([`deprecation_warning`]) for [`take_deprecation_warnings`], once.
+fn note_deprecation(method: Method, path: &str, header: &dyn Fn(&str) -> Option<String>) {
+    let deprecation = header("deprecation");
+    let sunset = header("sunset");
+    let Some(warning) =
+        deprecation_warning(method, path, deprecation.as_deref(), sunset.as_deref())
+    else {
+        return;
+    };
+    DEPRECATIONS.with(|warnings| {
+        let mut warnings = warnings.borrow_mut();
+        if !warnings.contains(&warning) {
+            warnings.push(warning);
+        }
+    });
+}
+
+/// The warning for `method` to `path`, whose answer carried `deprecation` or `sunset`, or
+/// `None` when it carried neither. Only a date the header holds in its standard form is
+/// repeated (`@` and Unix seconds for `Deprecation`, an HTTP date for `Sunset`), as a day:
+/// any other value is the server's text, which a warning does not quote.
+fn deprecation_warning(
+    method: Method,
+    path: &str,
+    deprecation: Option<&str>,
+    sunset: Option<&str>,
+) -> Option<String> {
+    if deprecation.is_none() && sunset.is_none() {
+        return None;
+    }
+    let day = |seconds: u64| i64::try_from(seconds / 86_400).ok().map(date_of_unix_day);
+    let since = deprecation
+        .and_then(|value| value.trim().strip_prefix('@'))
+        .and_then(|seconds| seconds.parse::<u64>().ok())
+        .and_then(day);
+    let until = sunset
+        .and_then(|value| crate::time::http_date(value.trim()))
+        .and_then(day);
+    let mut warning = format!("the API marks `{method} {path}` as deprecated");
+    if let Some(since) = since {
+        warning.push_str(&format!(" as of {since}"));
+    }
+    if let Some(until) = until {
+        warning.push_str(&format!(", and it may stop answering on {until}"));
+    }
+    warning.push_str(": a newer `hipc` may send another route");
+    Some(warning)
 }
 
 /// Where a request goes, and what it carries besides the body.
@@ -1117,6 +1183,7 @@ impl Client {
         let request_id = header("x-request-id").filter(|id| id.len() <= MAX_REQUEST_ID_BYTES);
         let location = header("location");
         let date = header("date");
+        note_deprecation(request.method, resolved.target.api_path(), &header);
         // The status has arrived, so it decides even when the body cannot be read: a 2xx
         // write was done (`partial`, not retryable), and a 4xx is that status's error.
         // The limit is one byte past the cap: ureq 3.5.0 refuses a read once its limit is used
@@ -1595,6 +1662,11 @@ fn status_error(answer: &StatusAnswer<'_>) -> Error {
     if maybe_done {
         error = error.with_side_effects(SideEffects::Partial);
     }
+    // The route this `hipc` sends is gone from the API (tenet 15); a newer release sends the
+    // one it serves now.
+    if status == 410 && !maybe_done {
+        return error.with_hint(RETIRED_HINT);
+    }
     // An answer whose body gave no text has only its `details` to explain it.
     if code == Code::Validation && unexplained {
         // Right in both modes: JSON mode prints `details` already, and text mode does not.
@@ -1602,6 +1674,10 @@ fn status_error(answer: &StatusAnswer<'_>) -> Error {
     }
     answer.attempt.with_hint(error)
 }
+
+/// The hint of a `410 Gone`: the API retired the route.
+const RETIRED_HINT: &str = "the API has retired this route: upgrade `hipc` to its latest release, \
+                            which sends the routes the API serves now";
 
 /// Why the body of a non-2xx answer could not be read, as the end of a sentence about it.
 fn unread_body(error: &ureq::Error) -> String {
@@ -3464,6 +3540,47 @@ mod tests {
                 "secret_access_key": ["This field may not be blank."]
             })
         );
+    }
+
+    /// A `Deprecation` or `Sunset` header becomes one warning per route, which names the
+    /// route and the dates the headers hold in their standard forms, and never the server's
+    /// other text.
+    #[test]
+    fn a_deprecated_route_is_one_warning_with_the_dates_its_headers_hold() {
+        let warning = |deprecation, sunset| {
+            deprecation_warning(Method::Get, "/api/compute/vms/", deprecation, sunset)
+        };
+        assert_eq!(warning(None, None), None);
+        assert_eq!(
+            warning(Some("@1782864000"), Some("Fri, 01 Jan 2027 00:00:00 GMT")).as_deref(),
+            Some(
+                "the API marks `GET /api/compute/vms/` as deprecated as of 2026-07-01, and it \
+                 may stop answering on 2027-01-01: a newer `hipc` may send another route"
+            )
+        );
+        assert_eq!(
+            warning(Some("true"), None).as_deref(),
+            Some(
+                "the API marks `GET /api/compute/vms/` as deprecated: a newer `hipc` may send \
+                 another route"
+            )
+        );
+        let odd = warning(Some("@soon <script>"), Some("next week")).expect("a warning");
+        assert!(!odd.contains("soon") && !odd.contains("week"), "{odd}");
+        assert!(warning(None, Some("Fri, 01 Jan 2027 00:00:00 GMT")).is_some());
+        assert_eq!(take_deprecation_warnings(), Vec::<String>::new());
+    }
+
+    /// A `410 Gone` hints to upgrade `hipc`, whatever its body says, unless it may have been
+    /// done.
+    #[test]
+    fn a_retired_route_hints_to_upgrade() {
+        for body in ["", r#"{"detail":"Gone."}"#, r#"{"x":1}"#] {
+            let error = answer(false, 410, body);
+            assert_eq!(error.code(), Code::Validation, "{body}");
+            assert_eq!(error.hint(), Some(RETIRED_HINT), "{body}");
+        }
+        assert_ne!(answer(true, 400, "").hint(), Some(RETIRED_HINT));
     }
 
     #[test]

@@ -2546,3 +2546,74 @@ fn a_write_to_a_route_hipc_does_not_know_warns() {
     let run = hipc().run(&["api", "POST", "/compute/vms/", "--yes"]);
     assert_eq!((run.code(), run.stderr()), (Some(0), ""));
 }
+
+/// An answer that says its route is deprecated, from a curated command or `hipc api`, becomes
+/// a warning that names the route and the dates its headers give: a `warning:` line in text
+/// mode, and a `warnings` entry in JSON, on the document or beside the error. The command does
+/// what it did before.
+#[test]
+fn a_deprecated_route_is_a_warning() {
+    let deprecated = |status, body: &str| {
+        Reply::json(status, body)
+            .header("Deprecation", "@1782864000")
+            .header("Sunset", "Fri, 01 Jan 2027 00:00:00 GMT")
+    };
+    let server = Server::start(vec![
+        route(
+            "GET",
+            "/api/accounts/",
+            deprecated(200, r#"{"accounts":[]}"#),
+        ),
+        route(
+            "GET",
+            "/api/ssh-keys/",
+            deprecated(404, r#"{"detail":"no"}"#),
+        ),
+    ]);
+    let warning = "the API marks `GET /api/accounts/` as deprecated as of 2026-07-01, and it may \
+                   stop answering on 2027-01-01: a newer `hipc` may send another route";
+    let hipc = || Hipc::against(&Home::new(), &server);
+    let run = hipc().run(&["account", "list"]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(run.json()["warnings"], json!([warning]));
+    assert_eq!(run.stderr(), "");
+    let run = hipc().run(&["--output", "text", "account", "list"]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(
+        run.stderr(),
+        format!("warning: {warning}\nnote: no items\n")
+    );
+    // A `hipc api` body keeps its shape, so its warnings go on stderr as one object.
+    let run = hipc().run(&["api", "GET", "/accounts/"]);
+    assert_eq!(run.stdout(), r#"{"accounts":[]}"#);
+    assert_eq!(
+        run.stderr(),
+        format!("{}\n", json!({ "warnings": [warning] }))
+    );
+    let failed = hipc().run(&["api", "GET", "/ssh-keys/"]);
+    assert_eq!(failed.code(), Some(1));
+    let object: serde_json::Value = serde_json::from_str(failed.stderr()).expect("one object");
+    assert_eq!(object["error"]["code"], "not_found");
+    assert_eq!(
+        object["warnings"],
+        json!([warning.replace("/api/accounts/", "/api/ssh-keys/")])
+    );
+}
+
+/// A `410` says the API retired the route this `hipc` sends, so the hint is to upgrade.
+#[test]
+fn a_retired_route_hints_to_upgrade_hipc() {
+    let server = Server::start(vec![route(
+        "GET",
+        "/api/accounts/",
+        Reply::json(410, r#"{"detail":"Gone."}"#),
+    )]);
+    let error = Hipc::against(&Home::new(), &server)
+        .run(&["account", "list"])
+        .fails(1, "validation");
+    assert_eq!(
+        error["hint"],
+        "the API has retired this route: upgrade `hipc` to its latest release, which sends the \
+         routes the API serves now"
+    );
+}

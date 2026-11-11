@@ -12,6 +12,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 - `hipc schema` lists, for each command, the `routes` it may send to: each one's `method` and path template, such as `{"method": "GET", "path": "/api/compute/vms/{vm_id}/"}`, with a placeholder in braces for each value the command fills in, and `{name..}` for a value of more than one segment, such as a Hub repository. `hipc api` lists none, since it sends to the route it is given, and neither does a command that sends nothing. `schema_version` is now `4`.
 
+- When an answer says its route is deprecated, with a `Deprecation` (RFC 9745) or a `Sunset` (RFC 8594) header, `hipc` prints a `warning:` that names the route and the dates the headers give, and in JSON adds the text to `warnings`; the command does what it did before. A `410` answer, a route the API has retired, gets a hint to upgrade `hipc`. TENETS tenet 15 says so.
+
 ### Changed
 
 - The HTTP library is ureq 3.5. A user name or password in a proxy variable's URL (`HTTPS_PROXY=http://user:p%40ss@proxy:3128`) is now percent-decoded once before it is sent to the proxy, so a literal `%` in it must be written `%25`; a user name or password that decodes to invalid UTF-8 is refused with exit 2 `usage`, as a proxy URL the library cannot parse is.

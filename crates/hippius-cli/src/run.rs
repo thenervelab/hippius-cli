@@ -59,8 +59,8 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         hippius::on_lock_wait(|waiting| output::note(&format!("note: {waiting}\n")));
     }
     let ran = guarded(&ctx, || execute(&ctx, &cli.command));
-    // Also after a failure: a command can write the config and then fail at a later step.
-    // Text mode warns on stderr; JSON
+    // Also after a failure: a command can write the config and then fail at a later step, and
+    // an answer that failed can say its route is deprecated. Text mode warns on stderr; JSON
     // mode, which writes no warning lines, adds the text to a `warnings` array beside the
     // document or the error, so an agent sees it too. The command's own run warnings were
     // printed as they came.
@@ -69,6 +69,7 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
     for warning in split_link
         .into_iter()
         .chain(hippius::take_unknown_keys_warning())
+        .chain(hippius::take_deprecation_warnings())
     {
         ctx.warning(&warning);
         warnings.push(warning);
