@@ -345,7 +345,10 @@ fn every_page(ctx: &Context<'_>, client: &Client, first: Request) -> Result<Prin
     list::walk(ctx, client, first, &start, |answer| {
         let page = list::read_page(paging, answer).map_err(|error| match paging {
             Paging::Numbered => not_a_list(&url),
-            Paging::Totalled { .. } | Paging::Cursor | Paging::Continuation => error,
+            Paging::Totalled { .. }
+            | Paging::UntilShort { .. }
+            | Paging::Cursor
+            | Paging::Continuation => error,
         })?;
         items.extend(page.items);
         let next = match page.next {

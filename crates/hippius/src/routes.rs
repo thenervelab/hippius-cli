@@ -295,6 +295,14 @@ pub enum Paging {
         /// The key that holds the items, such as `results` or `artifacts`.
         items: &'static str,
     },
+    /// Page numbers with neither a `next` link nor a total: `page` and `page_size`, answered
+    /// `{page, page_size, <items>}`, as the Hub usage by repository answers; the next page
+    /// follows while a page is full, so the list ends at the first page shorter than
+    /// `page_size`, an empty one included.
+    UntilShort {
+        /// The key that holds the items, such as `repositories`.
+        items: &'static str,
+    },
     /// A cursor: `before`, answered `{results, next_before}`; the server fixes the page size.
     Cursor,
     /// S3's `ListObjectsV2`: `max_keys` and `continuation_token`, answered `{Contents,
@@ -306,13 +314,16 @@ impl Paging {
     /// Whether the pages are numbered, so the first is page `1` and an answer may name the
     /// page it is; the others go on from a token the previous page gave.
     pub const fn numbered(self) -> bool {
-        matches!(self, Self::Numbered | Self::Totalled { .. })
+        matches!(
+            self,
+            Self::Numbered | Self::Totalled { .. } | Self::UntilShort { .. }
+        )
     }
 
     /// The query parameter that names the page to read: its number or its token.
     pub const fn token_query(self) -> &'static str {
         match self {
-            Self::Numbered | Self::Totalled { .. } => "page",
+            Self::Numbered | Self::Totalled { .. } | Self::UntilShort { .. } => "page",
             Self::Cursor => "before",
             Self::Continuation => "continuation_token",
         }
@@ -321,7 +332,7 @@ impl Paging {
     /// The query parameter of the page size, or `None` where the server fixes it.
     pub const fn size_query(self) -> Option<&'static str> {
         match self {
-            Self::Numbered | Self::Totalled { .. } => Some("page_size"),
+            Self::Numbered | Self::Totalled { .. } | Self::UntilShort { .. } => Some("page_size"),
             Self::Cursor => None,
             Self::Continuation => Some("max_keys"),
         }

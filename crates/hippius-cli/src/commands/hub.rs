@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use hippius::routes::{API_BASE, Route, hub};
+use hippius::routes::{API_BASE, Paging, Route, hub};
 use hippius::{
     CHECK_FIRST_HINT, Client, Code, ConfigFile, Error, Failure, HubMarker, Request, Result,
     SideEffects, Source, phrase, view_of,
@@ -20,6 +20,7 @@ use crate::cli::{
     Namespace, OneTimeSecret, PayFrom, Visibility,
 };
 use crate::commands::files::{save_secret, shown_once};
+use crate::commands::list;
 use crate::commands::{
     Printed, failed_part, print_body, print_body_or, print_envelope, print_with, require_public,
     require_reveal_or_file, run_hint, set_up_first,
@@ -169,19 +170,54 @@ fn artifact(route: &Route<2>, repository: &str, reference: &str) -> Request {
 }
 
 /// `GET /api/registry/usage/`, an object printed as sent, or with `--repositories` the
-/// per-repository list `GET /api/registry/usage/repositories/` as an envelope. Swagger lists
-/// no page parameter for the list, so it is read whole: a `next` link is `internal`.
+/// per-repository list `GET /api/registry/usage/repositories/`, every page of it, as one
+/// envelope whose `next_page_token` is null.
 fn usage(ctx: &Context<'_>, repositories: bool) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
     let printed = if repositories {
-        let request =
-            Request::to(&hub::USAGE_BY_REPOSITORY, []).about("list the Hub usage by repository");
-        print_envelope(ctx, &client, &request)
+        usage_by_repository(ctx, &client)
     } else {
         let request = Request::to(&hub::USAGE, []).about("get the Hub usage");
         print_body(ctx, &client, &request, Gate::Open)
     };
     printed.map_err(|error| with_provision_hint(ctx, error))
+}
+
+/// The usage by repository, read page by page. The server answers `{page, page_size,
+/// repositories}` with neither a `next` link nor a total (seen live 2026-11-11, 100 a page
+/// by default), so a page that is full is followed by the next one ([`Paging::UntilShort`]).
+/// The command takes no page flags, so its route is not marked paged; the first request
+/// carries no parameters, and the server picks the page size.
+fn usage_by_repository(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
+    let first =
+        Request::to(&hub::USAGE_BY_REPOSITORY, []).about("list the Hub usage by repository");
+    if ctx.dry_run() {
+        return ctx.dry_run_of(client, &[&first]).map(Printed::from);
+    }
+    let paging = Paging::UntilShort {
+        items: "repositories",
+    };
+    let mut items = Vec::new();
+    let mut asked = None;
+    list::walk(ctx, client, first.clone(), "1", |answer| {
+        let page = list::read_page(paging, answer)?;
+        // A server that ignores `page` and answers page 1 again would repeat the list on
+        // every page; a later page that names another `page` than the one asked is refused.
+        let start_over = asked.as_ref().map(|_| list::CHANGED_WHILE_READ);
+        list::answered_as_asked(&page, asked.as_deref().unwrap_or("1"), start_over)?;
+        let next = page.next_page_token()?;
+        items.extend(page.items);
+        let Some(number) = next else {
+            return Ok(list::Turn::Done(()));
+        };
+        let request = list::at_page(first.clone(), paging, Some(&number));
+        asked = Some(number.clone());
+        Ok(list::Turn::Next {
+            token: number,
+            request,
+        })
+    })?;
+    Ok(Printed::List(hippius::envelope(items)))
 }
 
 /// Subscribes to a Hub plan without charging twice (tenet 11).

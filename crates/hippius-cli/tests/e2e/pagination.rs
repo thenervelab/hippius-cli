@@ -64,11 +64,6 @@ const READ_WHOLE: &[(&[&str], &str, &str)] = &[
         "results",
     ),
     (
-        &["hub", "usage", "--repositories"],
-        "/api/registry/usage/repositories/",
-        "results",
-    ),
-    (
         &["hub", "repositories", "list"],
         "/api/registry/repositories/",
         "results",

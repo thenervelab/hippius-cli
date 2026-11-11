@@ -162,6 +162,11 @@ pub(crate) fn read_page(paging: Paging, answer: Value) -> Result<Page> {
             next_from_total(&mut page)?;
             Ok(page)
         }
+        Paging::UntilShort { items } => {
+            let mut page = hippius::page(with_items_as_results(answer, items))?;
+            next_while_full(&mut page)?;
+            Ok(page)
+        }
         Paging::Cursor => hippius::cursor_page(answer),
         Paging::Continuation => objects_page(answer),
     }
@@ -272,6 +277,40 @@ fn next_from_total(page: &mut Page) -> Result<()> {
         return Ok(());
     }
     if at.saturating_mul(size) < total {
+        page.next = Some(Next::Token(at.saturating_add(1).to_string()));
+    }
+    Ok(())
+}
+
+/// Sets `page.next` from its `page` and `page_size` when it has no `next` link, for a route
+/// that pages by number but answers `{page, page_size, <items>}` with neither a `next` link
+/// nor a total, as the Hub usage by repository does: the next page is the one after `page`
+/// while the page is full, so the list ends at the first page shorter than `page_size`.
+/// Whether `page` is the page asked for is [`answered_as_asked`]'s check.
+///
+/// # Errors
+///
+/// `internal` when `page` or `page_size` is missing or not a whole number, or when a page of
+/// items has a `page_size` of 0: either way where the list ends is unknown.
+fn next_while_full(page: &mut Page) -> Result<()> {
+    if page.next.is_some() {
+        return Ok(());
+    }
+    // As leniently as `answered_as_asked` reads `page`: a decimal string or `2.0` too.
+    let number = |key: &str| page.fields.get(key).and_then(whole_number);
+    let (Some(at), Some(size)) = (number("page"), number("page_size")) else {
+        return Err(Error::internal(
+            "the API answered a page without a whole-number `page` and `page_size`, so whether \
+             more pages exist is unknown",
+        ));
+    };
+    if size == 0 && !page.items.is_empty() {
+        return Err(Error::internal(
+            "the API answered a page of items with a `page_size` of 0, so where the next page \
+             starts is unknown",
+        ));
+    }
+    if !page.items.is_empty() && page.items.len() as u64 >= size {
         page.next = Some(Next::Token(at.saturating_add(1).to_string()));
     }
     Ok(())
@@ -552,6 +591,35 @@ mod tests {
         assert_eq!(next(3, 2, 5, 1), None);
         assert_eq!(next(1, 100, 80, 80), None);
         assert_eq!(next(4, 2, 5, 0), None);
+    }
+
+    /// A page of a list that names no total goes on while it is full, and ends at the first
+    /// short page, an empty one included; with no whole-number `page` and `page_size`, or a
+    /// `page_size` of 0 beside items, where the list ends is unknown.
+    #[test]
+    fn a_page_without_a_total_goes_on_while_it_is_full() {
+        let read = |answer: Value| {
+            read_page(
+                Paging::UntilShort {
+                    items: "repositories",
+                },
+                answer,
+            )
+        };
+        let page = |at: u64, size: u64, held: usize| serde_json::json!({"page": at, "page_size": size, "repositories": vec![Value::Null; held]});
+        let next = |at, size, held| read(page(at, size, held)).unwrap().next;
+        assert_eq!(next(1, 2, 2), Some(Next::Token("2".to_owned())));
+        assert_eq!(next(2, 2, 1), None);
+        assert_eq!(next(3, 2, 0), None);
+        assert_eq!(next(1, 0, 0), None);
+        for answer in [
+            page(1, 0, 1),
+            serde_json::json!({"page": 1, "repositories": [null]}),
+            serde_json::json!({"page_size": "x", "page": 1, "repositories": []}),
+        ] {
+            let error = read(answer.clone()).unwrap_err();
+            assert_eq!(error.code(), Code::Internal, "{answer}");
+        }
     }
 
     #[test]

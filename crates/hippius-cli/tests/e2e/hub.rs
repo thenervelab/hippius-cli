@@ -1924,55 +1924,105 @@ fn usage_without_a_project_hints_at_namespace_create() {
     }
 }
 
-/// The console types the per-repository answer as DRF `{count, next, previous, results}`;
-/// a bare array is read too, as every list is. A page's `count` stays beside `items`.
+/// The per-repository answer is `{page, page_size, repositories}` with neither a `next` link
+/// nor a total (seen live, 2026-11-11). A page shorter than `page_size` is the last, so one
+/// such page is the whole list, printed as an envelope with no next page.
 #[test]
-fn usage_by_repository_is_an_envelope() {
-    let item = json!({"name": "acme/app", "size_bytes": 42, "artifact_count": 3});
-    for (body, envelope) in [
-        (
-            concat!(
-                r#"{"count":1,"next":null,"previous":null,"#,
-                r#""results":[{"name":"acme/app","size_bytes":42,"artifact_count":3}]}"#
+fn usage_by_repository_prints_a_short_page_as_the_whole_list() {
+    let item = json!({"name": "acme/app", "storage_bytes": 42, "artifact_count": 3});
+    let body = json!({"page": 1, "page_size": 100, "repositories": [item]}).to_string();
+    let server = Server::start(vec![route_of(
+        &hub::USAGE_BY_REPOSITORY,
+        [],
+        Reply::json(200, &body),
+    )]);
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&["hub", "usage", "--repositories"])
+        .ok();
+    assert_eq!(doc, json!({"items": [item], "next_page_token": null}));
+    assert_eq!(
+        server.only_request().target,
+        "/api/registry/usage/repositories/"
+    );
+}
+
+/// A full page is followed by the next one, asked by its number, until a page is short.
+#[test]
+fn usage_by_repository_follows_each_full_page() {
+    let server = Server::start(vec![
+        // The query-exact route comes first: the plain one ignores the query.
+        route(
+            "GET",
+            "/api/registry/usage/repositories/?page=2",
+            Reply::json(
+                200,
+                r#"{"page":2,"page_size":2,"repositories":[{"name":"c"}]}"#,
             ),
-            json!({"count": 1, "items": [item], "next_page_token": null}),
         ),
-        (
-            r#"[{"name":"acme/app","size_bytes":42,"artifact_count":3}]"#,
-            json!({"items": [item], "next_page_token": null}),
+        route_of(
+            &hub::USAGE_BY_REPOSITORY,
+            [],
+            Reply::json(
+                200,
+                r#"{"page":1,"page_size":2,"repositories":[{"name":"a"},{"name":"b"}]}"#,
+            ),
         ),
+    ]);
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&["hub", "usage", "--repositories"])
+        .ok();
+    assert_eq!(
+        doc,
+        json!({"items": [{"name": "a"}, {"name": "b"}, {"name": "c"}], "next_page_token": null})
+    );
+    let targets: Vec<String> = server.requests().into_iter().map(|r| r.target).collect();
+    assert_eq!(
+        targets,
+        [
+            "/api/registry/usage/repositories/",
+            "/api/registry/usage/repositories/?page=2"
+        ]
+    );
+}
+
+/// A page that does not say its number and size leaves where the list ends unknown, so
+/// nothing is printed as if it were the whole list.
+#[test]
+fn usage_by_repository_refuses_a_page_without_its_size() {
+    for body in [
+        r#"{"page":1,"repositories":[{"name":"a"}]}"#,
+        r#"{"count":1,"next":null,"previous":null,"results":[{"name":"a"}]}"#,
+        r#"[{"name":"a"}]"#,
     ] {
         let server = Server::start(vec![route_of(
             &hub::USAGE_BY_REPOSITORY,
             [],
             Reply::json(200, body),
         )]);
-        let doc = Hipc::against(&Home::new(), &server)
-            .run(&["hub", "usage", "--repositories"])
-            .ok();
-        assert_eq!(doc, envelope);
+        let run = Hipc::against(&Home::new(), &server).run(&["hub", "usage", "--repositories"]);
+        assert_eq!(run.stdout(), "", "{body}");
+        run.fails(1, "internal");
+        assert_eq!(server.requests().len(), 1, "{body}");
     }
 }
 
-/// Swagger lists no page parameter for the route, so `hipc` reads it whole and does not
-/// print a short list as if it were complete.
+/// A server that answers page 1 again to `page=2` would hand out the same page forever; the
+/// later page is refused.
 #[test]
-fn usage_by_repository_refuses_a_second_page() {
-    let server = Server::start(vec![route_of(
-        &hub::USAGE_BY_REPOSITORY,
-        [],
-        Reply::json(
-            200,
-            concat!(
-                r#"{"count":2,"next":"https://x/api/registry/usage/repositories/?page=2","#,
-                r#""results":[]}"#
-            ),
+fn usage_by_repository_refuses_a_page_other_than_the_one_asked() {
+    let first = r#"{"page":1,"page_size":1,"repositories":[{"name":"a"}]}"#;
+    let server = Server::start(vec![
+        route(
+            "GET",
+            "/api/registry/usage/repositories/?page=2",
+            Reply::json(200, first),
         ),
-    )]);
+        route_of(&hub::USAGE_BY_REPOSITORY, [], Reply::json(200, first)),
+    ]);
     Hipc::against(&Home::new(), &server)
         .run(&["hub", "usage", "--repositories"])
         .fails(1, "internal");
-    assert_eq!(server.requests().len(), 1);
+    assert_eq!(server.requests().len(), 2);
 }
 
 /// A run that wrote a hard-linked config file and then failed adds the split-link warning to

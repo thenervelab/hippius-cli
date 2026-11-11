@@ -81,6 +81,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 ### Fixed
 
+- `hipc hub usage --repositories` reads the answer the API sends, `{page, page_size, repositories}` with no `next` link and no total, and follows each full page to the next one until a page is short, printing every repository as one list with `next_page_token` null. Before, every run exited 1 `internal`, saying the answer was not a list. A page that does not give its `page` and `page_size` is `internal`, so a short list is never printed as the whole one.
 - `hipc account projects transfer` reads the accounts answer as `hipc account list` does, so an answer without an `accounts` list is named as such (`internal`), not as one that marks no account as the token's own.
 - Text mode prints a `get` whose answer holds `items` and `next_page_token` as the one object it is, with no table and no `next page: --page-token` hint, which the command does not take. Only a command that prints a list envelope prints a list, and only its empty list gets the `no items` note.
 - Every redaction of several values at once (the spellings of the API token in an error, a credential `--credentials-dir` moved out of a database answer, a DNS credential `hipc cdn hostnames dns-setup` sent, and App Engine secrets) finds every place each value matches first and writes one `<redacted>` per span of matches that overlap. So a short value no longer cuts the marker a longer one wrote or a longer value that holds it, and two values that overlap in the text no longer leave part of either shown.

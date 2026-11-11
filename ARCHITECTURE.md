@@ -104,7 +104,8 @@ MEMBER_DELETE: 1 = Route::delete("/api/accounts/members/{member_id}/")
   how it takes a project and a billing account (`project`, `billing`, `names_one`,
   `beside_billing`), whether its answer `reveals` a secret, whether a read `provisions`,
   whether it is `permanent`, whether its 503 means it was `undone_on_503`, how the server
-  pages its list (`paged(Paging::Numbered)`, `Totalled`, `Cursor`, `Continuation`: the query
+  pages its list (`paged(Paging::Numbered)`, `Totalled`, `UntilShort`, `Cursor`,
+  `Continuation`: the query
   that asks for a page and the answer's shape), and the `guard` `hipc api` holds it back with.
 - Names: a list is the plural (`MEMBERS`), one item the singular (`MEMBER`), and a write the
   noun and its verb (`MEMBER_UPDATE`, `MEMBER_DELETE`, `INVITE_CREATE`).
@@ -269,8 +270,9 @@ tenet 3 (`Pages`), and admits each next page, so a loop or a list past a cap is 
 way everywhere. `list::run` reads a list the way its route's row says the server pages it
 (`Request::paging`), into one `hippius::Page` whose `Next` is a link or a token
 (`list::read_page`, which holds the readers of the two styles the library does not:
-`Totalled`, by `total`, and `Continuation`, held to the `--page-token` rules);
-`hipc s3 tokens list` and `hipc api --all` walk their pages through the same loop. `hipc api
+`Totalled`, by `total`, `UntilShort`, while a page is full, and `Continuation`, held to the
+`--page-token` rules); `hipc s3 tokens list`, `hipc hub usage --repositories`, and `hipc api
+--all` walk their pages through the same loop. `hipc api
 --all` follows `next` links only, so a page of a route its row says pages by number or token
 that names a next page is `internal` rather than read as the last.
 
