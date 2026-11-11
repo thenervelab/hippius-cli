@@ -16,7 +16,7 @@ pub(crate) use crate::cli::values::number;
 use crate::cli::values::{Charset, Dash, word};
 
 mod account;
-mod api;
+pub(crate) mod api;
 mod app_engine;
 mod auth;
 mod backups;
@@ -912,50 +912,37 @@ fn api_about() -> String {
 }
 
 /// The long help of `hipc api`: the short help, as clap takes it from a doc comment, then
-/// what the short help has no room for.
+/// what the short help has no room for. Each route it never sends is named from its row, with
+/// the row's reason and the one path to its effect (`api::rules::refusals_explained`).
 fn api_long_about() -> String {
     format!(
         "{}\n\nThe request carries the same auth, account, project, and billing rules as every \
          command. It goes only to the configured API origin: a full URL on any other origin, \
          plain http to a loopback port included, exits 2 usage; use curl for another host. A \
          refusal listed for one write method (POST, PUT, PATCH, or DELETE) holds for every \
-         write method of the route, and every path counts in any letter case, with or without \
-         the trailing slash or a format suffix. An account deletion request (any write of \
-         /account/deletion/ but DELETE, which withdraws a pending one) is never sent: request \
-         it in the console. No request to the account token route (/auth/token/, any method) \
-         is sent: create a token in the console settings. A read of a Kubernetes cluster's \
-         secrets (GET or HEAD /kubernetes/clusters/<cluster_id>/secrets/) is never sent \
-         either: hipc compute kubernetes clusters kubeconfig opens the kubeconfig. A CDN \
-         hostname's DNS setup (any write of /cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/) \
-         is never sent: hipc cdn hostnames dns-setup reads the provider credential from a \
-         private file. A Hub subscribe (any write of /registry/subscribe/) is never sent: hipc \
-         hub subscription subscribe reads the current plans first and refuses a second paid \
-         one. An App Engine launch, compose update, or compose check whose body sets secrets \
-         (any write of /compute/app-engine/apps/, of /compute/app-engine/apps/<vm_id>/compose/, \
-         or of /compute/app-engine/validate/) is never sent: hipc compute app-engine apps \
-         create launches an app with secrets read from a private file, and a compose update \
-         with secrets is not in this version; without secrets they are sent as usual. A write \
+         write method of the route that has no rule of its own, and every path counts in any \
+         letter case, with or without the trailing slash or a format suffix. {} A write \
          under /support/, such as a new ticket, a reply, or a chat handoff, whose body holds \
          HIPPIUS_TOKEN or a token a profile of the config file stores, as it is, quoted, \
          percent-encoded, or behind a JSON escape, also when whitespace or an invisible joining \
-         character splits it, or an \
-         access key (12 to 24 BIP-39 words in a row whose checksum holds), is never sent: a \
-         person on the support team may read it. Without a token, a PATCH of one support ticket (PATCH \
-         /support/tickets/<ticket_id>/) is sent with the body given: the server decides which \
-         fields a customer may change, and hipc support tickets update sends only the close. \
-         A resume of a Kubernetes operation blocked on data loss is sent: the \
-         server is the guard, and the refusal of hipc compute kubernetes operations resume is a \
-         courtesy. hipc api sends no If-Match, so a PUT of a zone's WAF rules or rate limits \
-         (/cdn/zones/<zone_id>/waf/rules/, /cdn/zones/<zone_id>/waf/rate-limits/) is not \
-         conditional and writes over a version another client published since it was read; hipc \
-         cdn waf rules update and hipc cdn waf rate-limits update send the version they read and \
-         stop on a conflict. A route no command sends (one no command of hipc schema lists in its \
-         routes) is one hipc does not know: a GET of it needs --reveal, since its answer may hold \
-         a secret, and a write needs --yes, as any write does, and warns. A 2xx answer larger than \
-         32 MiB is not printed: it exits 1 internal. On an \
-         error status a body that large is not read: the status decides the error, and its message \
-         says the body was not read.",
-        api_about()
+         character splits it, or an access key (12 to 24 BIP-39 words in a row whose checksum \
+         holds), is never sent: a person on the support team may read it. Without a token, a \
+         PATCH of one support ticket (PATCH /support/tickets/<ticket_id>/) is sent with the \
+         body given: the server decides which fields a customer may change, and hipc support \
+         tickets update sends only the close. A resume of a Kubernetes operation blocked on \
+         data loss is sent: the server is the guard, and the refusal of hipc compute \
+         kubernetes operations resume is a courtesy. hipc api sends no If-Match, so a PUT of a \
+         zone's WAF rules or rate limits (/cdn/zones/<zone_id>/waf/rules/, \
+         /cdn/zones/<zone_id>/waf/rate-limits/) is not conditional and writes over a version \
+         another client published since it was read; hipc cdn waf rules update and hipc cdn \
+         waf rate-limits update send the version they read and stop on a conflict. A route no \
+         command sends (one no command of hipc schema lists in its routes) is one hipc does \
+         not know: a GET of it needs --reveal, since its answer may hold a secret, and a write \
+         needs --yes, as any write does, and warns. A 2xx answer larger than 32 MiB is not \
+         printed: it exits 1 internal. On an error status a body that large is not read: the \
+         status decides the error, and its message says the body was not read.",
+        api_about(),
+        api::rules::refusals_explained().join(" ")
     )
 }
 
@@ -1183,17 +1170,29 @@ mod tests {
             .expect("hipc api is a command");
         let long = api.render_long_help().to_string();
         assert!(long.contains("GET or HEAD /network/me/"), "{long}");
+        // Each refused route is named from its row, with the row's reason and hint.
         assert!(
             long.contains(
-                "An account deletion request (any write of /account/deletion/ but DELETE, which \
-                 withdraws a pending one) is never sent"
+                "A write other than DELETE of /account/deletion/ is never sent: an account \
+                 deletion locks the account and revokes every token at once; request the \
+                 deletion in the console, under Settings, Delete Account."
             ),
             "{long}"
         );
         assert!(
             long.contains(
-                "GET or HEAD /kubernetes/clusters/<cluster_id>/secrets/) is never sent either: \
-                 hipc compute kubernetes clusters kubeconfig opens the kubeconfig"
+                "GET or HEAD of /kubernetes/clusters/<cluster_id>/secrets/ is never sent: its \
+                 answer holds the cluster's sealed kubeconfig; run hipc compute kubernetes \
+                 clusters kubeconfig, which opens"
+            ),
+            "{long}"
+        );
+        assert!(
+            long.contains(
+                "A write of /compute/app-engine/apps/ whose body sets secrets is never sent: \
+                 the body holds the app's secret values; run hipc compute app-engine apps \
+                 create --secrets-file, which reads the values from a private file and keeps \
+                 them out of every output; without secrets it is sent as usual."
             ),
             "{long}"
         );

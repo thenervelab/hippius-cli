@@ -572,10 +572,10 @@ pub(super) fn of_network(path: &[&str]) -> Option<Spec> {
 /// and a route a curated command or the console is the one path to is refused.
 pub(super) fn of_api() -> Spec {
     Spec {
-        confirmation: Confirmation::When(API_CONFIRMATION),
+        confirmation: Confirmation::When(&API_CONFIRMATION),
         reveal: Reveal::When(API_REVEAL_WHEN),
-        refused_when: Some(API_REFUSED_WHEN),
-        guards: API_GUARDS,
+        refused_when: Some(&API_REFUSED_WHEN),
+        guards: &API_GUARDS,
         ..SPEND
     }
 }

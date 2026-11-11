@@ -138,6 +138,21 @@ routes! {
 
     /// What the signed-in user's referral code brought.
     REFERRAL_ANALYTICS: 0 = Route::get("/api/referral/analytics/").personal();
+
+    /// Requests the account's deletion, which only the console sends: it locks the account
+    /// and revokes every token at once.
+    DELETION_REQUEST: 0 = Route::post("/api/account/deletion/")
+        .own_account()
+        .guard(Guard::Refused {
+            why: "an account deletion locks the account and revokes every token at once",
+            hint: "request the deletion in the console, under Settings, Delete Account",
+        });
+
+    /// Withdraws a pending deletion request, which locks and revokes nothing (swagger), so it
+    /// lends the request's refusal to no other method.
+    DELETION_WITHDRAW: 0 = Route::delete("/api/account/deletion/")
+        .own_account()
+        .guard(Guard::Needs(&[]));
 }
 
 /// The body of [`NOTIFICATIONS_UPDATE`]: only the settings given, so one left out keeps its

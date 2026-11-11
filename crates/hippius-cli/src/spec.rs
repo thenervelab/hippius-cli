@@ -7,11 +7,14 @@
 mod routes;
 mod rows;
 
+use std::sync::LazyLock;
+
 use clap::CommandFactory as _;
 use hippius::Code;
 use serde_json::{Value, json};
 
 use crate::cli::Cli;
+use crate::cli::api::rules::{self, Voice};
 
 /// The verb shelf of tenet 2: every word a leaf may end in as a verb, in the order tenet 2
 /// lists them. A test holds every leaf to it.
@@ -98,6 +101,14 @@ pub(crate) enum Confirmation {
     Always,
     /// Only when this holds, as the end of a sentence that starts "it is confirmed when".
     When(&'static str),
+}
+
+impl Spec {
+    /// When the command asks before a write, which decides how its writes are sent
+    /// ([`crate::context::Confirmed`]).
+    pub(crate) fn confirmation(&self) -> Confirmation {
+        self.confirmation
+    }
 }
 
 impl Confirmation {
@@ -197,43 +208,39 @@ const UNDO: Spec = Spec {
     ..READ_ONLY
 };
 
-/// The flags `hipc api` needs beyond `--yes`, on the routes `Client::route_flags` names,
-/// each refused with the code `RouteFlag::code` gives it.
-const API_GUARDS: &[Guard] = &[
-    Guard {
-        code: Code::ChangeIsolationRequired,
-        when: Some(
-            "the request writes to `/api/network/isolation/` (any method but `GET` and `HEAD`)",
-        ),
-    },
-    Guard {
-        code: Code::PublicRequired,
-        when: Some(
-            "the request is `POST /api/cdn/zones/`, \
-             `PUT /api/objectstore/buckets/<name>/acl/set/`, a `PATCH` of \
-             `/api/cdn/zones/<zone_id>/` whose body sets `origin`, or a \
-             `PATCH /api/registry/me/publicity/` unless the body sets `public` to `false`; a \
-             body that is not a JSON object counts as setting the key, and each rule holds for \
-             every write method of its route, not only the one named",
-        ),
-    },
-    Guard {
-        code: Code::RemoveOthersRequired,
-        when: Some(
-            "the request is a `PUT` of `/api/compute/vms/<vm_id>/firewall/`, \
-             `/api/cdn/zones/<zone_id>/rules/`, `/api/cdn/zones/<zone_id>/waf/rules/`, \
-             `/api/cdn/zones/<zone_id>/waf/rate-limits/`, `/api/cdn/lists/<name>/items/`, \
-             or `/api/objectstore/buckets/<name>/acl/set/`, a `PATCH` of \
-             `/api/accounts/members/<id>/` whose body sets `grants`, a `PATCH` of \
-             `/api/cdn/lists/<name>/` whose body sets `items`, or any other write `hipc` \
-             guards that replaces a whole list or document; a body that is not a JSON \
-             object counts as setting the key, and each rule holds for every write method of \
-             its route, not only the one named; a `POST` or `DELETE` of \
-             `/api/cdn/lists/<name>/items/`, which adds or removes the items it names, needs \
-             none",
-        ),
-    },
-];
+/// When `hipc api` refuses for each flag it needs beyond `--yes`, said from the route rows
+/// (`cli::api::rules`), in the order of `RouteFlag::ALL`.
+static API_GUARD_WHEN: LazyLock<Vec<String>> = LazyLock::new(api_guard_when);
+
+/// The flags `hipc api` needs beyond `--yes`, each refused with the code
+/// `RouteFlag::code` gives it, on the routes its rule names.
+static API_GUARDS: LazyLock<Vec<Guard>> = LazyLock::new(api_guards);
+
+/// [`API_GUARD_WHEN`]: for each flag, the routes it gets past, then what holds for all.
+fn api_guard_when() -> Vec<String> {
+    hippius::RouteFlag::ALL
+        .iter()
+        .map(|&flag| {
+            format!(
+                "the request is {}; {}",
+                hippius::phrase::join(&rules::needs(Voice::Schema, flag), "or"),
+                rules::flag_rules(Voice::Schema, flag)
+            )
+        })
+        .collect()
+}
+
+/// [`API_GUARDS`].
+fn api_guards() -> Vec<Guard> {
+    hippius::RouteFlag::ALL
+        .iter()
+        .zip(API_GUARD_WHEN.iter())
+        .map(|(flag, when)| Guard {
+            code: flag.code(),
+            when: Some(when.as_str()),
+        })
+        .collect()
+}
 
 /// When `hub subscription subscribe` refuses with `replace_required`. The window is
 /// `MARKER_SECONDS` in `commands/hub.rs`.
@@ -294,34 +301,46 @@ const NOT_DEFAULT_ORIGIN: &str = "the API origin is not `https://api.hippius.com
 const NOTIFICATION_ALERT_OFF: &str = "`--email-enabled`, `--low-credit-alerts`, \
      `--zero-balance-alerts`, or `--file-status-updates` is `false`";
 
-/// When `hipc api` refuses whatever the flags, a dry run included, as the rows of
-/// `hippius::account::ROUTE_RULES` and the support check decide it: a refusal listed for one
-/// write method holds for every write method the table lists no row for. A curated command is
-/// the one path to each refused effect. It lists refused requests only; what `hipc api` sends
-/// that a curated command refuses or never sends, the data-loss resume and a ticket `PATCH`
-/// with any body, is in its help.
-const API_REFUSED_WHEN: &str = concat!(
-    "the target is a full URL off the configured API origin, or the request is any method of \
-     `/api/auth/token/`, a write other than `DELETE` of `/api/account/deletion/`, `GET` or \
-     `HEAD` of `/api/kubernetes/clusters/<cluster_id>/secrets/`, a write of \
-     `/api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/` or of \
-     `/api/registry/subscribe/`, a write of `/api/compute/app-engine/apps/`, of \
-     `/api/compute/app-engine/apps/<vm_id>/compose/`, or of \
-     `/api/compute/app-engine/validate/` whose body sets `secrets` (a body that is not a JSON \
-     object counts as setting it), or a write under `/api/support/` whose body holds ",
-    support_secret!(),
-    "; a write is `POST`, `PUT`, `PATCH`, or `DELETE`, and each path counts in any letter \
-     case, with or without the trailing slash or a format suffix"
-);
+/// When `hipc api` refuses whatever the flags, a dry run included: the routes whose row or
+/// guard table entry refuses them, said from the rows (`cli::api::rules`), and the support
+/// check. A refusal listed for one write method holds for every write method with no rule of
+/// its own. A curated command is the one path to each refused effect. It lists refused
+/// requests only; what `hipc api` sends that a curated command refuses or never sends, the
+/// data-loss resume and a ticket `PATCH` with any body, is in its help.
+static API_REFUSED_WHEN: LazyLock<String> = LazyLock::new(api_refused_when);
 
-/// When `hipc api` asks: the one route it confirms on a read is the one row that
-/// `provisions`, written here so the text says which, in every form the route tables match.
-/// A write to a route no command lists is confirmed as any write is, with a warning.
-const API_CONFIRMATION: &str = "the method is not `GET` or `HEAD`, or the path is \
-                                `/api/network/me/`, whose first call creates the network, \
-                                with or without the trailing slash or a format suffix; a write \
-                                to a route no command lists in its `routes` also warns that \
-                                `hipc` does not know it";
+/// [`API_REFUSED_WHEN`].
+fn api_refused_when() -> String {
+    let mut refused = rules::refused(Voice::Schema);
+    refused.push(
+        concat!(
+            "a write under `/api/support/` whose body holds ",
+            support_secret!()
+        )
+        .to_owned(),
+    );
+    format!(
+        "the target is a full URL off the configured API origin, or the request is {}; a write \
+         is `POST`, `PUT`, `PATCH`, or `DELETE`, and each path counts in any letter case, with \
+         or without the trailing slash or a format suffix",
+        hippius::phrase::join(&refused, "or")
+    )
+}
+
+/// When `hipc api` asks: on every write, and on a read of a route whose row `provisions`,
+/// named from the rows in every form the route tables match. A write to a route no command
+/// lists is confirmed as any write is, with a warning.
+static API_CONFIRMATION: LazyLock<String> = LazyLock::new(api_confirmation);
+
+/// [`API_CONFIRMATION`].
+fn api_confirmation() -> String {
+    format!(
+        "the method is not `GET` or `HEAD`, or the request is {}, whose read may create \
+         something, with or without the trailing slash or a format suffix; a write to a route \
+         no command lists in its `routes` also warns that `hipc` does not know it",
+        hippius::phrase::join(&rules::provisioning_reads(Voice::Schema), "or")
+    )
+}
 
 /// When `hipc api` needs `--reveal`: on a route whose answer `hipc` knows holds a secret, and
 /// on a `GET` of a route it does not know, whose answer may hold one (tenet 9).
@@ -1041,10 +1060,10 @@ mod tests {
                 ("cdn waf rate-limits update".to_owned(), WAF_CHECK),
                 (
                     "api".to_owned(),
-                    "the method is not `GET` or `HEAD`, or the path is `/api/network/me/`, \
-                     whose first call creates the network, with or without the trailing \
-                     slash or a format suffix; a write to a route no command lists in its \
-                     `routes` also warns that `hipc` does not know it"
+                    "the method is not `GET` or `HEAD`, or the request is a `GET` or `HEAD` of \
+                     `/api/network/me/`, whose read may create something, with or without the \
+                     trailing slash or a format suffix; a write to a route no command lists in \
+                     its `routes` also warns that `hipc` does not know it"
                 ),
             ]
         );
@@ -1056,7 +1075,7 @@ mod tests {
             .cloned()
             .unwrap();
         assert_eq!(api["confirmation"], true);
-        assert_eq!(api["confirmation_when"], API_CONFIRMATION);
+        assert_eq!(api["confirmation_when"], API_CONFIRMATION.as_str());
     }
 
     /// The `reveal` bit agrees with the flags each command takes, so a row cannot go stale
@@ -1301,9 +1320,36 @@ mod tests {
         );
         assert_eq!(
             api["guards"][0]["when"],
-            "the request writes to `/api/network/isolation/` (any method but `GET` and `HEAD`)"
+            "the request is a `POST` of `/api/network/isolation/`; each rule holds for every \
+             write method of its route that has no rule of its own"
         );
-        assert_eq!(api["refused_when"], API_REFUSED_WHEN);
+        // Every route a guard of `hipc api` names is said with its condition, and the write
+        // methods a route documents as doing something else are named as needing none.
+        assert_eq!(
+            api["guards"][1]["when"],
+            "the request is a `POST` of `/api/cdn/zones/`, a `PATCH` or `DELETE` of \
+             `/api/cdn/zones/<zone_id>/` whose body sets `origin`, a `PATCH` of \
+             `/api/registry/me/publicity/` unless its body sets `public` to `false`, or a `PUT` \
+             of `/api/objectstore/buckets/<bucket_name>/acl/set/`; a body that is not a JSON \
+             object counts as setting the key; each rule holds for every write method of its \
+             route that has no rule of its own; a `PUT` that borrows a rule on a key of the \
+             body needs the flag whatever its body sets"
+        );
+        let remove_others = api["guards"][2]["when"].as_str().unwrap();
+        assert!(
+            remove_others.contains(
+                "a `PUT` of `/api/v1/operator/nodes/<node_id>/storage/`"
+            ),
+            "{remove_others}"
+        );
+        assert!(
+            remove_others.ends_with(
+                "a `POST` or `DELETE` of `/api/cdn/lists/<list_name>/items/`, which the API \
+                 documents as doing something else, needs none"
+            ),
+            "{remove_others}"
+        );
+        assert_eq!(api["refused_when"], API_REFUSED_WHEN.as_str());
         for noun in ["repositories", "artifacts"] {
             let delete = commands
                 .iter()
@@ -1835,8 +1881,8 @@ mod tests {
     }
 
     /// Every route a command lists is a row of `hippius::routes`, and a command takes the page
-    /// flags exactly when one of its routes is a list the server pages. `hipc api` lists no
-    /// route, and pages whatever route it is given.
+    /// flags exactly when one of its routes is a list the server pages. `hipc api` pages
+    /// whatever route it is given, and lists only routes no other command lists.
     #[test]
     fn every_listed_route_is_a_row_that_pages_as_its_command_does() {
         let root = Cli::command();
@@ -1853,7 +1899,16 @@ mod tests {
                 .collect();
             assert!(unlisted.is_empty(), "{path:?}: {unlisted:?} are not rows");
             if parts == ["api"] {
-                assert_eq!(listed, Vec::<&hippius::routes::Endpoint>::new());
+                let curated: Vec<&hippius::routes::Endpoint> = command_paths(&root)
+                    .iter()
+                    .filter(|other| *other != &path)
+                    .flat_map(|other| {
+                        let words: Vec<&str> = other.iter().map(String::as_str).collect();
+                        routes::routes(&words)
+                    })
+                    .collect();
+                assert_ne!(listed.len(), 0);
+                assert!(listed.iter().all(|route| !curated.contains(route)));
                 continue;
             }
             let paged = listed.iter().any(|endpoint| endpoint.paged());

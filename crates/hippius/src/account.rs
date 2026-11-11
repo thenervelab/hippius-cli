@@ -17,7 +17,7 @@ use std::cmp::Reverse;
 use crate::error::Result;
 use crate::method::Method;
 use crate::phrase::quote;
-use crate::routes::{self, Endpoint, Guard, RouteClass, RouteFlag};
+use crate::routes::{self, Endpoint, Guard, RouteClass};
 use crate::selector::Selection;
 use crate::url::{with_trailing_slash, without_query, without_query_values};
 
@@ -259,12 +259,6 @@ pub(crate) struct Rule {
     pub(crate) route: &'static str,
 }
 
-/// The hint of a `hipc api` compose update that carries `secrets`. `apps create` launches a
-/// second, billed app, so it is not named here.
-const COMPOSE_SECRETS_HINT: &str = "a compose update with secrets is not in this version of \
-                                    `hipc`: send the body without `secrets`, or change the \
-                                    app's secrets in the console";
-
 /// The hint of a `hipc api` request to the account token route, on any method.
 const AUTH_TOKEN_HINT: &str = "create a token in the console settings at \
                                `https://console.hippius.com/dashboard/settings`";
@@ -275,33 +269,16 @@ const AUTH_TOKEN_READ: &str = "its answer is the account's API token";
 /// Why `hipc api` refuses a write of the account token route.
 const AUTH_TOKEN_WRITE: &str = "the route hands out the account's API token";
 
-/// The refusal of a compose update whose body sets `secrets`, on every method the API may
-/// take for it.
-const COMPOSE_SECRETS: Guard = Guard::RefusedWhenSet {
-    key: "secrets",
-    why: crate::routes::compute::APP_SECRETS,
-    hint: COMPOSE_SECRETS_HINT,
-};
-
 /// The requests with no row that `hipc api` holds back beyond `--yes`, in the pattern
 /// language of [`SECRET_ROUTES`]. A row says it of its own route ([`Endpoint::guard`]),
 /// and a test refuses an entry whose path a row matches, so a request meets the rows or this
 /// table, never both.
 ///
-/// A route is refused outright when a curated command, or the console, is the one safe path
-/// to its effect: the console for an account deletion, which locks the account and revokes
-/// every token at once, and for the account token route, on every method, whose answer would
-/// put the account's own API token in the output, where a log or an agent reads it; and the
-/// App Engine commands, which read secret values from a checked private file, while `hipc
-/// api` reads its body from any file and prints it in a dry run and in a 400. A `HEAD` of a
-/// refused read is refused too: Django REST framework runs a `HEAD` through the `GET`
-/// handler.
-///
-/// A network isolation switch needs `--change-isolation` whatever the body: either mode
-/// changes which peers of the network reach each other. A write that replaces a whole list
-/// needs `--remove-others` outright: `hipc api` does not read the list to compare, since that
-/// would be a second copy of each route's list parser, and a body that copy misread would
-/// turn the guard off.
+/// The account token route is refused on every method: its answer would put the account's
+/// own API token in the output, where a log or an agent reads it, and the console settings
+/// are the one path to a token. A `HEAD` of a refused read is refused too: Django REST
+/// framework runs a `HEAD` through the `GET` handler. Every other route `hipc api` holds back
+/// has a row, so it counts as one `hipc` knows.
 const ROUTE_RULES: &[(Method, &str, Guard)] = &[
     (
         Method::Get,
@@ -327,34 +304,35 @@ const ROUTE_RULES: &[(Method, &str, Guard)] = &[
             hint: AUTH_TOKEN_HINT,
         },
     ),
-    // Swagger: a `DELETE` withdraws a pending deletion request, which locks and revokes
-    // nothing, so it is sent as any write is; the other write methods are refused as the
-    // `POST` is.
-    (Method::Delete, "/api/account/deletion/", Guard::Needs(&[])),
-    (
-        Method::Post,
-        "/api/account/deletion/",
-        Guard::Refused {
-            why: "an account deletion locks the account and revokes every token at once",
-            hint: "request the deletion in the console, under Settings, Delete Account",
-        },
-    ),
-    (
-        Method::Put,
-        "/api/compute/app-engine/apps/{vm_id}/compose/",
-        COMPOSE_SECRETS,
-    ),
-    (
-        Method::Post,
-        "/api/network/isolation/",
-        Guard::Needs(&[RouteFlag::ChangeIsolation]),
-    ),
-    (
-        Method::Put,
-        "/api/v1/operator/nodes/{node_id}/storage/",
-        Guard::Needs(&[RouteFlag::RemoveOthers]),
-    ),
 ];
+
+/// Every route `hipc api` has a rule for, with its method, template, and guard: each row,
+/// then each route with no row in the guard table. A write method with no entry of its own
+/// borrows the guard of another write method of its template when that guard lends
+/// ([`Guard::lends`]), as [`route_rules`] applies it.
+pub fn api_routes() -> impl Iterator<Item = (Method, &'static str, Guard)> {
+    routes::all()
+        .map(|row| (row.method(), row.template(), row.guard()))
+        .chain(ROUTE_RULES.iter().copied())
+}
+
+/// The guard `hipc api` applies to `method` on the route `template`, one of
+/// [`api_routes`]: its own entry's (a `HEAD` reaches the `GET` row, as [`routes::row`] has
+/// it), else one a write method borrows from another write method of the template, as
+/// [`route_rules`] lends it, else [`Guard::None`]. The help and the schema say the rules of
+/// `hipc api` from it; a test holds it to `route_rules` on a path that fills each template.
+pub fn api_guard(method: Method, template: &str) -> Guard {
+    let entries = || api_routes().filter(|&(_, route, _)| route == template);
+    let own = entries()
+        .find(|&(route, ..)| route == method || (method == Method::Head && route == Method::Get))
+        .map(|(.., guard)| guard);
+    let lent = || {
+        entries()
+            .find(|&(route, _, guard)| guard.lends() && !route.is_read() && !method.is_read())
+            .map(|(.., guard)| borrowed(guard, method))
+    };
+    own.or_else(lent).unwrap_or(Guard::None)
+}
 
 /// The rules on `method` to `path` (under `/api/`, no query), all of which apply: none or
 /// one, or for a path with a format suffix, the rule of each of its two forms that has one
@@ -618,6 +596,7 @@ pub(crate) fn header<'a>(
 pub(crate) mod tests {
     use super::*;
     use crate::error::Code;
+    use crate::routes::RouteFlag;
     use crate::source::Source;
 
     const ID: &str = "acct_0123456789abcdef0123";
@@ -1657,6 +1636,31 @@ pub(crate) mod tests {
             })
             .collect::<Vec<_>>()
             .join("/")
+    }
+
+    /// `api_guard`, which the help and the schema say the rules from, is the guard
+    /// `route_rules` applies on a path that fills the template, on every method.
+    #[test]
+    fn the_guard_of_a_template_is_the_rule_of_its_path() {
+        let methods = [
+            Method::Get,
+            Method::Head,
+            Method::Post,
+            Method::Put,
+            Method::Patch,
+            Method::Delete,
+        ];
+        for (_, template, _) in api_routes() {
+            let path = filled(template);
+            for method in methods {
+                let applied = route_rules(method, &path).first().map(|rule| rule.guard);
+                assert_eq!(
+                    applied.unwrap_or(Guard::None),
+                    api_guard(method, template),
+                    "{method} {template}"
+                );
+            }
+        }
     }
 
     /// The tables hold only routes no row decides: a row decides its own method's secret, and

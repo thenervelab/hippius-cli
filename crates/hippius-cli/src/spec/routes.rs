@@ -7,7 +7,7 @@
 
 use hippius::routes::{
     Endpoint, Route, account, billing, cdn, compute, databases, drive, hub, kubernetes, network,
-    runners, s3, support,
+    operator, runners, s3, support,
 };
 
 /// The endpoints of the route constants given, as `routes` returns them.
@@ -23,9 +23,18 @@ fn endpoint<const N: usize>(route: &'static Route<N>) -> &'static Endpoint {
 }
 
 /// The routes the command at `path` may send to, each once: none for a command that sends
-/// nothing, and none for `hipc api`, which sends to the route it is given.
+/// nothing. `hipc api` sends to the route it is given; it lists the routes `hipc` knows that
+/// only it reaches, so every route `hipc` knows is listed by some command, and one no command
+/// lists is one `hipc` does not know (`TENETS.md` tenet 7).
 pub(super) fn routes(path: &[&str]) -> Vec<&'static Endpoint> {
     match path {
+        ["api"] => sends![
+            account::DELETION_REQUEST,
+            account::DELETION_WITHDRAW,
+            compute::APP_ENGINE_COMPOSE_UPDATE,
+            network::ISOLATION_UPDATE,
+            operator::NODE_STORAGE_UPDATE,
+        ],
         ["compute", "app-engine", rest @ ..] => of_compute_app_engine(rest),
         ["compute", "runners", rest @ ..] => of_compute_runners(rest),
         ["compute", "databases", rest @ ..] => of_compute_databases(rest),

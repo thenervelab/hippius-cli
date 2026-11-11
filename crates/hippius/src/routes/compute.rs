@@ -208,4 +208,16 @@ routes! {
 
     /// Rewrites a compose file to fit; changes nothing.
     APP_ENGINE_FIX: 0 = Route::post("/api/compute/app-engine/fix/").scoped().project();
+
+    /// Replaces an app's compose file. No command sends it yet; with secrets in the body it is
+    /// refused, since only a private file may carry them.
+    APP_ENGINE_COMPOSE_UPDATE: 1 = Route::put("/api/compute/app-engine/apps/{vm_id}/compose/")
+        .scoped()
+        .project()
+        .guard(Guard::RefusedWhenSet {
+            key: "secrets",
+            why: APP_SECRETS,
+            hint: "a compose update with secrets is not in this version of `hipc`: send the \
+                   body without `secrets`, or change the app's secrets in the console",
+        });
 }

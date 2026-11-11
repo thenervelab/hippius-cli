@@ -1,6 +1,6 @@
 //! The account's private network: its peers, groups, policies, and VPCs.
 
-use crate::routes::Route;
+use crate::routes::{Guard, Route, RouteFlag};
 
 routes! {
     /// The private network; the first read for an account creates it.
@@ -35,4 +35,9 @@ routes! {
 
     /// A VPC's routers.
     VPC_ROUTERS: 1 = Route::get("/api/network/networks/{vpc_id}/routers/").scoped();
+
+    /// Switches which peers of the network reach each other; either mode changes that.
+    ISOLATION_UPDATE: 0 = Route::post("/api/network/isolation/")
+        .scoped()
+        .guard(Guard::Needs(&[RouteFlag::ChangeIsolation]));
 }

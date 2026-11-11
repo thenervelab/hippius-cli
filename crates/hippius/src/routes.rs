@@ -39,6 +39,7 @@ pub mod drive;
 pub mod hub;
 pub mod kubernetes;
 pub mod network;
+pub mod operator;
 pub mod runners;
 pub mod s3;
 pub mod support;
@@ -133,23 +134,29 @@ impl RouteFlag {
 /// What `hipc api` needs, beyond `--yes` on a write, to send a route. A refusal carries why
 /// and the one path to the route's effect; the message that names the request's method and
 /// route is built when it refuses, so a write that borrows the refusal of another write
-/// method of its route names its own method.
+/// method of its route names its own method. `hipc api`'s help and `hipc schema` say each
+/// guard from [`crate::api_routes`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Guard {
+pub enum Guard {
     /// Nothing beyond the usual confirmation of a write.
     None,
     /// Never sent, whatever the flags, a dry run included: refused as `usage` because `why`,
     /// with `hint`, which names the one path to the route's effect.
     Refused {
+        /// Why, as the end of a sentence: "its answer holds the cluster's sealed kubeconfig".
         why: &'static str,
+        /// The one path to the route's effect, as an imperative.
         hint: &'static str,
     },
     /// Refused as [`Guard::Refused`] is when the body sets `key`, a dry run included, and
     /// otherwise sent as usual. A body that is not a JSON object counts as setting it, so a
     /// shape `hipc` does not read fails closed.
     RefusedWhenSet {
+        /// The top-level key of the body that the refusal is about.
         key: &'static str,
+        /// Why, as [`Guard::Refused`] says it.
         why: &'static str,
+        /// The one path to the route's effect, as [`Guard::Refused`] says it.
         hint: &'static str,
     },
     /// Sent only with each of these flags. With none, the route lists a write method the
@@ -170,7 +177,7 @@ impl Guard {
     /// Whether a write method of the same route that has no guard of its own takes this
     /// one: every guard but none, and `Needs` with no flag, which says the method does
     /// something else.
-    pub(crate) fn lends(self) -> bool {
+    pub fn lends(self) -> bool {
         !matches!(self, Self::None | Self::Needs([]))
     }
 }
@@ -259,7 +266,8 @@ impl Endpoint {
         self.undone_on_503
     }
 
-    pub(crate) fn guard(&self) -> Guard {
+    /// What `hipc api` needs, beyond `--yes` on a write, to send the route.
+    pub fn guard(&self) -> Guard {
         self.guard
     }
 
@@ -655,6 +663,7 @@ pub fn all() -> impl Iterator<Item = &'static Endpoint> {
         hub::ALL,
         kubernetes::ALL,
         network::ALL,
+        operator::ALL,
         runners::ALL,
         s3::ALL,
         support::ALL,
