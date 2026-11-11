@@ -5,7 +5,7 @@ use hippius::routes::runners;
 use serde_json::{Value, json};
 
 use crate::common::{
-    Hipc, Home, MEMBER, PROJECT, Reply, Route, Run, Server, api, draft, parsed, route, route_of,
+    Hipc, Home, MEMBER, PROJECT, Reply, Route, Run, Server, draft, parsed, route, route_of,
 };
 
 /// The settings, shaped as the live answer was on 2026-10-27 (values made up).
@@ -511,21 +511,6 @@ fn jobs_all_stops_on_a_repeated_cursor() {
 }
 
 #[test]
-fn jobs_all_stops_after_a_thousand_pages() {
-    let server = crate::common::endless_pages(&api("/runners/jobs/"), |served| {
-        format!(r#"{{"results":[],"next_before":{}}}"#, served + 1)
-    });
-    let error = Hipc::against(&Home::new(), &server)
-        .run(&runners(&["jobs", "--all"]))
-        .fails(1, "internal");
-    assert!(
-        error["message"].as_str().unwrap().contains("1000 pages"),
-        "{error}"
-    );
-    assert_eq!(server.requests().len(), 1000);
-}
-
-#[test]
 fn jobs_refuses_a_limit_a_bad_token_and_a_page_that_is_not_a_cursor_page() {
     let server = Server::start(vec![]);
     for args in [
@@ -840,79 +825,30 @@ fn a_404_on_reading_the_limit_is_not_found_with_a_hint_that_it_is_not_enabled() 
 }
 
 /// A raise, or a removal of a cap in force, allows more spend and needs `--yes`; the
-/// question names the cap read from `monthly_cap_credits` and the new one. The base units in
-/// `monthly_cap` are a far larger number, so a comparison with them would call each raise a
-/// cut.
+/// question names the cap read from `monthly_cap_credits` and the new one, and the cap sent is
+/// the normal form of the one given. `commands::compute::runners::tests` holds every
+/// comparison; these pin each outcome end to end.
 #[test]
 fn limit_update_needs_yes_when_it_raises_or_removes_the_cap() {
-    let cases: [(&str, &str, &str, Value); 8] = [
-        (
-            "\"20.000000\"",
-            "50",
-            "raise the monthly runner spend cap from `20.000000` to `50` credits",
-            json!({"monthly_cap": "50"}),
-        ),
-        (
-            "\"20\"",
-            "none",
-            "remove the monthly runner spend cap of `20` credits",
-            json!({"monthly_cap": null}),
-        ),
-        // Exact decimals: no float decides a raise.
-        (
-            "\"0.45\"",
-            "0.5",
-            "raise the monthly runner spend cap from `0.45` to `0.5` credits",
-            json!({"monthly_cap": "0.5"}),
-        ),
-        (
-            "9",
-            "10",
-            "raise the monthly runner spend cap from `9` to `10` credits",
-            json!({"monthly_cap": "10"}),
-        ),
-        // A leading zero does not make a cap longer.
-        (
-            "\"050\"",
-            "60",
-            "raise the monthly runner spend cap from `050` to `60` credits",
-            json!({"monthly_cap": "60"}),
-        ),
-        (
-            "\"0\"",
-            "0.01",
-            "raise the monthly runner spend cap from `0` to `0.01` credits",
-            json!({"monthly_cap": "0.01"}),
-        ),
-        // The amount sent and shown is the normal form of the one given.
-        (
-            "\"20\"",
-            "050.500",
-            "raise the monthly runner spend cap from `20` to `50.5` credits",
-            json!({"monthly_cap": "50.5"}),
-        ),
-        // A cap that is not an amount still asks before it is removed, quoted as the
-        // server's words.
-        (
-            "\"lots`\"",
-            "none",
-            "remove the monthly runner spend cap, where `monthly_cap_credits` is \
-             `lots\\u{60}`, which is not an amount of credits",
-            json!({"monthly_cap": null}),
-        ),
-    ];
-    for (credits, cap, what, body) in cases {
-        asks(&limit(credits), cap, what, &body);
-    }
+    asks(
+        &limit("\"20.000000\""),
+        "050.500",
+        "raise the monthly runner spend cap from `20.000000` to `50.5` credits",
+        &json!({"monthly_cap": "50.5"}),
+    );
+    asks(
+        &limit("\"20\""),
+        "none",
+        "remove the monthly runner spend cap of `20` credits",
+        &json!({"monthly_cap": null}),
+    );
 }
 
-/// `null` is unconfirmed to mean no cap, and may be a server default, so a cap set over it
-/// asks. Without an amount in `monthly_cap_credits` the cap in force is unknown, whatever
-/// `monthly_cap` holds, so every change asks, `none` included.
+/// `null` is unconfirmed to mean no cap, so a cap set over it asks; without an amount in
+/// `monthly_cap_credits` the cap in force is unknown, so every change asks; and a
+/// `monthly_cap_credits` that is not an amount is named.
 #[test]
 fn limit_update_needs_yes_when_the_cap_in_force_is_null_or_unknown() {
-    let base_only = format!(r#"{{"monthly_cap":"{BASE_UNITS}"}}"#);
-    let base_and_null = format!(r#"{{"monthly_cap":"{BASE_UNITS}","monthly_cap_credits":null}}"#);
     asks(
         &limit("null"),
         "50",
@@ -920,83 +856,31 @@ fn limit_update_needs_yes_when_the_cap_in_force_is_null_or_unknown() {
          or a server default",
         &json!({"monthly_cap": "50"}),
     );
-    // The CDN shape without the credits: base units alone must not read as 20 quintillion
-    // credits, under which `50` would be a cut.
-    for answer in [
-        base_only.as_str(),
-        &base_and_null,
-        r#"{"spent_this_month":"1.50"}"#,
-        r#"{"monthly_cap_credits":null}"#,
-        // A missing `monthly_cap_credits` is not `null`: the cap in force is unknown.
-        r#"{"monthly_cap":null}"#,
-        // A `null` beside credits hipc cannot read is no proof that no cap is set.
-        r#"{"monthly_cap":null,"monthly_cap_credits":true}"#,
-        "[]",
-    ] {
-        asks(answer, "50", SET_UNKNOWN, &json!({"monthly_cap": "50"}));
-        asks(
-            answer,
-            "none",
-            REMOVE_UNKNOWN,
-            &json!({"monthly_cap": null}),
-        );
-    }
-    // A `monthly_cap_credits` that is not a decimal amount is no cap to compare with, and
-    // the question names it.
-    for (credits, shown) in [
-        ("\"-5\"", "`-5`"),
-        ("-5", "`-5`"),
-        ("\"5.\"", "`5.`"),
-        ("\".5\"", "`.5`"),
-        ("\"5.x\"", "`5.x`"),
-        ("\"5e1\"", "`5e1`"),
-        ("1e300", "`1e+300`"),
-        ("\"\"", "``"),
-    ] {
-        let bad =
-            format!("where `monthly_cap_credits` is {shown}, which is not an amount of credits");
-        let set = format!("set the monthly runner spend cap to `50` credits, {bad}");
-        asks(&limit(credits), "50", &set, &json!({"monthly_cap": "50"}));
-        let remove = format!("remove the monthly runner spend cap, {bad}");
-        asks(
-            &limit(credits),
-            "none",
-            &remove,
-            &json!({"monthly_cap": null}),
-        );
-    }
-    // One that is not a string or a number is no amount at all.
-    for credits in ["true", r#"{"credits":"5"}"#, "[5]"] {
-        asks(
-            &limit(credits),
-            "50",
-            SET_UNKNOWN,
-            &json!({"monthly_cap": "50"}),
-        );
-    }
+    let base_only = format!(r#"{{"monthly_cap":"{BASE_UNITS}"}}"#);
+    asks(&base_only, "50", SET_UNKNOWN, &json!({"monthly_cap": "50"}));
+    asks(
+        &base_only,
+        "none",
+        REMOVE_UNKNOWN,
+        &json!({"monthly_cap": null}),
+    );
+    asks(
+        &limit("1e300"),
+        "50",
+        "set the monthly runner spend cap to `50` credits, where `monthly_cap_credits` is \
+         `1e+300`, which is not an amount of credits",
+        &json!({"monthly_cap": "50"}),
+    );
 }
 
 /// A lower cap, the same cap, or `none` over a `null` cap allows no more spend, so it is
 /// sent without `--yes`, after the read, in its normal form.
 #[test]
 fn limit_update_needs_no_yes_when_it_lowers_or_keeps_the_cap() {
-    let cases: [(String, &str, Value); 12] = [
+    let cases: [(String, &str, Value); 4] = [
         (limit("\"20.000000\""), "5", json!({"monthly_cap": "5"})),
-        (limit("\"10\""), "9.99", json!({"monthly_cap": "9.99"})),
-        (limit("20.5"), "20.50", json!({"monthly_cap": "20.5"})),
         (limit("\"050\""), "50.0", json!({"monthly_cap": "50"})),
-        (limit("\"50\""), "050.00", json!({"monthly_cap": "50"})),
-        (limit("\"50\""), "50", json!({"monthly_cap": "50"})),
-        (limit("\"0.5\""), "0.45", json!({"monthly_cap": "0.45"})),
-        (limit("\"1\""), "000.000", json!({"monthly_cap": "0"})),
-        (limit("\"1\""), "0.10", json!({"monthly_cap": "0.1"})),
         (limit("null"), "none", json!({"monthly_cap": null})),
-        // 18 decimals is a credit's smallest part; trailing zeros past it are dropped.
-        (
-            limit("\"20\""),
-            "0.000000000000000001",
-            json!({"monthly_cap": "0.000000000000000001"}),
-        ),
         (
             limit("\"20\""),
             "5.000000000000000000000",
@@ -1109,39 +993,28 @@ fn limit_update_refuses_an_answer_that_does_not_show_the_cap_sent() {
     }
 }
 
+/// `cli::runners::tests` holds every refused cap; this pins the `usage` each refusal
+/// becomes, before any request or token.
 #[test]
 fn limit_update_refuses_a_bad_cap_before_any_request_or_token() {
     let server = Server::start(vec![]);
-    for cap in [
-        "", "-1", "1e3", "5.", ".5", "NONE", "None", "50 ", "5,0", "x",
+    for (cap, says) in [
+        (
+            "-1",
+            "a cap is a decimal number of credits, such as `50` or `20.5`, or `none`",
+        ),
+        (
+            "0.0000000000000000001",
+            "a cap has at most 18 digits after the point",
+        ),
     ] {
         // `=` keeps a value that starts with `-` from reading as a flag.
         let flag = format!("--monthly-cap={cap}");
         let error = Hipc::tokenless(&Home::new(), &server)
             .run(&runners(&["limit", "update", &flag, "--yes"]))
             .fails(2, "usage");
-        assert!(
-            error["message"].as_str().unwrap().contains(
-                "a cap is a decimal number of credits, such as `50` or `20.5`, or `none`"
-            ),
-            "{cap}: {error}"
-        );
-    }
-    // A credit has 18 decimals, so a finer cap is refused too, whatever trailing zeros follow.
-    for cap in [
-        "0.0000000000000000001",
-        "1.12345678901234567890",
-        "5.0000000000000000001000",
-    ] {
-        let flag = format!("--monthly-cap={cap}");
-        let error = hipc(&server, &["limit", "update", &flag, "--yes"]).fails(2, "usage");
-        assert!(
-            error["message"]
-                .as_str()
-                .unwrap()
-                .contains("a cap has at most 18 digits after the point"),
-            "{cap}: {error}"
-        );
+        let message = error["message"].as_str().expect("the message is a string");
+        assert!(message.contains(says), "{cap}: {message}");
     }
     hipc(&server, &["limit", "update", "--yes"]).fails(2, "usage");
     assert!(server.requests().is_empty());

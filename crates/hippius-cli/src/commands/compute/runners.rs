@@ -126,28 +126,10 @@ fn update_limit(ctx: &Context<'_>, cap: &MonthlyCap) -> Result<Printed> {
             .send(&client, &read)
             .and_then(|response| response.document())
             .map_err(not_enabled)?;
-        let new = match cap {
-            MonthlyCap::Credits(credits) => NewCap::Credits(credits),
-            MonthlyCap::None => NewCap::None,
-        };
-        let in_force = current_cap(&limit);
-        let order = match (new, &in_force) {
-            (NewCap::Credits(new), InForce::Credits(old)) => compare(new, old),
-            _ => None,
-        };
-        let runners_cap = spend_cap::Cap {
-            named: "the monthly runner spend cap",
-            read: "the limit",
-            spender: "runners",
-        };
-        Ok(
-            match spend_cap::question(runners_cap, new, &in_force, order) {
-                Some((action, consequence)) => {
-                    Decided::asked(put().about(action), Some(&consequence))
-                }
-                None => Decided::unasked(draft.clone()),
-            },
-        )
+        Ok(match limit_question(cap, &limit) {
+            Some((action, consequence)) => Decided::asked(put().about(action), Some(&consequence)),
+            None => Decided::unasked(draft.clone()),
+        })
     };
     // Only the read's 404 is the switch being off: a 404 after a good read is plain.
     let render = |sent: Result<Response>| applied(&sent?, cap);
@@ -158,6 +140,26 @@ fn update_limit(ctx: &Context<'_>, cap: &MonthlyCap) -> Result<Printed> {
         decide,
         render,
     )
+}
+
+/// The action and the consequence of the question an update to `cap` asks over the limit
+/// read as `limit`, or `None` when it is sent unasked ([`spend_cap::question`]).
+fn limit_question(cap: &MonthlyCap, limit: &Value) -> Option<(String, String)> {
+    let new = match cap {
+        MonthlyCap::Credits(credits) => NewCap::Credits(credits),
+        MonthlyCap::None => NewCap::None,
+    };
+    let in_force = current_cap(limit);
+    let order = match (new, &in_force) {
+        (NewCap::Credits(new), InForce::Credits(old)) => compare(new, old),
+        _ => None,
+    };
+    let runners_cap = spend_cap::Cap {
+        named: "the monthly runner spend cap",
+        read: "the limit",
+        spender: "runners",
+    };
+    spend_cap::question(runners_cap, new, &in_force, order)
 }
 
 /// The answer to the `PUT`, checked. `monthly_cap` is an unverified name for this route, and a
@@ -356,3 +358,176 @@ fn connect(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
 
 /// What a GitHub App installation unlink ends, for its question and `hipc api`'s.
 pub(crate) const UNLINKED: &str = "its repositories stop getting Hippius runners";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A limit answer shaped as the CDN cap's: base units in `monthly_cap`, and `credits`, a
+    /// JSON value, in `monthly_cap_credits`; `null` makes both `null`.
+    fn limit(credits: &str) -> Value {
+        let base = if credits == "null" {
+            "null"
+        } else {
+            r#""20000000000000000000""#
+        };
+        let text = format!(
+            r#"{{"monthly_cap":{base},"monthly_cap_credits":{credits},"spent_this_month":"1.50"}}"#
+        );
+        serde_json::from_str(&text).expect("each limit is JSON")
+    }
+
+    /// The action `--monthly-cap <cap>` asks about over `limit`, or `None` when it is sent
+    /// unasked.
+    fn asked(limit: &Value, cap: &str) -> Option<String> {
+        let cap = if cap == "none" {
+            MonthlyCap::None
+        } else {
+            let credits = crate::units::credits(cap, "a cap");
+            assert!(credits.is_ok(), "{cap}: {credits:?}");
+            MonthlyCap::Credits(credits.expect("asserted above"))
+        };
+        limit_question(&cap, limit).map(|(action, _)| action)
+    }
+
+    /// A raise, or a removal of a cap in force, asks, naming the cap read from
+    /// `monthly_cap_credits` and the new one, compared as exact decimals: the base units in
+    /// `monthly_cap` are a far larger number, so a comparison with them would call each raise
+    /// a cut.
+    #[test]
+    fn a_raise_or_a_removal_asks() {
+        let raise = |from: &str, to: &str| {
+            Some(format!(
+                "raise the monthly runner spend cap from `{from}` to `{to}` credits"
+            ))
+        };
+        for (credits, cap, action) in [
+            (r#""20.000000""#, "50", raise("20.000000", "50")),
+            (r#""0.45""#, "0.5", raise("0.45", "0.5")),
+            ("9", "10", raise("9", "10")),
+            // A leading zero does not make a cap longer.
+            (r#""050""#, "60", raise("050", "60")),
+            (r#""0""#, "0.01", raise("0", "0.01")),
+            // The amount shown is the normal form of the one given.
+            (r#""20""#, "050.500", raise("20", "50.5")),
+            (
+                r#""20""#,
+                "none",
+                Some("remove the monthly runner spend cap of `20` credits".to_owned()),
+            ),
+            // A cap that is not an amount still asks before it is removed, quoted as the
+            // server's words.
+            (
+                r#""lots`""#,
+                "none",
+                Some(
+                    "remove the monthly runner spend cap, where `monthly_cap_credits` is \
+                     `lots\\u{60}`, which is not an amount of credits"
+                        .to_owned(),
+                ),
+            ),
+        ] {
+            assert_eq!(asked(&limit(credits), cap), action, "{credits} {cap}");
+        }
+    }
+
+    /// `null` is unconfirmed to mean no cap, and may be a server default, so a cap set over it
+    /// asks. Without an amount in `monthly_cap_credits` the cap in force is unknown, whatever
+    /// `monthly_cap` holds, so every change asks, `none` included.
+    #[test]
+    fn a_change_over_a_null_or_unknown_cap_asks() {
+        assert_eq!(
+            asked(&limit("null"), "50").as_deref(),
+            Some(
+                "set the monthly runner spend cap to `50` credits, where the limit shows \
+                 `null`, unset or a server default"
+            )
+        );
+        let set_unknown = "set the monthly runner spend cap to `50` credits, where the cap in \
+                           force is unknown: the limit has no amount in `monthly_cap_credits`";
+        let remove_unknown = "remove the monthly runner spend cap, whose current value is \
+                              unknown: the limit has no amount in `monthly_cap_credits`";
+        for answer in [
+            r#"{"monthly_cap":"20000000000000000000"}"#,
+            r#"{"monthly_cap":"20000000000000000000","monthly_cap_credits":null}"#,
+            r#"{"spent_this_month":"1.50"}"#,
+            r#"{"monthly_cap_credits":null}"#,
+            // A missing `monthly_cap_credits` is not `null`: the cap in force is unknown.
+            r#"{"monthly_cap":null}"#,
+            // A `null` beside credits hipc cannot read is no proof that no cap is set.
+            r#"{"monthly_cap":null,"monthly_cap_credits":true}"#,
+            "[]",
+        ] {
+            let answer: Value = serde_json::from_str(answer).expect("each answer is JSON");
+            assert_eq!(
+                asked(&answer, "50").as_deref(),
+                Some(set_unknown),
+                "{answer}"
+            );
+            assert_eq!(
+                asked(&answer, "none").as_deref(),
+                Some(remove_unknown),
+                "{answer}"
+            );
+        }
+        // A `monthly_cap_credits` that is not a decimal amount is no cap to compare with, and
+        // the question names it.
+        for (credits, shown) in [
+            (r#""-5""#, "`-5`"),
+            ("-5", "`-5`"),
+            (r#""5.""#, "`5.`"),
+            (r#"".5""#, "`.5`"),
+            (r#""5.x""#, "`5.x`"),
+            (r#""5e1""#, "`5e1`"),
+            ("1e300", "`1e+300`"),
+            (r#""""#, "``"),
+        ] {
+            let bad = format!(
+                "where `monthly_cap_credits` is {shown}, which is not an amount of credits"
+            );
+            assert_eq!(
+                asked(&limit(credits), "50"),
+                Some(format!(
+                    "set the monthly runner spend cap to `50` credits, {bad}"
+                )),
+                "{credits}"
+            );
+            assert_eq!(
+                asked(&limit(credits), "none"),
+                Some(format!("remove the monthly runner spend cap, {bad}")),
+                "{credits}"
+            );
+        }
+        // One that is not a string or a number is no amount at all.
+        for credits in ["true", r#"{"credits":"5"}"#, "[5]"] {
+            assert_eq!(
+                asked(&limit(credits), "50").as_deref(),
+                Some(set_unknown),
+                "{credits}"
+            );
+        }
+    }
+
+    /// A lower cap, the same cap, or `none` over a `null` cap allows no more spend, so it is
+    /// sent unasked.
+    #[test]
+    fn a_cut_or_the_same_cap_is_sent_unasked() {
+        for (credits, cap) in [
+            (r#""20.000000""#, "5"),
+            (r#""10""#, "9.99"),
+            ("20.5", "20.50"),
+            (r#""050""#, "50.0"),
+            (r#""50""#, "050.00"),
+            (r#""50""#, "50"),
+            (r#""0.5""#, "0.45"),
+            (r#""1""#, "000.000"),
+            (r#""1""#, "0.10"),
+            ("null", "none"),
+            // 18 decimals is a credit's smallest part; trailing zeros past it are dropped.
+            (r#""20""#, "0.000000000000000001"),
+            (r#""20""#, "5.000000000000000000000"),
+        ] {
+            assert_eq!(asked(&limit(credits), cap), None, "{credits} {cap}");
+        }
+    }
+}

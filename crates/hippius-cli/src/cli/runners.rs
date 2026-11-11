@@ -216,3 +216,44 @@ pub(crate) enum RunnerInstallations {
         installation_id: u64,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_monthly_cap_is_credits_to_18_decimals_or_none() {
+        assert!(matches!(monthly_cap("none"), Ok(MonthlyCap::None)));
+        assert!(matches!(
+            monthly_cap("050.500"),
+            Ok(MonthlyCap::Credits(credits)) if credits == "50.5"
+        ));
+        for cap in [
+            "", "-1", "1e3", "5.", ".5", "NONE", "None", "50 ", "5,0", "x",
+        ] {
+            let refused = monthly_cap(cap);
+            assert!(refused.is_err(), "{cap:?}");
+            assert_eq!(
+                refused.expect_err("asserted above"),
+                "a cap is a decimal number of credits, such as `50` or `20.5`, or `none`",
+                "{cap:?}"
+            );
+        }
+        // A credit has 18 decimals, so a finer cap is refused too, whatever trailing zeros
+        // follow.
+        for cap in [
+            "0.0000000000000000001",
+            "1.12345678901234567890",
+            "5.0000000000000000001000",
+        ] {
+            let refused = monthly_cap(cap);
+            assert!(refused.is_err(), "{cap:?}");
+            assert!(
+                refused
+                    .expect_err("asserted above")
+                    .contains("a cap has at most 18 digits after the point"),
+                "{cap:?}"
+            );
+        }
+    }
+}

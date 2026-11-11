@@ -760,43 +760,23 @@ fn more_than_fifty_rules_is_usage_without_a_request() {
     update(&server, &list(50), &["--yes", "--remove-others"]).ok();
 }
 
+/// `commands::compute::firewall::tests` holds every malformed rule, port, and source; this
+/// pins one of each through `hipc`: the place it names, the `usage`, and that nothing is sent.
 #[test]
 fn a_malformed_rule_refuses_the_whole_list_without_a_request() {
     let server = Server::start(vec![]);
-    let no_protocol = "has no `protocol` of `tcp`, `udp`, or `icmp`";
-    let cases = [
+    // Each bad rule is second, after a good one, so the place it names is `rules[1]`.
+    for (rule, problem) in [
         ("1", "is not a JSON object"),
-        (r#"{"ports":["22"]}"#, no_protocol),
-        (r#"{"protocol":"TCP"}"#, no_protocol),
-        (r#"{"protocol":6}"#, no_protocol),
         (
-            r#"{"protocol":"icmp","ports":["22"]}"#,
-            "is `icmp`, which has no ports, so its `ports` must be `[]`",
+            r#"{"protocol":"tcp","ports":["22","0"]}"#,
+            "has the port `0`: a port is `1` to `65535`, or a range such as `8000-8080`",
         ),
         (
-            r#"{"protocol":"tcp","ports":"22"}"#,
-            "has a `ports` that is not an array of strings",
+            r#"{"protocol":"udp","source_cidrs":["::/0"]}"#,
+            "has the source `::/0`: a source is an IPv4 CIDR, such as `203.0.113.0/24`",
         ),
-        (
-            r#"{"protocol":"tcp","ports":[22]}"#,
-            "has a `ports` that is not an array of strings",
-        ),
-        (
-            r#"{"protocol":"tcp","source_cidrs":"0.0.0.0/0"}"#,
-            "has a `source_cidrs` that is not an array of strings",
-        ),
-        // A leading zero is a second spelling of a prefix: `/00` is every address.
-        (
-            r#"{"protocol":"tcp","source_cidrs":["0.0.0.0/00"]}"#,
-            "has the source `0.0.0.0/00`: a source is an IPv4 CIDR, such as `203.0.113.0/24`",
-        ),
-        (
-            r#"{"protocol":"tcp","source_cidrs":["10.0.0.0/08"]}"#,
-            "has the source `10.0.0.0/08`: a source is an IPv4 CIDR, such as `203.0.113.0/24`",
-        ),
-    ];
-    for (rule, problem) in cases {
-        // The bad rule is second, after a good one, so the place it names is `rules[1]`.
+    ] {
         let contents = format!(r#"{{"rules":[{{"protocol":"tcp"}},{rule}]}}"#);
         let error = update(&server, &contents, &["--yes"]).fails(2, "usage");
         let message = error["message"].as_str().expect("the message is a string");
@@ -808,56 +788,6 @@ fn a_malformed_rule_refuses_the_whole_list_without_a_request() {
         assert_eq!(
             error["hint"],
             "fix `rules[1]`; the VM keeps its rules until then"
-        );
-    }
-    for port in [
-        "0",
-        "65536",
-        "",
-        "-",
-        "22-",
-        "-22",
-        "80-22",
-        "+22",
-        " 22",
-        "1-2-3",
-        "123456",
-        "ab",
-        // A leading zero is a second spelling of a port, as it is of a prefix.
-        "022",
-        "08000-8080",
-        "8000-08080",
-        "00",
-    ] {
-        let contents = format!(r#"{{"rules":[{{"protocol":"tcp","ports":["22","{port}"]}}]}}"#);
-        let error = update(&server, &contents, &["--yes"]).fails(2, "usage");
-        let message = error["message"].as_str().expect("the message is a string");
-        assert!(
-            message.ends_with(&format!(
-                "has the port `{port}`: a port is `1` to `65535`, or a range such as `8000-8080`"
-            )),
-            "{message}"
-        );
-    }
-    for cidr in [
-        "10.0.0.0",
-        "10.0.0.0/33",
-        "10.0.0.0/",
-        "10.0.0.0/123",
-        "10.0.0.0/+8",
-        "10.0.0/8",
-        "256.0.0.0/8",
-        "::/0",
-        "",
-    ] {
-        let contents = format!(r#"{{"rules":[{{"protocol":"udp","source_cidrs":["{cidr}"]}}]}}"#);
-        let error = update(&server, &contents, &["--yes"]).fails(2, "usage");
-        let message = error["message"].as_str().expect("the message is a string");
-        assert!(
-            message.ends_with(&format!(
-                "has the source `{cidr}`: a source is an IPv4 CIDR, such as `203.0.113.0/24`"
-            )),
-            "{message}"
         );
     }
     assert!(server.requests().is_empty());

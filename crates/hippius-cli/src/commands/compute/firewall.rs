@@ -631,6 +631,86 @@ mod tests {
         }
     }
 
+    /// Each malformed rule of a file, port, and source is refused with what is wrong; the e2e
+    /// suite pins one of each through `hipc` (`public_ip::a_malformed_rule_refuses_...`).
+    #[test]
+    fn a_malformed_rule_port_or_source_is_refused_with_what_is_wrong() {
+        let problem = |rule: &str| {
+            let rule: Value = serde_json::from_str(rule).expect("each case is JSON");
+            Rule::read(&rule, Source::File).err()
+        };
+        let no_protocol = "has no `protocol` of `tcp`, `udp`, or `icmp`";
+        for (rule, says) in [
+            ("1", "is not a JSON object"),
+            (r#"{"ports":["22"]}"#, no_protocol),
+            (r#"{"protocol":"TCP"}"#, no_protocol),
+            (r#"{"protocol":6}"#, no_protocol),
+            (
+                r#"{"protocol":"tcp","ports":[22]}"#,
+                "has a `ports` that is not an array of strings",
+            ),
+            (
+                r#"{"protocol":"tcp","source_cidrs":"0.0.0.0/0"}"#,
+                "has a `source_cidrs` that is not an array of strings",
+            ),
+        ] {
+            assert_eq!(problem(rule).as_deref(), Some(says), "{rule}");
+        }
+        for port in [
+            "0",
+            "65536",
+            "",
+            "-",
+            "22-",
+            "-22",
+            "80-22",
+            "+22",
+            " 22",
+            "1-2-3",
+            "123456",
+            "ab",
+            "022",
+            "08000-8080",
+            "8000-08080",
+            "00",
+        ] {
+            let rule = format!(r#"{{"protocol":"tcp","ports":["22","{port}"]}}"#);
+            assert_eq!(
+                problem(&rule),
+                Some(format!(
+                    "has the port `{port}`: a port is `1` to `65535`, or a range such as \
+                     `8000-8080`"
+                )),
+                "{port:?}"
+            );
+        }
+        for cidr in [
+            "10.0.0.0",
+            "10.0.0.0/33",
+            "10.0.0.0/",
+            "10.0.0.0/123",
+            "10.0.0.0/+8",
+            "10.0.0/8",
+            "256.0.0.0/8",
+            "::/0",
+            "",
+            "0.0.0.0/00",
+            "10.0.0.0/08",
+        ] {
+            let rule = format!(r#"{{"protocol":"udp","source_cidrs":["{cidr}"]}}"#);
+            assert_eq!(
+                problem(&rule),
+                Some(format!(
+                    "has the source `{cidr}`: a source is an IPv4 CIDR, such as `203.0.113.0/24`"
+                )),
+                "{cidr:?}"
+            );
+        }
+        let edges = r#"{"protocol":"tcp","ports":["1","65535","1-65535","443-443"],
+            "source_cidrs":["0.0.0.0/0","255.255.255.255/32","10.1.2.3/8"]}"#;
+        assert_eq!(problem(edges), None);
+    }
+
     #[test]
     fn every_port_and_any_source_are_told_apart() {
         let rule = |rule: Value| Rule::read(&rule, Source::File).unwrap();
