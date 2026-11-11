@@ -20,6 +20,7 @@ use std::path::Path;
 use hippius::routes::databases::{self, CreatedDatabase};
 use hippius::{Error, Request, Response, Result, phrase, view_of, without_field};
 use serde_json::{Map, Value, json};
+use zeroize::Zeroizing;
 
 use crate::cli::{
     CREDENTIALS_JSON, DatabaseCreate, DatabaseExposure, DatabaseRestore, DatabaseTarget, Databases,
@@ -245,7 +246,8 @@ fn credentials(ctx: &Context<'_>, dir: Option<&Path>, response: &Response) -> Re
         ),
         None => (created, "the answer holds no `credentials`".to_owned()),
     };
-    match view_of::<CreatedDatabase>(&created).id {
+    // The id alone, read as the view reads it, so no copy of a credential is made for it.
+    match created.get("id").and_then(Value::as_u64) {
         Some(id) => ctx.note(&format!(
             "{shown}; run `hipc compute databases get {id}` to follow the database to \
              `running`"
@@ -297,13 +299,14 @@ fn save_credentials(dir: &Path, created: Value) -> Result<(Value, Vec<String>)> 
             );
             return refused(message, created);
         };
-        files.push((path, pem.as_bytes().to_vec()));
+        files.push((path, Zeroizing::new(pem.as_bytes().to_vec())));
     }
     let object = &created[CREDENTIALS];
-    let mut json = serde_json::to_vec_pretty(object).expect("a JSON value serializes");
+    let mut json =
+        Zeroizing::new(serde_json::to_vec_pretty(object).expect("a JSON value serializes"));
     json.push(b'\n');
     files.push((dir.join(CREDENTIALS_JSON), json));
-    let env = match env_file(dir, &view) {
+    let mut env = match env_file(dir, &view) {
         Ok(env) => env,
         Err(why) => {
             let message = format!(
@@ -312,7 +315,10 @@ fn save_credentials(dir: &Path, created: Value) -> Result<(Value, Vec<String>)> 
             return refused(message, created);
         }
     };
-    files.push((dir.join(ENV_FILE), env.into_bytes()));
+    files.push((
+        dir.join(ENV_FILE),
+        Zeroizing::new(std::mem::take(&mut *env).into_bytes()),
+    ));
     let mut written = Vec::new();
     for (path, bytes) in &files {
         if let Err(NewFileError::Create(failed) | NewFileError::Write(failed)) =
@@ -348,7 +354,7 @@ fn save_credentials(dir: &Path, created: Value) -> Result<(Value, Vec<String>)> 
     // Each value in every spelling a field may repeat it in, such as percent-encoded in a URL.
     // Redacted before the fields `hipc` writes go in, so a short withheld value cannot rewrite
     // the paths of the files.
-    let withheld = zeroize::Zeroizing::new(withheld(object));
+    let withheld = Zeroizing::new(withheld(object));
     let secrets = hippius::redactions(withheld.iter().map(String::as_str));
     let mut saved = hippius::redact_value_all(created, &secrets);
     saved[CREDENTIALS] = Value::Object(shown);
@@ -387,7 +393,10 @@ fn withheld(object: &Value) -> Vec<String> {
 /// python-dotenv decodes inside single quotes), or a control character, such as a line break,
 /// cannot be written that way, so the file is refused, with the reason. The directory's own
 /// path was held to that rule at parse time.
-fn env_file(dir: &Path, created: &CreatedDatabase) -> std::result::Result<String, String> {
+fn env_file(
+    dir: &Path,
+    created: &CreatedDatabase,
+) -> std::result::Result<Zeroizing<String>, String> {
     // `absolute` fails only when the current directory cannot be read, which the parse-time
     // check of a relative `dir` already needed: the path as given is then the best there is.
     let absolute = std::path::absolute(dir).ok();
@@ -417,11 +426,19 @@ fn env_file(dir: &Path, created: &CreatedDatabase) -> std::result::Result<String
         ("PGSSLCERT", Some(path(TLS_FILES[0].0))),
         ("PGSSLKEY", Some(path(TLS_FILES[1].0))),
     ];
-    let mut env = String::from(
-        "# libpq settings for this database, written once by hipc; add PGHOST and PGPORT from\n\
-         # `hipc compute databases get` when they are missing. Load with: set -a; . ./.env; set +a\n",
-    );
-    for (name, value) in settings {
+    // Each value, the password included, is cleared when dropped, and the file's text is sized
+    // first, so filling it never reallocates and frees a copy nothing clears.
+    let settings = settings.map(|(name, value)| (name, value.map(Zeroizing::new)));
+    let header = "# libpq settings for this database, written once by hipc; add PGHOST and PGPORT \
+                  from\n# `hipc compute databases get` when they are missing. Load with: set -a; \
+                  . ./.env; set +a\n";
+    let size = settings
+        .iter()
+        .filter_map(|(name, value)| Some(name.len() + value.as_ref()?.len() + "=''\n".len()))
+        .sum::<usize>();
+    let mut env = Zeroizing::new(String::with_capacity(header.len() + size));
+    env.push_str(header);
+    for (name, value) in &settings {
         let Some(value) = value else { continue };
         if value.contains(['\'', '\\']) || value.chars().any(char::is_control) {
             return Err(format!(
@@ -429,7 +446,9 @@ fn env_file(dir: &Path, created: &CreatedDatabase) -> std::result::Result<String
                  which `.env` cannot hold quoted"
             ));
         }
-        env.push_str(&format!("{name}='{value}'\n"));
+        for part in [name, "='", value.as_str(), "'\n"] {
+            env.push_str(part);
+        }
     }
     Ok(env)
 }
