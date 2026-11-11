@@ -2,9 +2,10 @@
 //! `auto-reload get` and `history`, and `hipc drive|s3 subscription history`. The invoice PDF is in
 //! `invoices.rs`.
 
+use hippius::routes::{billing, compute, s3};
 use serde_json::{Value, json};
 
-use crate::common::{BILLING, Hipc, Home, MEMBER, Reply, Server, draft, route};
+use crate::common::{BILLING, Hipc, Home, MEMBER, Reply, Server, draft, route, route_of};
 
 /// The compute summary, in the shape the console reads, with a base unit amount past
 /// `u64` and `f64`.
@@ -62,9 +63,9 @@ const HISTORY: &str = concat!(
 
 #[test]
 fn summary_is_the_server_body_with_every_digit() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/compute/billing/summary/",
+    let server = Server::start(vec![route_of(
+        &compute::BILLING_SUMMARY,
+        [],
         Reply::json(200, SUMMARY),
     )]);
     let run = Hipc::against(&Home::new(), &server).run(&["billing", "summary"]);
@@ -89,9 +90,9 @@ fn text_value<'a>(stdout: &'a str, key: &str) -> &'a str {
 /// which fields it changed; JSON keeps them as sent (the test above).
 #[test]
 fn text_mode_shows_the_summary_amounts_in_credits() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/compute/billing/summary/",
+    let server = Server::start(vec![route_of(
+        &compute::BILLING_SUMMARY,
+        [],
         Reply::json(
             200,
             &SUMMARY.replace(r#""arrears":null"#, r#""arrears":"250""#),
@@ -132,9 +133,9 @@ const USAGE_LINE: &str = concat!(
 
 #[test]
 fn text_mode_shows_the_usage_amounts_in_credits_and_leaves_quantities() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/compute/usage/",
+    let server = Server::start(vec![route_of(
+        &compute::USAGE,
+        [],
         Reply::json(200, USAGE_LINE),
     )]);
     let run = Hipc::against(&Home::new(), &server).run(&["--output", "text", "billing", "usage"]);
@@ -163,9 +164,9 @@ fn text_mode_shows_the_usage_amounts_in_credits_and_leaves_quantities() {
 /// mode leaves it as sent, and with `--quiet` no note is printed either.
 #[test]
 fn text_mode_leaves_another_scale_and_quiet_drops_the_note() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/compute/billing/summary/",
+    let server = Server::start(vec![route_of(
+        &compute::BILLING_SUMMARY,
+        [],
         Reply::json(200, &SUMMARY.replace(r#""decimals":18"#, r#""decimals":6"#)),
     )]);
     let home = Home::new();
@@ -175,9 +176,9 @@ fn text_mode_leaves_another_scale_and_quiet_drops_the_note() {
         "123456789012345678901234"
     );
     assert_eq!(run.stderr(), "");
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/compute/billing/summary/",
+    let server = Server::start(vec![route_of(
+        &compute::BILLING_SUMMARY,
+        [],
         Reply::json(200, SUMMARY),
     )]);
     let quiet =
@@ -227,11 +228,7 @@ fn the_credits_note_names_only_what_changed() {
 
 #[test]
 fn usage_sends_the_month_only_when_given() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/compute/usage/",
-        Reply::json(200, USAGE),
-    )]);
+    let server = Server::start(vec![route_of(&compute::USAGE, [], Reply::json(200, USAGE))]);
     let home = Home::new();
     let doc = Hipc::against(&home, &server)
         .run(&["billing", "usage", "--month", "2026-09"])
@@ -279,9 +276,9 @@ fn a_month_that_is_not_yyyy_mm_is_usage_without_a_request() {
 
 #[test]
 fn a_bad_month_from_the_server_is_validation() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/compute/usage/",
+    let server = Server::start(vec![route_of(
+        &compute::USAGE,
+        [],
         Reply::json(400, r#"{"error":"Bad month"}"#),
     )]);
     let error = Hipc::against(&Home::new(), &server)
@@ -295,9 +292,9 @@ fn a_bad_month_from_the_server_is_validation() {
 
 #[test]
 fn auto_reload_is_the_server_body() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/billing/auto-reload/",
+    let server = Server::start(vec![route_of(
+        &billing::AUTO_RELOAD,
+        [],
         Reply::json(200, AUTO_RELOAD),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -305,9 +302,9 @@ fn auto_reload_is_the_server_body() {
         .ok();
     assert_eq!(doc, serde_json::from_str::<Value>(AUTO_RELOAD).unwrap());
     // The feature off answers `available: false` alone, which is printed as it is.
-    let off = Server::start(vec![route(
-        "GET",
-        "/api/billing/auto-reload/",
+    let off = Server::start(vec![route_of(
+        &billing::AUTO_RELOAD,
+        [],
         Reply::json(200, r#"{"available":false}"#),
     )]);
     let doc = Hipc::against(&Home::new(), &off)
@@ -322,9 +319,9 @@ fn auto_reload_is_the_server_body() {
 /// route returns.
 #[test]
 fn auto_reload_history_is_the_server_body_with_the_limit() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/billing/auto-reload/history/",
+    let server = Server::start(vec![route_of(
+        &billing::AUTO_RELOAD_HISTORY,
+        [],
         Reply::json(200, RELOADS),
     )]);
     let home = Home::new();
@@ -370,9 +367,9 @@ fn auto_reload_history_limit_is_1_to_100() {
 
 #[test]
 fn invoices_list_one_page_with_the_limit_and_the_token() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/billing/invoices/",
+    let server = Server::start(vec![route_of(
+        &billing::INVOICES,
+        [],
         Reply::json(200, INVOICES),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -496,28 +493,12 @@ fn history_all_follows_the_pages() {
 #[test]
 fn a_membership_sends_the_account_header_on_the_scoped_reads() {
     let server = Server::start(vec![
-        route(
-            "GET",
-            "/api/compute/billing/summary/",
-            Reply::json(200, SUMMARY),
-        ),
-        route("GET", "/api/compute/usage/", Reply::json(200, USAGE)),
-        route("GET", "/api/billing/invoices/", Reply::json(200, INVOICES)),
-        route(
-            "GET",
-            "/api/billing/auto-reload/",
-            Reply::json(200, AUTO_RELOAD),
-        ),
-        route(
-            "GET",
-            "/api/billing/auto-reload/history/",
-            Reply::json(200, RELOADS),
-        ),
-        route(
-            "GET",
-            "/api/s3/subscription/history/",
-            Reply::json(200, HISTORY),
-        ),
+        route_of(&compute::BILLING_SUMMARY, [], Reply::json(200, SUMMARY)),
+        route_of(&compute::USAGE, [], Reply::json(200, USAGE)),
+        route_of(&billing::INVOICES, [], Reply::json(200, INVOICES)),
+        route_of(&billing::AUTO_RELOAD, [], Reply::json(200, AUTO_RELOAD)),
+        route_of(&billing::AUTO_RELOAD_HISTORY, [], Reply::json(200, RELOADS)),
+        route_of(&s3::HISTORY, [], Reply::json(200, HISTORY)),
     ]);
     // The auto-reload reads take the account only beside a billing account, as the console
     // sends them; without one they are refused (`billing_writes`).
@@ -572,11 +553,7 @@ fn the_drive_history_refuses_a_membership_before_sending() {
 
 #[test]
 fn debug_prints_the_request_and_the_status_and_nothing_else() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/compute/usage/",
-        Reply::json(200, USAGE),
-    )]);
+    let server = Server::start(vec![route_of(&compute::USAGE, [], Reply::json(200, USAGE))]);
     let run = Hipc::against(&Home::new(), &server)
         .run(&["--debug", "billing", "usage", "--month", "2026-09"]);
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
@@ -641,9 +618,9 @@ fn each_read_maps_the_server_errors_to_their_codes() {
 
 #[test]
 fn an_answer_that_is_not_json_is_internal() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/compute/billing/summary/",
+    let server = Server::start(vec![route_of(
+        &compute::BILLING_SUMMARY,
+        [],
         Reply::json(200, "<html>"),
     )]);
     let error = Hipc::against(&Home::new(), &server)

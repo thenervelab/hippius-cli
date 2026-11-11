@@ -13,7 +13,8 @@
 
 use std::time::{Duration, Instant, SystemTime};
 
-use hippius::{Client, Code, Error, Method, Request, Result, SideEffects, phrase};
+use hippius::routes::billing;
+use hippius::{Client, Code, Error, Request, Result, SideEffects, phrase};
 use serde_json::{Value, json};
 
 use crate::cli::{CHAIN_MINIMUM, ONE, Planck};
@@ -23,10 +24,6 @@ use crate::commands::poll::{Next, Schedule, Wait, poll_until};
 use crate::commands::print_with;
 use crate::context::{Context, Gate, Write};
 use crate::output::Mode;
-
-const QUOTE: &str = "/billing/native/quote/";
-const BUY: &str = "/billing/native/buy/";
-const PURCHASES: &str = "/billing/native/purchases/";
 
 /// How often a purchase is read again: every 3 seconds, as the console reads it.
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
@@ -54,7 +51,7 @@ const IN_FLIGHT: [&str; 3] = ["queued", "submitted", "included"];
 
 /// The read of the quote, which a top-up sends first.
 fn quote_request() -> Request {
-    Request::get(QUOTE).about("get the hAlpha quote")
+    Request::to(&billing::NATIVE_QUOTE, []).about("get the hAlpha quote")
 }
 
 /// The fields of a quote that are 18-decimal amounts.
@@ -164,8 +161,9 @@ impl Quote {
                 ),
             )
             .with_hint(format!(
-                "run `hipc api GET {PURCHASES}` to find the first buy; if it is not there, top \
-                 up again without `--idempotency-key`"
+                "run `hipc api GET {}` to find the first buy; if it is not there, top up again \
+                 without `--idempotency-key`",
+                purchases_request().target()
             )));
         }
         Ok(())
@@ -292,7 +290,7 @@ const SELF_SIGN_HINT: &str = "top up with hAlpha in the console at `https://cons
 
 /// The buy, with the `min_credits` it sends and its key.
 fn buy_request(alpha: Planck, min_credits: &str, key: &str) -> Request {
-    Request::new(Method::Post, BUY)
+    Request::to(&billing::NATIVE_BUY, [])
         .json(&json!({
             "alpha_amount": alpha.0.to_string(),
             "min_credits": min_credits,
@@ -303,7 +301,7 @@ fn buy_request(alpha: Planck, min_credits: &str, key: &str) -> Request {
 /// The purchases list, newest first: swagger's `ordering` on `created_at`, so the purchase a
 /// run follows, and any other in flight, is on the first page.
 fn purchases_request() -> Request {
-    Request::get(PURCHASES)
+    Request::to(&billing::NATIVE_PURCHASES, [])
         .query("ordering", "-created_at")
         .about("read the hAlpha purchases")
 }
@@ -340,7 +338,8 @@ fn refuse_in_flight(page: &Value, now: u64) -> Result<()> {
             ),
         )
         .with_hint(format!(
-            "run `hipc api GET {PURCHASES}` until it is `completed` or `failed`, then top up again"
+            "run `hipc api GET {}` until it is `completed` or `failed`, then top up again",
+            purchases_request().target()
         )));
     }
     Ok(())
@@ -593,8 +592,10 @@ fn follow(
     ctx.note(&format!(
         "the buy was accepted as the purchase {quoted} under the key `{key}`; following it"
     ));
-    let follow_hint =
-        format!("run `hipc api GET {PURCHASES}` to see where the purchase {quoted} stands");
+    let follow_hint = format!(
+        "run `hipc api GET {}` to see where the purchase {quoted} stands",
+        purchases_request().target()
+    );
     let schedule = Schedule {
         // The first read goes out at once, whatever the deadline.
         first: Duration::ZERO,

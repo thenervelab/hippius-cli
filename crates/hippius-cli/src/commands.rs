@@ -27,9 +27,8 @@ use std::io::Read;
 use std::os::fd::AsFd as _;
 use std::path::{Path, PathBuf};
 
-use hippius::{
-    Client, ConfigFile, Error, Method, Overrides, Request, Response, Result, Source, phrase,
-};
+use hippius::routes::{self, Route};
+use hippius::{Client, ConfigFile, Error, Overrides, Request, Response, Result, Source, phrase};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
@@ -478,13 +477,13 @@ pub(crate) fn print_envelope(
     })
 }
 
-/// The PATCH of `path`, a Drive or S3 subscription, that keeps the plan: `--pay-from` or
+/// `route`, the PATCH of a Drive or S3 subscription, that keeps the plan: `--pay-from` or
 /// `--storage-cap`. The command's `change` group takes one of them when `--plan` is
 /// absent. `service` names the plan in the question, as `Drive` or `S3`. Both change what
 /// later renewals or storage cost, so both are confirmed, and the action an agent reads in
 /// the refusal names the money.
 pub(crate) fn plan_setting(
-    path: &str,
+    route: &Route<0>,
     service: &str,
     setting: &PlanSetting,
 ) -> Result<(Request, Gate<'static>)> {
@@ -518,7 +517,7 @@ pub(crate) fn plan_setting(
         let body = json!({ "storage_cap_bytes": cap });
         (body, action, "storage past the quota is billed")
     };
-    let request = Request::new(Method::Patch, path).json(&body).about(action);
+    let request = Request::to(route, []).json(&body).about(action);
     Ok((
         request,
         Gate::Confirm {
@@ -710,7 +709,8 @@ pub(crate) fn keyed_list(answer: Value, request: &Request, key: &str) -> Result<
 /// status page. The route is in no scoped or personal list, so a membership is refused rather
 /// than answered with the caller's own products (tenet 12).
 pub(crate) fn status(ctx: &Context<'_>) -> Result<Printed> {
-    let request = Request::get("/services/status/").about("get the state of each product");
+    let request =
+        Request::to(&routes::support::SERVICES_STATUS, []).about("get the state of each product");
     print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
 }
 
@@ -819,7 +819,7 @@ mod tests {
             pay_from: None,
             storage_cap: None,
         };
-        let error = plan_setting("/s3/subscription/", "S3", &setting).unwrap_err();
+        let error = plan_setting(&routes::s3::SUBSCRIPTION_CHANGE, "S3", &setting).unwrap_err();
         assert_eq!(error.code(), Code::Usage);
         assert_eq!(
             error.message(),

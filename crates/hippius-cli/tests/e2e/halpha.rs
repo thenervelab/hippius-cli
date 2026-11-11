@@ -1,10 +1,11 @@
 //! `hipc billing native-quote` and `hipc billing top-up --method halpha`: the hAlpha quote,
 //! the custodial buy, and the follow of its purchase.
 
+use hippius::routes::billing;
 use serde_json::{Value, json};
 
 use crate::common::{
-    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Route, Server, route, route_each,
+    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Route, Server, route_each, route_of,
 };
 
 const QUOTE: &str = "/api/billing/native/quote/";
@@ -65,13 +66,17 @@ fn quote_body(changes: &Value) -> String {
 }
 
 fn quote(changes: &Value) -> Route {
-    route("GET", QUOTE, Reply::json(200, &quote_body(changes)))
+    route_of(
+        &billing::NATIVE_QUOTE,
+        [],
+        Reply::json(200, &quote_body(changes)),
+    )
 }
 
 fn buy(status: &str) -> Route {
-    route(
-        "POST",
-        BUY,
+    route_of(
+        &billing::NATIVE_BUY,
+        [],
         Reply::json(201, &json!({"id": "p_1", "status": status}).to_string()),
     )
 }
@@ -257,7 +262,11 @@ fn a_purchase_in_flight_blocks_a_second_buy() {
     let list = json!({"count": 1, "results": [{"id": "p_7", "status": "submitted"}]});
     let server = Server::start(vec![
         quote(&json!({})),
-        route("GET", PURCHASES, Reply::json(200, &list.to_string())),
+        route_of(
+            &billing::NATIVE_PURCHASES,
+            [],
+            Reply::json(200, &list.to_string()),
+        ),
     ]);
     let error = top_up(&server, &["--yes"]).fails(1, "conflict");
     assert_eq!(
@@ -277,7 +286,11 @@ fn a_purchase_in_flight_blocks_a_second_buy() {
     let list = json!({"count": 1, "results": [{"id": "p_8"}]});
     let server = Server::start(vec![
         quote(&json!({})),
-        route("GET", PURCHASES, Reply::json(200, &list.to_string())),
+        route_of(
+            &billing::NATIVE_PURCHASES,
+            [],
+            Reply::json(200, &list.to_string()),
+        ),
     ]);
     let error = top_up(&server, &["--yes"]).fails(1, "conflict");
     assert_eq!(
@@ -296,9 +309,9 @@ fn the_in_flight_window_is_measured_by_the_apis_clock() {
     ]});
     let server = Server::start(vec![
         quote(&json!({})),
-        route(
-            "GET",
-            PURCHASES,
+        route_of(
+            &billing::NATIVE_PURCHASES,
+            [],
             Reply::json(200, &list.to_string()).header("Date", "Tue, 03 Nov 2026 10:01:00 GMT"),
         ),
     ]);
@@ -310,9 +323,9 @@ fn the_in_flight_window_is_measured_by_the_apis_clock() {
     // Sixteen minutes before the `Date` is out of the window by either clock.
     let server = Server::start(vec![
         quote(&json!({})),
-        route(
-            "GET",
-            PURCHASES,
+        route_of(
+            &billing::NATIVE_PURCHASES,
+            [],
             Reply::json(200, &list.to_string()).header("Date", "Tue, 03 Nov 2026 10:16:00 GMT"),
         ),
         buy("completed"),
@@ -328,7 +341,7 @@ fn a_retry_resends_the_exact_buy_reading_only_the_quote() {
     let server = Server::start(vec![
         quote(&json!({"enabled": false, "stale": true, "native_balance": "0"})),
         buy("queued"),
-        route("GET", PURCHASES, page("completed")),
+        route_of(&billing::NATIVE_PURCHASES, [], page("completed")),
     ]);
     let doc = top_up(
         &server,
@@ -394,7 +407,7 @@ fn a_retry_resends_the_exact_buy_reading_only_the_quote() {
 fn a_purchase_the_list_never_shows_says_so_at_the_deadline() {
     let server = Server::start(vec![
         quote(&json!({})),
-        route("GET", PURCHASES, no_purchases()),
+        route_of(&billing::NATIVE_PURCHASES, [], no_purchases()),
         buy("queued"),
     ]);
     let run = top_up(
@@ -585,7 +598,11 @@ fn an_unknown_status_is_a_partial_failure_and_a_missing_id_a_warning() {
         error["error"]["details"],
         json!({"purchase": "p_1", "status": "refunded"})
     );
-    let no_id = route("POST", BUY, Reply::json(201, r#"{"status":"queued"}"#));
+    let no_id = route_of(
+        &billing::NATIVE_BUY,
+        [],
+        Reply::json(201, r#"{"status":"queued"}"#),
+    );
     let server = Server::start(vec![quote(&json!({})), purchases(&[]), no_id]);
     let run = top_up(&server, &["--yes", "--output", "text"]);
     assert_eq!(run.code(), Some(0));
@@ -598,16 +615,20 @@ fn an_unknown_status_is_a_partial_failure_and_a_missing_id_a_warning() {
 
 #[test]
 fn a_numeric_id_is_found_in_the_list() {
-    let started = route(
-        "POST",
-        BUY,
+    let started = route_of(
+        &billing::NATIVE_BUY,
+        [],
         Reply::json(201, r#"{"id":12,"status":"queued"}"#),
     );
     let list = json!({"count": 1, "results": [{"id": 12, "status": "completed"}]});
     let server = Server::start(vec![
         quote(&json!({})),
         started,
-        route("GET", PURCHASES, Reply::json(200, &list.to_string())),
+        route_of(
+            &billing::NATIVE_PURCHASES,
+            [],
+            Reply::json(200, &list.to_string()),
+        ),
     ]);
     assert_eq!(top_up(&server, &["--yes"]).ok()["status"], "completed");
 }
@@ -656,7 +677,7 @@ fn a_buy_answer_that_is_not_a_purchase_is_internal() {
     let server = Server::start(vec![
         quote(&json!({})),
         purchases(&[]),
-        route("POST", BUY, Reply::json(201, "[]")),
+        route_of(&billing::NATIVE_BUY, [], Reply::json(201, "[]")),
     ]);
     let run = top_up(&server, &["--yes"]);
     assert_eq!(run.code(), Some(1));
@@ -743,9 +764,9 @@ fn a_quote_hipc_cannot_read_or_price_is_internal() {
 
 #[test]
 fn a_409_self_sign_from_the_buy_is_refused_with_the_console_hint() {
-    let refused = route(
-        "POST",
-        BUY,
+    let refused = route_of(
+        &billing::NATIVE_BUY,
+        [],
         Reply::json(
             409,
             r#"{"code":"self_sign","detail":"This account signs its own buys."}"#,
@@ -758,9 +779,9 @@ fn a_409_self_sign_from_the_buy_is_refused_with_the_console_hint() {
     assert_eq!(error["http_status"], 409);
     assert_eq!(error["details"]["code"], "self_sign");
     // Another 409 keeps the API's own words.
-    let other = route(
-        "POST",
-        BUY,
+    let other = route_of(
+        &billing::NATIVE_BUY,
+        [],
         Reply::json(409, r#"{"code":"busy","detail":"busy"}"#),
     );
     let server = Server::start(vec![quote(&json!({})), purchases(&[]), other]);
@@ -773,7 +794,11 @@ fn a_409_self_sign_from_the_buy_is_refused_with_the_console_hint() {
 
 #[test]
 fn a_buy_that_may_have_reached_the_server_names_its_key() {
-    let failed = route("POST", BUY, Reply::json(500, r#"{"detail":"boom"}"#));
+    let failed = route_of(
+        &billing::NATIVE_BUY,
+        [],
+        Reply::json(500, r#"{"detail":"boom"}"#),
+    );
     let server = Server::start(vec![quote(&json!({})), purchases(&[]), failed]);
     let error = top_up(&server, &["--yes"]).fails(1, "internal");
     assert_eq!(error["side_effects"], "partial");
@@ -796,7 +821,13 @@ fn a_buy_that_may_have_reached_the_server_names_its_key() {
 #[test]
 fn the_retry_hint_keeps_the_profile_and_is_not_doubled() {
     let home = Home::new();
-    let failed = || route("POST", BUY, Reply::json(500, r#"{"detail":"boom"}"#));
+    let failed = || {
+        route_of(
+            &billing::NATIVE_BUY,
+            [],
+            Reply::json(500, r#"{"detail":"boom"}"#),
+        )
+    };
     let server = Server::start(vec![quote(&json!({})), purchases(&[]), failed()]);
     let work = Hipc::against(&home, &server)
         .run(&[

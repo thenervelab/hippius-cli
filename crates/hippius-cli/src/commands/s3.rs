@@ -6,8 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
+use hippius::routes::{Route, s3};
 use hippius::{
-    AccessKeyId, AwsFiles, AwsProfile, Client, Error, Method, Request, Response, Result, SecretKey,
+    AccessKeyId, AwsFiles, AwsProfile, Client, Error, Request, Response, Result, SecretKey,
     SecretValue, phrase, without_fields,
 };
 use serde_json::{Map, Value, json};
@@ -33,7 +34,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &S3) -> Result<Printed> {
         S3::Plans => print_body(
             ctx,
             &ctx.client(&context::config()?)?,
-            &Request::get("/s3/plans/").about("list the S3 plans"),
+            &Request::to(&s3::PLANS, []).about("list the S3 plans"),
             Gate::Open,
         ),
         S3::Subscription(command) => subscription(ctx, &ctx.load_authed_client()?, command),
@@ -45,22 +46,21 @@ pub(crate) fn run(ctx: &Context<'_>, command: &S3) -> Result<Printed> {
 fn subscription(ctx: &Context<'_>, client: &Client, command: &S3Subscription) -> Result<Printed> {
     match command {
         S3Subscription::Get => {
-            let request = Request::get("/s3/subscription/").about("get the S3 plan");
+            let request = Request::to(&s3::SUBSCRIPTION, []).about("get the S3 plan");
             print_body(ctx, client, &request, Gate::Open)
         }
         S3Subscription::Checkout { intent_id } => {
-            let request = Request::get(format!("/s3/subscription/checkout/{intent_id}/"))
+            let request = Request::to(&s3::CHECKOUT, [intent_id])
                 .about(format!("get the card checkout `{intent_id}`"));
             print_body(ctx, client, &request, Gate::Open)
         }
         S3Subscription::History(args) => {
-            let request =
-                Request::get("/s3/subscription/history/").about("list the S3 plan history");
+            let request = Request::to(&s3::HISTORY, []).about("list the S3 plan history");
             list::run(ctx, client, &request, args)
         }
         S3Subscription::Subscribe(args) => {
             let body = json!({ "plan": args.plan.code(), "rail": args.pay_from.code() });
-            let request = Request::new(Method::Post, "/s3/subscription/")
+            let request = Request::to(&s3::SUBSCRIBE, [])
                 .json(&body)
                 .about(format!("buy the S3 plan `{}`", args.plan.code()));
             let gate = Gate::Confirm {
@@ -71,20 +71,19 @@ fn subscription(ctx: &Context<'_>, client: &Client, command: &S3Subscription) ->
         S3Subscription::Change(args) => {
             let (request, gate) = match args.plan {
                 Some(plan) => (
-                    Request::new(Method::Patch, "/s3/subscription/")
+                    Request::to(&s3::SUBSCRIPTION_CHANGE, [])
                         .json(&json!({ "plan": plan.code() }))
                         .about(format!("switch the S3 plan to `{}`", plan.code())),
                     Gate::Confirm {
                         consequence: Some("a plan below the current usage pauses uploads"),
                     },
                 ),
-                None => plan_setting("/s3/subscription/", "S3", &args.setting)?,
+                None => plan_setting(&s3::SUBSCRIPTION_CHANGE, "S3", &args.setting)?,
             };
             print_body(ctx, client, &request, gate)
         }
         S3Subscription::Cancel => {
-            let request =
-                Request::new(Method::Delete, "/s3/subscription/").about("cancel the S3 plan");
+            let request = Request::to(&s3::SUBSCRIPTION_CANCEL, []).about("cancel the S3 plan");
             let gate = Gate::Confirm {
                 consequence: Some(CANCELLED),
             };
@@ -108,7 +107,7 @@ fn buckets(ctx: &Context<'_>, command: &Buckets) -> Result<Printed> {
         Buckets::List => print_keyed_list(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/objectstore/buckets/").about("list the buckets"),
+            &Request::to(&s3::BUCKETS, []).about("list the buckets"),
             "buckets",
         ),
         Buckets::Acl(command) => acl(ctx, command),
@@ -124,7 +123,7 @@ fn buckets(ctx: &Context<'_>, command: &Buckets) -> Result<Printed> {
             if let Some(region) = region {
                 body.insert("region".to_owned(), region.as_str().into());
             }
-            let request = Request::new(Method::Post, "/objectstore/buckets/")
+            let request = Request::to(&s3::BUCKET_CREATE, [])
                 .json(&Value::Object(body))
                 .about(format!("create the bucket `{bucket_name}`"));
             let client = ctx.load_authed_client()?;
@@ -132,12 +131,9 @@ fn buckets(ctx: &Context<'_>, command: &Buckets) -> Result<Printed> {
         }
         Buckets::Delete { bucket_name } => {
             check_bucket(bucket_name)?;
-            let request = Request::new(
-                Method::Delete,
-                format!("/objectstore/buckets/{bucket_name}/"),
-            )
-            .listed_by("hipc s3 buckets list")
-            .about(format!("delete the bucket `{bucket_name}`"));
+            let request = Request::to(&s3::BUCKET_DELETE, [bucket_name])
+                .listed_by("hipc s3 buckets list")
+                .about(format!("delete the bucket `{bucket_name}`"));
             let done = json!({ "name": bucket_name, "deleted": true });
             let client = ctx.load_authed_client()?;
             print_body_or(
@@ -162,7 +158,7 @@ fn list_objects(ctx: &Context<'_>, args: &ObjectsList) -> Result<Printed> {
     check_bucket(name)?;
     let limit = args.limit.to_string();
     let page_request = |token: Option<&str>| {
-        let mut request = Request::get(format!("/objectstore/buckets/{name}/objects/"))
+        let mut request = Request::to(&s3::OBJECTS, [name])
             .listed_by("hipc s3 buckets list")
             .about(format!("list the objects of the bucket `{name}`"))
             .query("max_keys", &limit);
@@ -303,7 +299,7 @@ fn presign(ctx: &Context<'_>, args: &Presign) -> Result<Printed> {
         ));
     }
     require_reveal(ctx, *reveal)?;
-    let request = Request::get(format!("/objectstore/buckets/{bucket_name}/presigned-url/"))
+    let request = Request::to(&s3::PRESIGNED_URL, [bucket_name])
         .query("key", key)
         .listed_by("hipc s3 buckets list")
         .about(format!(
@@ -326,12 +322,12 @@ fn acl(ctx: &Context<'_>, command: &BucketAcl) -> Result<Printed> {
         BucketAcl::List => print_envelope(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/objectstore/acl/").about("list the sub-token grants of the buckets"),
+            &Request::to(&s3::ACLS, []).about("list the sub-token grants of the buckets"),
         ),
         // Swagger `objectstore_buckets_acl_list`: `{bucket, policy}`.
         BucketAcl::Get { bucket_name } => {
             check_bucket(bucket_name)?;
-            let request = Request::get(format!("/objectstore/buckets/{bucket_name}/acl/"))
+            let request = Request::to(&s3::BUCKET_ACL, [bucket_name])
                 .listed_by("hipc s3 buckets list")
                 .about(format!("get the policy of the bucket `{bucket_name}`"));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
@@ -383,7 +379,7 @@ fn update_acl(ctx: &Context<'_>, args: &AclUpdate) -> Result<Printed> {
             ctx.args(),
         ));
     }
-    let request = Request::new(Method::Put, format!("/objectstore/buckets/{name}/acl/set/"))
+    let request = Request::to(&s3::BUCKET_ACL_SET, [name])
         .listed_by("hipc s3 buckets list")
         .json(&json!({ "policy": policy }))
         .about(format!(
@@ -431,11 +427,31 @@ fn tokens(ctx: &Context<'_>, command: &Tokens) -> Result<Printed> {
     }
 }
 
-/// The collection path of a token kind.
-fn collection(kind: TokenKind) -> &'static str {
-    match kind {
-        TokenKind::Master => "/objectstore/master-tokens/",
-        TokenKind::Sub => "/objectstore/sub-tokens/",
+/// The routes of one kind of token.
+#[derive(Debug)]
+struct TokenRoutes {
+    list: Route<0>,
+    create: Route<0>,
+    revoke: Route<1>,
+    rotate: Route<1>,
+}
+
+impl TokenRoutes {
+    const fn of(kind: TokenKind) -> &'static Self {
+        match kind {
+            TokenKind::Master => &Self {
+                list: s3::MASTER_TOKENS,
+                create: s3::MASTER_TOKEN_CREATE,
+                revoke: s3::MASTER_TOKEN_REVOKE,
+                rotate: s3::MASTER_TOKEN_ROTATE,
+            },
+            TokenKind::Sub => &Self {
+                list: s3::SUB_TOKENS,
+                create: s3::SUB_TOKEN_CREATE,
+                revoke: s3::SUB_TOKEN_REVOKE,
+                rotate: s3::SUB_TOKEN_ROTATE,
+            },
+        }
     }
 }
 
@@ -449,7 +465,7 @@ fn list_tokens(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
         let mut pages = Pages::starting_at("1");
         let mut page_number: Option<String> = None;
         loop {
-            let request = Request::get(collection(kind))
+            let request = Request::to(&TokenRoutes::of(kind).list, [])
                 .about(format!("list the S3 `{}` tokens", kind.code()));
             let request = match &page_number {
                 Some(number) => request.query("page", number),
@@ -494,7 +510,7 @@ fn list_tokens(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
 fn create_token(ctx: &Context<'_>, args: &TokenCreate) -> Result<Printed> {
     let body = token_body(args)?;
     require_reveal_or_file(ctx, args.reveal, args.secret_file.path.is_some())?;
-    let request = Request::new(Method::Post, collection(args.kind))
+    let request = Request::to(&TokenRoutes::of(args.kind).create, [])
         .json(&body)
         .about(format!("create an S3 `{}` token", args.kind.code()));
     let secret_file = args.secret_file.path.as_deref();
@@ -576,8 +592,7 @@ fn token_body(args: &TokenCreate) -> Result<Value> {
 
 fn revoke_token(ctx: &Context<'_>, target: &TokenTarget) -> Result<Printed> {
     check_uuid(&target.token_id)?;
-    let path = format!("{}{}/revoke/", collection(target.kind), target.token_id);
-    let request = Request::new(Method::Post, path)
+    let request = Request::to(&TokenRoutes::of(target.kind).revoke, [&target.token_id])
         .listed_by("hipc s3 tokens list")
         .about(format!(
             "revoke the S3 `{}` token `{}`",
@@ -605,18 +620,16 @@ fn revoke_token(ctx: &Context<'_>, target: &TokenTarget) -> Result<Printed> {
 fn rotate_token(ctx: &Context<'_>, args: &TokenRotate) -> Result<Printed> {
     check_uuid(&args.target.token_id)?;
     require_reveal_or_file(ctx, args.reveal, args.secret_file.path.is_some())?;
-    let path = format!(
-        "{}{}/rotate/",
-        collection(args.target.kind),
+    let request = Request::to(
+        &TokenRoutes::of(args.target.kind).rotate,
+        [&args.target.token_id],
+    )
+    .listed_by("hipc s3 tokens list")
+    .about(format!(
+        "rotate the S3 `{}` token `{}`",
+        args.target.kind.code(),
         args.target.token_id
-    );
-    let request = Request::new(Method::Post, path)
-        .listed_by("hipc s3 tokens list")
-        .about(format!(
-            "rotate the S3 `{}` token `{}`",
-            args.target.kind.code(),
-            args.target.token_id
-        ));
+    ));
     let secret_file = args.secret_file.path.as_deref();
     let consequence = format!(
         "the old token stops working, and {}",
