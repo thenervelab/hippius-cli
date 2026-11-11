@@ -132,15 +132,22 @@ impl Request {
     /// A request without a body to `route`, with `values` in its placeholders
     /// ([`Route::path`]). The target is kept as `hipc api` takes it, without [`API_BASE`], so
     /// a hint that names the route reads as a caller would type it; the client adds the base
-    /// back when it sends.
+    /// back when it sends. The row decides how the request pages and whether a read of it
+    /// provisions ([`Request::provisions`]), so no caller marks either by hand.
     pub fn to<const N: usize>(route: &Route<N>, values: [&dyn fmt::Display; N]) -> Self {
         let path = route.path(values);
         let target = path
             .strip_prefix(API_BASE)
             .expect("a route's template starts with the API base, which `Route::new` checks");
-        Self {
-            paging: route.endpoint().paging(),
+        let endpoint = route.endpoint();
+        let request = Self {
+            paging: endpoint.paging(),
             ..Self::new(route.method(), target)
+        };
+        if endpoint.provisions() {
+            request.provisions()
+        } else {
+            request
         }
     }
 
@@ -253,7 +260,8 @@ impl Request {
     }
 
     /// Marks a GET that can create something on the server, such as the private network a
-    /// first `GET /api/network/me/` provisions: it is then a write for the selector rules,
+    /// first `GET /api/network/me/` provisions, for a request built from a written target
+    /// ([`Request::to`] takes it from the route's row): it is then a write for the selector rules,
     /// so a stored project is refused rather than skipped (a stored billing account is
     /// skipped, as on every route that takes none), and a failure after it was sent has
     /// `partial` side effects.

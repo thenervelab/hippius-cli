@@ -83,7 +83,6 @@ fn dispatch(ctx: &Context<'_>, command: &Network) -> Result<Printed> {
         // request, so every call is confirmed and treated as a write.
         Network::Get => {
             let request = Request::to(&network::ME, [])
-                .provisions()
                 .about("get the private network, creating it if the account has none");
             print_body(ctx, &ctx.load_authed_client()?, &request, creation_gate())
         }

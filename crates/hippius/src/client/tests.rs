@@ -371,6 +371,19 @@ fn a_route_request_goes_to_its_path_and_names_it_without_the_base() {
     assert!(!under_api_base("/apix/") && !under_api_base("/x/api/"));
 }
 
+/// A request built from a route takes what its row says of it: a read whose row provisions
+/// is a write, as `hipc api` treats the same path, and its paging.
+#[test]
+fn a_route_request_takes_access_and_paging_from_its_row() {
+    use crate::routes::{compute, network};
+    let me = Request::to(&network::ME, []);
+    assert!(!me.is_read());
+    assert_eq!(me.access(), Access::Write);
+    let keys = Request::to(&compute::SSH_KEYS, []);
+    assert!(keys.is_read());
+    assert_eq!(keys.paging(), Some(Paging::Numbered));
+}
+
 #[test]
 fn paths_join_under_api_once_and_queries_are_encoded() {
     let c = client(Selection::Own);
