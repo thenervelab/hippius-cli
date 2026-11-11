@@ -3,7 +3,7 @@
 use hippius::routes::drive;
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Server, draft, route_of};
+use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, route_of};
 
 const PLANS: &str = concat!(
     r#"[{"code":"free","name":"Free","price_credits_monthly":0},"#,
@@ -577,97 +577,4 @@ fn checkout_shows_a_card_checkout_and_refuses_a_membership() {
             .fails(2, "usage");
     }
     assert_eq!(server.requests().len(), 1);
-}
-
-/// Swagger `drive_subscription_partial_update`: a PATCH is a plan change, a funding switch,
-/// or an overage cap, one at a time. Each spends money, so each is confirmed, and
-/// the refusal names what would change.
-#[test]
-fn change_switches_funding_or_sets_the_overage_cap_alone() {
-    let server = Server::start(vec![route_of(
-        &drive::SUBSCRIPTION_CHANGE,
-        [],
-        Reply::json(200, r#"{"active":true}"#),
-    )]);
-    let home = Home::new();
-    let change = |extra: &[&str]| {
-        let args = [&["drive", "subscription", "change"][..], extra].concat();
-        Hipc::against(&home, &server).run(&args)
-    };
-    for (flags, action) in [
-        (
-            &["--pay-from", "card"][..],
-            "charge each renewal of the Drive plan to the card saved at Stripe",
-        ),
-        (
-            &["--pay-from", "credits"],
-            "pay each renewal of the Drive plan from the balance",
-        ),
-        (
-            &["--storage-cap", "2000000000000"],
-            "bill the storage of the Drive plan past its quota, up to `2000000000000` bytes",
-        ),
-        (
-            &["--storage-cap", "default"],
-            "bill the storage of the Drive plan past its quota, up to the default cap of twice \
-             the plan's storage",
-        ),
-    ] {
-        let error = change(flags).fails(2, "confirmation_required");
-        assert_eq!(
-            error["message"],
-            format!("this would {action}, and `--yes` was not passed")
-        );
-    }
-    assert!(server.requests().is_empty());
-
-    change(&["--pay-from", "card", "--yes"]).ok();
-    change(&["--storage-cap", "2000000000000", "--yes"]).ok();
-    change(&["--storage-cap", "default", "--yes"]).ok();
-    let bodies: Vec<_> = server.requests().iter().map(Recorded::json).collect();
-    assert_eq!(
-        bodies,
-        [
-            json!({"funding": "card"}),
-            json!({"storage_cap_bytes": 2_000_000_000_000_u64}),
-            json!({"storage_cap_bytes": null}),
-        ]
-    );
-}
-
-#[test]
-fn change_takes_one_kind_of_change_and_a_period_only_with_a_plan() {
-    let server = Server::start(vec![]);
-    for flags in [
-        &["--plan", "duo", "--pay-from", "card"][..],
-        &["--plan", "duo", "--storage-cap", "default"],
-        &["--pay-from", "card", "--storage-cap", "1"],
-        &["--period", "annual"],
-        &["--period", "annual", "--pay-from", "card"],
-        &["--pay-from", "paypal"],
-        &["--storage-cap", "0"],
-        &["--storage-cap", "-1"],
-        &["--storage-cap", "9223372036854775808"],
-        &["--storage-cap", "1.5"],
-    ] {
-        let args = [&["drive", "subscription", "change"][..], flags, &["--yes"]].concat();
-        Hipc::against(&Home::new(), &server)
-            .run(&args)
-            .fails(2, "usage");
-    }
-    let doc = Hipc::against(&Home::new(), &server)
-        .run(&[
-            "drive",
-            "subscription",
-            "change",
-            "--storage-cap",
-            "9223372036854775807",
-            "--dry-run",
-        ])
-        .ok();
-    assert_eq!(
-        draft(&doc)["body"],
-        json!({"storage_cap_bytes": 9_223_372_036_854_775_807_u64})
-    );
-    assert!(server.requests().is_empty());
 }

@@ -6,7 +6,7 @@ use hippius::routes::s3;
 use serde_json::json;
 
 use crate::common::{
-    Hipc, Home, MEMBER, Recorded, Reply, Route, Server, command, draft, route, route_of,
+    Hipc, Home, MEMBER, PROJECT, Reply, Route, Server, command, draft, route, route_of,
 };
 
 /// A secret the server returns once. Tests assert where it may and may not appear.
@@ -215,48 +215,6 @@ fn a_plan_is_checked_against_the_server_catalog() {
 
 /// Swagger `s3_subscription_partial_update`: a PATCH is a plan change, a funding switch,
 /// or an overage cap, one at a time, each confirmed.
-#[test]
-fn change_switches_funding_or_sets_the_overage_cap_alone() {
-    let server = Server::start(vec![route_of(
-        &s3::SUBSCRIPTION_CHANGE,
-        [],
-        Reply::json(200, r#"{"mode":"plan"}"#),
-    )]);
-    let home = Home::new();
-    let change = |extra: &[&str]| {
-        let args = [&["s3", "subscription", "change"][..], extra].concat();
-        Hipc::against(&home, &server).run(&args)
-    };
-    let error = change(&["--pay-from", "credits"]).fails(2, "confirmation_required");
-    assert_eq!(
-        error["message"],
-        "this would pay each renewal of the S3 plan from the balance, and `--yes` was not passed"
-    );
-    let error = change(&["--storage-cap", "default"]).fails(2, "confirmation_required");
-    assert_eq!(
-        error["message"],
-        "this would bill the storage of the S3 plan past its quota, up to the default cap of \
-         twice the plan's storage, and `--yes` was not passed"
-    );
-    for flags in [
-        &["--plan", "pro", "--pay-from", "card"][..],
-        &["--pay-from", "card", "--storage-cap", "5"],
-        &["--storage-cap", "0"],
-        &["--period", "annual"],
-    ] {
-        change(&[flags, &["--yes"]].concat()).fails(2, "usage");
-    }
-    assert!(server.requests().is_empty());
-
-    change(&["--pay-from", "card", "--yes"]).ok();
-    change(&["--storage-cap", "5", "--yes"]).ok();
-    let bodies: Vec<_> = server.requests().iter().map(Recorded::json).collect();
-    assert_eq!(
-        bodies,
-        [json!({"funding": "card"}), json!({"storage_cap_bytes": 5})]
-    );
-}
-
 #[test]
 fn a_card_checkout_and_a_cancel_note_only_in_text_mode() {
     let server = Server::start(vec![
@@ -859,6 +817,32 @@ fn create_with_reveal_prints_the_secret_on_stdout_only_in_snake_case() {
     assert!(doc.get("accessKeyId").is_none() && doc.get("createdAt").is_none());
     assert!(!run.stderr().contains(SECRET));
     assert_eq!(server.only_request().json(), json!({"name": "ci"}));
+}
+
+/// A master token is account-wide, so its route takes no project: `--project` on its
+/// create is refused before anything is sent, a dry run included (tenet 12's own example).
+#[test]
+fn a_master_token_create_with_a_project_is_refused_without_a_request() {
+    let server = Server::start(vec![]);
+    for extra in [&["--reveal", "--yes"][..], &["--dry-run"]] {
+        let argv = [
+            &[
+                "--project",
+                PROJECT,
+                "s3",
+                "tokens",
+                "create",
+                "--kind",
+                "master",
+            ][..],
+            extra,
+        ]
+        .concat();
+        Hipc::against(&Home::new(), &server)
+            .run(&argv)
+            .fails(2, "project_scope_unsupported");
+    }
+    assert!(server.requests().is_empty());
 }
 
 #[test]

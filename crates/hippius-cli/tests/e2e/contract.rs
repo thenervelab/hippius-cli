@@ -1,13 +1,17 @@
 //! End-to-end checks of the machine contract (`TENETS.md` tenets 2, 3, 4 and 7) for the
 //! commands that need no network. Each test spawns the built `hipc` binary. Two more checks
-//! are about documentation: the `hipc` commands `README.md` shows are in `hipc schema` and
-//! parse, and no top-level doc holds a merge conflict marker.
+//! are about documentation: a `hipc` command `README.md` shows parses, and no top-level doc
+//! holds a merge conflict marker.
+//!
+//! The sweeps over every command, its help, and every command the pages show run in-process,
+//! in `spec::help_agrees` and `spec::doc_commands`, on the parser the binary parses with; a
+//! spawn per page and per flag was most of this suite's time. One row of each stays here, so
+//! the binary is held to what they check.
 //!
 //! These tests always pipe stdout, so `auto` mode is JSON in all of them. How the mode
 //! depends on `CI`, `AI_AGENT`, and a terminal is unit-tested in `src/output.rs`, where
 //! they are inputs, and at a real terminal in `tests/e2e/prompt.rs`.
 
-use std::collections::BTreeSet;
 use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
@@ -417,77 +421,6 @@ fn the_install_one_liner_is_the_scripts_own() {
     }
 }
 
-/// Every command path `hipc schema` lists, each as its words joined by one space.
-fn schema_paths() -> BTreeSet<String> {
-    let doc = json(&hipc(&["schema"]).stdout);
-    let commands = doc["commands"].as_array().expect("the schema has commands");
-    commands
-        .iter()
-        .map(|command| {
-            let words = command["path"].as_array().expect("a path is an array");
-            let words: Vec<&str> = words
-                .iter()
-                .map(|w| w.as_str().expect("a path word is a string"))
-                .collect();
-            words.join(" ")
-        })
-        .collect()
-}
-
-/// Shell words that end the arguments of a `hipc` command in the README.
-const SHELL_OPERATORS: [&str; 6] = ["|", "||", "&&", ";", ">", ">>"];
-
-/// Each `hipc` command in `readme`, as the text it was read from and its arguments: every
-/// command on a line of a fenced code block, and every command in an inline code span
-/// outside one. A command with no arguments is skipped, because a bare `hipc` names the
-/// binary, not a command.
-fn readme_commands(readme: &str) -> Vec<(&str, Vec<&str>)> {
-    let mut in_block = false;
-    let mut commands = Vec::new();
-    for line in readme.lines() {
-        if line.trim_start().starts_with("```") {
-            in_block = !in_block;
-        } else if in_block {
-            commands.extend(commands_in(line).into_iter().map(|args| (line, args)));
-        } else {
-            // Split on backticks, the odd pieces are the inline code spans.
-            for span in line.split('`').skip(1).step_by(2) {
-                commands.extend(commands_in(span).into_iter().map(|args| (span, args)));
-            }
-        }
-    }
-    commands
-}
-
-/// The arguments of each `hipc` command in `text`. A word `hipc` starts a command, also after
-/// `(` or `$(`, so the README names the binary file `./hipc`. Its arguments are the words
-/// after it, up to a shell operator, a `#` comment, or a word that ends in `)` or `;`,
-/// which closes a subshell or the command.
-fn commands_in(text: &str) -> Vec<Vec<&str>> {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let mut commands = Vec::new();
-    for (i, word) in words.iter().enumerate() {
-        if word.trim_start_matches(['$', '(']) != "hipc" {
-            continue;
-        }
-        let mut args = Vec::new();
-        for word in &words[i + 1..] {
-            if SHELL_OPERATORS.contains(word) || word.starts_with('#') {
-                break;
-            }
-            let arg = word.trim_end_matches([')', ';']);
-            args.push(arg);
-            if arg.len() < word.len() {
-                break;
-            }
-        }
-        if !args.is_empty() {
-            commands.push(args);
-        }
-    }
-    commands
-}
-
 /// The repository's prose files, read at compile time. A merge that leaves conflict markers
 /// in Rust fails to build, but one in a Markdown file passed every test once, so they are
 /// checked here.
@@ -548,100 +481,14 @@ fn a_conflict_marker_is_found_and_a_heading_underline_is_not() {
     );
 }
 
-/// Every `hipc` command the README, `docs/getting-started.md`, and `docs/agents.md` show, in
-/// a code block or an inline code span, starts with a command path of `hipc schema`, and `hipc`
-/// parses it, so a rename that forgets a page fails here. The parse runs the command with
-/// `--help`, which reads no file and touches no network, and fails on a word the command
-/// does not take, such as the old `show` after `hipc billing stripe`. A stale word that the
-/// command takes as a positional argument still parses; only the path and the flags are
-/// checked. A page may not show a global flag before the path, or a placeholder in it.
+/// The binary parses a command a page shows, as the in-process check
+/// `spec::doc_commands::page_commands_start_with_a_schema_path_and_parse` does for every
+/// command of the README, `docs/getting-started.md`, and `docs/agents.md`.
 #[test]
-fn readme_commands_start_with_a_schema_path_and_parse() {
-    let paths = schema_paths();
-    let mut found = BTreeSet::new();
-    for (page, markdown) in COMMAND_PAGES {
-        for (source, args) in readme_commands(markdown) {
-            let source = source.trim();
-            let line = args.join(" ");
-            // The longest path, so `hipc compute vms list` is not read as a shorter one.
-            let path = (1..=args.len())
-                .rev()
-                .map(|n| args[..n].join(" "))
-                .find(|path| paths.contains(path));
-            let Some(path) = path else {
-                panic!(
-                    "{page} `{source}`: `hipc {line}` starts with no `hipc schema` path \
-                     (a renamed command, or a flag before the path)"
-                );
-            };
-            found.insert((page, path));
-
-            let out = hipc(&[args.as_slice(), &["--help"]].concat());
-            assert_eq!(
-                out.status.code(),
-                Some(0),
-                "{page} `{source}`: `hipc {line}` does not parse: {}",
-                text(&out.stderr)
-            );
-        }
-    }
-
-    // A scan that stopped finding a page's commands would pass with nothing to check.
-    let anchors = [
-        ("README.md", "auth login"),
-        ("README.md", "auth status"),
-        ("README.md", "billing transactions"),
-        ("README.md", "schema"),
-        ("README.md", "completions"),
-        ("README.md", "api"),
-        ("docs/getting-started.md", "auth login"),
-        ("docs/getting-started.md", "account use"),
-        ("docs/getting-started.md", "completions"),
-        ("docs/agents.md", "schema"),
-        ("docs/agents.md", "auth login"),
-        ("docs/agents.md", "api"),
-    ];
-    for (page, expected) in anchors {
-        assert!(
-            found.contains(&(page, expected.to_owned())),
-            "{page} shows no `hipc {expected}`"
-        );
-    }
-}
-
-/// The README scan reads every command on a fenced line, after `(` and `$(` too, and the
-/// commands of inline code spans outside fences, skipping a bare `hipc`; arguments end at a
-/// shell operator, a comment, or a word that ends in `)` or `;`.
-#[test]
-fn readme_commands_reads_fences_and_inline_spans() {
-    // After the first line, each line ends a command on one stop alone: `|`, `>`, a
-    // closing `)`, `#`, `&&`, a trailing `;`, `>>`, `||`, and a bare `;`.
-    let readme = "run `hipc schema` or `hipc`, not hipc account\n```sh\n\
-                  hipc auth login --token-file x | hipc schema > out\n\
-                  echo $(hipc account) (hipc --json schema) ./hipc\n\
-                  hipc version # note\n\
-                  hipc version && hipc schema\n\
-                  hipc schema; hipc auth status >> log\n\
-                  hipc account || hipc account ; hipc\n```\n";
-    let commands: Vec<Vec<&str>> = readme_commands(readme)
-        .into_iter()
-        .map(|(_, args)| args)
-        .collect();
-    let expected: [&[&str]; 12] = [
-        &["schema"],
-        &["auth", "login", "--token-file", "x"],
-        &["schema"],
-        &["account"],
-        &["--json", "schema"],
-        &["version"],
-        &["version"],
-        &["schema"],
-        &["schema"],
-        &["auth", "status"],
-        &["account"],
-        &["account"],
-    ];
-    assert_eq!(commands, expected);
+fn a_readme_command_parses() {
+    assert!(README.contains("hipc billing transactions --all"));
+    let out = hipc(&["billing", "transactions", "--all", "--help"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
 }
 
 #[test]
@@ -1408,28 +1255,15 @@ fn option_flags(help: &str) -> Vec<&str> {
         .collect()
 }
 
-/// The root help lists the global flags under their own heading, after its own options.
-/// Every other help page, from each group to each leaf in `hipc schema`, lists only the
-/// command's own options and ends with one line that points to the root help for the global
-/// ones, so a command's required flags stand out and its page stays short.
+/// The root help lists the global flags under their own heading, after its own options;
+/// a group's and a leaf's help list only their own, and end with the line that points to the
+/// root help. The binary prints the help clap renders from the parser, so one page of each
+/// kind here pins that; every page is checked in-process by
+/// `spec::help_agrees::every_help_lists_its_own_options_before_the_global_ones`.
 #[test]
 fn every_help_lists_its_own_options_before_the_global_ones() {
-    let schema = json(&hipc(&["schema"]).stdout);
-    let mut paths = BTreeSet::new();
-    for command in schema["commands"].as_array().unwrap() {
-        let path: Vec<String> = command["path"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|word| word.as_str().unwrap().to_owned())
-            .collect();
-        for len in 0..=path.len() {
-            paths.insert(path[..len].to_vec());
-        }
-    }
-    for path in paths {
-        let mut args: Vec<&str> = path.iter().map(String::as_str).collect();
-        args.push("-h");
+    for path in [&[][..], &["compute"], &["compute", "vms", "create"]] {
+        let args = [path, &["-h"]].concat();
         let out = hipc(&args);
         assert_eq!(out.status.code(), Some(0), "{args:?}");
         let help = text(&out.stdout);
@@ -1456,377 +1290,62 @@ fn every_help_lists_its_own_options_before_the_global_ones() {
     }
 }
 
-/// The `-h` headings whose lines are arguments.
-const ARGUMENT_HEADINGS: [&str; 3] = ["Arguments", "Options", "Global options"];
-
-/// One argument line of a `-h` text under `heading`, as clap renders it:
-/// `<VALUE>` for a positional argument, `--name <VALUE>` or `--name` for a flag, then the
-/// short help with clap's `[default: ...]` and `[possible values: ...]` after it.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct HelpLine {
-    heading: String,
-    /// The `--name` of a flag; `None` for a positional argument.
-    flag: Option<String>,
-    value_name: Option<String>,
-    help: String,
-}
-
-/// The argument lines of a `-h` text, without `-h, --help` and `-V, --version`, which clap
-/// adds to every command and `hipc schema` leaves out.
-///
-/// `-h` prints an argument on one line, its name and its help apart by two spaces or more,
-/// unless one of the section's lines would pass 100 columns: then every name is on a line of
-/// its own, indented two or six spaces, and its help on the next, indented ten.
-fn help_lines(help: &str) -> Vec<HelpLine> {
-    let mut lines: Vec<HelpLine> = Vec::new();
-    let mut heading = None;
-    for line in help.lines() {
-        if let Some(name) = line.strip_suffix(':').filter(|_| !line.starts_with(' ')) {
-            heading = ARGUMENT_HEADINGS.contains(&name).then_some(name);
-            continue;
-        }
-        let Some(heading) = heading.filter(|_| line.starts_with("  ")) else {
-            heading = None;
-            continue;
-        };
-        if line.starts_with("          ") {
-            let last = lines.last_mut().expect("a help line follows its name line");
-            line.trim_start().clone_into(&mut last.help);
-            continue;
-        }
-        let (spec, text) = line.trim_start().split_once("  ").unwrap_or((line, ""));
-        let mut words = spec.split_whitespace();
-        // `-h, --help` names its flag in the second word.
-        let first = words
-            .find(|word| !word.ends_with(','))
-            .expect("an argument line names the argument");
-        let value = |word: &str| word.trim_matches(['<', '>', '[', ']', '.']).to_owned();
-        let (flag, value_name) = if first.starts_with("--") {
-            (Some(first.to_owned()), words.next().map(value))
-        } else {
-            (None, Some(value(first)))
-        };
-        lines.push(HelpLine {
-            heading: heading.to_owned(),
-            flag,
-            value_name,
-            help: text.trim_start().to_owned(),
-        });
-    }
-    lines.retain(|line| !matches!(line.flag.as_deref(), Some("--help" | "--version")));
-    lines
-}
-
-/// The line `-h` prints under `heading` for one `args`, `flags`, or `global_flags` entry of
-/// `hipc schema`.
-fn schema_line(heading: &str, entry: &Value) -> HelpLine {
-    let mut help = entry["help"]
-        .as_str()
-        .expect("every argument has a help")
-        .to_owned();
-    if let Some(default) = entry["default"].as_str() {
-        help.push_str(&format!(" [default: {default}]"));
-    }
-    let values: Vec<&str> = entry["possible_values"]
-        .as_array()
-        .expect("possible_values is an array")
-        .iter()
-        .map(|value| value.as_str().expect("a possible value is a string"))
-        .collect();
-    if !values.is_empty() {
-        help.push_str(&format!(" [possible values: {}]", values.join(", ")));
-    }
-    let name = entry["name"].as_str().expect("an argument has a name");
-    HelpLine {
-        heading: heading.to_owned(),
-        flag: name.starts_with("--").then(|| name.to_owned()),
-        value_name: entry["value_name"].as_str().map(str::to_owned),
-        help,
-    }
-}
-
-/// The `hipc schema` entries of `command[field]`, as the lines `-h` prints under `heading`.
-fn schema_lines(command: &Value, field: &str, heading: &str) -> Vec<HelpLine> {
-    command[field]
-        .as_array()
-        .unwrap_or_else(|| panic!("{field} is an array: {command}"))
-        .iter()
-        .map(|entry| schema_line(heading, entry))
-        .collect()
-}
-
-/// What the `Usage:` line of a `-h` text says a command requires, after its path.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct Usage {
-    /// Each required flag, as `--name`.
-    flags: Vec<String>,
-    /// Each positional argument, in order: its value name, whether it is required (`<ID>`,
-    /// not `[ID]`), and whether it repeats (`<ID>...`).
-    positionals: Vec<(String, bool, bool)>,
-    /// Each set of flags of which one is required, as clap prints it: `<--a|--b <B>>`.
-    groups: Vec<Vec<String>>,
-}
-
-/// The `Usage:` line of the `-h` text of the command at `path`.
-///
-/// A required flag is followed by its value, `--name <VALUE>`: no required flag of `hipc` is
-/// a switch, and the test asserts that, so the word after a flag is its value.
-fn usage(help: &str, path: &[&str]) -> Usage {
-    let line = help
-        .lines()
-        .find_map(|line| line.strip_prefix("Usage: hipc "))
-        .expect("a help has a usage line");
-    let rest = line
-        .strip_prefix(&path.join(" "))
-        .unwrap_or_else(|| panic!("the usage of {path:?} starts with its path: {line}"));
-    let mut usage = Usage::default();
-    let mut words = rest.split_whitespace();
-    while let Some(word) = words.next() {
-        if word == "[OPTIONS]" {
-            continue;
-        }
-        if word.starts_with("--") {
-            usage.flags.push(word.to_owned());
-            let value = words.next().unwrap_or_default();
-            assert!(value.starts_with('<'), "{path:?}: {word} has no value");
-        } else if word.starts_with("<--") {
-            let mut group = word.to_owned();
-            let depth = |text: &str| text.matches('<').count() - text.matches('>').count();
-            while depth(&group) > 0 {
-                group.push(' ');
-                group.push_str(words.next().expect("a group closes on the usage line"));
-            }
-            let inner = &group[1..group.len() - 1];
-            let names = inner.split('|').map(|alternative| {
-                let name = alternative
-                    .split(' ')
-                    .next()
-                    .expect("an alternative is named");
-                name.to_owned()
-            });
-            usage.groups.push(names.collect());
-        } else {
-            let name = word.trim_matches(['<', '>', '[', ']', '.']).to_owned();
-            usage
-                .positionals
-                .push((name, word.starts_with('<'), word.ends_with("...")));
-        }
-    }
-    usage
-}
-
-/// What the schema says the usage line of `command` shows.
-fn schema_usage(command: &Value) -> Usage {
-    let entries = |field: &str| {
-        command[field]
-            .as_array()
-            .expect("a list of entries")
-            .clone()
-    };
-    let name = |entry: &Value| entry["name"].as_str().expect("a name").to_owned();
-    let mut flags: Vec<String> = entries("flags")
-        .iter()
-        .filter(|flag| flag["required"] == true)
-        .map(name)
-        .collect();
-    flags.sort();
-    let positionals = entries("args")
-        .iter()
-        .map(|arg| {
-            let value = arg["value_name"]
-                .as_str()
-                .expect("a positional has a value name");
-            (
-                value.to_owned(),
-                arg["required"] == true,
-                arg["repeats"] == true,
-            )
-        })
-        .collect();
-    let groups = entries("required_groups")
-        .iter()
-        .map(|group| {
-            let names = group["names"].as_array().expect("a group names flags");
-            let names = names.iter().map(|n| n.as_str().expect("a flag name"));
-            names.map(str::to_owned).collect()
-        })
-        .collect();
-    Usage {
-        flags,
-        positionals,
-        groups,
-    }
-}
-
-/// Values the flags of `hipc` accept, tried in turn until one parses: a number, a path, a
-/// grant, an IP address, an email address, a month, a date, a region, a time, a region
-/// amount, a zone prefix, a WAF tier's zone count, and a dedicated disk, each the form its
-/// flag's value parser names. A directory is tried too: the run's own empty home, which
-/// `takes_twice` adds.
-const VALUE_CANDIDATES: [&str; 18] = [
-    "1",
-    "/a/",
-    "vms=operator",
-    "192.0.2.1",
-    "a@example.com",
-    "2026-09",
-    "2026-09-30",
-    "FR",
-    "2026-10-27T09:30:00Z",
-    "FR=100",
-    "site/",
-    "standard=1",
-    "1000:hdd",
-    "acct_0123456789abcdef0123",
-    "default",
-    "gpu=true:NoSchedule",
-    "3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0c",
-    "5DfhGyQdFobKM8NsWvEeAKk5EQQgYe9AydgJ7rMB6E1EqRzV",
-];
-
-/// Whether clap takes `flag` of the command at `path` twice, read from a run of
-/// `hipc <path> <flag> [value] <flag> [value] -h`: clap refuses a second use of a flag that
-/// does not repeat as it reads it, and prints the help at `-h` otherwise. A value that does
-/// not parse is refused before the second use, so the next candidate is tried.
-fn takes_twice(path: &[&str], flag: &Value) -> bool {
-    let name = flag["name"].as_str().expect("a flag has a name");
-    // An empty directory of this test's own, for `--credentials-dir`, which takes only an
-    // existing directory without the credential files in it.
-    let dir = Home::new();
-    let dir_text = dir.path().to_str().expect("the temporary home is UTF-8");
-    let candidates: Vec<&str> = match flag["value_name"].as_str() {
-        None => vec![""],
-        Some(_) => flag["possible_values"][0]
-            .as_str()
-            .or_else(|| flag["default"].as_str())
-            .into_iter()
-            .chain(VALUE_CANDIDATES)
-            .chain([dir_text])
-            .collect(),
-    };
-    for value in candidates {
-        let once: Vec<&str> = [name, value]
-            .into_iter()
-            .filter(|w| !w.is_empty())
-            .collect();
-        let args = [path, &once, &once, &["-h"]].concat();
-        let out = hipc(&args);
-        if out.status.code() == Some(0) {
-            return true;
-        }
-        if text(&out.stderr).contains("cannot be used multiple times") {
-            return false;
-        }
-    }
-    panic!("{path:?} {name}: no candidate value parses; add one to VALUE_CANDIDATES")
-}
-
-/// Every argument and flag the parser gives a command is in `hipc schema`, in the order its
-/// `-h` lists them, with the value name, default, possible values, and help it shows; the
-/// required flags, positional arguments, and required sets its usage line shows; and the
-/// repeat bit clap applies when a flag is given twice. The global flags are listed once, at
-/// the top level. The help and the parse are clap's own reading of the parser, so a
-/// flag added, renamed, moved, or hidden without the schema following fails here.
+/// The binary's help of a command lists the flags its `hipc schema` entry lists, in order,
+/// and the binary refuses a second use of a flag the schema says does not repeat and takes
+/// one it says does. Every command's help, usage line, and repeat bits are checked against
+/// the schema in-process by
+/// `spec::help_agrees::schema_lists_every_argument_and_flag_the_help_shows`; this row pins
+/// that the binary prints that help and parses with that parser.
 #[test]
 fn schema_lists_every_argument_and_flag_the_help_shows() {
-    let schema = json(&hipc(&["schema"]).stdout);
-    let globals = schema_lines(&schema, "global_flags", "Global options");
-    let names: Vec<&str> = globals.iter().filter_map(|l| l.flag.as_deref()).collect();
-    assert_eq!(names, GLOBAL_FLAGS);
-    let root = hipc(&["-h"]);
-    let root_globals: Vec<_> = help_lines(text(&root.stdout))
-        .into_iter()
-        .filter(|line| line.heading == "Global options")
+    let schema = json(&hipc(&["schema", "account", "members", "update"]).stdout);
+    let command = &schema["commands"][0];
+    let path = ["account", "members", "update"];
+    let flags: Vec<&str> = command["flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|flag| flag["name"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        root_globals, globals,
-        "the root help lists every global flag"
-    );
-    for command in schema["commands"].as_array().unwrap() {
-        let mut args: Vec<&str> = command["path"]
+    let out = hipc(&[&path[..], &["-h"]].concat());
+    let mut shown = option_flags(text(&out.stdout));
+    shown.retain(|flag| *flag != "--help");
+    assert_eq!(shown, flags);
+    let repeats = |name: &str| {
+        let flag = command["flags"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|word| word.as_str().unwrap())
-            .collect();
-        let mut expected = schema_lines(command, "args", "Arguments");
-        // A positional argument is named by its id, never by a flag spelling.
-        assert!(expected.iter().all(|line| line.flag.is_none()), "{args:?}");
-        expected.extend(schema_lines(command, "flags", "Options"));
-        args.push("-h");
-        let out = hipc(&args);
-        assert_eq!(out.status.code(), Some(0), "{args:?}");
-        let help = text(&out.stdout);
-        let (own, global): (Vec<_>, Vec<_>) = help_lines(help)
-            .into_iter()
-            .partition(|line| line.heading != "Global options");
-        // The global flags are on the root help alone, checked below.
-        assert_eq!(global, [], "{args:?}");
-        assert_eq!(own, expected, "{args:?}");
-        args.pop();
-        let mut shown = usage(help, &args);
-        shown.flags.sort();
-        assert_eq!(shown, schema_usage(command), "{args:?}");
-        for flag in command["flags"].as_array().unwrap() {
-            let repeats = takes_twice(&args, flag);
-            assert_eq!(flag["repeats"], repeats, "{args:?} {flag}");
-        }
-    }
-}
-
-/// The usage reader reads required flags, positional arguments, and required sets.
-#[test]
-fn usage_reads_flags_positionals_and_groups() {
-    let help = "Usage: hipc x y [OPTIONS] --kind <KIND> <--all|--path <PATH>|--p <P>> <ID> \
-                [NAME]...\n";
-    assert_eq!(
-        usage(help, &["x", "y"]),
-        Usage {
-            flags: vec!["--kind".to_owned()],
-            positionals: vec![
-                ("ID".to_owned(), true, false),
-                ("NAME".to_owned(), false, true)
-            ],
-            groups: vec![vec![
-                "--all".to_owned(),
-                "--path".to_owned(),
-                "--p".to_owned()
-            ]],
-        }
-    );
-}
-
-/// The help reader of the test above reads each kind of argument line clap prints, and
-/// skips the lines under any other heading.
-#[test]
-fn help_lines_reads_positionals_flags_and_switches() {
-    let help = "About\n\nUsage: hipc x [OPTIONS] <ID>\n\nArguments:\n  <ID>  The id\n  \
-                [NAME]...  Names\n\nOptions:\n      --kind <KIND>  A kind [possible values: \
-                a, b]\n      --all          Everything\n  -h, --help  Print help\n\n\
-                Global options:\n      --wide <W>\n          Wide help\n  -V, --version\n\
-                \x20         Print version\n      --yes\n          Confirm\n\n\
-                Examples:\n  hipc x 1\n";
-    let line = |heading: &str, flag: Option<&str>, value: Option<&str>, help: &str| HelpLine {
-        heading: heading.to_owned(),
-        flag: flag.map(str::to_owned),
-        value_name: value.map(str::to_owned),
-        help: help.to_owned(),
+            .find(|flag| flag["name"] == name)
+            .unwrap();
+        flag["repeats"].as_bool().unwrap()
     };
-    assert_eq!(
-        help_lines(help),
-        [
-            line("Arguments", None, Some("ID"), "The id"),
-            line("Arguments", None, Some("NAME"), "Names"),
-            line(
-                "Options",
-                Some("--kind"),
-                Some("KIND"),
-                "A kind [possible values: a, b]"
-            ),
-            line("Options", Some("--all"), None, "Everything"),
-            line("Global options", Some("--wide"), Some("W"), "Wide help"),
-            line("Global options", Some("--yes"), None, "Confirm"),
-        ]
+    assert!(repeats("--grant"));
+    let twice = [
+        &path[..],
+        &["7", "--grant", "vms=admin", "--grant", "s3=viewer", "-h"],
+    ]
+    .concat();
+    assert_eq!(hipc(&twice).status.code(), Some(0));
+    assert!(!repeats("--billing-permission"));
+    let twice = [
+        &path[..],
+        &[
+            "7",
+            "--billing-permission",
+            "true",
+            "--billing-permission",
+            "true",
+            "-h",
+        ],
+    ]
+    .concat();
+    let out = hipc(&twice);
+    assert_json_error(&out, 2, "usage");
+    assert!(
+        text(&out.stderr).contains("cannot be used multiple times"),
+        "{}",
+        text(&out.stderr)
     );
 }
 

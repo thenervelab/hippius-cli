@@ -1180,8 +1180,14 @@ mod tests {
 
     /// Every command line of up to four words from this vocabulary that clap accepts gets
     /// the same mode from the raw scan as from the parse.
+    ///
+    /// The parser is built once and reused: `Cli::try_parse_from` builds the whole command
+    /// tree afresh for each of the 10,000 lines, which is most of a parse's cost and took
+    /// about 12 minutes in a debug build.
     #[test]
     fn raw_argv_scan_agrees_with_clap_on_every_accepted_command_line() {
+        use clap::{CommandFactory as _, FromArgMatches as _};
+
         const WORDS: [&str; 9] = [
             "version",
             "--json",
@@ -1207,11 +1213,15 @@ mod tests {
                 .collect();
             lines.extend(longer);
         }
+        let mut parser = Cli::command();
         let mut accepted = 0;
         for line in &lines {
             let mut argv = vec!["hipc"];
             argv.extend(line);
-            let Ok(cli) = Cli::try_parse_from(&argv) else {
+            let parsed = parser
+                .try_get_matches_from_mut(&argv)
+                .and_then(|mut matches| Cli::from_arg_matches_mut(&mut matches));
+            let Ok(cli) = parsed else {
                 continue;
             };
             accepted += 1;
