@@ -55,7 +55,7 @@ pub use crate::config::{
 };
 pub use crate::digest::sha256_hex;
 pub use crate::dns::{DnsCredentials, DnsProvider};
-pub use crate::error::{CHECK_FIRST_HINT, Code, Error, ISSUES_URL, Result, SideEffects};
+pub use crate::error::{CHECK_FIRST_HINT, Code, Error, Failure, ISSUES_URL, Result, SideEffects};
 pub use crate::ids::new_idempotency_key;
 pub use crate::json::{
     CursorPage, Page, cursor_page, envelope, envelope_beside, page, page_beside,

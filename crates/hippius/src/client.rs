@@ -25,13 +25,13 @@ use ureq::unversioned::transport::{
 use crate::account::{self, Rule};
 use crate::config::{Credential, Settings};
 use crate::encode::percent_encode;
-use crate::error::{Code, Error, Result, SideEffects};
+use crate::error::{Code, Error, Failure, Result, SideEffects};
 use crate::method::{Access, Method};
 use crate::phrase::quote;
 use crate::project;
 use crate::redact::{is_secret_field, token_spellings};
 use crate::routes::{API_BASE, Endpoint, Guard, Route, RouteFlag};
-use crate::selector::{BillingId, ProjectId, Selection};
+use crate::selector::{BillingId, ProjectId, Selection, Selector};
 use crate::source::{Given, Source};
 use crate::time::date_of_unix_day;
 use crate::url::{Origin, without_query_values};
@@ -407,9 +407,12 @@ impl Response {
     pub fn invalid(&self, why: &str) -> Error {
         let details =
             parse_json(&self.body).map_or(Value::Null, |body| without_secret_fields(body, &[]));
-        let error = Error::new(Code::Validation, format!("cannot {}: {why}", self.action))
-            .with_http(self.status, self.request_id.clone())
-            .with_details(details);
+        let error = Error::new(
+            Failure::Validation,
+            format!("cannot {}: {why}", self.action),
+        )
+        .with_http(self.status, self.request_id.clone())
+        .with_details(details);
         self.without_token(error)
     }
 
@@ -677,7 +680,7 @@ impl Client {
                     )
                 };
                 Err(Error::new(
-                    Code::Auth,
+                    Failure::Auth,
                     format!(
                         "no API token is configured for `{}`: {found}",
                         self.origin.as_str()
@@ -695,7 +698,7 @@ impl Client {
                     _ => format!("pass `--profile` the name of {profiles}"),
                 };
                 Err(Error::new(
-                    Code::Auth,
+                    Failure::Auth,
                     format!(
                         "no API token is configured for `{}`: the config file {} has no \
                          profile {}",
@@ -715,7 +718,7 @@ impl Client {
             // The hint names the variable that binds the token, never this origin as a value
             // to copy: sending a CI secret to a new host is a choice the caller makes knowingly.
             Credential::VariableWithheld { bound_to } => Err(Error::new(
-                Code::Auth,
+                Failure::Auth,
                 format!(
                     "`HIPPIUS_TOKEN` is for `{bound_to}`, and this command targets `{}`, so \
                      the token was not sent",
@@ -727,7 +730,7 @@ impl Client {
                  sent to no other",
             )),
             Credential::Withheld { stored_for } => Err(Error::new(
-                Code::Auth,
+                Failure::Auth,
                 format!(
                     "the stored token is for `{stored_for}`, and this command targets `{}`, so \
                      the token was not sent",
@@ -1577,23 +1580,23 @@ fn status_error(answer: &StatusAnswer<'_>) -> Error {
         .as_ref()
         .and_then(|d| d.get("code"))
         .and_then(Value::as_str);
-    let code = match answer.status {
-        401 => Code::Auth,
-        402 => Code::PaymentRequired,
+    let refused = match answer.status {
+        401 => Refused::Failed(Failure::Auth),
+        402 => Refused::Failed(Failure::PaymentRequired),
         403 => server_code
-            .and_then(Code::from_account_refusal)
-            .unwrap_or(Code::Permission),
-        404 => Code::NotFound,
+            .and_then(account_refusal)
+            .unwrap_or(Refused::Failed(Failure::Permission)),
+        404 => Refused::Failed(Failure::NotFound),
         // A 412 answers an `If-Match` that no longer holds: another client changed the
         // resource first, which is what a 409 says too.
-        409 | 412 => Code::Conflict,
-        429 => Code::RateLimited,
+        409 | 412 => Refused::Failed(Failure::Conflict),
+        429 => Refused::Failed(Failure::RateLimited),
         // A redirect is not followed, so it is a failure of the request as built.
         // 501 and the 5xx the contract does not name are not a passing outage.
-        300..=399 | 500 | 501 | 505..=599 => Code::Internal,
-        425 | 502..=504 => Code::Unavailable,
+        300..=399 | 500 | 501 | 505..=599 => Refused::Failed(Failure::Internal),
+        425 | 502..=504 => Refused::Failed(Failure::Unavailable),
         // 400, 422, and every other status the contract does not name.
-        _ => Code::Validation,
+        _ => Refused::Failed(Failure::Validation),
     };
     // The message is hipc's own sentence about what it was doing; the server's words follow,
     // quoted, so a person and an agent can tell the two apart (tenet 15). The server's body
@@ -1627,27 +1630,27 @@ fn status_error(answer: &StatusAnswer<'_>) -> Error {
             _ => true,
         });
     let message = format!("cannot {}: {why}", answer.attempt.action);
-    // The exit-2 codes a server answer can carry, which take their hints at construction.
-    // A refusal of a header the request did not carry is about the route itself, and the
-    // flag value the hint names would change nothing.
+    // A scope refusal is the exit-2 code a server answer can carry, which takes its hint at
+    // construction. A refusal of a header the request did not carry is about the route
+    // itself, and the flag value the hint names would change nothing.
     let attempt = answer.attempt;
-    let error = match code {
-        Code::AccountScopeUnsupported => Error::account_scope_unsupported(message),
-        Code::ProjectScopeUnsupported => Error::project_scope_unsupported(message),
-        Code::BillingScopeUnsupported => Error::billing_scope_unsupported(message),
-        _ => Error::new(code, message),
+    let error = match refused {
+        Refused::Failed(failure) => Error::new(failure, message),
+        Refused::Scope(selector) => {
+            let sent = match selector {
+                Selector::Account => attempt.member,
+                Selector::Project => attempt.project,
+                Selector::Billing => attempt.billing,
+            };
+            let error = selector.refusal(message);
+            if sent {
+                error
+            } else {
+                error.with_hint(unscoped_refusal_hint(selector))
+            }
+        }
     };
-    let unsent = match code {
-        Code::AccountScopeUnsupported => !attempt.member,
-        Code::ProjectScopeUnsupported => !attempt.project,
-        Code::BillingScopeUnsupported => !attempt.billing,
-        _ => false,
-    };
-    let error = if unsent {
-        error.with_hint(unscoped_refusal_hint(code))
-    } else {
-        error
-    };
+    let code = error.code();
     let mut error = error.with_http(status, answer.request_id.clone());
     if let Some(details) = details {
         error = error.with_details(details);
@@ -1734,13 +1737,39 @@ fn without_token_in(text: String, spellings: &[String]) -> String {
     crate::redact::redact_all(text, spellings)
 }
 
+/// What a non-2xx answer refuses: a failure, or a selector the route cannot use.
+#[derive(Debug, Clone, Copy)]
+enum Refused {
+    /// A failure that exits 1.
+    Failed(Failure),
+    /// `account_scope_unsupported`, `project_scope_unsupported`, or
+    /// `billing_scope_unsupported`, which exit 2 with the flag value that fixes them.
+    Scope(Selector),
+}
+
+/// The account and grant codes a 403 body may carry, which pass through unchanged; `None`
+/// for any other.
+fn account_refusal(code: &str) -> Option<Refused> {
+    Some(match code {
+        "account_scope_unsupported" => Refused::Scope(Selector::Account),
+        "project_scope_unsupported" => Refused::Scope(Selector::Project),
+        "billing_scope_unsupported" => Refused::Scope(Selector::Billing),
+        "not_a_member" => Refused::Failed(Failure::NotAMember),
+        "owner_only" => Refused::Failed(Failure::OwnerOnly),
+        "insufficient_grant" => Refused::Failed(Failure::InsufficientGrant),
+        "team_management_required" => Refused::Failed(Failure::TeamManagementRequired),
+        "billing_required" => Refused::Failed(Failure::BillingRequired),
+        _ => return None,
+    })
+}
+
 /// The hint of a scope refusal the server sent for a request that carried no such header:
 /// no flag value helps, so the route itself refuses the selector and the fix is a report.
-fn unscoped_refusal_hint(code: Code) -> String {
-    let header = match code {
-        Code::ProjectScopeUnsupported => "X-Hippius-Project",
-        Code::BillingScopeUnsupported => "X-Hippius-Billing",
-        _ => "X-Hippius-Account",
+fn unscoped_refusal_hint(selector: Selector) -> String {
+    let header = match selector {
+        Selector::Account => "X-Hippius-Account",
+        Selector::Project => "X-Hippius-Project",
+        Selector::Billing => "X-Hippius-Billing",
     };
     format!(
         "the request carried no `{header}`, so no selector flag changes this answer: report \
@@ -2151,15 +2180,15 @@ fn transport_error_as(
     write: bool,
     attempt: &Attempt<'_>,
 ) -> Error {
-    let code = match error {
-        ureq::Error::Timeout(_) => Code::Timeout,
+    let failure = match error {
+        ureq::Error::Timeout(_) => Failure::Timeout,
         // An answer that is not valid HTTP gets the same answer on a retry.
         ureq::Error::BodyExceedsLimit(_)
         | ureq::Error::BadUri(_)
         | ureq::Error::Http(_)
         | ureq::Error::Protocol(_)
-        | ureq::Error::LargeResponseHeader(..) => Code::Internal,
-        _ => Code::Unavailable,
+        | ureq::Error::LargeResponseHeader(..) => Failure::Internal,
+        _ => Failure::Unavailable,
     };
     // hipc's sentence names the host and what went wrong; ureq's own text, which names
     // neither the operation nor the fix, goes to `details`.
@@ -2168,14 +2197,14 @@ fn transport_error_as(
         attempt.action,
         transport_kind(error, kind, attempt.host)
     );
-    let error = Error::new(code, message)
+    let error = Error::new(failure, message)
         .with_details(serde_json::json!({ "transport_error": error.to_string() }));
     let error = match kind {
         Transport::Refused => error,
         // A write that may have been sent is `partial`, and not retryable: a retry could
         // do it twice. A read may be retried.
         Transport::MaybeSent if write => error.with_side_effects(SideEffects::Partial),
-        Transport::MaybeSent if code == Code::Internal => error,
+        Transport::MaybeSent if failure == Failure::Internal => error,
         Transport::NotSent | Transport::MaybeSent => error.retryable(None),
     };
     attempt.with_hint(error)

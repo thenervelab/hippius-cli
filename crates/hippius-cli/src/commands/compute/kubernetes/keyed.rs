@@ -42,7 +42,7 @@ use hippius::routes::kubernetes::{
     self, NodePoolScaleBody, NodeReplaceBody, Operation, OperationKind, Pool,
 };
 use hippius::{
-    Client, ClusterKey, Code, Error, MatchedKey, Request, Response, Result, phrase, view_of,
+    Client, ClusterKey, Error, Failure, MatchedKey, Request, Response, Result, phrase, view_of,
 };
 use serde_json::{Map, Value, json};
 
@@ -142,7 +142,7 @@ pub(super) fn scale(ctx: &Context<'_>, args: &NodePoolScale) -> Result<Printed> 
         .find(|pool| view_of::<Pool>(pool).id == Some(pool_id))
     else {
         return Err(Error::new(
-            Code::NotFound,
+            Failure::NotFound,
             format!(
                 "the Kubernetes cluster {} has no node pool `{pool_id}`",
                 phrase::named(id, &cluster)
@@ -242,7 +242,7 @@ pub(super) fn replace(ctx: &Context<'_>, args: &NodeReplace) -> Result<Printed> 
     let operations = operations_of(&read_list(ctx, &client, &reads[2])?);
     let Some(pool) = pools.iter().find(|pool| holds_node(&view_of(pool), node)) else {
         return Err(Error::new(
-            Code::NotFound,
+            Failure::NotFound,
             format!(
                 "the Kubernetes cluster {} has no node `{node}` in its node pools",
                 phrase::named(id, &cluster)
@@ -569,7 +569,7 @@ fn same_signing(now: &Value, before: &Value) -> bool {
 /// as it is then.
 fn changed(ctx: &Context<'_>, target: &Target<'_>) -> Error {
     Error::new(
-        Code::Conflict,
+        Failure::Conflict,
         format!(
             "{} changed after hipc read it for the question: its nodes, its operations in \
              flight, or what a node of it signs are not what the question was about, so \
@@ -610,7 +610,7 @@ fn refuse_busy(target: &Target<'_>, node: &str, operations: &[Operation]) -> Res
     match busy {
         None => Ok(()),
         Some(doing) => Err(Error::new(
-            Code::Conflict,
+            Failure::Conflict,
             format!(
                 "the node `{node}` of {} is already being {doing}, so no node was signed",
                 target.pool_named()

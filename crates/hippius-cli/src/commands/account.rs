@@ -16,7 +16,7 @@ use std::path::Path;
 
 use hippius::routes::account;
 use hippius::{
-    BillingId, Client, Code, ConfigFile, Error, Given, Overrides, ProjectId, Request, Result,
+    BillingId, Client, ConfigFile, Error, Failure, Given, Overrides, ProjectId, Request, Result,
     Selection, Settings, Source, phrase, redact_value, view_of,
 };
 use serde_json::{Map, Value, json};
@@ -138,7 +138,7 @@ pub(crate) fn get(ctx: &Context<'_>) -> Result<Printed> {
         return Err(no_own_account());
     }
     Err(Error::new(
-        Code::NotAMember,
+        Failure::NotAMember,
         format!(
             "the token cannot act in the account `{}`",
             selection.as_str()
@@ -517,7 +517,7 @@ fn accept(
             None => "the API says it is not valid".to_owned(),
         };
         return Err(Error::new(
-            Code::Conflict,
+            Failure::Conflict,
             format!("cannot accept the invite: {why}"),
         ));
     }
@@ -712,7 +712,7 @@ fn member_grants(answer: &Value, id: u64) -> Option<Result<Vec<Entry>>> {
         if let Err(error) = links.and_then(|links| links.into_complete(members_list().target())) {
             return Some(Err(error));
         }
-        let missing = Error::new(Code::NotFound, format!("no member with id `{id}`"));
+        let missing = Error::new(Failure::NotFound, format!("no member with id `{id}`"));
         return Some(Err(
             missing.with_hint(format!("run `{MEMBERS}` to see what exists"))
         ));

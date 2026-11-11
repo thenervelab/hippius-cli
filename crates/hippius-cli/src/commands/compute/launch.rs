@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use hippius::routes::compute::{self, Vm, VmStatus};
-use hippius::{Client, Code, Error, Request, Result, phrase, view_of};
+use hippius::{Client, Code, Error, Failure, Request, Result, phrase, view_of};
 use serde_json::Value;
 
 use crate::cli::{BackupInterval, FailoverMode};
@@ -239,7 +239,7 @@ impl Wait for VmLaunch<'_> {
                     self.vm_quoted,
                     phrase::quote(status.as_str())
                 );
-                Next::Stop(Err(Error::new(Code::PartialFailure, message)
+                Next::Stop(Err(Error::new(Failure::PartialFailure, message)
                     .with_hint(self.hint)
                     .after_write(std::mem::take(&mut self.vm))))
             }
@@ -290,7 +290,7 @@ impl Wait for VmLaunch<'_> {
                  (`network_ready`) after {after}"
             ),
         };
-        Err(Error::new(Code::Timeout, message)
+        Err(Error::new(Failure::Timeout, message)
             .with_hint(self.hint)
             .after_write(self.vm))
     }

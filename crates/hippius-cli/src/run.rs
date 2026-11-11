@@ -188,6 +188,11 @@ fn split_link_warning(path: &std::path::Path) -> String {
     )
 }
 
+// `guarded` catches a command's panic to print one error object; with `panic = "abort"` the
+// process would end with no output at all, against tenet 4.
+#[cfg(not(panic = "unwind"))]
+compile_error!("hipc must be built with `panic = \"unwind\"`: `run::guarded` catches a panic");
+
 /// Runs `command`, turning a panic into an `internal` error with what the run has done to
 /// the server so far, so a bug after a write still says `side_effects: partial` (tenet 4)
 /// and the output stays one error object, without the default panic message beside it. The panic's own text is not shown:

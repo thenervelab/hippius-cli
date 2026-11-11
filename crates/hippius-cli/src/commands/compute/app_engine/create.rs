@@ -21,7 +21,7 @@
 use std::time::{Duration, Instant};
 
 use hippius::routes::compute::{self, BootPhase, Vm, VmStatus};
-use hippius::{AppSecrets, Code, Error, Request, Result, SecretValue, Slot, phrase, view_of};
+use hippius::{AppSecrets, Error, Failure, Request, Result, SecretValue, Slot, phrase, view_of};
 use serde_json::{Map, Value};
 
 use super::{APPS, Compose, Hashed, check_hash, read_compose, unavailable_hint};
@@ -589,7 +589,7 @@ impl Wait for AppLaunch<'_> {
             Launch::Done => Next::Stop(Ok(Printed::Document(self.print()))),
             Launch::Ended(state) => {
                 let message = format!("{} reached `{state}` instead of `running`", self.app_named);
-                Next::Stop(Err(Error::new(Code::PartialFailure, message)
+                Next::Stop(Err(Error::new(Failure::PartialFailure, message)
                     .with_hint(self.hint)
                     .after_write(self.print())))
             }
@@ -632,7 +632,7 @@ impl Wait for AppLaunch<'_> {
             self.app_named,
             phrase::count(self.timeout.as_secs(), "second")
         );
-        Err(Error::new(Code::Timeout, message)
+        Err(Error::new(Failure::Timeout, message)
             .with_hint(self.hint)
             .after_write(self.print()))
     }

@@ -14,7 +14,7 @@
 use std::time::{Duration, Instant, SystemTime};
 
 use hippius::routes::billing::{self, PurchaseStatus};
-use hippius::{Client, Code, Error, Request, Result, SideEffects, phrase, view_of};
+use hippius::{Client, Error, Failure, Request, Result, SideEffects, phrase, view_of};
 use serde::Deserialize as _;
 use serde_json::{Value, json};
 
@@ -140,14 +140,14 @@ impl Quote {
     /// answers a key it has seen as it answered the first, whatever the quote says now.
     fn check_retry(&self, alpha: Planck, min_credits: Planck) -> Result<()> {
         if !self.custodial {
-            return Err(self_sign(Error::new(Code::Conflict, String::new())));
+            return Err(self_sign(Error::new(Failure::Conflict, String::new())));
         }
         let credits = credits_for(alpha.0, self.alpha_price).unwrap_or(u128::MAX);
         let floor =
             credits / 10_000 * RETRY_FLOOR_BPS + credits % 10_000 * RETRY_FLOOR_BPS / 10_000;
         if min_credits.0 < floor {
             return Err(Error::new(
-                Code::Conflict,
+                Failure::Conflict,
                 format!(
                     "`--min-credits {min_credits}` is below 90 percent of the `{}` credits \
                      `--alpha {alpha}` buys at the quoted price now, and under a key the API has \
@@ -176,26 +176,26 @@ impl Quote {
                 .map(|reason| format!(": the API says {}", phrase::quote(reason)))
                 .unwrap_or_default();
             return Err(Error::new(
-                Code::Conflict,
+                Failure::Conflict,
                 format!("hAlpha top-ups are off (`enabled` is `false` in the quote){why}"),
             )
             .with_hint(format!("{again} `enabled` is `true`, then top up again")));
         }
         if self.stale {
             return Err(Error::new(
-                Code::Conflict,
+                Failure::Conflict,
                 "the hAlpha price on chain is stale (`stale` is `true` in the quote), and the \
                  chain refuses a buy at a stale price",
             )
             .with_hint(format!("{again} `stale` is `false`, then top up again")));
         }
         if !self.custodial {
-            return Err(self_sign(Error::new(Code::Conflict, String::new())));
+            return Err(self_sign(Error::new(Failure::Conflict, String::new())));
         }
         if alpha.0 < self.min_alpha {
             let least = Planck(self.min_alpha);
             return Err(Error::new(
-                Code::Conflict,
+                Failure::Conflict,
                 format!("`--alpha {alpha}` is below the quote's `min_alpha` of `{least}` hAlpha"),
             )
             .with_hint(format!("pass `--alpha` of at least `{least}`")));
@@ -205,7 +205,7 @@ impl Quote {
         if alpha.0.saturating_add(CHAIN_MINIMUM.0) > self.native_balance {
             let held = Planck(self.native_balance);
             return Err(Error::new(
-                Code::Conflict,
+                Failure::Conflict,
                 format!(
                     "`--alpha {alpha}` and the `{CHAIN_MINIMUM}` hAlpha kept for the fee are more \
                      than the account's `native_balance` of `{held}` hAlpha"
@@ -226,7 +226,7 @@ impl Quote {
         let least = min_credits(credits);
         if least == 0 {
             return Err(Error::new(
-                Code::Conflict,
+                Failure::Conflict,
                 format!("`--alpha {alpha}` buys no credits at the quoted `alpha_price`"),
             )
             .with_hint("pass a larger `--alpha`"));
@@ -317,7 +317,7 @@ fn refuse_in_flight(page: &Value, now: u64) -> Result<()> {
             .as_ref()
             .map_or_else(|| "without an id".to_owned(), phrase::quote);
         return Err(Error::new(
-            Code::Conflict,
+            Failure::Conflict,
             format!(
                 "the purchase {id} is still {}, and a second buy now could spend twice",
                 status_of(&row.status)
@@ -648,6 +648,8 @@ fn find(page: &Value, id: &str) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
+    use hippius::Code;
+
     use super::*;
 
     #[test]

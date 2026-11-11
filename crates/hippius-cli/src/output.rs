@@ -1013,6 +1013,7 @@ mod text {
 #[cfg(test)]
 mod tests {
     use clap::Parser as _;
+    use hippius::Failure;
     use serde_json::json;
 
     use super::*;
@@ -1399,7 +1400,7 @@ mod tests {
         assert_eq!(
             render_failure(
                 Mode::Text,
-                &Error::new(Code::NotFound, "no such thing"),
+                &Error::new(Failure::NotFound, "no such thing"),
                 &[]
             ),
             "error: no such thing\n"

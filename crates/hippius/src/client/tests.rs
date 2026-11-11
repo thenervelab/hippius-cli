@@ -1094,6 +1094,40 @@ fn a_scope_refusal_without_its_header_names_no_flag() {
     }
 }
 
+/// A scope refusal of a request that carried that header, and only that one, keeps the hint
+/// that names the flag value.
+#[test]
+fn a_scope_refusal_with_its_header_names_the_flag() {
+    for (code, member, project, billing) in [
+        ("account_scope_unsupported", true, false, false),
+        ("project_scope_unsupported", false, true, false),
+        ("billing_scope_unsupported", false, false, true),
+    ] {
+        let body = format!(r#"{{"code":"{code}"}}"#);
+        let error = status_error(&StatusAnswer {
+            attempt: &Attempt {
+                member,
+                project,
+                billing,
+                ..attempt()
+            },
+            write: false,
+            not_done_on_503: false,
+            status: 403,
+            body: body.as_bytes(),
+            retry_after: None,
+            request_id: None,
+            location: None,
+            body_unread: None,
+            token_spellings: &[],
+            sent_secrets: &[],
+        });
+        assert_eq!(error.code().as_str(), code);
+        let hint = error.hint().unwrap();
+        assert!(hint.starts_with("pass `--"), "{code}: {hint}");
+    }
+}
+
 /// A precondition shows in the dry run only on the request that carries it. `Debug`
 /// says whether a request carries a precondition or an idempotency key, never its value,
 /// as it shows nothing else the caller gave but the path.
@@ -1183,6 +1217,33 @@ fn every_status_maps_to_its_contract_code() {
         (100, Code::Validation),
     ] {
         assert_eq!(answer(false, status, "").code(), code, "{status}");
+    }
+}
+
+/// Each account and grant code a 403 may carry keeps its code, a scope refusal its exit 2;
+/// any other code is a plain `permission`.
+#[test]
+fn every_account_refusal_passes_through_and_nothing_else_does() {
+    for code in [
+        Code::NotAMember,
+        Code::AccountScopeUnsupported,
+        Code::ProjectScopeUnsupported,
+        Code::BillingScopeUnsupported,
+        Code::OwnerOnly,
+        Code::InsufficientGrant,
+        Code::TeamManagementRequired,
+        Code::BillingRequired,
+    ] {
+        let body = format!(r#"{{"code":"{}"}}"#, code.as_str());
+        assert_eq!(answer(false, 403, &body).code(), code, "{body}");
+    }
+    for other in ["usage", "permission", "project_not_found", ""] {
+        let body = format!(r#"{{"code":"{other}"}}"#);
+        assert_eq!(
+            answer(false, 403, &body).code(),
+            Code::Permission,
+            "{other}"
+        );
     }
 }
 
