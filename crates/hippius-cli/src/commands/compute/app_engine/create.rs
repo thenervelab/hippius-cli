@@ -22,7 +22,7 @@ use hippius::routes::compute::{self, Vm};
 use hippius::{AppSecrets, Error, Request, Result, SecretValue, Slot, phrase, view_of};
 use serde_json::{Map, Value};
 
-use super::{APPS, Compose, Hashed, check_hash, read_compose, unavailable_hint};
+use super::{APPS_LIST_COMMAND, Compose, Hashed, check_hash, read_compose, unavailable_hint};
 use crate::cli::{AppCreate, DiskTier, FailoverMode, GuestPoweroff};
 use crate::commands::Printed;
 use crate::commands::compute::launch::{
@@ -50,7 +50,7 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
         Request::to(&compute::APP_ENGINE_APP_CREATE, [])
             .json(&create_body(args, &compose, secrets))
             .about(&action)
-            .listed_by(APPS)
+            .listed_by(APPS_LIST_COMMAND)
     };
     let validate = compose.request(&compute::APP_ENGINE_VALIDATE, "validate");
     let placeholders = secrets.as_ref().map(AppSecrets::placeholder_body);
@@ -111,7 +111,7 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
     // waits, so both are internal, with the answer printed so what it holds is not lost.
     if app.vm_id.is_none() {
         return Err(Error::internal("the launch answer has no `vm_id`")
-            .with_hint(format!("run `{APPS}` to find the new app"))
+            .with_hint(format!("run `{APPS_LIST_COMMAND}` to find the new app"))
             .after_write(printable(&launched, redactions)));
     }
     match timeout {
@@ -329,13 +329,13 @@ fn is_token(text: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
-/// A failure of a request sent after the secrets: the launch, or a poll of the app. With no
-/// secrets sent it is unchanged. Otherwise, of the server's body, only [`kept_fields`] stays;
-/// a request id stays only as an id that holds no value ([`hippius::holds_secret`]); and the message
-/// of any status outside 2xx (a redirect, whose target may hold anything, or a refusal) is
-/// built from those fields alone, never from the server's own text, so a field that was
-/// dropped cannot reach it. A failure with no status, or a 2xx hipc could not use, keeps a
-/// message of hipc's own, with every value redacted from it all the same.
+/// A failure of a request sent after the secrets: the launch, or a poll of the app. With no secrets
+/// sent it is unchanged. Otherwise, of the server's body, only [`kept_fields`] stays; a request id
+/// stays only as an id that holds no value ([`hippius::holds_secret`]); and the message of any
+/// status outside 2xx (a redirect, whose target may hold anything, or a refusal) is built from
+/// those fields alone, never from the server's own text, so a field that was dropped cannot reach
+/// it. A failure with no status, or a 2xx hipc could not use, keeps a message of hipc's own, with
+/// every value redacted from it all the same.
 pub(in crate::commands::compute) fn sanitized(
     error: Error,
     action: &str,
@@ -362,9 +362,9 @@ pub(in crate::commands::compute) fn sanitized(
         .with_message(message)
 }
 
-/// The message of a failure from what [`kept_fields`] kept: a redirect says so without its
-/// target; a refusal gives the server's kebab `error` or `code`, else its redacted `detail`, else only
-/// the status.
+/// The message of a failure from what [`kept_fields`] kept: a redirect says so without its target;
+/// a refusal gives the server's kebab `error` or `code`, else its redacted `detail`, else only the
+/// status.
 fn refusal_message(action: &str, status: u16, kept: &Value) -> String {
     if (300..400).contains(&status) {
         return format!(
@@ -391,10 +391,10 @@ fn is_request_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// The fields of an error body kept when the request carried secrets: `error` or `code` when it is a
-/// kebab code ([`checked_text`]), `detail` and `source` as redacted text, `line` as a number,
-/// and in `issues`, each one's `rule` (a kebab code), `line` and `column`, and its redacted
-/// `message` and `hint`. A number is redacted as [`hippius::redact_value_all`] does. A body that is not an
+/// The fields of an error body kept when the request carried secrets: `error` or `code` when it is
+/// a kebab code ([`checked_text`]), `detail` and `source` as redacted text, `line` as a number, and
+/// in `issues`, each one's `rule` (a kebab code), `line` and `column`, and its redacted `message`
+/// and `hint`. A number is redacted as [`hippius::redact_value_all`] does. A body that is not an
 /// object keeps nothing.
 fn kept_fields(details: Value, redactions: &[String]) -> Option<Value> {
     let Value::Object(fields) = details else {

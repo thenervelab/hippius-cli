@@ -1,5 +1,5 @@
 //! The guard on a write that replaces a whole list: a VM's firewall rules, a CDN zone's
-//! cache rules, and a member's grants.
+//! cache rules, WAF rules, and rate limits, a WAF list's items, and a member's grants.
 //!
 //! A one-entry file meant as "add this entry" drops every other entry, and an agent passing
 //! `--yes` never reads the question that says so. So unless `--remove-others` is passed,
@@ -132,7 +132,7 @@ impl Found {
 ///
 /// # Errors
 ///
-/// `remove_others_required` for a write that would remove entries; the refusals of
+/// `remove_others_required` when the write would remove entries; the refusals of
 /// [`Context::check_write`] and [`Context::confirm_write`]; the read's error; and the error
 /// of `current`.
 pub(crate) fn replace_list(

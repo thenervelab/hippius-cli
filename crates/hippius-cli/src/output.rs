@@ -221,9 +221,8 @@ pub(crate) fn body(terminal: &Terminal, mode: Mode, bytes: &[u8], done: SideEffe
 /// A server body as a person may read it, ending in a line break unless it is empty. Text
 /// mode writes Rust escapes (`\u{1b}`), as every text-mode value does. JSON mode writes
 /// `\uXXXX`, the escape a JSON string accepts: inside a string it reads back as the same
-/// character.
-/// Outside one, the only such character valid JSON can hold is a carriage return between
-/// tokens, which shows as `\u000d` rather than move the cursor back over the line.
+/// character. Outside one, the only such character valid JSON can hold is a carriage return
+/// between tokens, which shows as `\u000d` rather than move the cursor back over the line.
 fn escape_body(mode: Mode, bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let mut escaped = String::with_capacity(text.len() + 1);
@@ -344,11 +343,11 @@ pub(crate) fn clap_error(mode: Mode, error: &clap::Error, args: &[OsString]) -> 
     let (path, mut command) = typed_command(args);
     // A word the caller gave that is too long to be a command name or a value from a fixed
     // list may be a token pasted in the wrong place, so a refusal of it as unknown never
-    // repeats it: clap's message, and [`usage_message`], would quote it. A word shorter than that, such as a mistyped command
-    // name, still gets the usual message and its nearest command. clap's own name for an
-    // argument (`--name <NAME>`, `<VM_ID>`) is not the caller's word.
-    // Only the errors that refuse a word as unknown; a validator's refusal is its own message,
-    // which says what was wrong without the value where the value may be a secret.
+    // repeats it: clap's message, and `usage_message`, would quote it (tenet 9). A shorter
+    // word, such as a mistyped command name, still gets the usual message and its nearest
+    // command. clap's own name for an argument (`--name <NAME>`, `<VM_ID>`) is not the
+    // caller's word. A validator's refusal is not one of these kinds: it says what was wrong
+    // without the value where the value may be a secret.
     let refuses_a_word = matches!(
         error.kind(),
         ErrorKind::UnknownArgument | ErrorKind::InvalidValue | ErrorKind::InvalidSubcommand
@@ -459,9 +458,9 @@ fn is_missing_subcommand(error: &clap::Error) -> bool {
 /// set aside before the cut and put back through `phrase::quote`, so a blank line, a line
 /// break, or a `'` inside one cannot end the message or change it. `quote` writes its line
 /// breaks as `\n`, the form `render_failure` gives every other control character, so they
-/// cannot forge a line of their own.
-/// Elsewhere an apostrophe inside a word stays, and a numeric range clap names bare
-/// outside a literal (`0 is not in 1..=500`) is a literal too, so it gains backticks.
+/// cannot forge a line of their own. Elsewhere an apostrophe inside a word stays, and a
+/// numeric range clap names bare outside a literal (`0 is not in 1..=500`) is a literal too,
+/// so it gains backticks.
 fn usage_message(error: &clap::Error) -> String {
     let quoted: Vec<&str> = [
         ContextKind::InvalidValue,

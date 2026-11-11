@@ -61,7 +61,7 @@ pub(crate) fn run(ctx: &Context<'_>, args: &Api) -> Result<Printed> {
     // `None` for a route `hipc` does not know: no command sends it.
     let row = client.route_of(&request)?;
     // Before the selected account's refusals and the confirmation, as for every curated
-    // command (TENETS 5 and 9): `returns_secret` applies no account rule. An answer `hipc`
+    // command (tenets 5 and 9): `returns_secret` applies no account rule. An answer `hipc`
     // knows nothing of may hold a secret too, so a `GET` of a route with no row needs
     // `--reveal` as well (tenet 9); a `HEAD` answer has no body to print.
     if client.returns_secret(&request)? {
@@ -95,8 +95,8 @@ pub(crate) fn run(ctx: &Context<'_>, args: &Api) -> Result<Printed> {
     }
     // A read that may create something, such as the first `GET /api/network/me/`, is a
     // write from here on: confirmed with the curated command's consequence, refused with a
-    // stored project, and `partial` when it fails after it was sent. Marked
-    // before `url`, which applies the selection rules by the request's access.
+    // stored project, and `partial` when it fails after it was sent. Marked before `url`,
+    // which applies the selection rules by the request's access.
     let provisions = client.provisions(&request)?;
     if provisions {
         request = request.provisions();
@@ -273,7 +273,7 @@ const CONSEQUENCES: [(&Endpoint, &str); 14] = [
 ];
 
 /// Refuses a request that needs `route_flag` unless it was passed. A dry run sends nothing,
-/// so it needs no flag, as it needs no `--reveal` (TENETS 5). Each flag refuses with its
+/// so it needs no flag, as it needs no `--reveal` (tenet 5). Each flag refuses with its
 /// own code, `--public` and `--remove-others` with the curated commands' codes.
 /// `namespace` says the request is the Hub namespace publicity `PATCH`, whose `--public`
 /// refusal names who can pull rather than a bucket.
@@ -303,7 +303,7 @@ fn require_route_flag(
             ),
         ),
         // The curated command reads the list and names what a write removes; `hipc api`
-        // reads nothing, for the reason the route-rule table in `hippius::account` gives.
+        // reads nothing, so its refusal can name no entry.
         RouteFlag::RemoveOthers => (
             args.remove_others,
             Error::remove_others_unread(

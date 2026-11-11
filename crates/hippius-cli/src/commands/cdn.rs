@@ -65,15 +65,14 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Cdn) -> Result<Printed> {
     }
 }
 
-/// The command that lists the zone ids, for the hint of a 404 on a zone route.
-const ZONES: &str = "hipc cdn zones list";
+const ZONES_LIST_COMMAND: &str = "hipc cdn zones list";
 
 fn cap(ctx: &Context<'_>, client: &Client, command: &CdnCap) -> Result<Printed> {
     match command {
         CdnCap::Get(ZoneTarget { zone_id }) => {
             let request = Request::to(&cdn::CAP, [zone_id])
                 .about(format!("get the spend cap of the CDN zone `{zone_id}`"))
-                .listed_by(ZONES);
+                .listed_by(ZONES_LIST_COMMAND);
             print_body(ctx, client, &request, Gate::Open)
         }
         CdnCap::Update {
@@ -111,13 +110,13 @@ fn cap_update(
     // The cap is the one writable field: the server refuses any other key.
     let patch = |about: &str| {
         Request::to(&cdn::CAP_UPDATE, [&zone_id])
-            .listed_by(ZONES)
+            .listed_by(ZONES_LIST_COMMAND)
             .json(&cdn::CapUpdateBody { monthly_cap })
             .about(about)
     };
     let read = Request::to(&cdn::CAP, [&zone_id])
         .about(format!("get the spend cap of the CDN zone `{zone_id}`"))
-        .listed_by(ZONES);
+        .listed_by(ZONES_LIST_COMMAND);
     let draft = patch(&format!("set {named} to `{monthly_cap}` credits"));
     let decide = || {
         let current: cdn::Cap = view_of(&ctx.send(client, &read)?.document()?);
@@ -171,7 +170,7 @@ fn purges(ctx: &Context<'_>, client: &Client, command: &CdnPurges) -> Result<Pri
         CdnPurges::List(ZoneTarget { zone_id }) => {
             let request = Request::to(&cdn::PURGES, [zone_id])
                 .about(format!("list the purges of the CDN zone `{zone_id}`"))
-                .listed_by(ZONES);
+                .listed_by(ZONES_LIST_COMMAND);
             print_keyed_list(ctx, client, &request, "purges")
         }
         CdnPurges::Get {
@@ -265,14 +264,14 @@ fn zones(ctx: &Context<'_>, command: &CdnZones) -> Result<Printed> {
         CdnZones::Get(ZoneTarget { zone_id }) => {
             let request = Request::to(&cdn::ZONE, [zone_id])
                 .about(format!("get the CDN zone `{zone_id}`"))
-                .listed_by(ZONES);
+                .listed_by(ZONES_LIST_COMMAND);
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         CdnZones::Create(args) => create_zone(ctx, args),
         CdnZones::Update(args) => update_zone(ctx, args),
         CdnZones::Delete(ZoneTarget { zone_id }) => {
             let request = Request::to(&cdn::ZONE_DELETE, [zone_id])
-                .listed_by(ZONES)
+                .listed_by(ZONES_LIST_COMMAND)
                 .about(format!("delete the CDN zone `{zone_id}`"));
             let gate = Gate::Confirm {
                 consequence: Some(ZONE_DELETED),
@@ -400,7 +399,7 @@ fn update_zone(ctx: &Context<'_>, args: &ZoneUpdate) -> Result<Printed> {
         return print_body(ctx, &client, &patch(origin)?, gate);
     }
     let read = Request::to(&cdn::ZONE, [&args.zone.zone_id])
-        .listed_by(ZONES)
+        .listed_by(ZONES_LIST_COMMAND)
         .about(format!("get the CDN zone `{}`", args.zone.zone_id));
     let draft = patch(Some(Origin {
         kind: Some("<the zone's origin kind>"),
@@ -521,7 +520,7 @@ fn zone_patch(
         ..body.clone()
     };
     Ok(Request::to(&cdn::ZONE_UPDATE, [&args.zone.zone_id])
-        .listed_by(ZONES)
+        .listed_by(ZONES_LIST_COMMAND)
         .json(&body)
         .about(action))
 }
@@ -630,7 +629,7 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
             &client()?,
             &Request::to(&cdn::HOSTNAMES, [zone_id])
                 .about(format!("list the hostnames of the CDN zone `{zone_id}`"))
-                .listed_by(ZONES),
+                .listed_by(ZONES_LIST_COMMAND),
             "hostnames",
         ),
         CdnHostnames::Create {
@@ -638,7 +637,7 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
             hostname,
         } => {
             let request = Request::to(&cdn::HOSTNAME_CREATE, [zone_id])
-                .listed_by(ZONES)
+                .listed_by(ZONES_LIST_COMMAND)
                 .json(&cdn::HostnameCreateBody { hostname })
                 .about(format!(
                     "add the custom hostname `{hostname}` to the CDN zone `{zone_id}`"
@@ -844,7 +843,7 @@ fn purge(ctx: &Context<'_>, client: &Client, args: &CdnPurge) -> Result<Printed>
     let request = Request::to(&cdn::PURGE_CREATE, [&args.zone.zone_id])
         .json(&body)
         .about(format!("purge the CDN zone `{}`", args.zone.zone_id))
-        .listed_by(ZONES);
+        .listed_by(ZONES_LIST_COMMAND);
     print_with(ctx, client, &request, Gate::Open, |response| {
         let body = response.document()?;
         // A zone id starts with `z`, so the printed command cannot read it as a flag.
@@ -867,7 +866,7 @@ fn stats(ctx: &Context<'_>, client: &Client, args: &CdnStats) -> Result<Printed>
             "get the traffic of the CDN zone `{}`",
             args.zone.zone_id
         ))
-        .listed_by(ZONES);
+        .listed_by(ZONES_LIST_COMMAND);
     let query = [
         ("from", args.from.as_deref()),
         ("to", args.to.as_deref()),

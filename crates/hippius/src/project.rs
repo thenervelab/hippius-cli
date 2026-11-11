@@ -1,5 +1,5 @@
 //! Which project and billing account a request acts in, and whether `X-Hippius-Project` and
-//! `X-Hippius-Billing` go on it (`TENETS.md` tenet 12).
+//! `X-Hippius-Billing` go on it (tenet 12).
 //!
 //! A project holds resources (VMs, databases, clusters, runners, S3 buckets and keys, CDN
 //! zones), and a billing account is a wallet that pays for projects. Without a header, a
@@ -166,7 +166,8 @@ pub(crate) fn listed_billing(method: Method, form: &str) -> Option<Take> {
 }
 
 /// The `X-Hippius-Project` value for a `method` request to `path`, or `None` when no
-/// header goes on it. `project` is the selected project, `None` for the Default one. `access` says whether the request may change state.
+/// header goes on it. `project` is the selected project, `None` for the Default one. `access`
+/// says whether the request may change state.
 ///
 /// # Errors
 ///

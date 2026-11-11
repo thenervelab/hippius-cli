@@ -1,9 +1,9 @@
 //! `hipc compute databases`: managed PostgreSQL.
 //!
 //! Every route here is under `/api/databases/`, which is account-scoped, so a membership
-//! sends `X-Hippius-Account`. The personal database routes (`/api/databases/metrics/`,
-//! `<n>/backup-token/`, `<n>/members/`) are not wrapped. The series of one database,
-//! `<n>/metrics/`, is account-scoped, and `metrics` reads it.
+//! sends `X-Hippius-Account` (tenet 12). No command here wraps the few personal database
+//! routes the library's account rules list. The series of one database, `<n>/metrics/`, is
+//! account-scoped, and `metrics` reads it.
 //!
 //! The create answer is the one place the server shows a database's `credentials`: the
 //! password, the backup passphrase, and the TLS client key. The server keeps no copy, and
@@ -37,7 +37,7 @@ fn delete(ctx: &Context<'_>, database_id: u64) -> Result<Printed> {
         .about(format!(
             "decommission the database `{database_id}` and every VM behind it"
         ))
-        .listed_by(DATABASES);
+        .listed_by(DATABASES_LIST_COMMAND);
     let left = left_after_delete(database_id);
     let gate = Gate::Confirm {
         consequence: Some(&left),
@@ -91,7 +91,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
         Databases::Get(DatabaseTarget { database_id }) => print(
             &Request::to(&databases::DATABASE, [database_id])
                 .about(format!("get the database `{database_id}`"))
-                .listed_by(DATABASES),
+                .listed_by(DATABASES_LIST_COMMAND),
             Gate::Open,
         ),
         Databases::Create(args) => create(ctx, args),
@@ -101,7 +101,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
                 .about(format!(
                     "restart PostgreSQL on the database `{database_id}`"
                 ))
-                .listed_by(DATABASES);
+                .listed_by(DATABASES_LIST_COMMAND);
             let gate = Gate::Confirm {
                 consequence: Some("its connections end"),
             };
@@ -125,7 +125,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
                     "publish the primary of the database `{database_id}` on the public edge, \
                      where anyone can reach it"
                 ))
-                .listed_by(DATABASES);
+                .listed_by(DATABASES_LIST_COMMAND);
             let gate = Gate::Confirm {
                 consequence: Some("the password is still required to connect"),
             };
@@ -136,7 +136,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
                 .about(format!(
                     "take the primary of the database `{database_id}` off the public edge"
                 ))
-                .listed_by(DATABASES);
+                .listed_by(DATABASES_LIST_COMMAND);
             let gate = Gate::Confirm { consequence: None };
             // Swagger answers 204, so the document says what was done.
             let client = ctx.load_authed_client()?;
@@ -154,14 +154,14 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
         Databases::Events(DatabaseTarget { database_id }) => {
             let request = Request::to(&databases::DATABASE_EVENTS, [database_id])
                 .about(format!("list the events of the database `{database_id}`"))
-                .listed_by(DATABASES);
+                .listed_by(DATABASES_LIST_COMMAND);
             print_list(ctx, &request, "events")
         }
         // The metrics answer is an object: `samples`, `latest`, and `agent_last_seen`.
         Databases::Metrics(DatabaseTarget { database_id }) => {
             let request = Request::to(&databases::DATABASE_METRICS, [database_id])
                 .about(format!("get the metrics of the database `{database_id}`"))
-                .listed_by(DATABASES);
+                .listed_by(DATABASES_LIST_COMMAND);
             print(&request, Gate::Open)
         }
         // Swagger: `{refusals: [...]}`.
@@ -174,8 +174,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
     }
 }
 
-/// The command that lists the database ids, for the hint of a 404 on a database route.
-const DATABASES: &str = "hipc compute databases list";
+const DATABASES_LIST_COMMAND: &str = "hipc compute databases list";
 
 /// `request`'s answer, a list under `key` (or a bare array or a page), printed as the list
 /// envelope with the answer's other fields beside `items`, and any `credentials` removed.
@@ -196,12 +195,12 @@ fn without_credentials(response: &Response) -> Result<Value> {
     Ok(without_field(response.document()?, CREDENTIALS))
 }
 
-/// `POST /api/databases/` with exactly `tier`, `size`, `engine_version`, and `name` when
-/// given (swagger: "nothing else"). The 202 answer is printed as sent, credentials
-/// included, or with the secrets replaced by their files under `--credentials-dir`
-/// ([`save_credentials`]), and the command does not wait for `running`: operations that finish later
-/// get a status read and no new wait, here `get` of the new id. A wait
-/// would be worse: a run killed mid-wait would lose the one-time credentials.
+/// `POST /api/databases/` with exactly `tier`, `size`, `engine_version`, and `name` when given
+/// (swagger: "nothing else"). The 202 answer is printed as sent, credentials included, or with the
+/// secrets replaced by their files under `--credentials-dir` ([`save_credentials`]), and the
+/// command does not wait for `running`: operations that finish later get a status read and no new
+/// wait, here `get` of the new id. A wait would be worse: a run killed mid-wait would lose the
+/// one-time credentials.
 fn create(ctx: &Context<'_>, args: &DatabaseCreate) -> Result<Printed> {
     require_reveal_or_file(ctx, args.reveal, args.credentials_dir.is_some())?;
     let request = Request::to(&databases::DATABASE_CREATE, [])
@@ -435,14 +434,15 @@ fn env_file(dir: &Path, created: &CreatedDatabase) -> std::result::Result<String
     Ok(env)
 }
 
-/// `POST /api/databases/<id>/restore/`, with `target_time` only when given. The answer is a
-/// new database, whose credentials it may hold once, printed as a create's is
-/// ([`credentials`]), `--credentials-dir` included. It does not
-/// wait: operations that finish later get a status read, here `get` of the new id.
+/// `POST /api/databases/<id>/restore/`, with `target_time` only when given. The answer is a new
+/// database, whose credentials it may hold once, printed as a create's is ([`credentials`]),
+/// `--credentials-dir` included. It does not wait: operations that finish later get a status read,
+/// here `get` of the new id.
 fn restore(ctx: &Context<'_>, args: &DatabaseRestore) -> Result<Printed> {
     require_reveal_or_file(ctx, args.reveal, args.credentials_dir.is_some())?;
     let id = args.database.database_id;
-    let request = Request::to(&databases::DATABASE_RESTORE, [&id]).listed_by(DATABASES);
+    let request =
+        Request::to(&databases::DATABASE_RESTORE, [&id]).listed_by(DATABASES_LIST_COMMAND);
     let (request, point) = match &args.target_time {
         Some(time) => (
             request.json(&databases::DatabaseRestoreBody { target_time: time }),

@@ -565,7 +565,6 @@ fn follow(
         purchases_request().target()
     );
     let schedule = Schedule {
-        // The first read goes out at once, whatever the deadline.
         first: Duration::ZERO,
         interval: POLL_INTERVAL,
         deadline: Instant::now() + wait,

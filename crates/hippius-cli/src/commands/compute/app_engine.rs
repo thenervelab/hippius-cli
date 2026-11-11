@@ -32,12 +32,10 @@ use crate::commands::files::write_output_file;
 use crate::commands::{Input, Printed, print_list_with, print_with};
 use crate::context::{Context, Gate};
 
-/// The command that lists the `vm_id`s, for the hint of a 404 on an app route.
-pub(super) const APPS: &str = "hipc compute app-engine apps list";
+pub(super) const APPS_LIST_COMMAND: &str = "hipc compute app-engine apps list";
 
 pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
     match command {
-        // `get` is the command the unavailable hint names, so it is sent without that hint.
         AppEngine::Get => {
             let request =
                 Request::to(&compute::APP_ENGINE_INFO, []).about("get the App Engine limits");
@@ -73,7 +71,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
         AppEngine::Apps(AppEngineApps::Get(AppTarget { vm_id })) => {
             let request = Request::to(&compute::APP_ENGINE_APP, [vm_id])
                 .about(format!("get the app `{vm_id}`"))
-                .listed_by(APPS);
+                .listed_by(APPS_LIST_COMMAND);
             show(ctx, &request, |response| {
                 let app = response.document()?;
                 // The server writes `verify_command`, and a hostile origin could make it any
@@ -91,7 +89,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
         AppEngine::Apps(AppEngineApps::Runtime(AppTarget { vm_id })) => {
             let request = Request::to(&compute::APP_ENGINE_RUNTIME, [vm_id])
                 .about(format!("get the runtime of the app `{vm_id}`"))
-                .listed_by(APPS);
+                .listed_by(APPS_LIST_COMMAND);
             show(ctx, &request, |response| {
                 let runtime = response.document()?;
                 // Every successful answer is unverified, so this is a note to read, not a
@@ -106,7 +104,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
         AppEngine::GuestComponents(GuestComponents::Get(AppTarget { vm_id })) => {
             let request = Request::to(&compute::APP_ENGINE_GUEST_COMPONENTS, [vm_id])
                 .about(format!("get the guest components of the app `{vm_id}`"))
-                .listed_by(APPS);
+                .listed_by(APPS_LIST_COMMAND);
             show(ctx, &request, |response| {
                 let components = response.document()?;
                 if view_of::<compute::GuestComponents>(&components).needs_operator == Some(true) {
@@ -120,7 +118,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
         AppEngine::GuestComponents(GuestComponents::UpdateStatus(AppTarget { vm_id })) => {
             let request = Request::to(&compute::APP_ENGINE_GUEST_UPGRADE, [vm_id])
                 .about(format!("get the guest upgrade of the app `{vm_id}`"))
-                .listed_by(APPS);
+                .listed_by(APPS_LIST_COMMAND);
             show(ctx, &request, |response| {
                 let upgrade = response.document()?;
                 if view_of::<compute::GuestUpgrade>(&upgrade).job == Slot::Null {
@@ -165,6 +163,7 @@ fn unavailable_hint(error: Error) -> Error {
 }
 
 /// A compose file as it was read: its exact text, its SHA-256, and how a message names it.
+#[derive(Debug)]
 struct Compose {
     text: String,
     sha256: String,
@@ -301,7 +300,7 @@ fn semantic_changes(fixed: &compute::Fixed) -> Vec<String> {
 }
 
 /// What an answer's `compose_sha256` must be the SHA-256 of.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 enum Hashed<'a> {
     /// The compose hipc sent, named as a message names it. A mismatch means the server read
     /// other bytes, and a launch would measure something other than the file.
@@ -325,7 +324,7 @@ fn check_hash(
         Hashed::Fixed => "`fixed_compose`",
     };
     match answer.get("compose_sha256") {
-        // `expected` is 64 lowercase hex digits, so a match is too, in either case.
+        // `expected` is lowercase hex, and the server may write its hash in either case.
         Some(Value::String(hash)) if hash.eq_ignore_ascii_case(expected) => Ok(()),
         None | Some(Value::Null) => Err(response.refused(&format!(
             "the API answered without the `compose_sha256` of {what}"

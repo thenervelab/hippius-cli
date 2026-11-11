@@ -142,9 +142,8 @@ impl AppSecrets {
     }
 
     /// The texts to redact from anything an answer or an error repeats, longest first: every
-    /// value in each spelling the DNS credential is redacted in
-    /// (`hippius::DnsCredentials::redactions`). An empty value redacts nothing. They are
-    /// cleared when dropped.
+    /// value in every spelling ([`crate::redactions`]). An empty value redacts nothing.
+    /// They are cleared when dropped.
     pub fn redactions(&self) -> Zeroizing<Vec<String>> {
         crate::redact::redactions(self.secrets.iter().map(|(_, text)| text.as_str()))
     }

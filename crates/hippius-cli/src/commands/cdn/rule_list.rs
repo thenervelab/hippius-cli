@@ -11,7 +11,7 @@ use hippius::{Client, Error, Request, Response, Result, SideEffects, phrase, vie
 use serde_json::{Map, Value, json};
 
 use crate::cli::ZoneId;
-use crate::commands::cdn::ZONES;
+use crate::commands::cdn::ZONES_LIST_COMMAND;
 use crate::commands::replace::{self, Entry, Found, Replace, replace_list};
 use crate::commands::{Input, Printed, print_body};
 use crate::context::{Context, Gate, Step, Write, WritePlan};
@@ -168,7 +168,7 @@ pub(super) fn read_rules(ctx: &Context<'_>, zone_id: &ZoneId, list: &RuleList) -
 fn rules_get(zone_id: &ZoneId, list: &RuleList) -> Request {
     Request::to(list.read, [zone_id])
         .about(format!("get the {} of the CDN zone `{zone_id}`", list.what))
-        .listed_by(ZONES)
+        .listed_by(ZONES_LIST_COMMAND)
 }
 
 /// `PUT` of the list with the file's bytes, under the whole-list guard. A rule key swagger
@@ -211,7 +211,7 @@ pub(super) fn update_rules(
     let read_action = read.action();
     let replace = Replace {
         write: Request::to(list.update, [zone_id])
-            .listed_by(ZONES)
+            .listed_by(ZONES_LIST_COMMAND)
             .raw_json(body)
             .about(format!(
                 "replace every {} of the CDN zone `{zone_id}` with the rules from {}",
@@ -325,8 +325,8 @@ fn check_rules(
 /// # Errors
 ///
 /// `validation`, exit 1, with the answer in `details`, when `valid` is `false`, so a script
-/// can trust the exit code. `internal` with `partial` side effects for an answer with no
-/// boolean `valid`, or with the `rules` or `version` of a published list: a server that
+/// can trust the exit code. `internal` with `partial` side effects when the answer has no
+/// boolean `valid`, or has the `rules` or `version` of a published list: a server that
 /// ignored `dry_run` would have published the file, so the hint reads what is published.
 fn checked(response: &Response, zone_id: &ZoneId, list: &RuleList) -> Result<Value> {
     let answer = response.document()?;

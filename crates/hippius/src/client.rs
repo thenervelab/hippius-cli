@@ -371,7 +371,7 @@ impl Response {
 
     /// The body as a JSON document, for a command that prints it: [`Response::json`], but
     /// an empty body is refused too, so stdout is never `null` on success
-    /// (`TENETS.md` tenet 3). A command whose route may answer 204 prints its own document
+    /// (tenet 3). A command whose route may answer 204 prints its own document
     /// for that instead.
     ///
     /// # Errors
@@ -676,9 +676,8 @@ impl Client {
         match &self.credential {
             Credential::Variable(_) | Credential::Stored(_) => Ok(()),
             // The message names where the token was looked for, so a profile or a config
-            // file other than the one the caller meant shows at once. The hint is for an
-            // agent too: it cannot sign in, but the person it works for can, at a prompt
-            // that does not echo, with a token from either kind of console sign-in.
+            // file other than the one the caller meant shows at once (`no_token_hint` says
+            // who can sign in).
             Credential::None { profile, path } => {
                 // Only on this refusal, so a run with a token never looks at the path again.
                 let found = if path.symlink_metadata().is_ok() {
@@ -723,12 +722,6 @@ impl Client {
                 )
                 .with_hint(hint))
             }
-            // The hint points back at the stored origin, never at logging in for the new
-            // one: a variable from a repository's `.envrc` must not talk the caller into
-            // storing a token for a host they did not choose. It names the flag, which wins
-            // over the variable and the profile wherever the target came from; removing the
-            // flag or the variable would not help when the target is the profile's `api_url`
-            // or the default.
             // The hint names the variable that binds the token, never this origin as a value
             // to copy: sending a CI secret to a new host is a choice the caller makes knowingly.
             Credential::VariableWithheld { bound_to } => Err(Error::new(
@@ -743,6 +736,12 @@ impl Client {
                 "set `HIPPIUS_TOKEN_ORIGIN` to the origin `HIPPIUS_TOKEN` is meant for; it is \
                  sent to no other",
             )),
+            // The hint points back at the stored origin, never at logging in for the new
+            // one: a variable from a repository's `.envrc` must not talk the caller into
+            // storing a token for a host they did not choose. It names the flag, which wins
+            // over the variable and the profile wherever the target came from; removing the
+            // flag or the variable would not help when the target is the profile's `api_url`
+            // or the default.
             Credential::Withheld { stored_for } => Err(Error::new(
                 Failure::Auth,
                 format!(
@@ -776,10 +775,11 @@ impl Client {
     }
 
     /// Whether the answer to `request` holds a secret, which hipc prints only with
-    /// `--reveal` (TENETS 9). The routes are the secret table in `account`.
+    /// `--reveal` (tenet 9): its route's row says so ([`crate::routes`]), and for a route with
+    /// no row, the secret table in `account`.
     ///
     /// The answer depends on the method and the target alone, not on the selected account,
-    /// so a caller can check `--reveal` before the account refusals (TENETS 5).
+    /// so a caller can check `--reveal` before the account refusals (tenet 5).
     ///
     /// # Errors
     ///
@@ -800,8 +800,8 @@ impl Client {
 
     /// Whether `request` reads by its method yet may create something on the server, such
     /// as the first `GET /api/network/me/` for an account: `hipc api` then marks it with
-    /// [`Request::provisions`] and confirms it as the curated command does (TENETS 5 and
-    /// 7). The routes are the provisioning table in `account`.
+    /// [`Request::provisions`] and confirms it as the curated command does (tenets 5 and
+    /// 7). Its route's row says so ([`crate::routes`]); a route with no row does not.
     ///
     /// Like [`Client::returns_secret`], it depends on the method and the target alone, so
     /// a caller can mark the request before the account refusals read its access.
@@ -850,9 +850,9 @@ impl Client {
     }
 
     /// The flags `hipc api` needs beyond `--yes` to send `request`, in the order it checks
-    /// them, and empty when it needs none (TENETS 5). The routes are the route-rule table in
-    /// `account`; a bucket ACL set needs two, and a path with a format suffix the flags of
-    /// both its forms.
+    /// them, and empty when it needs none (tenet 5). Its route's row gives the guard
+    /// ([`crate::routes`]), and the route-rule table in `account` the routes with no row; a
+    /// bucket ACL set needs two, and a path with a format suffix the flags of both its forms.
     ///
     /// Like [`Client::returns_secret`], it depends on the request alone, not the account
     /// or the token, so a caller can check it before the account refusals and the token.
@@ -1582,7 +1582,7 @@ struct StatusAnswer<'a> {
     sent_secrets: &'a [String],
 }
 
-/// The error for a non-2xx answer (`TENETS.md` tenet 4).
+/// The error for a non-2xx answer (tenet 4).
 fn status_error(answer: &StatusAnswer<'_>) -> Error {
     // An error body has no reason to carry a secret, and it is printed whole as
     // `error.details` in JSON mode, so the secret fields are removed from it.
@@ -1672,10 +1672,9 @@ fn status_error(answer: &StatusAnswer<'_>) -> Error {
     // A write that got a 5xx may have been done, so it is `partial` and not retryable: a
     // retry could do it twice (tenet 4). So may a write that got a redirect: the server
     // received it and answered, and `303 See Other` is the usual answer to a POST that was
-    // done. A 429 was refused before any work, so it is retryable. The
-    // one exception is a 503 with `Retry-After` from a route whose 503 means "chain
-    // unreachable, nothing done" (TENETS 4).
-    // Any delay counts here, a day or more included: the route says nothing was done.
+    // done. A 429 was refused before any work, so it is retryable. The one exception is a
+    // 503 with a `Retry-After` delay, of any length, from a route whose 503 means "chain
+    // unreachable, nothing done".
     let not_done = answer.not_done_on_503
         && answer.status == 503
         && answer
@@ -1911,9 +1910,9 @@ fn refusal(method: Method, route: &str, key: Option<&str>, why: &str, hint: &'st
 }
 
 /// `body` without any field named as a secret ([`is_secret_field`]), at any depth, but for
-/// Django REST framework's field errors: a secret field whose value is a list of strings is a validation
-/// error about the field, such as `{"secret_access_key": ["This field may not be blank."]}`,
-/// which says why the request was refused, so it stays. Such a message may quote the value
+/// Django REST framework's field errors: a secret field whose value is a list of strings is a
+/// validation error about the field, which says why the request was refused, so it stays:
+/// `{"secret_access_key": ["This field may not be blank."]}`. Such a message may quote the value
 /// sent in the field (`'hunter2' is too common`), so each of `sent_secrets` is redacted from
 /// it; only from it, since a short value would cut every other text of the body.
 fn without_secret_fields(body: Value, sent_secrets: &[String]) -> Value {
@@ -2117,9 +2116,10 @@ enum Progress {
 ///
 /// A proxy `CONNECT` does not count either. ureq opens the proxy leg through this whole
 /// chain, this link included, with a copy of the config that has no proxy
-/// (`ConnectProxyConnector`, ureq 3.5.0 `src/unversioned/transport/connect.rs`). So on a client that uses
-/// a proxy, a connection whose config has none is that leg: it gets a flag of its own that
-/// nothing reads. The connection to the API is wrapped again around it and is marked.
+/// (`ConnectProxyConnector`, ureq 3.5.0 `src/unversioned/transport/connect.rs`). So on a
+/// client that uses a proxy, a connection whose config has none is that leg: it gets a flag
+/// of its own that nothing reads. The connection to the API is wrapped again around it and
+/// is marked.
 ///
 /// This uses `ureq::unversioned`, which ureq keeps out of its semver promise: a ureq
 /// upgrade may need it updated, and the build says so.

@@ -30,14 +30,11 @@ use crate::commands::{
 use crate::context::{Context, Gate, WritePlan};
 use crate::output::Mode;
 
-/// The command that lists the billing account ids, for the hint of a 404.
-const BILLING_ACCOUNTS: &str = "hipc account billing-accounts list";
+const BILLING_ACCOUNTS_LIST_COMMAND: &str = "hipc account billing-accounts list";
 
-/// The command that lists the project ids, for the hint of a 404.
-const PROJECTS: &str = "hipc account projects list";
+const PROJECTS_LIST_COMMAND: &str = "hipc account projects list";
 
-/// The command that lists the transfer ids, for the hint of a 404.
-const TRANSFERS: &str = "hipc account project-transfers list";
+const TRANSFERS_LIST_COMMAND: &str = "hipc account project-transfers list";
 
 /// The most alert thresholds a budget takes: the console's limit.
 const MAX_ALERTS: usize = 5;
@@ -64,7 +61,7 @@ pub(crate) fn projects(ctx: &Context<'_>, command: &Projects) -> Result<Printed>
         Projects::Update(args) => {
             let request = Request::to(&routes::account::PROJECT_UPDATE, [&args.project.project_id])
                 .json(&NameBody { name: &args.name })
-                .listed_by(PROJECTS)
+                .listed_by(PROJECTS_LIST_COMMAND)
                 .about(format!(
                     "rename the project `{}` to {}",
                     args.project.project_id,
@@ -74,7 +71,7 @@ pub(crate) fn projects(ctx: &Context<'_>, command: &Projects) -> Result<Printed>
         }
         Projects::Delete(ProjectTarget { project_id }) => {
             let request = Request::to(&routes::account::PROJECT_DELETE, [project_id])
-                .listed_by(PROJECTS)
+                .listed_by(PROJECTS_LIST_COMMAND)
                 .about(format!(
                     "archive the project `{project_id}`, which must own nothing"
                 ));
@@ -169,7 +166,7 @@ pub(crate) fn billing_accounts(ctx: &Context<'_>, command: &BillingAccounts) -> 
                 [billing_account_id],
             )
             .json(&NameBody { name })
-            .listed_by(BILLING_ACCOUNTS)
+            .listed_by(BILLING_ACCOUNTS_LIST_COMMAND)
             .about(format!(
                 "rename the billing account `{billing_account_id}` to {}",
                 phrase::quote(name)
@@ -205,7 +202,7 @@ fn costs(ctx: &Context<'_>, args: &Costs) -> Result<Printed> {
         "get the costs of the billing account `{}`",
         args.billing_account_id
     ))
-    .listed_by(BILLING_ACCOUNTS);
+    .listed_by(BILLING_ACCOUNTS_LIST_COMMAND);
     if let Some(from) = &args.from {
         request = request.query("from", from);
     }
@@ -260,7 +257,7 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
         .json(&routes::account::ProjectTransferBody {
             to_account: args.to_account.as_str(),
         })
-        .listed_by(PROJECTS)
+        .listed_by(PROJECTS_LIST_COMMAND)
         .about(format!(
             "offer the project {project} to the account `{}`{from}",
             args.to_account
@@ -271,7 +268,7 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
     let draft = write(&shown_id, if member.is_some() { "" } else { own });
     let projects = Request::to(&routes::account::PROJECTS, [])
         .about("list the projects")
-        .listed_by(PROJECTS);
+        .listed_by(PROJECTS_LIST_COMMAND);
     let accounts = account::accounts_request();
     let reads: &[&Request] = if member.is_some() {
         &[&projects]
@@ -299,7 +296,9 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
                     args.project.project_id
                 ),
             );
-            return Err(missing.with_hint(format!("run `{PROJECTS}` to see the project ids")));
+            return Err(missing.with_hint(format!(
+                "run `{PROJECTS_LIST_COMMAND}` to see the project ids"
+            )));
         };
         let named = match project.name {
             Some(name) => format!("{} ({shown_id})", phrase::quote(name)),
@@ -329,8 +328,8 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
 ///
 /// # Errors
 ///
-/// `internal` for an answer without an `accounts` list, when no one account is marked, or the
-/// one marked has no string `id`: the offer's source is then unknown, so the offer is not
+/// `internal` when the answer has no `accounts` list, no one account is marked, or the one
+/// marked has no string `id`: the offer's source is then unknown, so the offer is not
 /// sent, since the check against `--to-account` and the question would rest on a guess.
 fn own_account_id(answer: Value) -> Result<String> {
     let accounts = account::accounts_page(answer)?.items;
@@ -427,14 +426,14 @@ fn budget(ctx: &Context<'_>, command: &Budget) -> Result<Printed> {
     match command {
         Budget::Get(ProjectTarget { project_id }) => {
             let request = Request::to(&routes::account::PROJECT_BUDGET, [project_id])
-                .listed_by(PROJECTS)
+                .listed_by(PROJECTS_LIST_COMMAND)
                 .about(format!("get the budget of the project `{project_id}`"));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         Budget::Update(args) => budget_update(ctx, args),
         Budget::Delete(ProjectTarget { project_id }) => {
             let request = Request::to(&routes::account::PROJECT_BUDGET_DELETE, [project_id])
-                .listed_by(PROJECTS)
+                .listed_by(PROJECTS_LIST_COMMAND)
                 .about(format!(
                     "remove the monthly budget of the project `{project_id}`, with its alerts and \
                  any launch block"
@@ -489,7 +488,7 @@ fn budget_update(ctx: &Context<'_>, args: &BudgetUpdate) -> Result<Printed> {
         thresholds: &thresholds,
         block_launch_over: args.block_launches,
     })
-    .listed_by(PROJECTS)
+    .listed_by(PROJECTS_LIST_COMMAND)
     .about(format!(
         "set the monthly budget of the project `{}` to `{limit}` USD, mailing at {} percent \
          of it and {launches}",
@@ -510,7 +509,7 @@ fn quota(ctx: &Context<'_>, command: &Quota) -> Result<Printed> {
     match command {
         Quota::Get(ProjectTarget { project_id }) => {
             let request = Request::to(&routes::account::PROJECT_QUOTA, [project_id])
-                .listed_by(PROJECTS)
+                .listed_by(PROJECTS_LIST_COMMAND)
                 .about(format!("get the quota of the project `{project_id}`"));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
@@ -548,7 +547,7 @@ fn quota_update(ctx: &Context<'_>, args: &QuotaUpdate) -> Result<Printed> {
         [&args.project.project_id],
     )
     .json(&routes::account::ProjectQuotaUpdateBody { limits })
-    .listed_by(PROJECTS)
+    .listed_by(PROJECTS_LIST_COMMAND)
     .about(format!(
         "set the compute limits of the project `{}`: {}",
         args.project.project_id,
@@ -654,10 +653,13 @@ fn decide(
     done: Option<Value>,
 ) -> Result<Printed> {
     let read = transfers_read();
-    let draft = write(&format!("`{id}`")).listed_by(TRANSFERS);
+    let draft = write(&format!("`{id}`")).listed_by(TRANSFERS_LIST_COMMAND);
     let named_write = || {
         let named = transfer_named(id, side, ctx.send(client, &read)?.json()?)?;
-        Ok(Decided::asked(write(&named).listed_by(TRANSFERS), None))
+        Ok(Decided::asked(
+            write(&named).listed_by(TRANSFERS_LIST_COMMAND),
+            None,
+        ))
     };
     // The server may answer 204, so `done` stands for the body it does not send.
     let render = |sent: Result<Response>| {
@@ -701,7 +703,9 @@ fn transfer_named(id: u64, side: Side, answer: Value) -> Result<String> {
         lists.links.into_complete(transfers_read().target())?;
         // Decided by what the server listed, not by the command line (tenet 4).
         let missing = Error::new(Failure::NotFound, missing);
-        return Err(missing.with_hint(format!("run `{TRANSFERS}` to see the transfer ids")));
+        return Err(missing.with_hint(format!(
+            "run `{TRANSFERS_LIST_COMMAND}` to see the transfer ids"
+        )));
     };
     let (by, other) = match side {
         Side::Incoming => ("from", transfer.from_account),
@@ -802,8 +806,8 @@ struct Transfers {
 ///
 /// # Errors
 ///
-/// `internal` unless the answer is an object holding both lists, or for a `next` that is
-/// not a link. A `next` link is the caller's to refuse: the list refuses it, and a decision
+/// `internal` unless the answer is an object holding both lists, or when a `next` is not a
+/// link. A `next` link is the caller's to refuse: the list refuses it, and a decision
 /// refuses it only when the transfer is not on the page read.
 fn transfer_lists(answer: Value) -> Result<Transfers> {
     let Value::Object(mut body) = answer else {

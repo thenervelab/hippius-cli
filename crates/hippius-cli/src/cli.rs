@@ -357,7 +357,8 @@ pub(crate) enum Command {
     /// changes nothing else. A name that is not a command at its place is a usage error, exit 2,
     /// that lists the commands there, and whose hint runs the nearest one. Each command lists
     /// the routes it may send to in routes, each a method and a path template such as
-    /// GET /api/compute/vms/{vm_id}/; api lists none, since it sends to the route it is given.
+    /// GET /api/compute/vms/{vm_id}/. api sends to the route it is given, so it lists only the
+    /// guarded routes no other command sends to.
     #[command(after_help = examples(&[
         "hipc schema",
         "hipc schema compute app-engine",
@@ -895,9 +896,9 @@ fn api_long_about() -> String {
 }
 
 /// Secret-table routes the `--reveal` help leaves out: staff and operator routes that no `hipc`
-/// command sends. The guard still applies to them; customer-facing help lists only customer
-/// routes.
-const UNLISTED_SECRET_ROUTES: [(hippius::Method, &str); 8] = [
+/// command sends, and `GET /auth/token/`, which `hipc api` refuses outright. The guard still
+/// applies to them.
+const UNLISTED_SECRET_ROUTES: &[(hippius::Method, &str)] = &[
     (
         hippius::Method::Post,
         "/api/infrastructure/compute-miners/prepare/",
@@ -1258,7 +1259,7 @@ mod tests {
         // An unlisted route that left the secret table would hide nothing and go stale.
         for unlisted in UNLISTED_SECRET_ROUTES {
             assert!(
-                hippius::secret_routes().any(|route| route == unlisted),
+                hippius::secret_routes().any(|route| route == *unlisted),
                 "{unlisted:?}"
             );
         }

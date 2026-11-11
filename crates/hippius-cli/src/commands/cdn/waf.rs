@@ -25,13 +25,12 @@ use crate::cli::{WafEvents, WafMode, WafRateLimits, WafRules, WafTest, WafUpdate
 use crate::commands::cdn::rule_list::{
     CUSTOM_RULES, ListUpdate, RATE_LIMITS, read_rules, update_rules,
 };
-use crate::commands::cdn::{ZONES, fields_set, with_query};
+use crate::commands::cdn::{ZONES_LIST_COMMAND, fields_set, with_query};
 use crate::commands::replace::{Entry, Found, Replace, replace_list};
 use crate::commands::{Input, Printed, print_body, print_body_or, print_keyed_list};
 use crate::context::{Context, Gate};
 
-/// The command that lists the WAF lists, for the hint of a 404 on a list route.
-const LISTS: &str = "hipc cdn lists list";
+const WAF_LISTS_LIST_COMMAND: &str = "hipc cdn lists list";
 
 /// The largest block page body, in bytes (swagger, `block_response.body`: "At most 4 KB").
 const MAX_BLOCK_BODY_BYTES: u64 = 4096;
@@ -52,7 +51,7 @@ pub(super) fn waf(ctx: &Context<'_>, command: &CdnWaf) -> Result<Printed> {
         CdnWaf::Get(ZoneTarget { zone_id }) => {
             let request = Request::to(&cdn::WAF, [zone_id])
                 .about(format!("get the WAF settings of the CDN zone `{zone_id}`"))
-                .listed_by(ZONES);
+                .listed_by(ZONES_LIST_COMMAND);
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         CdnWaf::Update(args) => update(ctx, args),
@@ -61,7 +60,7 @@ pub(super) fn waf(ctx: &Context<'_>, command: &CdnWaf) -> Result<Printed> {
                 .about(format!(
                     "get where the WAF of the CDN zone `{zone_id}` is deployed"
                 ))
-                .listed_by(ZONES);
+                .listed_by(ZONES_LIST_COMMAND);
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         CdnWaf::Analytics(args) => analytics(ctx, args),
@@ -167,7 +166,7 @@ fn update(ctx: &Context<'_>, args: &WafUpdate) -> Result<Printed> {
     let consequence = (args.mode == Some(WafMode::Off))
         .then_some("the zone's WAF rules stop applying, and its WAF billing stops");
     let request = Request::to(&cdn::WAF_UPDATE, [&args.zone.zone_id])
-        .listed_by(ZONES)
+        .listed_by(ZONES_LIST_COMMAND)
         .json(&body)
         .about(format!(
             "update the WAF of the CDN zone `{}`: set {}{billed}",
@@ -185,7 +184,7 @@ fn analytics(ctx: &Context<'_>, args: &WafAnalytics) -> Result<Printed> {
             "get the WAF matches of the CDN zone `{}`",
             args.zone.zone_id
         ))
-        .listed_by(ZONES);
+        .listed_by(ZONES_LIST_COMMAND);
     let query = [
         ("from", args.from.as_deref()),
         ("to", args.to.as_deref()),
@@ -205,7 +204,7 @@ fn events(ctx: &Context<'_>, args: &WafEvents) -> Result<Printed> {
             "get the sampled WAF matches of the CDN zone `{}`",
             args.zone.zone_id
         ))
-        .listed_by(ZONES);
+        .listed_by(ZONES_LIST_COMMAND);
     let query = [
         ("from", args.from.as_deref()),
         ("to", args.to.as_deref()),
@@ -261,7 +260,7 @@ fn test(ctx: &Context<'_>, args: &WafTest) -> Result<Printed> {
             "test a request against the WAF of the CDN zone `{}`",
             args.zone.zone_id
         ))
-        .listed_by(ZONES)
+        .listed_by(ZONES_LIST_COMMAND)
         .changes_nothing();
     print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
 }
@@ -272,7 +271,7 @@ fn versions(ctx: &Context<'_>, command: &WafVersions) -> Result<Printed> {
         WafVersions::List(ZoneTarget { zone_id }) => {
             let request = Request::to(&cdn::WAF_VERSIONS, [zone_id])
                 .about(format!("list the WAF versions of the CDN zone `{zone_id}`"))
-                .listed_by(ZONES);
+                .listed_by(ZONES_LIST_COMMAND);
             print_keyed_list(ctx, &client, &request, "versions")
         }
         WafVersions::Get {
@@ -349,7 +348,7 @@ pub(super) fn lists(ctx: &Context<'_>, command: &CdnLists) -> Result<Printed> {
             description,
         } => {
             let request = Request::to(&cdn::LIST_UPDATE, [list_name])
-                .listed_by(LISTS)
+                .listed_by(WAF_LISTS_LIST_COMMAND)
                 .json(&cdn::ListUpdateBody { description })
                 .about(format!(
                     "change the description of the WAF list `{list_name}`"
@@ -358,7 +357,7 @@ pub(super) fn lists(ctx: &Context<'_>, command: &CdnLists) -> Result<Printed> {
         }
         CdnLists::Delete { list_name } => {
             let request = Request::to(&cdn::LIST_DELETE, [list_name])
-                .listed_by(LISTS)
+                .listed_by(WAF_LISTS_LIST_COMMAND)
                 .about(format!("delete the WAF list `{list_name}`"));
             let gate = Gate::Confirm { consequence: None };
             let done = json!({ "name": list_name, "deleted": true });
@@ -371,7 +370,7 @@ pub(super) fn lists(ctx: &Context<'_>, command: &CdnLists) -> Result<Printed> {
 fn list_get(name: &str) -> Request {
     Request::to(&cdn::LIST, [&name])
         .about(format!("get the WAF list `{name}`"))
-        .listed_by(LISTS)
+        .listed_by(WAF_LISTS_LIST_COMMAND)
 }
 
 fn items(ctx: &Context<'_>, command: &ListItems) -> Result<Printed> {
@@ -382,7 +381,7 @@ fn items(ctx: &Context<'_>, command: &ListItems) -> Result<Printed> {
         } => {
             let items = some_items(items_file)?;
             let request = Request::to(&cdn::LIST_ITEMS_ADD, [list_name])
-                .listed_by(LISTS)
+                .listed_by(WAF_LISTS_LIST_COMMAND)
                 .about(format!(
                     "add {} to the WAF list `{list_name}`",
                     phrase::count(items.len() as u64, "item")
@@ -401,7 +400,7 @@ fn items(ctx: &Context<'_>, command: &ListItems) -> Result<Printed> {
         } => {
             let items = some_items(items_file)?;
             let request = Request::to(&cdn::LIST_ITEMS_REMOVE, [list_name])
-                .listed_by(LISTS)
+                .listed_by(WAF_LISTS_LIST_COMMAND)
                 .about(format!(
                     "remove {} from the WAF list `{list_name}`",
                     phrase::count(items.len() as u64, "item")
@@ -424,7 +423,7 @@ fn items(ctx: &Context<'_>, command: &ListItems) -> Result<Printed> {
             let read_action = read.action();
             let replace = Replace {
                 write: Request::to(&cdn::LIST_ITEMS_REPLACE, [list_name])
-                    .listed_by(LISTS)
+                    .listed_by(WAF_LISTS_LIST_COMMAND)
                     .about(format!(
                         "replace every item of the WAF list `{list_name}` with {}",
                         phrase::count(items.len() as u64, "item")

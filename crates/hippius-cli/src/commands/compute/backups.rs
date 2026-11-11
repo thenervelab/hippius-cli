@@ -9,7 +9,7 @@ use crate::cli::{
     BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, FailoverMode, VmId, VmTarget,
 };
 use crate::commands::compute::launch::failover_clause;
-use crate::commands::compute::{VMS, refused_as};
+use crate::commands::compute::{VMS_LIST_COMMAND, refused_as};
 use crate::commands::{
     Catalog, Decided, Printed, keyed_list, print_body, print_body_or, print_list_with,
     read_then_write, send_from_catalog,
@@ -21,7 +21,7 @@ pub(super) fn backups(ctx: &Context<'_>, client: &Client, command: &Backups) -> 
     let of_vm = |route: &Route<1>, what: &str, vm_id: &VmId| {
         Request::to(route, [vm_id])
             .about(format!("get the {what} of the VM `{vm_id}`"))
-            .listed_by(VMS)
+            .listed_by(VMS_LIST_COMMAND)
     };
     match command {
         Backups::Options => get(options()),
@@ -33,7 +33,7 @@ pub(super) fn backups(ctx: &Context<'_>, client: &Client, command: &Backups) -> 
         Backups::Policy(BackupPolicy::Delete(VmTarget { vm_id })) => {
             let request = Request::to(&compute::BACKUP_POLICY_DELETE, [vm_id])
                 .about(format!("turn off the backups of the VM `{vm_id}`"))
-                .listed_by(VMS);
+                .listed_by(VMS_LIST_COMMAND);
             let gate = Gate::Confirm {
                 consequence: Some(BACKUPS_KEPT),
             };
@@ -81,7 +81,7 @@ fn policy_update(ctx: &Context<'_>, client: &Client, args: &BackupPolicyUpdate) 
             interval_s: seconds,
             failover_mode: args.failover.map(FailoverMode::code),
         })
-        .listed_by(VMS)
+        .listed_by(VMS_LIST_COMMAND)
         .about(format!(
             "back up the VM `{vm_id}` every {}{failover}",
             phrase::count(u64::from(seconds), "second")
@@ -119,15 +119,14 @@ fn options() -> Request {
 /// VM's `name`, which only a read can give, and a dry run sends nothing.
 const NAME_PLACEHOLDER: &str = "<the VM's name>";
 
-/// `POST .../backups/restore/`. Swagger: "`confirm` must be the VM's `name`, exactly". `hipc`
-/// fills it from `GET /api/compute/vms/<vm_id>/` rather than taking a `--confirm-name`
-/// flag, which would be a second confirmation beside `--yes`. The read comes before the
-/// question, so the question names the VM whose disk is overwritten and the name the
-/// server checks is one the person saw (a read after the question would let a wrong
-/// id be confirmed under a name nobody read). With `--yes` nobody sees
-/// the question, and the server's check is the only guard. The local refusals (an account
-/// the route cannot use, the token) run before that read. A failed read is the error, and
-/// nothing is written. A dry run sends neither: its document is the POST with the name as a
+/// `POST .../backups/restore/`. Swagger: "`confirm` must be the VM's `name`, exactly". `hipc` fills
+/// it from `GET /api/compute/vms/<vm_id>/` rather than taking a `--confirm-name` flag, which would
+/// be a second confirmation beside `--yes`. The read comes before the question, so the question
+/// names the VM whose disk is overwritten and the name the server checks is one the person saw (a
+/// read after the question would let a wrong id be confirmed under a name nobody read). With
+/// `--yes` nobody sees the question, and the server's check is the only guard. The local refusals
+/// (an account the route cannot use, the token) run before that read. A failed read is the error,
+/// and nothing is written. A dry run sends neither: its document is the POST with the name as a
 /// placeholder, and its `requests` lists the read, then the POST.
 fn restore(ctx: &Context<'_>, client: &Client, args: &BackupRestore) -> Result<Printed> {
     let vm_id = &args.vm.vm_id;
@@ -142,7 +141,7 @@ fn restore(ctx: &Context<'_>, client: &Client, args: &BackupRestore) -> Result<P
     };
     let read = Request::to(&compute::VM, [vm_id])
         .about(format!("get the VM `{vm_id}`"))
-        .listed_by(VMS);
+        .listed_by(VMS_LIST_COMMAND);
     let draft = post(NAME_PLACEHOLDER);
     let decide = || {
         let vm: Vm = view_of(&ctx.send(client, &read)?.document()?);
@@ -156,7 +155,7 @@ fn restore(ctx: &Context<'_>, client: &Client, args: &BackupRestore) -> Result<P
         } else {
             ""
         };
-        let request = post(name).listed_by(VMS).about(format!(
+        let request = post(name).listed_by(VMS_LIST_COMMAND).about(format!(
             "overwrite the disk of the VM {} (`{vm_id}`) with the backup `{point}`{rollback}",
             phrase::quote(name)
         ));

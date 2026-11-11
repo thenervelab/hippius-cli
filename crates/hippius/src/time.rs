@@ -28,13 +28,13 @@ pub struct Now {
 impl Now {
     /// The time now, from `date`, an answer's `Date` header ([`crate::Response::date`]),
     /// and `local`, the local clock. A `Date` that is not an IMF-fixdate is no reading, and a
-    /// local clock set before 1970 is none either.
+    /// local clock set before 1970 is none either. `action` names what the caller was doing,
+    /// for the error's `cannot <action>`.
     ///
     /// # Errors
     ///
     /// `internal` when the local clock is set before 1970, whatever the `Date`: a `Date` alone
-    /// could be ahead of time and open a guard's window. `action` says what could not be done, as `cannot
-    /// <action>`.
+    /// could be ahead of time and open a guard's window.
     pub fn of(date: Option<&str>, local: SystemTime, action: &str) -> Result<Self> {
         let server = date.and_then(http_date);
         let local = local

@@ -11,6 +11,9 @@
 //! buffer, which would keep a copy of the token for the life of the process; and whatever
 //! was typed past the line is discarded when the mode is put back, so a line pasted after
 //! the token cannot answer a question asked later in the same run.
+//!
+//! The unbuffered reader and the discard of what was typed ahead serve the confirmation
+//! question and a secret file read from stdin too.
 
 use std::io::{self, Read};
 use std::os::fd::{AsFd as _, BorrowedFd};
@@ -58,7 +61,7 @@ fn read_line_from(fd: BorrowedFd<'_>, ask: impl FnOnce()) -> io::Result<Typed> {
 
 /// Discards what was typed at the terminal on stdin and not read yet, before a question is
 /// shown, so only an answer typed after it can answer it. Best effort: a terminal that
-/// refuses the flush is asked anyway, as it was before the flush existed. The caller has
+/// refuses the flush is asked anyway. The caller has
 /// checked that stdin is a terminal ([`crate::output::Terminal::can_prompt`]).
 pub(crate) fn discard_typed_ahead() {
     let _best_effort = tcflush(io::stdin().as_fd(), QueueSelector::IFlush);

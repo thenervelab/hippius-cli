@@ -9,10 +9,10 @@
 //! gives a `usage` error before any request; the exclusive create still refuses a file that
 //! appeared after that check.
 //!
-//! The directory is held to the rule of the config directory ([`private_dir`]), at parse time
-//! and again on the open directory when the file is created there: a directory another user
-//! can write lets them swap the file for their own (a CA that a database connection trusts, a
-//! kubeconfig that names their server) or delete it.
+//! The directory is held to [`private_dir`], at parse time and again on the open directory
+//! when the file is created there: a directory another user can write lets them swap the file
+//! for their own (a CA that a database connection trusts, a kubeconfig that names their
+//! server) or delete it.
 
 use std::fs::{File, Metadata, Permissions};
 use std::io::Write as _;
@@ -98,10 +98,9 @@ pub(crate) fn private_dir(metadata: &Metadata) -> Result<(), Unsafe> {
     refusal(dir, user).map_or(Ok(()), Err)
 }
 
-/// The rule of the config directory, for the directory `(owner, group, mode)` and the user
-/// `(euid, egid)`: the user (or root) owns it, and no other user can write it. Two kinds of
-/// directory others can write pass too, since no file hipc writes there can be swapped or
-/// removed:
+/// Why the directory `(owner, group, mode)` is unsafe to create a file in for the user `(euid,
+/// egid)`, or `None`: the user (or root) must own it, and no other user may write it. Two kinds of
+/// directory others can write pass too, since no file hipc writes there can be swapped or removed:
 ///
 /// - a sticky one, such as `/tmp`: there only a file's owner may rename or delete it (POSIX
 ///   `rename`, `unlink`), and the exclusive create refuses a file someone made first;
@@ -111,7 +110,9 @@ pub(crate) fn private_dir(metadata: &Metadata) -> Result<(), Unsafe> {
 ///   the current directory of most users there. A primary group shared with others, such as
 ///   `staff` on macOS or `users`, has another id, so its write bit is refused.
 ///
-/// ACL entries are not read: they are the caller's to keep.
+/// ACL entries are not read: they are the caller's to keep. This is looser than the check of
+/// the config directory in `hippius::private_file`, which refuses those two kinds and a
+/// directory root owns.
 fn refusal((owner, group, mode): (u32, u32, u32), (euid, egid): (u32, u32)) -> Option<Unsafe> {
     let private_group = group == egid && group == euid;
     let others_write = mode & 0o002 != 0 || (mode & 0o020 != 0 && !private_group);
@@ -174,10 +175,11 @@ pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), NewFileError> {
     let mut file = rustix::fs::openat(&dir, file_name, flags, Mode::RUSR | Mode::WUSR)
         .map(File::from)
         .map_err(|e| create(io(e)))?;
-    // The mode passed to open is masked by the umask. Setting it again makes it exact. The
-    // file's bytes are synced, then its name, which lives in the directory (POSIX `fsync`:
-    // https://pubs.opengroup.org/onlinepubs/9799919799/functions/fsync.html), so a file that
-    // holds a key that exists nowhere else lasts once hipc names it.
+    // The umask may have cleared the owner's bits of the mode passed to open; setting the mode
+    // again restores `0600`. The file's bytes are synced, then its name, which lives in the
+    // directory (POSIX `fsync`:
+    // https://pubs.opengroup.org/onlinepubs/9799919799/functions/fsync.html), so a file that holds
+    // a key that exists nowhere else lasts once hipc names it.
     file.set_permissions(Permissions::from_mode(0o600))
         .and_then(|()| file.write_all(bytes))
         .and_then(|()| file.sync_all())

@@ -79,7 +79,6 @@ pub(crate) struct BucketName(String);
 impl BucketName {
     pub(crate) fn parse(value: &str) -> Result<Self, String> {
         let bytes = value.as_bytes();
-        // A name that starts with a letter or digit starts with no `-`.
         let valid = is_word(value, 3..=63, Charset::LowerDotDash, Dash::Refused)
             && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
             && bytes.last().is_some_and(u8::is_ascii_alphanumeric)

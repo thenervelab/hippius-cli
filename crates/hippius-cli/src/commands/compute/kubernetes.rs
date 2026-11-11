@@ -4,12 +4,11 @@
 //! project, so a membership sends `X-Hippius-Account` and a selected project
 //! `X-Hippius-Project`. `/api/kubernetes/agent/` is personal and not wrapped.
 //!
-//! Swagger types none of the answers. The shapes are the console's: the cluster, pool,
-//! operation, event, and refusal lists are bare arrays with no page parameters, so each is
-//! read whole into the list envelope, whose `next_page_token` is null (tenet 3). The backups
-//! answer is an object, printed as the envelope of its `snapshots`, with its other fields
-//! beside them. The POSTs send `{}` where they carry nothing, as the
-//! console does.
+//! Swagger types none of the answers. The shapes are the console's: the cluster, pool, operation,
+//! event, and refusal lists are bare arrays with no page parameters, so each is read whole into the
+//! list envelope, whose `next_page_token` is null (tenet 3). The backups answer is an object,
+//! printed as the envelope of its `snapshots`, with its other fields beside them. The POSTs send
+//! `{}` where they carry nothing, as the console does.
 //!
 //! The backups answer holds a presigned S3 download link and the sealed key of each etcd
 //! snapshot. A link fetches the snapshot for minutes without a token, so the command needs
@@ -47,8 +46,7 @@ use crate::commands::{
 };
 use crate::context::{Context, Gate, WritePlan};
 
-/// The command that lists the cluster ids, for the hint of a 404 on a cluster route.
-const CLUSTERS: &str = "hipc compute kubernetes clusters list";
+const CLUSTERS_LIST_COMMAND: &str = "hipc compute kubernetes clusters list";
 
 pub(super) fn run(ctx: &Context<'_>, command: &Kubernetes) -> Result<Printed> {
     match command {
@@ -62,7 +60,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Kubernetes) -> Result<Printed> {
                 .about(format!(
                     "get the backups of the Kubernetes cluster `{cluster_id}`"
                 ))
-                .listed_by(CLUSTERS);
+                .listed_by(CLUSTERS_LIST_COMMAND);
             print_keyed_list(ctx, &ctx.load_authed_client()?, &request, "snapshots")
         }
         Kubernetes::NodePools(NodePools::List(ClusterTarget { cluster_id })) => {
@@ -125,7 +123,7 @@ fn clusters(ctx: &Context<'_>, command: &Clusters) -> Result<Printed> {
 fn cluster_get(id: u64) -> Request {
     Request::to(&kubernetes::CLUSTER, [&id])
         .about(format!("get the Kubernetes cluster `{id}`"))
-        .listed_by(CLUSTERS)
+        .listed_by(CLUSTERS_LIST_COMMAND)
 }
 
 /// A list under a cluster, at `route`, read whole as the envelope (module docs).
@@ -141,7 +139,7 @@ fn list(ctx: &Context<'_>, id: u64, route: &Route<1>, what: &str) -> Result<Prin
 fn list_request(id: u64, route: &Route<1>, what: &str) -> Request {
     Request::to(route, [&id])
         .about(format!("list the {what} of the Kubernetes cluster `{id}`"))
-        .listed_by(CLUSTERS)
+        .listed_by(CLUSTERS_LIST_COMMAND)
 }
 
 /// Sends `request`, the read of a list under a cluster, and returns its items, refusing a page
@@ -161,7 +159,7 @@ fn cluster_delete(ctx: &Context<'_>, client: &Client, id: u64) -> Result<Printed
                  decommissioned, with the workloads and the data on it, and this cannot be \
                  undone"
             ))
-            .listed_by(CLUSTERS)
+            .listed_by(CLUSTERS_LIST_COMMAND)
     };
     let read = cluster_get(id);
     let draft = delete(&format!("`{id}`"));
@@ -174,7 +172,7 @@ fn cluster_delete(ctx: &Context<'_>, client: &Client, id: u64) -> Result<Printed
 }
 
 /// What `operations cancel` and `operations resume` do to an operation.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Verb {
     Cancel,
     Resume,
@@ -298,9 +296,7 @@ fn actionable(target: &OperationTarget, verb: Verb, listed: &[Value]) -> Result<
     // Mirroring this read in `hipc api` would mean a second copy of this parser over a raw
     // route, so it is left to the server. Whether the server enforces the signed acceptance
     // is unverified; if it does not, this read belongs in `hipc api` too.
-    if matches!(verb, Verb::Resume)
-        && state == Some(&OperationState::Blocked)
-        && blocked_on_local_data(&op)
+    if verb == Verb::Resume && state == Some(&OperationState::Blocked) && blocked_on_local_data(&op)
     {
         return Err(Error::new(
             Failure::Conflict,
@@ -318,11 +314,11 @@ fn actionable(target: &OperationTarget, verb: Verb, listed: &[Value]) -> Result<
     Ok(op)
 }
 
-/// Whether `op` is blocked on data a node would lose, which a resume can only get past with
-/// a signed `accept_data_loss`, which only the console can make. Such a block is told from
-/// the step and the reason: the step `check_local_data`, or a drain whose reason says data
-/// "would be lost". The reason is matched at any step, so a block reported another way is refused
-/// here rather than resumed with `{}`.
+/// Whether `op` is blocked on data a node would lose, which a resume can only get past with a
+/// signed `accept_data_loss`, which only the console can make. Such a block is told from the step
+/// and the reason: the step `check_local_data`, or a drain whose reason says data "would be lost".
+/// The reason is matched at any step, so a block reported another way is refused here rather than
+/// resumed with `{}`.
 fn blocked_on_local_data(op: &Operation) -> bool {
     op.step.as_deref() == Some("check_local_data")
         || op
@@ -412,9 +408,8 @@ fn pool_create(ctx: &Context<'_>, args: &NodePoolCreate) -> Result<Printed> {
             args.name,
             phrase::quote(&args.flavor)
         ))
-        .listed_by(CLUSTERS);
-    // Not confirmed: tenet 5 confirms only what spends, deletes, revokes, rotates, cancels,
-    // or opens a ticket, and an empty pool spends nothing until a scale, which is confirmed.
+        .listed_by(CLUSTERS_LIST_COMMAND);
+    // Not confirmed: an empty pool spends nothing until a scale, which is confirmed (tenet 5).
     print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
 }
 

@@ -213,7 +213,6 @@ fn asked_token(ctx: &Context<'_>, ask_first: impl FnOnce() -> Result<()>) -> Res
     let typed = hidden::read_line(|| output::note(TOKEN_PROMPT));
     // Enter was not echoed, so the next line starts here.
     output::note("\n");
-    // The same command again, with the profile and the origin this run was given.
     let retry = format!(
         "run `{}` and paste the token at the prompt, or pass `--token-file <path>`",
         phrase::command(ctx.args())

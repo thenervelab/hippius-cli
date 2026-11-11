@@ -5,7 +5,7 @@ use hippius::{Client, Request, Result};
 use serde_json::json;
 
 use crate::cli::{PublicIp, VmTarget};
-use crate::commands::compute::VMS;
+use crate::commands::compute::VMS_LIST_COMMAND;
 use crate::commands::{Printed, print_body, print_body_or, print_with};
 use crate::context::{Context, Gate};
 
@@ -25,14 +25,14 @@ pub(super) fn public_ip(ctx: &Context<'_>, client: &Client, command: &PublicIp) 
             client,
             &Request::to(&compute::PUBLIC_IP, [vm_id])
                 .about(format!("get the public IPv4 of the VM `{vm_id}`"))
-                .listed_by(VMS),
+                .listed_by(VMS_LIST_COMMAND),
             Gate::Open,
         ),
         // Swagger documents the attach as idempotent: a repeat returns the address already
         // attached. It still needs `--yes`, because the first call starts a bill.
         PublicIp::Create(VmTarget { vm_id }) => {
             let request = Request::to(&compute::PUBLIC_IP_CREATE, [vm_id])
-                .listed_by(VMS)
+                .listed_by(VMS_LIST_COMMAND)
                 .about(format!("attach a public IPv4 to the VM `{vm_id}`"));
             let gate = Gate::Confirm {
                 consequence: Some("it is billed until it is detached or the VM is deleted"),
@@ -45,7 +45,7 @@ pub(super) fn public_ip(ctx: &Context<'_>, client: &Client, command: &PublicIp) 
         }
         PublicIp::Delete(VmTarget { vm_id }) => {
             let request = Request::to(&compute::PUBLIC_IP_DELETE, [vm_id])
-                .listed_by(VMS)
+                .listed_by(VMS_LIST_COMMAND)
                 .about(format!("detach the public IPv4 from the VM `{vm_id}`"));
             let gate = Gate::Confirm {
                 consequence: Some(IP_DETACHED),
@@ -59,7 +59,7 @@ pub(super) fn public_ip(ctx: &Context<'_>, client: &Client, command: &PublicIp) 
         } => {
             let request = Request::to(&compute::PUBLIC_IP_USAGE, [vm_id])
                 .about(format!("get the public IPv4 usage of the VM `{vm_id}`"))
-                .listed_by(VMS);
+                .listed_by(VMS_LIST_COMMAND);
             let request = match range {
                 Some(range) => request.query("range", range.code()),
                 None => request,

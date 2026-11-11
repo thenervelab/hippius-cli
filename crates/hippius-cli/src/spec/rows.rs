@@ -60,8 +60,8 @@ pub(super) fn of_top(path: &[&str]) -> Option<Spec> {
 pub(super) fn of_auth(path: &[&str]) -> Option<Spec> {
     match path {
         ["status"] => Some(READ_ONLY),
-        // A token bound to any origin but the default one is confirmed (tenet 8), and so is
-        // one that replaces a different stored token, since later commands act as its owner.
+        // Replacing a different stored token is confirmed because later commands act as its
+        // owner (tenet 8).
         ["login"] => Some(Spec {
             confirmation: Confirmation::When(
                 "the API origin is not `https://api.hippius.com`, or the profile stores a \
