@@ -11,9 +11,6 @@
 //! write.
 
 pub(crate) mod waf;
-
-use std::cmp::Ordering;
-
 use hippius::routes::cdn::{self, Origin, ZoneUpdateBody};
 use hippius::{Client, DnsCredentials, Error, Request, Result, phrase, view_of};
 use serde::Serialize;
@@ -25,6 +22,7 @@ use crate::cli::{
 };
 use crate::commands::credits::{DECIMALS, amount, compare};
 use crate::commands::replace::{self, Entry, Found, Replace, replace_list};
+use crate::commands::spend_cap::{self, InForce, NewCap};
 use crate::commands::{
     Input, Printed, print_body, print_body_or, print_keyed_list, print_with, require_public,
 };
@@ -108,8 +106,7 @@ fn cap_update(
     zone_id: &str,
     monthly_cap: &str,
 ) -> Result<Printed> {
-    let set =
-        format!("set the monthly spend cap of the CDN zone `{zone_id}` to `{monthly_cap}` credits");
+    let named = format!("the monthly spend cap of the CDN zone `{zone_id}`");
     // The cap is the one writable field: the server refuses any other key.
     let patch = |about: &str| {
         Request::to(&cdn::CAP_UPDATE, [&zone_id])
@@ -120,7 +117,7 @@ fn cap_update(
     let read = Request::to(&cdn::CAP, [&zone_id])
         .about(format!("get the spend cap of the CDN zone `{zone_id}`"))
         .listed_by(ZONES);
-    let draft = patch(&set);
+    let draft = patch(&format!("set {named} to `{monthly_cap}` credits"));
     let checked = match ctx.check_write(client, &draft)? {
         Write::DryRun(_) => {
             return ctx
@@ -144,33 +141,17 @@ fn cap_update(
         (Some(base), Some(new)) => compare(&new, base),
         _ => old.as_deref().and_then(|old| compare(monthly_cap, old)),
     };
-    let question = match (order, old.as_deref()) {
-        (Some(Ordering::Less | Ordering::Equal), _) => None,
-        (Some(Ordering::Greater), Some(old)) => Some(format!(
-            "raise the monthly spend cap of the CDN zone `{zone_id}` from {} to \
-             `{monthly_cap}` credits",
-            phrase::quote(old)
-        )),
-        (Some(Ordering::Greater), None) => Some(format!(
-            "raise the monthly spend cap of the CDN zone `{zone_id}` to `{monthly_cap}` credits"
-        )),
-        (None, Some(old)) => Some(format!(
-            "{set}, where `monthly_cap_credits` is {}, which is not an amount of credits",
-            phrase::quote(old)
-        )),
-        (None, None) => Some(format!(
-            "{set}, where the cap in force is unknown: the cap has no amount in \
-             `monthly_cap_credits`"
-        )),
+    let in_force = old.map_or(InForce::Unknown, InForce::Credits);
+    let zone_cap = spend_cap::Cap {
+        named: &named,
+        read: "the cap",
+        spender: "the zone",
     };
+    let question = spend_cap::question(zone_cap, NewCap::Credits(monthly_cap), &in_force, order);
     let request = match question {
-        Some(action) => {
+        Some((action, consequence)) => {
             let request = patch(&action);
-            ctx.confirm_write(
-                checked,
-                &request.action(),
-                Some("the zone may then spend more of the balance each month"),
-            )?;
+            ctx.confirm_write(checked, &request.action(), Some(&consequence))?;
             request
         }
         None => draft,

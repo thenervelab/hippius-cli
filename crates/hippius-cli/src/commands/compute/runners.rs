@@ -35,7 +35,8 @@ use crate::cli::{
     MonthlyCap, RunnerInstallations, RunnerLimit, RunnerSettings, RunnerSettingsUpdate, RunnerSize,
     Runners,
 };
-use crate::commands::credits::{amount, compare};
+use crate::commands::credits::compare;
+use crate::commands::spend_cap::{self, InForce, NewCap};
 use crate::commands::{Printed, list, print_body, print_body_or, print_envelope, print_with};
 use crate::context::{Context, Gate, Write};
 
@@ -130,79 +131,25 @@ fn update_limit(ctx: &Context<'_>, cap: &MonthlyCap) -> Result<Printed> {
         .send(&client, &read_limit())
         .and_then(|response| response.document())
         .map_err(not_enabled)?;
-    let more = "runners may then spend more of the balance each month";
-    let unknown = "if the cap in force is higher than it shows, runners may then spend more of \
-                   the balance each month";
-    let set_unknown = |new: &str| {
-        format!(
-            "set the monthly runner spend cap to `{new}` credits, where the current cap is \
-             unknown: the limit has no amount in `monthly_cap_credits`"
-        )
+    let new = match cap {
+        MonthlyCap::Credits(credits) => NewCap::Credits(credits),
+        MonthlyCap::None => NewCap::None,
     };
-    let not_an_amount = |old: &str| {
-        format!(
-            "where `monthly_cap_credits` is {}, which is not an amount of credits",
-            phrase::quote(old)
-        )
+    let in_force = current_cap(&limit);
+    let order = match (new, &in_force) {
+        (NewCap::Credits(new), InForce::Credits(old)) => compare(new, old),
+        _ => None,
     };
-    // Whether `null` means no cap, rather than a server default, is not confirmed against the
-    // live API, so a cap set over `null` is asked about. Removing a cap that already reads
-    // `null` sends the same `null` back, so it asks nothing.
-    let question = match (cap, current_cap(&limit)) {
-        (MonthlyCap::None, Current::Null) => None,
-        (MonthlyCap::None, Current::Unknown) => Some((
-            "remove the monthly runner spend cap, whose current value is unknown: the limit \
-             has no amount in `monthly_cap_credits`"
-                .to_owned(),
-            unknown,
-        )),
-        (MonthlyCap::None, Current::Credits(old)) => Some(if amount(&old).is_some() {
-            (
-                format!(
-                    "remove the monthly runner spend cap of {} credits",
-                    phrase::quote(&old)
-                ),
-                more,
-            )
-        } else {
-            (
-                format!(
-                    "remove the monthly runner spend cap, {}",
-                    not_an_amount(&old)
-                ),
-                unknown,
-            )
-        }),
-        (MonthlyCap::Credits(new), Current::Null) => Some((
-            format!(
-                "set the monthly runner spend cap to `{new}` credits, where the limit shows \
-                 `null`, unset or a server default"
-            ),
-            unknown,
-        )),
-        (MonthlyCap::Credits(new), Current::Unknown) => Some((set_unknown(new), unknown)),
-        (MonthlyCap::Credits(new), Current::Credits(old)) => match compare(new, &old) {
-            Some(Ordering::Greater) => Some((
-                format!(
-                    "raise the monthly runner spend cap from {} to `{new}` credits",
-                    phrase::quote(&old)
-                ),
-                more,
-            )),
-            Some(Ordering::Less | Ordering::Equal) => None,
-            None => Some((
-                format!(
-                    "set the monthly runner spend cap to `{new}` credits, {}",
-                    not_an_amount(&old)
-                ),
-                unknown,
-            )),
-        },
+    let runners_cap = spend_cap::Cap {
+        named: "the monthly runner spend cap",
+        read: "the limit",
+        spender: "runners",
     };
+    let question = spend_cap::question(runners_cap, new, &in_force, order);
     let request = match question {
         Some((action, consequence)) => {
             let request = put().about(action);
-            ctx.confirm_write(checked, &request.action(), Some(consequence))?;
+            ctx.confirm_write(checked, &request.action(), Some(&consequence))?;
             request
         }
         None => draft,
@@ -216,7 +163,7 @@ fn update_limit(ctx: &Context<'_>, cap: &MonthlyCap) -> Result<Printed> {
 /// server that ignores an unknown field answers 200 with the cap unchanged: a cut that did not
 /// happen would then exit 0 while runners keep spending. Only an answer whose
 /// `monthly_cap_credits` is the amount sent, compared as [`compare`] does, or that reads
-/// [`Current::Null`] after a removal, is the change made. Any other 2xx is `internal` with
+/// [`InForce::Null`] after a removal, is the change made. Any other 2xx is `internal` with
 /// `partial` side effects, and nothing goes to stdout, as for a peer rename: the `PUT` was
 /// sent, and may or may not have changed the cap. The hint reads the limit rather than
 /// sending the `PUT` again, whose effect is unknown.
@@ -224,8 +171,8 @@ fn applied(response: &Response, cap: &MonthlyCap) -> Result<Value> {
     let answer = response.document()?;
     let current = current_cap(&answer);
     let done = match (cap, &current) {
-        (MonthlyCap::None, Current::Null) => true,
-        (MonthlyCap::Credits(new), Current::Credits(now)) => {
+        (MonthlyCap::None, InForce::Null) => true,
+        (MonthlyCap::Credits(new), InForce::Credits(now)) => {
             compare(new, now) == Some(Ordering::Equal)
         }
         _ => false,
@@ -234,11 +181,11 @@ fn applied(response: &Response, cap: &MonthlyCap) -> Result<Value> {
         return Ok(answer);
     }
     let why = match current {
-        Current::Null => "the API answered a cap of `null`".to_owned(),
-        Current::Unknown => {
+        InForce::Null => "the API answered a cap of `null`".to_owned(),
+        InForce::Unknown => {
             "the API answered without an amount in `monthly_cap_credits`".to_owned()
         }
-        Current::Credits(now) => format!(
+        InForce::Credits(now) => format!(
             "the API answered `monthly_cap_credits` {}",
             phrase::quote(&now)
         ),
@@ -251,32 +198,20 @@ fn applied(response: &Response, cap: &MonthlyCap) -> Result<Value> {
     )))
 }
 
-/// What the limit says of the cap in force.
-enum Current {
-    /// `monthly_cap` and `monthly_cap_credits` are both present and `null`: no cap, or a
-    /// server default; which is unconfirmed.
-    Null,
-    /// Neither a cap in credits nor `null`: no `monthly_cap_credits`, or no `monthly_cap`, or
-    /// an answer that is not an object. A missing field is not read as `null`: a server that
-    /// leaves the field out says nothing of the cap.
-    Unknown,
-    /// `monthly_cap_credits`, a string or a number, which [`compare`]
-    /// reads as an amount or not.
-    Credits(String),
-}
-
-/// The cap in force, from `monthly_cap_credits` only. If this route follows the CDN cap,
+/// The cap in force, from `monthly_cap_credits` only: `null` only when `monthly_cap` is
+/// `null` too, and unknown when a field is missing, since a server that leaves the field out
+/// says nothing of the cap. If this route follows the CDN cap,
 /// `monthly_cap` holds base units (`20000000000000000000` for 20 credits), and comparing
 /// credits against that would make every raise look like a cut. A JSON number is read as
 /// serde writes it, so one in exponent form, such as `1e+300`, is not a decimal amount and the
 /// cap counts as unknown on purpose: a cap hipc cannot compare exactly is never judged a lower
 /// one.
-fn current_cap(limit: &Value) -> Current {
+fn current_cap(limit: &Value) -> InForce {
     let limit: runners::Limit = view_of(limit);
     match limit.monthly_cap_credits {
-        Slot::Value(TextOrNumber(text)) => Current::Credits(text),
-        Slot::Null if limit.monthly_cap == Slot::Null => Current::Null,
-        Slot::Missing | Slot::Null | Slot::Other => Current::Unknown,
+        Slot::Value(TextOrNumber(text)) => InForce::Credits(text),
+        Slot::Null if limit.monthly_cap == Slot::Null => InForce::Null,
+        Slot::Missing | Slot::Null | Slot::Other => InForce::Unknown,
     }
 }
 

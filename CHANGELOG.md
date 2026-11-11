@@ -54,6 +54,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - The route table decides each request to a route a command sends: its account, project, and billing headers, whether its answer holds a secret, whether a read creates something, whether it cannot be undone, and what `hipc api` asks before sending it. The path tables decide only a route no command sends. A `HEAD` counts as the `GET` of its route, so a `HEAD` of an S3 plan read takes the selected project as the `GET` does. The `--reveal` help of `hipc api` names each placeholder by what fills it, such as `/registry/keys/<key_id>/rotate/`.
 - The `hipc compute app-engine apps create` question says that the OS disk tier is fixed for the VM's life, as the `hipc compute vms create` question does: one clause serves both.
 - An App Engine launch wait that runs out of time while the app's boot is stalled (`boot_stalled`) says so in its `timeout` message, as a VM launch wait does: the two launches share one wait.
+- `hipc cdn cap update` and `hipc compute runners limit update` ask one question, built one way. A runner cap set over a limit with no amount says "where the cap in force is unknown", as the CDN cap did, and a CDN cap set over a cap `hipc` cannot compare says the zone may spend more if the cap in force is higher than it shows, as the runner cap did, rather than that it will.
 
 ### Removed
 
