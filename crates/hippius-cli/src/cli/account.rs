@@ -786,3 +786,181 @@ pub(super) fn email(value: &str) -> Result<String, String> {
         Err("an email address is `name@domain`, such as `ana@example.com`".to_owned())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory as _;
+    use clap::error::ErrorKind;
+
+    use super::*;
+    use crate::cli::Cli;
+    use crate::cli::tests::refusal;
+
+    /// The two commands that take `--grant`, before it.
+    const TAKE_A_GRANT: [&[&str]; 2] = [
+        &["account", "members", "update", "7"],
+        &["account", "invites", "create", "--email", "a@b.co"],
+    ];
+
+    #[test]
+    fn a_bad_grant_says_what_is_wrong_in_both_commands() {
+        let scopes = "use `vms`, `databases`, `kubernetes`, `runners`, `s3`, `cdn`, `network`, \
+                      `compute:*`, `storage:*`, or `billing`";
+        let shape = "a grant is `SCOPE=LEVEL`, such as `vms=operator`, `SCOPE=LEVEL@ID`, or `none`";
+        let not_a_project = |id: &str| {
+            format!(
+                "`{id}` is not a project id: a grant on `vms` names a project, `proj_` and 20 \
+                 lowercase hex characters, from `hipc account projects list`"
+            )
+        };
+        let not_a_scope = |scope: &str| format!("`{scope}` is not a grant scope: {scopes}");
+        let not_a_level = |level: &str| {
+            format!("`{level}` is not a grant level: use `viewer`, `operator`, or `admin`")
+        };
+        let cases = [
+            ("vms", shape.to_owned()),
+            ("", shape.to_owned()),
+            ("NONE", shape.to_owned()),
+            ("drive=admin", not_a_scope("drive")),
+            ("project=admin", not_a_scope("project")),
+            ("Billing=viewer", not_a_scope("Billing")),
+            ("VMS=admin", not_a_scope("VMS")),
+            ("compute=admin", not_a_scope("compute")),
+            (
+                "billing=operator",
+                "`operator` is not a billing level: use `viewer` or `admin`".to_owned(),
+            ),
+            ("vms=admin@proj_x", not_a_project("proj_x")),
+            ("vms=admin@", not_a_project("")),
+            (
+                "vms=admin@bill_9f8e7d6c5b4a39281706",
+                not_a_project("bill_9f8e7d6c5b4a39281706"),
+            ),
+            ("vms=admin@default", not_a_project("default")),
+            (
+                "billing=admin@proj_0a1b2c3d4e5f60718293",
+                "`proj_0a1b2c3d4e5f60718293` is not a billing account id: a grant on `billing` \
+                 names a billing account, `bill_` and 20 lowercase hex characters, from `hipc \
+                 account billing-accounts list`"
+                    .to_owned(),
+            ),
+            (
+                "network=admin@proj_0a1b2c3d4e5f60718293",
+                "a grant on `network` is account-wide, so it names no project or billing account"
+                    .to_owned(),
+            ),
+            ("vms=owner", not_a_level("owner")),
+            ("vms=Admin", not_a_level("Admin")),
+            ("vms=", not_a_level("")),
+        ];
+        let mut parser = Cli::command();
+        for (value, says) in cases {
+            let refused = grant(value);
+            assert!(refused.is_err(), "{value:?} is a grant");
+            assert_eq!(refused.expect_err("asserted above"), says, "{value:?}");
+            for command in TAKE_A_GRANT {
+                let argv = [command, &["--grant", value]].concat();
+                let (kind, message) = refusal(&mut parser, &argv);
+                assert_eq!(kind, ErrorKind::ValueValidation, "{argv:?}");
+                assert!(message.contains(&says), "{argv:?}: {message}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_grant_reads_its_scope_level_and_target() {
+        assert!(matches!(grant("none"), Ok(GrantArg::NoGrants)));
+        assert!(matches!(
+            grant("compute:*=operator"),
+            Ok(GrantArg::Grant(Grant {
+                scope: "compute:*",
+                level: "operator",
+                target: GrantTarget::Account,
+            }))
+        ));
+        assert!(matches!(
+            grant("vms=admin@proj_0a1b2c3d4e5f60718293"),
+            Ok(GrantArg::Grant(Grant { target: GrantTarget::Project(id), .. }))
+                if id.as_str() == "proj_0a1b2c3d4e5f60718293"
+        ));
+        assert!(matches!(
+            grant("billing=admin@bill_9f8e7d6c5b4a39281706"),
+            Ok(GrantArg::Grant(Grant { level: "admin", target: GrantTarget::Billing(id), .. }))
+                if id.as_str() == "bill_9f8e7d6c5b4a39281706"
+        ));
+    }
+
+    #[test]
+    fn an_invite_email_is_name_at_domain_of_at_most_254_bytes() {
+        let longest = format!("{}@example.com", "a".repeat(242));
+        for good in ["ana@example.com", "a@b.co", &longest] {
+            assert_eq!(email(good).as_deref(), Ok(good));
+        }
+        let too_long = format!("{}@example.com", "a".repeat(243));
+        let mut parser = Cli::command();
+        for bad in [
+            "",
+            "ana",
+            "@example.com",
+            "ana@",
+            "ana@example",
+            "ana@.com",
+            "ana@example.",
+            "ana@b@example.com",
+            "ana bo@example.com",
+            "ana@exa\tmple.com",
+            "ana@example.com\n",
+            &too_long,
+        ] {
+            let says = "an email address is `name@domain`, such as `ana@example.com`";
+            assert_eq!(email(bad), Err(says.to_owned()), "{bad:?}");
+            let (kind, message) = refusal(
+                &mut parser,
+                &["account", "invites", "create", "--email", bad],
+            );
+            assert_eq!(kind, ErrorKind::ValueValidation, "{bad:?}");
+            assert!(message.contains(says), "{bad:?}: {message}");
+        }
+    }
+
+    /// A member or invite id is plain digits; one that reads as a flag is not an id at all.
+    #[test]
+    fn a_bad_member_or_invite_id_is_refused_by_each_command() {
+        let mut parser = Cli::command();
+        for id in ["x", "7/", "1.5", "", "7?x=1", "../8", "-1"] {
+            for (command, says) in [
+                (
+                    ["members", "update", id, "--billing-permission", "true"].as_slice(),
+                    MEMBER_ID,
+                ),
+                (&["members", "delete", id], MEMBER_ID),
+                (&["invites", "revoke", id], INVITE_ID),
+            ] {
+                let argv = [&["account"], command].concat();
+                let (kind, message) = refusal(&mut parser, &argv);
+                if id == "-1" {
+                    assert_eq!(kind, ErrorKind::UnknownArgument, "{argv:?}");
+                } else {
+                    assert_eq!(kind, ErrorKind::ValueValidation, "{argv:?}");
+                    assert!(message.contains(says), "{argv:?}: {message}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_permission_takes_only_true_or_false() {
+        let mut parser = Cli::command();
+        for value in ["yes", "1", "", "TRUE"] {
+            for flag in ["--billing-permission", "--manage-team"] {
+                let argv = ["account", "members", "update", "7", flag, value];
+                let (kind, message) = refusal(&mut parser, &argv);
+                assert_eq!(kind, ErrorKind::InvalidValue, "{argv:?}");
+                assert!(
+                    message.contains("[possible values: true, false]"),
+                    "{argv:?}: {message}"
+                );
+            }
+        }
+    }
+}

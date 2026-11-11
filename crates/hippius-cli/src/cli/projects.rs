@@ -284,3 +284,241 @@ fn quota_limit(value: &str) -> Result<QuotaLimit, String> {
     }
     Ok(QuotaLimit::At(limit))
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory as _;
+    use clap::error::ErrorKind;
+
+    use crate::cli::Cli;
+    use crate::cli::tests::refusal;
+
+    const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
+    const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
+
+    /// Asserts that `parser` refuses each command line of `argv` by its validator, saying `says`.
+    fn refuses(parser: &mut clap::Command, argv: &[&str], says: &str) {
+        let (kind, message) = refusal(parser, argv);
+        assert_eq!(kind, ErrorKind::ValueValidation, "{argv:?}: {message}");
+        assert!(message.contains(says), "{argv:?}: {message}");
+    }
+
+    /// A name is 1 to 64 characters on one line, none invisible, once trimmed, as the console
+    /// checks it, in each command that takes one.
+    #[test]
+    fn a_name_outside_the_console_rule_is_refused() {
+        let long = "x".repeat(65);
+        let too_short_or_long = "a name is one line of 1 to 64 characters";
+        let control = "a name holds no control character or line break, a tab or a newline \
+                       included, since it is shown on one line";
+        let invisible = "a name holds no invisible character, such as a bidi override or a \
+                         zero-width space, since two that look the same would differ";
+        let mut parser = Cli::command();
+        for (name, says) in [
+            ("", too_short_or_long),
+            ("   ", too_short_or_long),
+            (long.as_str(), too_short_or_long),
+            ("two\nlines", control),
+            ("tab\there", control),
+            ("line\u{2028}break", control),
+            ("para\u{2029}graph", control),
+            ("web\u{202e}dorp", invisible),
+            ("w\u{200b}eb", invisible),
+            ("web\u{feff}x", invisible),
+        ] {
+            assert_eq!(
+                super::principal_name(name),
+                Err(says.to_owned()),
+                "{name:?}"
+            );
+            for command in [
+                &["projects", "create"][..],
+                &["projects", "update", PROJECT],
+                &["billing-accounts", "create"],
+                &["billing-accounts", "update", BILLING],
+            ] {
+                let argv = [&["account"], command, &["--name", name]].concat();
+                refuses(&mut parser, &argv, says);
+            }
+        }
+        let fits = "é".repeat(64);
+        assert_eq!(super::principal_name(&format!(" {fits} ")), Ok(fits));
+    }
+
+    /// Every id goes into the path, so a malformed one, or `default`, which names the account
+    /// itself and no project or billing account these routes take, is refused at parse time.
+    #[test]
+    fn a_malformed_or_default_id_is_refused_by_each_command() {
+        let project = "a project id is `proj_` and 20 lowercase hex characters, from `hipc \
+                       account projects list`; the Default project has none";
+        let mut parser = Cli::command();
+        for id in [
+            "default",
+            "proj_x",
+            "proj_0A1B2C3D4E5F60718293",
+            "../x",
+            BILLING,
+        ] {
+            for command in [
+                &["update", id, "--name", "x"][..],
+                &["delete", id],
+                &["transfer", id, "--to-account", "acct_ffffffffffffffffffff"],
+                &["budget", "get", id],
+                &["budget", "delete", id],
+                &["quota", "get", id],
+                &["quota", "update", id, "--vms", "1"],
+                &[
+                    "budget",
+                    "update",
+                    id,
+                    "--monthly-limit",
+                    "1",
+                    "--alert-at",
+                    "50",
+                    "--block-launches",
+                    "true",
+                ],
+            ] {
+                let argv = [&["account", "projects"], command].concat();
+                refuses(&mut parser, &argv, project);
+            }
+        }
+        for id in ["default", "bill_x", PROJECT] {
+            refuses(
+                &mut parser,
+                &["account", "billing-accounts", "update", id, "--name", "x"],
+                "a billing account id is `bill_` and 20 lowercase hex characters, from `hipc \
+                 account billing-accounts list`; the Default billing account has none",
+            );
+        }
+        for id in ["self", "acct_x", "ACCT_0123456789ABCDEF0123"] {
+            refuses(
+                &mut parser,
+                &[
+                    "account",
+                    "projects",
+                    "transfer",
+                    PROJECT,
+                    "--to-account",
+                    id,
+                ],
+                "an account id is `acct_` and 20 lowercase hex characters",
+            );
+        }
+        for id in ["x", "1.5", "0x5"] {
+            for verb in ["accept", "decline", "cancel"] {
+                refuses(
+                    &mut parser,
+                    &["account", "project-transfers", verb, id],
+                    "a transfer id is a whole number, from `hipc account project-transfers list`",
+                );
+            }
+        }
+        refuses(
+            &mut parser,
+            &[
+                "account",
+                "project-transfers",
+                "accept",
+                "5",
+                "--bill-to",
+                "bill_x",
+            ],
+            "a billing account is `default`, or `bill_` and 20 lowercase hex characters, from \
+             `hipc account billing-accounts list`",
+        );
+    }
+
+    /// The console's rules on a budget: a limit above 0 to the cent, thresholds of 1 to 100,
+    /// and the launch block given.
+    #[test]
+    fn budget_update_refuses_what_the_console_refuses() {
+        let mut parser = Cli::command();
+        let budget = |flags: &str| -> Vec<String> {
+            ["account", "projects", "budget", "update", PROJECT]
+                .into_iter()
+                .chain(flags.split(' '))
+                .map(str::to_owned)
+                .collect()
+        };
+        for (flags, kind, says) in [
+            (
+                "--monthly-limit 0 --alert-at 50 --block-launches true",
+                ErrorKind::ValueValidation,
+                "a monthly limit is more than `0`",
+            ),
+            (
+                "--monthly-limit 0.00 --alert-at 50 --block-launches true",
+                ErrorKind::ValueValidation,
+                "a monthly limit is more than `0`",
+            ),
+            (
+                "--monthly-limit 1.234 --alert-at 50 --block-launches true",
+                ErrorKind::ValueValidation,
+                "an amount is US dollars to the cent, such as `50` or `12.50`",
+            ),
+            (
+                "--monthly-limit 1 --alert-at 0 --block-launches true",
+                ErrorKind::ValueValidation,
+                "0 is not in 1..=100",
+            ),
+            (
+                "--monthly-limit 1 --alert-at 101 --block-launches true",
+                ErrorKind::ValueValidation,
+                "101 is not in 1..=100",
+            ),
+            (
+                "--monthly-limit 1 --alert-at 50 --block-launches maybe",
+                ErrorKind::InvalidValue,
+                "--block-launches",
+            ),
+            (
+                "--monthly-limit 1 --alert-at 50",
+                ErrorKind::MissingRequiredArgument,
+                "--block-launches",
+            ),
+            (
+                "--monthly-limit 1 --block-launches true",
+                ErrorKind::MissingRequiredArgument,
+                "--alert-at",
+            ),
+            (
+                "--alert-at 50 --block-launches true",
+                ErrorKind::MissingRequiredArgument,
+                "--monthly-limit",
+            ),
+        ] {
+            let argv = budget(flags);
+            let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+            let (refused_as, message) = refusal(&mut parser, &argv);
+            assert_eq!(refused_as, kind, "{flags}: {message}");
+            assert!(message.contains(says), "{flags}: {message}");
+        }
+    }
+
+    /// A quota limit is a whole number up to the largest signed 32-bit integer, or `none`.
+    #[test]
+    fn a_quota_limit_is_a_count_or_none() {
+        let mut parser = Cli::command();
+        for (value, says) in [
+            ("1.5", "a limit is a whole number, such as `5`, or `none`"),
+            ("five", "a limit is a whole number, such as `5`, or `none`"),
+            ("None", "a limit is a whole number, such as `5`, or `none`"),
+            ("", "a limit is a whole number, such as `5`, or `none`"),
+            (
+                "18446744073709551616",
+                "a limit is a whole number, such as `5`, or `none`",
+            ),
+            ("2147483648", "a limit is at most `2147483647`"),
+            ("18446744073709551615", "a limit is at most `2147483647`"),
+        ] {
+            refuses(
+                &mut parser,
+                &[
+                    "account", "projects", "quota", "update", PROJECT, "--vcpus", value,
+                ],
+                says,
+            );
+        }
+    }
+}

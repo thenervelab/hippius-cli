@@ -930,8 +930,20 @@ fn typed_route(route: &str) -> String {
 #[cfg(test)]
 mod tests {
     use clap::CommandFactory as _;
+    use clap::error::ErrorKind;
 
     use super::*;
+
+    /// How `parser` refuses `hipc` with `argv`: the kind of refusal, and clap's message, which
+    /// holds a validator's refusal as it is. One parser serves a whole table, since building it
+    /// costs about 90 ms in a debug build.
+    pub(super) fn refusal(parser: &mut clap::Command, argv: &[&str]) -> (ErrorKind, String) {
+        let parsed =
+            parser.try_get_matches_from_mut(std::iter::once("hipc").chain(argv.iter().copied()));
+        assert!(parsed.is_err(), "{argv:?} parses");
+        let error = parsed.expect_err("asserted above");
+        (error.kind(), error.to_string())
+    }
 
     /// Every value of every enum whose `code` the API receives goes on the wire as the word the
     /// command line takes for it, so a renamed variant cannot send a word the help does not
