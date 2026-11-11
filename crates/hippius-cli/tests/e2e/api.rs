@@ -38,6 +38,23 @@ fn a_2xx_body_is_printed_byte_for_byte() {
     assert_eq!(run.stderr(), "");
 }
 
+/// A `HEAD` answer has no body (RFC 9110, section 9.3.2), and the HTTP library reads none
+/// even when a server sends one, so a `HEAD` of a route whose `GET` reveals a secret prints
+/// nothing and needs no `--reveal`.
+#[test]
+fn a_head_prints_no_body_even_when_the_server_sends_one() {
+    let server = Server::start(vec![route(
+        "HEAD",
+        "/api/objectstore/master-tokens/",
+        Reply::json(200, r#"{"secret":"s3cr3t-master-token"}"#),
+    )]);
+    let run =
+        Hipc::against(&Home::new(), &server).run(&["api", "HEAD", "/objectstore/master-tokens/"]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(run.stdout(), "");
+    assert_eq!(run.stderr(), "");
+}
+
 /// An answer of exactly 32 MiB is read, and only a larger one is `internal`.
 #[test]
 fn a_body_of_exactly_32_mib_is_read_and_one_byte_more_is_not() {
