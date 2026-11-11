@@ -1,10 +1,11 @@
 //! `hipc s3 buckets objects list`: a bucket's objects, read from the control plane, one page
 //! at a time or every page with `--all`. No object bytes move.
 
+use hippius::routes::s3;
 use serde_json::{Value, json};
 
 use crate::common::{
-    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Route, Run, Server, draft, route,
+    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Route, Run, Server, draft, route, route_of,
 };
 
 const PATH: &str = "/api/objectstore/buckets/photos/objects/";
@@ -419,9 +420,9 @@ fn bad_flags_are_usage_before_any_request_or_token() {
 
 #[test]
 fn a_missing_bucket_is_not_found_with_a_hint_to_list_the_buckets() {
-    let server = Server::start(vec![route(
-        "GET",
-        PATH,
+    let server = Server::start(vec![route_of(
+        &s3::OBJECTS,
+        [&"photos"],
         Reply::json(404, r#"{"detail":"Bucket not found"}"#),
     )]);
     let error = hipc(&server, &["photos"]).fails(1, "not_found");

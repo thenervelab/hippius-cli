@@ -1,9 +1,10 @@
 //! `hipc hub plans`, `hipc hub subscription`, `hipc hub namespace`, and `hipc hub usage`.
 
+use hippius::routes::hub;
 use serde_json::{Value, json};
 
 use crate::common::{
-    self, Hipc, Home, MEMBER, Reply, Route, Run, Server, draft, hub_provision_hint, route,
+    self, Hipc, Home, MEMBER, Reply, Route, Run, Server, draft, hub_provision_hint, route, route_of,
 };
 
 const PLANS: &str = concat!(
@@ -15,15 +16,11 @@ const PLANS: &str = concat!(
 const SUBMITTED: &str = r#"{"submitted":true,"extrinsic_hash":"0xab"}"#;
 
 fn plans() -> Route {
-    route("GET", "/api/registry/plans/", Reply::json(200, PLANS))
+    route_of(&hub::PLANS, [], Reply::json(200, PLANS))
 }
 
 fn subscriptions(body: &str) -> Route {
-    route(
-        "GET",
-        "/api/registry/subscriptions/",
-        Reply::json(200, body),
-    )
+    route_of(&hub::SUBSCRIPTIONS, [], Reply::json(200, body))
 }
 
 fn subscribe(server: &Server, extra: &[&str]) -> Run {
@@ -45,9 +42,9 @@ fn plans_need_no_token_and_are_an_envelope() {
 
 #[test]
 fn a_failing_catalog_is_its_error() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/plans/",
+    let server = Server::start(vec![route_of(
+        &hub::PLANS,
+        [],
         Reply::json(503, r#"{"error":"down"}"#),
     )]);
     let error = Hipc::against(&Home::new(), &server)
@@ -150,11 +147,7 @@ fn subscribe_by_name_in_any_case_posts_the_plan_id() {
     let server = Server::start(vec![
         plans(),
         subscriptions("[]"),
-        route(
-            "POST",
-            "/api/registry/subscribe/",
-            Reply::json(201, SUBMITTED),
-        ),
+        route_of(&hub::SUBSCRIBE, [], Reply::json(201, SUBMITTED)),
     ]);
     let doc = subscribe(&server, &["--plan", "bUiLdEr", "--yes"]).ok();
     assert_eq!(doc, serde_json::from_str::<Value>(SUBMITTED).unwrap());
@@ -174,11 +167,7 @@ fn subscribe_by_numeric_id_and_says_submitted_in_text_mode() {
     let server = Server::start(vec![
         plans(),
         subscriptions("[]"),
-        route(
-            "POST",
-            "/api/registry/subscribe/",
-            Reply::json(201, SUBMITTED),
-        ),
+        route_of(&hub::SUBSCRIBE, [], Reply::json(201, SUBMITTED)),
     ]);
     let run = Hipc::against(&Home::new(), &server).run(&[
         "--output",
@@ -213,11 +202,7 @@ fn an_active_free_or_inactive_plan_does_not_block_a_subscribe() {
     let server = Server::start(vec![
         plans(),
         subscriptions(rows),
-        route(
-            "POST",
-            "/api/registry/subscribe/",
-            Reply::json(201, SUBMITTED),
-        ),
+        route_of(&hub::SUBSCRIBE, [], Reply::json(201, SUBMITTED)),
     ]);
     subscribe(&server, &["--plan", "pro", "--yes"]).ok();
     assert!(!server.calls().iter().any(|m| m.starts_with("DELETE")));
@@ -253,21 +238,9 @@ fn replace_cancels_every_active_paid_plan_then_subscribes() {
     let server = Server::start(vec![
         plans(),
         subscriptions(rows),
-        route(
-            "DELETE",
-            "/api/registry/subscriptions/8/",
-            Reply::json(204, ""),
-        ),
-        route(
-            "DELETE",
-            "/api/registry/subscriptions/9/",
-            Reply::json(204, ""),
-        ),
-        route(
-            "POST",
-            "/api/registry/subscribe/",
-            Reply::json(201, SUBMITTED),
-        ),
+        route_of(&hub::SUBSCRIPTION_CANCEL, [&8], Reply::json(204, "")),
+        route_of(&hub::SUBSCRIPTION_CANCEL, [&9], Reply::json(204, "")),
+        route_of(&hub::SUBSCRIBE, [], Reply::json(201, SUBMITTED)),
     ]);
     subscribe(&server, &["--plan", "builder", "--replace", "--yes"]).ok();
     assert_eq!(
@@ -287,14 +260,10 @@ fn a_post_failing_after_a_cancel_is_a_partial_failure_naming_the_cancel() {
     let server = Server::start(vec![
         plans(),
         subscriptions(r#"[{"subscription_id":8,"plan_id":3,"active":true}]"#),
-        route(
-            "DELETE",
-            "/api/registry/subscriptions/8/",
-            Reply::json(204, ""),
-        ),
-        route(
-            "POST",
-            "/api/registry/subscribe/",
+        route_of(&hub::SUBSCRIPTION_CANCEL, [&8], Reply::json(204, "")),
+        route_of(
+            &hub::SUBSCRIBE,
+            [],
             Reply::json(402, r#"{"error":"Not enough credits"}"#),
         ),
     ]);
@@ -333,14 +302,10 @@ fn a_partial_failure_in_text_names_each_part_once() {
     let server = Server::start(vec![
         plans(),
         subscriptions(r#"[{"subscription_id":8,"plan_id":3,"active":true}]"#),
-        route(
-            "DELETE",
-            "/api/registry/subscriptions/8/",
-            Reply::json(204, ""),
-        ),
-        route(
-            "POST",
-            "/api/registry/subscribe/",
+        route_of(&hub::SUBSCRIPTION_CANCEL, [&8], Reply::json(204, "")),
+        route_of(
+            &hub::SUBSCRIBE,
+            [],
             Reply::json(402, r#"{"error":"Not enough credits"}"#),
         ),
     ]);
@@ -378,14 +343,10 @@ fn a_second_cancel_failing_is_a_partial_failure_and_nothing_is_bought() {
             r#"[{"subscription_id":8,"plan_id":3,"active":true},"#,
             r#"{"subscription_id":9,"plan_id":2,"active":true}]"#
         )),
-        route(
-            "DELETE",
-            "/api/registry/subscriptions/8/",
-            Reply::json(204, ""),
-        ),
-        route(
-            "DELETE",
-            "/api/registry/subscriptions/9/",
+        route_of(&hub::SUBSCRIPTION_CANCEL, [&8], Reply::json(204, "")),
+        route_of(
+            &hub::SUBSCRIPTION_CANCEL,
+            [&9],
             Reply::json(409, r#"{"error":"Already cancelling"}"#),
         ),
     ]);
@@ -404,9 +365,9 @@ fn the_first_cancel_failing_is_that_error_with_no_side_effects() {
     let server = Server::start(vec![
         plans(),
         subscriptions(r#"[{"subscription_id":8,"plan_id":3,"active":true}]"#),
-        route(
-            "DELETE",
-            "/api/registry/subscriptions/8/",
+        route_of(
+            &hub::SUBSCRIPTION_CANCEL,
+            [&8],
             Reply::json(409, r#"{"error":"Already cancelling"}"#),
         ),
     ]);
@@ -420,9 +381,9 @@ fn the_first_cancel_failing_is_that_error_with_no_side_effects() {
 fn a_failing_read_stops_the_subscribe_before_any_write() {
     let server = Server::start(vec![
         plans(),
-        route(
-            "GET",
-            "/api/registry/subscriptions/",
+        route_of(
+            &hub::SUBSCRIPTIONS,
+            [],
             Reply::json(503, r#"{"error":"down"}"#),
         ),
     ]);
@@ -566,9 +527,9 @@ fn subscribe_dry_run_by_name_needs_no_token_and_prints_text() {
 
 #[test]
 fn cancel_deletes_once_and_names_the_subscription_on_204() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/registry/subscriptions/7/",
+    let server = Server::start(vec![route_of(
+        &hub::SUBSCRIPTION_CANCEL,
+        [&7],
         Reply::json(204, ""),
     )]);
     let home = Home::new();
@@ -588,9 +549,9 @@ fn cancel_deletes_once_and_names_the_subscription_on_204() {
 
 #[test]
 fn cancel_prints_the_server_body_when_there_is_one() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/registry/subscriptions/7/",
+    let server = Server::start(vec![route_of(
+        &hub::SUBSCRIPTION_CANCEL,
+        [&7],
         Reply::json(200, r#"{"cancelled":true,"grace_until":"2026-11-01"}"#),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -662,9 +623,9 @@ fn bad_namespace_names_are_usage_without_a_request() {
     }
     assert!(server.requests().is_empty());
     let longest = "a".repeat(63);
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/namespaces/check/",
+    let server = Server::start(vec![route_of(
+        &hub::NAMESPACE_CHECK,
+        [],
         Reply::json(200, r#"{"available":true}"#),
     )]);
     Hipc::against(&Home::new(), &server)
@@ -674,9 +635,9 @@ fn bad_namespace_names_are_usage_without_a_request() {
 
 #[test]
 fn status_is_the_status_object() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/provision/status/",
+    let server = Server::start(vec![route_of(
+        &hub::NAMESPACE_STATUS,
+        [],
         Reply::json(
             200,
             r#"{"status":"provisioning","namespace":"acme","robot":{"robot_secret":"s3cr3t"}}"#,
@@ -692,9 +653,9 @@ fn status_is_the_status_object() {
 
 #[test]
 fn namespace_get_strips_the_robot_secret() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/me/",
+    let server = Server::start(vec![route_of(
+        &hub::NAMESPACE,
+        [],
         Reply::json(
             200,
             r#"{"namespace":"acme","robot_name":"robot$acme","robot_secret":"s3cr3t-robot"}"#,
@@ -710,9 +671,9 @@ fn namespace_get_strips_the_robot_secret() {
 
 #[test]
 fn namespace_get_strips_a_nested_robot_secret_too() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/me/",
+    let server = Server::start(vec![route_of(
+        &hub::NAMESPACE,
+        [],
         Reply::json(
             200,
             concat!(
@@ -759,9 +720,9 @@ fn namespace_reads_strip_every_secret_spelling() {
 /// 403 keeps no hint.
 #[test]
 fn namespace_get_without_a_project_hints_at_namespace_create() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/me/",
+    let server = Server::start(vec![route_of(
+        &hub::NAMESPACE,
+        [],
         Reply::json(
             403,
             r#"{"detail":"You must call /api/registry/provision/ first."}"#,
@@ -799,11 +760,7 @@ fn namespace_get_without_a_project_hints_at_namespace_create() {
             "owner_only",
         ),
     ] {
-        let server = Server::start(vec![route(
-            "GET",
-            "/api/registry/me/",
-            Reply::json(403, body),
-        )]);
+        let server = Server::start(vec![route_of(&hub::NAMESPACE, [], Reply::json(403, body))]);
         let error = Hipc::against(&Home::new(), &server)
             .run(&["hub", "namespace", "get"])
             .fails(1, code);
@@ -814,11 +771,7 @@ fn namespace_get_without_a_project_hints_at_namespace_create() {
 
 #[test]
 fn namespace_get_passes_a_non_object_through() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/me/",
-        Reply::json(200, "[1]"),
-    )]);
+    let server = Server::start(vec![route_of(&hub::NAMESPACE, [], Reply::json(200, "[1]"))]);
     let doc = Hipc::against(&Home::new(), &server)
         .run(&["hub", "namespace", "get"])
         .ok();
@@ -853,9 +806,9 @@ fn a_bad_namespace_is_usage_before_the_reveal_and_confirmation_checks() {
 #[test]
 fn namespace_create_prints_the_one_time_secret_on_stdout() {
     let provision = |answer: &'static str| {
-        let server = Server::start(vec![route(
-            "POST",
-            "/api/registry/provision/",
+        let server = Server::start(vec![route_of(
+            &hub::NAMESPACE_CREATE,
+            [],
             Reply::json(201, answer),
         )]);
         let run = Hipc::against(&Home::new(), &server).run(&[
@@ -911,9 +864,9 @@ fn namespace_create_prints_the_one_time_secret_on_stdout() {
 /// the error is `partial` and names the rotate that issues a new secret.
 #[test]
 fn namespace_create_refuses_an_answer_with_another_login_command() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/registry/provision/",
+    let server = Server::start(vec![route_of(
+        &hub::NAMESPACE_CREATE,
+        [],
         Reply::json(
             201,
             r#"{"robot_name":"robot$acme+push","robot_secret":"s3cr3t-robot","help":"docker login -p s3cr3t-robot"}"#,
@@ -949,9 +902,9 @@ fn namespace_create_refuses_an_answer_with_another_login_command() {
 /// A secret issued under another of its names is not followed by a note that none was.
 #[test]
 fn namespace_create_with_a_secret_under_another_name_notes_no_missing_secret() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/registry/provision/",
+    let server = Server::start(vec![route_of(
+        &hub::NAMESPACE_CREATE,
+        [],
         Reply::json(201, r#"{"status":"active","Password":"s3cr3t"}"#),
     )]);
     let run = Hipc::against(&Home::new(), &server).run(&[
@@ -974,9 +927,9 @@ fn namespace_create_with_a_secret_under_another_name_notes_no_missing_secret() {
 
 #[test]
 fn namespace_create_without_a_secret_succeeds_and_text_mode_names_the_rotate() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/registry/provision/",
+    let server = Server::start(vec![route_of(
+        &hub::NAMESPACE_CREATE,
+        [],
         Reply::json(202, r#"{"status":"provisioning","idempotent":true}"#),
     )]);
     let args = ["hub", "namespace", "create", "acme", "--reveal", "--yes"];
@@ -1012,9 +965,9 @@ fn namespace_create_without_a_secret_succeeds_and_text_mode_names_the_rotate() {
 
 #[test]
 fn namespace_create_402_hints_at_the_balance_gate_and_409_is_conflict() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/registry/provision/",
+    let server = Server::start(vec![route_of(
+        &hub::NAMESPACE_CREATE,
+        [],
         Reply::json(402, r#"{"error":"Insufficient balance"}"#),
     )]);
     let args = ["hub", "namespace", "create", "acme", "--reveal", "--yes"];
@@ -1028,9 +981,9 @@ fn namespace_create_402_hints_at_the_balance_gate_and_409_is_conflict() {
          `hipc billing balance` to see yours, top it up with `hipc billing top-up`, then run \
          the command again"
     );
-    let limit = Server::start(vec![route(
-        "POST",
-        "/api/registry/provision/",
+    let limit = Server::start(vec![route_of(
+        &hub::NAMESPACE_CREATE,
+        [],
         Reply::json(409, r#"{"error":"Project limit reached"}"#),
     )]);
     let error = Hipc::against(&Home::new(), &limit)
@@ -1085,12 +1038,8 @@ fn replace_with_post(reply: Reply) -> Server {
     Server::start(vec![
         plans(),
         subscriptions(r#"[{"subscription_id":8,"plan_id":3,"active":true}]"#),
-        route(
-            "DELETE",
-            "/api/registry/subscriptions/8/",
-            Reply::json(204, ""),
-        ),
-        route("POST", "/api/registry/subscribe/", reply),
+        route_of(&hub::SUBSCRIPTION_CANCEL, [&8], Reply::json(204, "")),
+        route_of(&hub::SUBSCRIBE, [], reply),
     ])
 }
 
@@ -1157,11 +1106,7 @@ fn an_unreadable_subscription_row_is_refused_before_any_write() {
     let server = Server::start(vec![
         plans(),
         subscriptions(r#"[{"plan_id":3,"active":false}]"#),
-        route(
-            "POST",
-            "/api/registry/subscribe/",
-            Reply::json(201, SUBMITTED),
-        ),
+        route_of(&hub::SUBSCRIBE, [], Reply::json(201, SUBMITTED)),
     ]);
     subscribe(&server, &["--plan", "builder", "--yes"]).ok();
 }
@@ -1180,11 +1125,7 @@ fn a_second_subscribe_inside_the_sync_window_is_refused_even_with_replace() {
     let server = Server::start(vec![
         plans(),
         subscriptions("[]"),
-        route(
-            "POST",
-            "/api/registry/subscribe/",
-            Reply::json(201, SUBMITTED),
-        ),
+        route_of(&hub::SUBSCRIBE, [], Reply::json(201, SUBMITTED)),
     ]);
     let home = Home::new();
     subscribe_in(&home, &server, &["--plan", "builder", "--yes"]).ok();
@@ -1261,7 +1202,7 @@ fn scripted(listed: &[u64], deletes: Vec<(u64, Reply)>, post: Reply) -> Server {
         let path = format!("/api/registry/subscriptions/{id}/");
         routes.push(route("DELETE", &path, reply));
     }
-    routes.push(route("POST", "/api/registry/subscribe/", post));
+    routes.push(route_of(&hub::SUBSCRIBE, [], post));
     Server::start(routes)
 }
 
@@ -1524,18 +1465,14 @@ fn an_old_marker_does_not_block_and_a_refused_subscribe_clears_its_own() {
     let accepting = Server::start(vec![
         plans(),
         subscriptions("[]"),
-        route(
-            "POST",
-            "/api/registry/subscribe/",
-            Reply::json(201, SUBMITTED),
-        ),
+        route_of(&hub::SUBSCRIBE, [], Reply::json(201, SUBMITTED)),
     ]);
     let refusing = Server::start(vec![
         plans(),
         subscriptions("[]"),
-        route(
-            "POST",
-            "/api/registry/subscribe/",
+        route_of(
+            &hub::SUBSCRIBE,
+            [],
             Reply::json(402, r#"{"error":"Not enough credits"}"#),
         ),
     ]);
@@ -1556,11 +1493,7 @@ fn a_marker_from_a_clock_that_stepped_back_still_blocks() {
     let server = Server::start(vec![
         plans(),
         subscriptions("[]"),
-        route(
-            "POST",
-            "/api/registry/subscribe/",
-            Reply::json(201, SUBMITTED),
-        ),
+        route_of(&hub::SUBSCRIBE, [], Reply::json(201, SUBMITTED)),
     ]);
     let home = Home::new();
     subscribe_in(&home, &server, &["--plan", "builder", "--yes"]).ok();
@@ -1596,11 +1529,7 @@ fn a_subscribe_that_may_have_landed_keeps_its_marker() {
     let server = Server::start(vec![
         plans(),
         subscriptions("[]"),
-        route(
-            "POST",
-            "/api/registry/subscribe/",
-            Reply::json(503, r#"{"error":"down"}"#),
-        ),
+        route_of(&hub::SUBSCRIBE, [], Reply::json(503, r#"{"error":"down"}"#)),
     ]);
     let home = Home::new();
     subscribe_in(&home, &server, &["--plan", "builder", "--yes"]).fails(1, "unavailable");
@@ -1616,11 +1545,7 @@ fn another_token_on_the_same_profile_is_not_blocked() {
     let server = Server::start(vec![
         plans(),
         subscriptions("[]"),
-        route(
-            "POST",
-            "/api/registry/subscribe/",
-            Reply::json(201, SUBMITTED),
-        ),
+        route_of(&hub::SUBSCRIBE, [], Reply::json(201, SUBMITTED)),
     ]);
     let home = Home::new();
     subscribe_in(&home, &server, &["--plan", "builder", "--yes"]).ok();
@@ -1662,9 +1587,9 @@ fn a_marker_that_cannot_be_written_sends_no_subscribe() {
 /// withheld, and `hipc` prints its own in its place.
 #[test]
 fn namespace_robot_prints_the_login_without_any_secret() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/me/robot/",
+    let server = Server::start(vec![route_of(
+        &hub::ROBOT,
+        [],
         Reply::json(
             200,
             concat!(
@@ -1712,9 +1637,9 @@ fn namespace_robot_drops_every_command_field_the_server_sends() {
             "Command": command,
             "nested": {"docker_login_cmd": command, "kept": "registry.hippius.com"},
         });
-        let server = Server::start(vec![route(
-            "GET",
-            "/api/registry/me/robot/",
+        let server = Server::start(vec![route_of(
+            &hub::ROBOT,
+            [],
             Reply::json(200, &body.to_string()),
         )]);
         let built = "docker login registry.hippius.com -u 'robot$acme+ci' --password-stdin";
@@ -1760,9 +1685,9 @@ fn namespace_robot_drops_secret_keys_in_any_case() {
         "env": {"DOCKER_PASSWORD": "S3CRET", "HOME": "/root"},
         "description": "pass -path or -project to the client",
     });
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/me/robot/",
+    let server = Server::start(vec![route_of(
+        &hub::ROBOT,
+        [],
         Reply::json(200, &body.to_string()),
     )]);
     let run = Hipc::against(&Home::new(), &server).run(&["hub", "namespace", "robot", "get"]);
@@ -1793,9 +1718,9 @@ fn namespace_robot_refuses_any_other_docker_login_command() {
         json!("echo S3CRET | docker login -u r --password-stdin"),
         json!({"argv": ["docker", "login", "-u", "r", "--password", "S3CRET"]}),
     ] {
-        let server = Server::start(vec![route(
-            "GET",
-            "/api/registry/me/robot/",
+        let server = Server::start(vec![route_of(
+            &hub::ROBOT,
+            [],
             Reply::json(200, &body.to_string()),
         )]);
         let run = Hipc::against(&Home::new(), &server).run(&["hub", "namespace", "robot", "get"]);
@@ -1815,9 +1740,9 @@ fn namespace_robot_refuses_any_other_docker_login_command() {
         json!({"env": {"DOCKER_PASSWORD": "S3CRET"}, "command": ["docker", "login", "-u", "r"]}),
         json!({"login_cmd": "ZG9ja2VyIGxvZ2luIC1wIFMzQ1JFVA=="}),
     ] {
-        let server = Server::start(vec![route(
-            "GET",
-            "/api/registry/me/robot/",
+        let server = Server::start(vec![route_of(
+            &hub::ROBOT,
+            [],
             Reply::json(200, &body.to_string()),
         )]);
         let run = Hipc::against(&Home::new(), &server).run(&["hub", "namespace", "robot", "get"]);
@@ -1829,9 +1754,9 @@ fn namespace_robot_refuses_any_other_docker_login_command() {
 /// Without a robot name in the answer, `hipc` has no login to build a command for.
 #[test]
 fn namespace_robot_without_a_name_has_a_null_login_command() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/me/robot/",
+    let server = Server::start(vec![route_of(
+        &hub::ROBOT,
+        [],
         Reply::json(200, r#"{"expires_at":null,"username":7}"#),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -1854,11 +1779,7 @@ fn namespace_robot_refuses_a_login_command_that_passes_a_password() {
         r#"{"argv":["docker","login","-u","r","--password","s3cr3t"]}"#,
         r#"{"argv":["docker","login","-u","r","--password=s3cr3t"]}"#,
     ] {
-        let server = Server::start(vec![route(
-            "GET",
-            "/api/registry/me/robot/",
-            Reply::json(200, body),
-        )]);
+        let server = Server::start(vec![route_of(&hub::ROBOT, [], Reply::json(200, body))]);
         let run = Hipc::against(&Home::new(), &server)
             .env("HIPPIUS_PROFILE", "work")
             .run(&["hub", "namespace", "robot", "get"]);
@@ -1883,11 +1804,7 @@ fn namespace_robot_refuses_a_login_command_that_passes_a_password() {
 #[test]
 fn namespace_robot_refusal_joins_a_flag_shaped_profile_to_its_flag() {
     let body = r#"{"argv":["docker","login","-u","r","-p","s3cr3t"]}"#;
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/me/robot/",
-        Reply::json(200, body),
-    )]);
+    let server = Server::start(vec![route_of(&hub::ROBOT, [], Reply::json(200, body))]);
     let error = Hipc::against(&Home::new(), &server)
         .env("HIPPIUS_PROFILE", "-work")
         .run(&["hub", "namespace", "robot", "get"])
@@ -1904,9 +1821,9 @@ fn namespace_robot_refusal_joins_a_flag_shaped_profile_to_its_flag() {
 }
 #[test]
 fn namespace_robot_without_a_project_hints_at_namespace_create() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/me/robot/",
+    let server = Server::start(vec![route_of(
+        &hub::ROBOT,
+        [],
         Reply::json(
             403,
             r#"{"detail":"You must call /api/registry/provision/ first."}"#,
@@ -1965,11 +1882,7 @@ fn usage_is_the_usage_object_as_sent() {
         r#""repo_count":2,"artifact_count":null},"#,
         r#""history":[{"date":"2026-10-28","storage_used_bytes":5}]}"#
     );
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/usage/",
-        Reply::json(200, body),
-    )]);
+    let server = Server::start(vec![route_of(&hub::USAGE, [], Reply::json(200, body))]);
     let run = Hipc::against(&Home::new(), &server).run(&["hub", "usage"]);
     // A number past `u64` keeps its digits.
     assert!(
@@ -2025,9 +1938,9 @@ fn usage_by_repository_is_an_envelope() {
             json!({"items": [item], "next_page_token": null}),
         ),
     ] {
-        let server = Server::start(vec![route(
-            "GET",
-            "/api/registry/usage/repositories/",
+        let server = Server::start(vec![route_of(
+            &hub::USAGE_BY_REPOSITORY,
+            [],
             Reply::json(200, body),
         )]);
         let doc = Hipc::against(&Home::new(), &server)
@@ -2041,9 +1954,9 @@ fn usage_by_repository_is_an_envelope() {
 /// print a short list as if it were complete.
 #[test]
 fn usage_by_repository_refuses_a_second_page() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/usage/repositories/",
+    let server = Server::start(vec![route_of(
+        &hub::USAGE_BY_REPOSITORY,
+        [],
         Reply::json(
             200,
             concat!(
@@ -2066,9 +1979,9 @@ fn a_failure_after_a_split_config_link_lists_the_warning_beside_the_error() {
     let refusing = Server::start(vec![
         plans(),
         subscriptions("[]"),
-        route(
-            "POST",
-            "/api/registry/subscribe/",
+        route_of(
+            &hub::SUBSCRIBE,
+            [],
             Reply::json(402, r#"{"error":"Not enough credits"}"#),
         ),
     ]);

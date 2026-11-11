@@ -1,10 +1,12 @@
 //! `hipc hub repositories` and `hipc hub artifacts`: the registry's repositories and the
 //! artifacts in them.
 
+use hippius::routes::hub;
 use serde_json::{Value, json};
 
 use crate::common::{
     Hipc, Home, MEMBER, Reply, Server, draft, hub_provision_hint, one_request_dry_run, route,
+    route_of,
 };
 
 const REPOSITORY: &str = r#"{"id":4,"name":"acme/app","artifact_count":2,"pull_count":9}"#;
@@ -17,9 +19,9 @@ const ARTIFACT: &str = concat!(
 const NO_PROJECT: &str = r#"{"detail":"You must call /api/registry/provision/ first."}"#;
 
 fn repositories(body: &str) -> Server {
-    Server::start(vec![route(
-        "GET",
-        "/api/registry/repositories/",
+    Server::start(vec![route_of(
+        &hub::REPOSITORIES,
+        [],
         Reply::json(200, body),
     )])
 }
@@ -127,9 +129,9 @@ fn repositories_get_passes_over_a_row_without_a_name() {
 /// console sends it.
 #[test]
 fn artifacts_list_reads_the_repository_path() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/repositories/acme/team/app/artifacts/",
+    let server = Server::start(vec![route_of(
+        &hub::ARTIFACTS,
+        [&"acme/team/app"],
         Reply::json(200, &format!(r#"{{"count":1,"results":[{ARTIFACT}]}}"#)),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -155,9 +157,9 @@ fn artifacts_get_takes_a_tag_or_a_digest() {
 
 #[test]
 fn an_artifact_the_server_lacks_hints_at_the_list() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/repositories/acme/app/artifacts/v9/",
+    let server = Server::start(vec![route_of(
+        &hub::ARTIFACT,
+        [&"acme/app", &"v9"],
         Reply::json(404, r#"{"detail":"Not found."}"#),
     )]);
     let error = Hipc::against(&Home::new(), &server)
@@ -276,9 +278,9 @@ fn a_confirmed_delete_sends_one_delete_and_prints_what_went() {
 /// A body on the 2xx is printed as sent, in place of the document `hipc` writes for a 204.
 #[test]
 fn a_delete_that_answers_a_body_prints_it() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/registry/repositories/acme/app/",
+    let server = Server::start(vec![route_of(
+        &hub::REPOSITORY_DELETE,
+        [&"acme/app"],
         Reply::json(200, r#"{"deleted":"acme/app"}"#),
     )]);
     let doc = Hipc::against(&Home::new(), &server)

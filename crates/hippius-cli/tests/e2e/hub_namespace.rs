@@ -3,9 +3,10 @@
 //! secret, which needs `--reveal` (tenet 9) and keeps every `docker login` command the server
 //! sends off stdout. Both need `--yes`, and `/api/registry/` refuses a membership.
 
+use hippius::routes::hub;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, route_of};
 
 const PUBLICITY: &str = "/api/registry/me/publicity/";
 
@@ -15,11 +16,11 @@ const ROTATE: &str = "/api/registry/robot/rotate/";
 const ROTATED: &str = r#"{"robot_login":"robot$acme","robot_secret":"s3cr3t-rotated"}"#;
 
 fn publicity(reply: Reply) -> Server {
-    Server::start(vec![route("PATCH", PUBLICITY, reply)])
+    Server::start(vec![route_of(&hub::PUBLICITY_UPDATE, [], reply)])
 }
 
 fn rotate(reply: Reply) -> Server {
-    Server::start(vec![route("POST", ROTATE, reply)])
+    Server::start(vec![route_of(&hub::ROBOT_ROTATE, [], reply)])
 }
 
 #[test]

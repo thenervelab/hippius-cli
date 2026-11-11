@@ -2,7 +2,9 @@
 //! object, so it needs `--reveal`, goes only to stdout, and `--debug` never shows the query
 //! values.
 
-use crate::common::{Hipc, Home, Reply, Server, draft, route};
+use hippius::routes::s3;
+
+use crate::common::{Hipc, Home, Reply, Server, draft, route_of};
 
 const PATH: &str = "/api/objectstore/buckets/photos/presigned-url/";
 
@@ -20,7 +22,11 @@ fn answer() -> String {
 }
 
 fn server() -> Server {
-    Server::start(vec![route("GET", PATH, Reply::json(200, &answer()))])
+    Server::start(vec![route_of(
+        &s3::PRESIGNED_URL,
+        [&"photos"],
+        Reply::json(200, &answer()),
+    )])
 }
 
 /// With `--reveal` the request carries the key and the expiry as query values, and the

@@ -1,9 +1,10 @@
 //! `hipc billing gamma`: the subnet 75 gamma deposits, a hotkey link signed with the hotkey's
 //! words, its unlink, and the conversions of gamma into credits.
 
+use hippius::routes::billing;
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Route, SEED_PHRASES, Server, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Route, SEED_PHRASES, Server, route, route_of};
 
 const OVERVIEW: &str = "/api/billing/gamma/";
 const CHALLENGE: &str = "/api/billing/gamma/hotkeys/challenge/";
@@ -28,12 +29,20 @@ fn challenge_for(hotkey: &str) -> Route {
         "message": message(hotkey),
         "expires_at": "2026-11-09T10:05:00+00:00",
     });
-    route("POST", CHALLENGE, Reply::json(201, &body.to_string()))
+    route_of(
+        &billing::GAMMA_HOTKEY_CHALLENGE,
+        [],
+        Reply::json(201, &body.to_string()),
+    )
 }
 
 fn linked() -> Route {
     let body = json!({"hotkey": HOTKEY, "linked_at": "2026-11-09T10:00:30+00:00"});
-    route("POST", LINK, Reply::json(201, &body.to_string()))
+    route_of(
+        &billing::GAMMA_HOTKEY_CREATE,
+        [],
+        Reply::json(201, &body.to_string()),
+    )
 }
 
 fn conversion(status: &str) -> String {
@@ -58,9 +67,9 @@ fn get_prints_the_spender_and_the_deposits() {
         "hotkeys": [{"hotkey": HOTKEY, "deposit": {"balance": "25.000000000",
                      "spendable": "25.000000000", "names_hippius": true}}],
     });
-    let server = Server::start(vec![route(
-        "GET",
-        OVERVIEW,
+    let server = Server::start(vec![route_of(
+        &billing::GAMMA,
+        [],
         Reply::json(200, &body.to_string()),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -145,9 +154,9 @@ fn a_challenge_for_another_hotkey_is_never_signed() {
 #[test]
 fn a_challenge_without_its_message_is_unreadable() {
     let home = Home::new();
-    let server = Server::start(vec![route(
-        "POST",
-        CHALLENGE,
+    let server = Server::start(vec![route_of(
+        &billing::GAMMA_HOTKEY_CHALLENGE,
+        [],
         Reply::json(201, &json!({"nonce": NONCE}).to_string()),
     )]);
     let file = hotkey_file(&home);
@@ -364,9 +373,9 @@ fn an_unlink_is_confirmed_and_prints_what_it_did() {
 
 #[test]
 fn a_conversion_is_confirmed_and_names_the_read_that_follows_it() {
-    let server = Server::start(vec![route(
-        "POST",
-        CONVERSIONS,
+    let server = Server::start(vec![route_of(
+        &billing::GAMMA_CONVERSION_CREATE,
+        [],
         Reply::json(202, &conversion("pending")),
     )]);
     let args = [
@@ -400,9 +409,9 @@ fn a_conversion_is_confirmed_and_names_the_read_that_follows_it() {
 
 #[test]
 fn a_conversion_answer_without_an_id_is_a_partial_failure_with_the_answer() {
-    let server = Server::start(vec![route(
-        "POST",
-        CONVERSIONS,
+    let server = Server::start(vec![route_of(
+        &billing::GAMMA_CONVERSION_CREATE,
+        [],
         Reply::json(202, r#"{"status":"pending"}"#),
     )]);
     let run = Hipc::against(&Home::new(), &server).run(&[
@@ -479,7 +488,7 @@ fn the_conversions_are_read_one_or_all() {
         conversion("spent")
     );
     let server = Server::start(vec![
-        route("GET", CONVERSIONS, Reply::json(200, &list)),
+        route_of(&billing::GAMMA_CONVERSIONS, [], Reply::json(200, &list)),
         route("GET", &one, Reply::json(200, &conversion("spent"))),
     ]);
     let doc = Hipc::against(&Home::new(), &server)

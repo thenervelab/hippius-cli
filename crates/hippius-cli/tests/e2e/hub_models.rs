@@ -1,9 +1,10 @@
 //! `hipc hub events list` and `hipc hub models`: the namespace's audit events, read
 //! whole, and the model index, which needs no token and pages by `total`.
 
+use hippius::routes::hub;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, TOKEN, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Server, TOKEN, draft, route_of};
 
 /// A model row in the shape the Hub's model pages read.
 const MODEL: &str = concat!(
@@ -31,9 +32,9 @@ fn versions_page(page: u64, page_size: u64, total: u64, rows: usize) -> String {
 
 #[test]
 fn events_list_is_read_whole_as_an_envelope() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/events/",
+    let server = Server::start(vec![route_of(
+        &hub::EVENTS,
+        [],
         Reply::json(200, r#"[{"id":1,"type":"push","repository":"acme/app"}]"#),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -48,9 +49,9 @@ fn events_list_is_read_whole_as_an_envelope() {
     );
     assert!(server.only_request().header("authorization").is_some());
     // A `next` link is a list this command would cut short.
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/events/",
+    let server = Server::start(vec![route_of(
+        &hub::EVENTS,
+        [],
         Reply::json(
             200,
             r#"{"count":2,"next":"http://x/api/registry/events/?page=2","results":[{"id":1}]}"#,
@@ -63,9 +64,9 @@ fn events_list_is_read_whole_as_an_envelope() {
 
 #[test]
 fn events_list_without_a_project_hints_at_provision() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/events/",
+    let server = Server::start(vec![route_of(
+        &hub::EVENTS,
+        [],
         Reply::json(
             403,
             r#"{"detail":"You must call /api/registry/provision/ first."}"#,
@@ -87,9 +88,9 @@ fn events_list_without_a_project_hints_at_provision() {
 /// as the server wrote it, and the next page from `total`.
 #[test]
 fn models_list_prints_one_page_and_the_next_from_the_total() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/models/",
+    let server = Server::start(vec![route_of(
+        &hub::MODELS,
+        [],
         Reply::json(200, &models_page(1, 2, 5, 2)),
     )]);
     let run = Hipc::against(&Home::new(), &server).run(&["hub", "models", "list", "--limit", "2"]);
@@ -126,7 +127,7 @@ fn models_list_last_page_has_no_next() {
         // An empty last page of an empty list.
         (models_page(1, 2, 0, 0), &["--limit", "2"]),
     ] {
-        let server = Server::start(vec![route("GET", "/api/models/", Reply::json(200, &body))]);
+        let server = Server::start(vec![route_of(&hub::MODELS, [], Reply::json(200, &body))]);
         let mut argv = vec!["hub", "models", "list"];
         argv.extend(args);
         let doc = Hipc::against(&Home::new(), &server).run(&argv).ok();
@@ -170,7 +171,7 @@ fn route_each_page() -> crate::common::Route {
 #[test]
 fn models_list_reads_its_numbers_as_strings_or_floats() {
     let body = format!(r#"{{"page":"2","page_size":2.0,"total":"5","results":[{MODEL},{MODEL}]}}"#);
-    let server = Server::start(vec![route("GET", "/api/models/", Reply::json(200, &body))]);
+    let server = Server::start(vec![route_of(&hub::MODELS, [], Reply::json(200, &body))]);
     let doc = Hipc::against(&Home::new(), &server)
         .run(&["hub", "models", "list", "--page-token", "2", "--limit", "2"])
         .ok();
@@ -182,7 +183,7 @@ fn models_list_reads_its_numbers_as_strings_or_floats() {
 #[test]
 fn models_list_reads_a_next_link_and_refuses_a_page_it_cannot_place() {
     let body = format!(r#"{{"next":"http://x/api/models/?page=4","results":[{MODEL}]}}"#);
-    let server = Server::start(vec![route("GET", "/api/models/", Reply::json(200, &body))]);
+    let server = Server::start(vec![route_of(&hub::MODELS, [], Reply::json(200, &body))]);
     let doc = Hipc::against(&Home::new(), &server)
         .run(&["hub", "models", "list"])
         .ok();
@@ -194,7 +195,7 @@ fn models_list_reads_a_next_link_and_refuses_a_page_it_cannot_place() {
         format!(r#"{{"page":1.5,"page_size":2,"total":5,"results":[{MODEL}]}}"#),
         format!("[{MODEL}]"),
     ] {
-        let server = Server::start(vec![route("GET", "/api/models/", Reply::json(200, &body))]);
+        let server = Server::start(vec![route_of(&hub::MODELS, [], Reply::json(200, &body))]);
         let error = Hipc::against(&Home::new(), &server)
             .run(&["hub", "models", "list"])
             .fails(1, "internal");
@@ -258,7 +259,7 @@ fn models_list_refuses_a_page_size_of_0_and_a_page_it_did_not_ask_for() {
         ),
     ];
     for (flags, body, message) in cases {
-        let server = Server::start(vec![route("GET", "/api/models/", Reply::json(200, &body))]);
+        let server = Server::start(vec![route_of(&hub::MODELS, [], Reply::json(200, &body))]);
         let error = Hipc::against(&Home::new(), &server)
             .run(&[&["hub", "models", "list"][..], flags].concat())
             .fails(1, "internal");
@@ -281,9 +282,9 @@ fn models_list_refuses_a_page_size_of_0_and_a_page_it_did_not_ask_for() {
         }
     }
     // A page of size 0 with no items is the empty last page, not an error.
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/models/",
+    let server = Server::start(vec![route_of(
+        &hub::MODELS,
+        [],
         Reply::json(200, &models_page(1, 0, 0, 0)),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -338,9 +339,9 @@ fn models_get_pages_its_versions_by_total() {
         ]
     );
     // An answer without `artifacts` is not read as an empty list.
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/models/acme/llama/",
+    let server = Server::start(vec![route_of(
+        &hub::MODEL,
+        [&"acme/llama"],
         Reply::json(200, r#"{"page":1,"page_size":2,"total":0}"#),
     )]);
     let error = Hipc::against(&Home::new(), &server)
@@ -358,25 +359,25 @@ fn models_get_pages_its_versions_by_total() {
 fn models_need_no_token_and_send_one_when_configured() {
     let routes = || {
         vec![
-            route(
-                "GET",
-                "/api/models/",
+            route_of(
+                &hub::MODELS,
+                [],
                 Reply::json(200, &models_page(1, 100, 1, 1)),
             ),
-            route(
-                "GET",
-                "/api/models/formats/",
+            route_of(
+                &hub::MODEL_FORMATS,
+                [],
                 Reply::json(
                     200,
                     r#"{"formats":["gguf"],"architectures":[],"quantizations":[]}"#,
                 ),
             ),
-            route(
-                "GET",
-                "/api/models/acme/llama/",
+            route_of(
+                &hub::MODEL,
+                [&"acme/llama"],
                 Reply::json(200, &versions_page(1, 100, 0, 0)),
             ),
-            route("GET", "/api/models/acme/llama/v1/", Reply::json(200, MODEL)),
+            route_of(&hub::MODEL, [&"acme/llama/v1"], Reply::json(200, MODEL)),
         ]
     };
     let commands: [&[&str]; 4] = [
@@ -408,15 +409,11 @@ fn models_formats_and_a_version_print_the_answer_as_sent() {
     let formats = r#"{"formats":["gguf","onnx"],"architectures":["llama"],"quantizations":[]}"#;
     let versions = versions_page(1, 50, 1, 1);
     let server = Server::start(vec![
-        route("GET", "/api/models/formats/", Reply::json(200, formats)),
-        route(
-            "GET",
-            "/api/models/acme/llama/",
-            Reply::json(200, &versions),
-        ),
-        route(
-            "GET",
-            "/api/models/acme/llama/sha256:0a1b/",
+        route_of(&hub::MODEL_FORMATS, [], Reply::json(200, formats)),
+        route_of(&hub::MODEL, [&"acme/llama"], Reply::json(200, &versions)),
+        route_of(
+            &hub::MODEL,
+            [&"acme/llama/sha256:0a1b"],
             Reply::json(200, MODEL),
         ),
     ]);
@@ -447,8 +444,8 @@ fn models_formats_and_a_version_print_the_answer_as_sent() {
 #[test]
 fn a_missing_model_names_where_to_look() {
     let server = Server::start(vec![
-        route("GET", "/api/models/acme/gone/", Reply::not_found()),
-        route("GET", "/api/models/acme/llama/v9/", Reply::not_found()),
+        route_of(&hub::MODEL, [&"acme/gone"], Reply::not_found()),
+        route_of(&hub::MODEL, [&"acme/llama/v9"], Reply::not_found()),
     ]);
     let home = Home::new();
     let error = Hipc::against(&home, &server)
@@ -533,9 +530,9 @@ fn bad_model_names_and_references_are_usage() {
     }
     assert!(server.requests().is_empty());
     // Dots and dashes inside a part are fine.
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/models/my-team/llama-3.1_q4/",
+    let server = Server::start(vec![route_of(
+        &hub::MODEL,
+        [&"my-team/llama-3.1_q4"],
         Reply::json(200, &versions_page(1, 100, 0, 0)),
     )]);
     Hipc::against(&Home::new(), &server)

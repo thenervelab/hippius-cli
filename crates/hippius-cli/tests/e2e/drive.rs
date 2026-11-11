@@ -1,8 +1,9 @@
 //! `hipc drive plans` and `hipc drive subscription`.
 
+use hippius::routes::drive;
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Server, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Server, draft, route_of};
 
 const PLANS: &str = concat!(
     r#"[{"code":"free","name":"Free","price_credits_monthly":0},"#,
@@ -11,11 +12,7 @@ const PLANS: &str = concat!(
 
 #[test]
 fn plans_need_no_token_and_are_an_envelope() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/drive/plans/",
-        Reply::json(200, PLANS),
-    )]);
+    let server = Server::start(vec![route_of(&drive::PLANS, [], Reply::json(200, PLANS))]);
     let doc = Hipc::tokenless(&Home::new(), &server)
         .run(&["drive", "plans"])
         .ok();
@@ -50,11 +47,7 @@ fn every_drive_route_refuses_a_membership_before_sending() {
 
 #[test]
 fn plans_with_a_membership_are_sent_without_the_header() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/drive/plans/",
-        Reply::json(200, PLANS),
-    )]);
+    let server = Server::start(vec![route_of(&drive::PLANS, [], Reply::json(200, PLANS))]);
     Hipc::against(&Home::new(), &server)
         .env("HIPPIUS_ACCOUNT", MEMBER)
         .run(&["drive", "plans"])
@@ -64,9 +57,9 @@ fn plans_with_a_membership_are_sent_without_the_header() {
 
 #[test]
 fn get_is_the_subscription_object() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/drive/subscription/",
+    let server = Server::start(vec![route_of(
+        &drive::SUBSCRIPTION,
+        [],
         Reply::json(
             200,
             concat!(
@@ -96,9 +89,9 @@ fn subscribe_on_a_pipe_needs_yes_and_sends_nothing() {
 
 #[test]
 fn subscribe_from_credits_posts_plan_and_payment() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/drive/subscription/",
+    let server = Server::start(vec![route_of(
+        &drive::SUBSCRIBE,
+        [],
         Reply::json(201, r#"{"active":true,"plan":"duo"}"#),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -120,9 +113,9 @@ fn subscribe_from_credits_posts_plan_and_payment() {
 
 #[test]
 fn subscribe_sends_the_period_only_when_given() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/drive/subscription/",
+    let server = Server::start(vec![route_of(
+        &drive::SUBSCRIBE,
+        [],
         Reply::json(201, "{}"),
     )]);
     Hipc::against(&Home::new(), &server)
@@ -149,9 +142,9 @@ fn card_checkout_prints_the_body_and_a_note_only_in_text_mode() {
         r#"{"intent_id":"i-1","checkout_url":"https://checkout.example/x","#,
         r#""credits":"4","amount_cents":400}"#
     );
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/drive/subscription/",
+    let server = Server::start(vec![route_of(
+        &drive::SUBSCRIBE,
+        [],
         Reply::json(202, body),
     )]);
     let args = [
@@ -215,9 +208,9 @@ fn next_step_names_the_checkout_only_when_it_can() {
         "--yes",
     ];
     let run = |body: &str| {
-        let server = Server::start(vec![route(
-            "POST",
-            "/api/drive/subscription/",
+        let server = Server::start(vec![route_of(
+            &drive::SUBSCRIBE,
+            [],
             Reply::json(202, body),
         )]);
         let doc = Hipc::against(&Home::new(), &server).run(&card).ok();
@@ -257,9 +250,9 @@ fn next_step_names_the_checkout_only_when_it_can() {
         );
     }
     // A subscribe on the balance is bought at once, so nothing waits and nothing is added.
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/drive/subscription/",
+    let server = Server::start(vec![route_of(
+        &drive::SUBSCRIBE,
+        [],
         Reply::json(201, r#"{"intent_id":"i-1","status":"active"}"#),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -277,9 +270,9 @@ fn next_step_names_the_checkout_only_when_it_can() {
 
 #[test]
 fn a_202_without_a_checkout_url_still_says_nothing_was_bought() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/drive/subscription/",
+    let server = Server::start(vec![route_of(
+        &drive::SUBSCRIBE,
+        [],
         Reply::json(202, "{}"),
     )]);
     let run = Hipc::against(&Home::new(), &server).run(&[
@@ -302,9 +295,9 @@ fn a_202_without_a_checkout_url_still_says_nothing_was_bought() {
 
 #[test]
 fn subscribe_errors_map_to_their_codes() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/drive/subscription/",
+    let server = Server::start(vec![route_of(
+        &drive::SUBSCRIBE,
+        [],
         Reply::json(402, r#"{"error":"Not enough credits"}"#),
     )]);
     let error = Hipc::against(&Home::new(), &server)
@@ -326,9 +319,9 @@ fn subscribe_errors_map_to_their_codes() {
 
 #[test]
 fn change_patches_the_plan_without_payment_or_rail() {
-    let server = Server::start(vec![route(
-        "PATCH",
-        "/api/drive/subscription/",
+    let server = Server::start(vec![route_of(
+        &drive::SUBSCRIPTION_CHANGE,
+        [],
         Reply::json(200, r#"{"plan":"max"}"#),
     )]);
     Hipc::against(&Home::new(), &server)
@@ -357,9 +350,9 @@ fn change_patches_the_plan_without_payment_or_rail() {
 
 #[test]
 fn cancel_deletes_and_needs_yes() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/drive/subscription/",
+    let server = Server::start(vec![route_of(
+        &drive::SUBSCRIPTION_CANCEL,
+        [],
         Reply::json(202, r#"{"status":"cancel_submitted"}"#),
     )]);
     let home = Home::new();
@@ -375,17 +368,17 @@ fn cancel_deletes_and_needs_yes() {
 
 #[test]
 fn cancel_on_another_rail_or_while_confirming_maps_to_its_code() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/drive/subscription/",
+    let server = Server::start(vec![route_of(
+        &drive::SUBSCRIPTION_CANCEL,
+        [],
         Reply::json(409, r#"{"error":"Managed on another rail"}"#),
     )]);
     Hipc::against(&Home::new(), &server)
         .run(&["drive", "subscription", "cancel", "--yes"])
         .fails(1, "conflict");
-    let early = Server::start(vec![route(
-        "DELETE",
-        "/api/drive/subscription/",
+    let early = Server::start(vec![route_of(
+        &drive::SUBSCRIPTION_CANCEL,
+        [],
         Reply::json(425, r#"{"error":"Still confirming"}"#),
     )]);
     let error = Hipc::against(&Home::new(), &early)
@@ -477,9 +470,9 @@ fn dry_run_shows_the_exact_body_and_sends_nothing() {
 
 #[test]
 fn subscribe_409_is_conflict_with_no_side_effects() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/drive/subscription/",
+    let server = Server::start(vec![route_of(
+        &drive::SUBSCRIBE,
+        [],
         Reply::json(409, r#"{"error":"Already subscribed"}"#),
     )]);
     let error = Hipc::against(&Home::new(), &server)
@@ -514,8 +507,8 @@ fn a_subscribe_503_with_retry_after_did_nothing_and_may_be_retried() {
     let unreachable =
         Reply::json(503, r#"{"error":"Chain unreachable"}"#).header("Retry-After", "4");
     let server = Server::start(vec![
-        route("POST", "/api/drive/subscription/", unreachable.clone()),
-        route("PATCH", "/api/drive/subscription/", unreachable),
+        route_of(&drive::SUBSCRIBE, [], unreachable.clone()),
+        route_of(&drive::SUBSCRIPTION_CHANGE, [], unreachable),
     ]);
     let subscribe = [
         "drive",
@@ -543,7 +536,7 @@ fn a_subscribe_503_with_retry_after_did_nothing_and_may_be_retried() {
         Reply::json(503, r#"{"error":"x"}"#).header("Retry-After", "soon"),
         Reply::json(502, r#"{"error":"x"}"#).header("Retry-After", "4"),
     ] {
-        let other = Server::start(vec![route("POST", "/api/drive/subscription/", reply)]);
+        let other = Server::start(vec![route_of(&drive::SUBSCRIBE, [], reply)]);
         let error = Hipc::against(&Home::new(), &other)
             .run(&subscribe)
             .fails(1, "unavailable");
@@ -554,9 +547,9 @@ fn a_subscribe_503_with_retry_after_did_nothing_and_may_be_retried() {
 
 #[test]
 fn checkout_shows_a_card_checkout_and_refuses_a_membership() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/drive/subscription/checkout/pi_3Abc-9/",
+    let server = Server::start(vec![route_of(
+        &drive::CHECKOUT,
+        [&"pi_3Abc-9"],
         Reply::json(
             200,
             r#"{"intent_id":"pi_3Abc-9","status":"paid","minted":true}"#,
@@ -570,9 +563,9 @@ fn checkout_shows_a_card_checkout_and_refuses_a_membership() {
         .env("HIPPIUS_ACCOUNT", MEMBER)
         .run(&["drive", "subscription", "checkout", "pi_3Abc-9"])
         .fails(2, "account_scope_unsupported");
-    let missing = Server::start(vec![route(
-        "GET",
-        "/api/drive/subscription/checkout/pi_x/",
+    let missing = Server::start(vec![route_of(
+        &drive::CHECKOUT,
+        [&"pi_x"],
         Reply::not_found(),
     )]);
     Hipc::against(&Home::new(), &missing)
@@ -591,9 +584,9 @@ fn checkout_shows_a_card_checkout_and_refuses_a_membership() {
 /// the refusal names what would change.
 #[test]
 fn change_switches_funding_or_sets_the_overage_cap_alone() {
-    let server = Server::start(vec![route(
-        "PATCH",
-        "/api/drive/subscription/",
+    let server = Server::start(vec![route_of(
+        &drive::SUBSCRIPTION_CHANGE,
+        [],
         Reply::json(200, r#"{"active":true}"#),
     )]);
     let home = Home::new();

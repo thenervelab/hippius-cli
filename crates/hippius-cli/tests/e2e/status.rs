@@ -1,8 +1,9 @@
 //! `hipc status`: the state of each product, a top-level read of `GET /api/services/status/`.
 
+use hippius::routes::support;
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, TOKEN, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Server, TOKEN, draft, route_of};
 
 const STATUS: &str = concat!(
     r#"{"hub":{"state":"none"},"drive":{"state":"active"},"#,
@@ -11,9 +12,9 @@ const STATUS: &str = concat!(
 );
 
 fn server() -> Server {
-    Server::start(vec![route(
-        "GET",
-        "/api/services/status/",
+    Server::start(vec![route_of(
+        &support::SERVICES_STATUS,
+        [],
         Reply::json(200, STATUS),
     )])
 }
