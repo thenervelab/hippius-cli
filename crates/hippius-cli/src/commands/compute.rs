@@ -29,14 +29,15 @@ mod kubernetes;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use hippius::routes::{Route, compute};
-use hippius::{Client, Code, Error, Request, Response, Result, phrase};
+use hippius::routes::Route;
+use hippius::routes::compute::{self, Vm, VmStatus};
+use hippius::{Client, Code, Error, Request, Response, Result, Slot, phrase, view_of};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
     BackupInterval, BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, Compute,
-    DedicatedDisk, ExposeMode, ExposeProtocol, ExposureCreate, Exposures, FailoverMode, Firewall,
-    GuestPoweroff, PowerPolicy, PublicIp, SshKeys, VmCreate, Vms,
+    DedicatedDisk, DiskTier, ExposeMode, ExposeProtocol, ExposureCreate, Exposures, FailoverMode,
+    Firewall, GuestPoweroff, PowerPolicy, PublicIp, SshKeys, VmCreate, Vms,
 };
 use crate::commands::poll::{Next, Schedule, Wait, poll_until};
 use crate::commands::{
@@ -224,7 +225,7 @@ fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<Printed> {
         // finish later get a status command and no new wait.
         Vms::Resize { vm_id, flavor } => {
             let request = Request::to(&compute::VM_RESIZE, [vm_id])
-                .json(&json!({ "flavor": flavor }))
+                .json(&compute::VmResizeBody { flavor })
                 .listed_by(VMS);
             let request = request.about(format!("resize the VM `{vm_id}` to `{flavor}`"));
             let consequence = "a running VM reboots, and the bill changes to the new size";
@@ -236,8 +237,8 @@ fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<Printed> {
                 // clap accepted the typed vm_id; one that starts with `-` came after `--`,
                 // and a printed command would read it as a flag, so it gets no note.
                 let vm = crate::cli::as_argument(vm_id, crate::cli::vm_id);
-                if let (Some(vm), Some(id)) =
-                    (vm, body.pointer("/resize/id").and_then(Value::as_u64))
+                let resize = view_of::<compute::VmResize>(&body).resize;
+                if let (Some(vm), Some(id)) = (vm, resize.and_then(|resize| resize.id))
                     && let Some(command) =
                         ctx.next_command(&format!("compute vms resize-status {vm} {id}"))
                 {
@@ -272,14 +273,15 @@ fn vm_delete(ctx: &Context<'_>, client: &Client, vm_id: &str) -> Result<Printed>
         .listed_by(VMS);
     let draft = delete(&format!("`{vm_id}`"));
     let checked = match ctx.check_write(client, &draft)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(client, &[&read, &draft])?;
-            return Ok(Printed::Document(doc));
+        Write::DryRun(_) => {
+            return ctx
+                .dry_run_of(client, &[&read, &draft])
+                .map(Printed::Document);
         }
         Write::Checked(checked) => checked,
     };
-    let vm = ctx.send(client, &read)?.document()?;
-    let named = match vm.get("name").and_then(Value::as_str) {
+    let vm: Vm = view_of(&ctx.send(client, &read)?.document()?);
+    let named = match vm.name {
         Some(name) => format!("{} (`{vm_id}`)", phrase::quote(name)),
         None => format!("`{vm_id}`"),
     };
@@ -349,15 +351,15 @@ const POWER_POLICY: [&str; 5] = [
 /// without its `vm_id` gets the one asked for (`vm_id`), so the document always names its VM.
 fn power_policy(response: &Response, vm_id: &str, sent: Option<GuestPoweroff>) -> Result<Value> {
     let vm = response.document()?;
-    match (vm.get("on_guest_poweroff"), sent) {
-        (Some(Value::String(policy)), Some(sent)) if policy != sent.code() => {
+    match (view_of::<Vm>(&vm).on_guest_poweroff, sent) {
+        (Some(policy), Some(sent)) if policy != sent.code() => {
             return Err(response.refused(&format!(
                 "the API answered with `on_guest_poweroff` {}",
                 phrase::quote(policy)
             )));
         }
-        (Some(Value::String(_)), _) => {}
-        _ => return Err(response.refused("the API answered without `on_guest_poweroff`")),
+        (Some(_), _) => {}
+        (None, _) => return Err(response.refused("the API answered without `on_guest_poweroff`")),
     }
     let mut policy = Map::new();
     for field in std::iter::once("vm_id").chain(POWER_POLICY) {
@@ -414,7 +416,9 @@ fn update_power_policy(
         GuestPoweroff::Stop => "stay stopped",
     };
     let request = Request::to(&compute::VM_POWER_POLICY_UPDATE, [&vm_id])
-        .json(&json!({ "on_guest_poweroff": policy.code() }))
+        .json(&compute::PowerPolicyBody {
+            on_guest_poweroff: policy.code(),
+        })
         .listed_by(VMS)
         .about(format!(
             "set the VM `{vm_id}` to {does} when its own operating system powers it off"
@@ -423,8 +427,7 @@ fn update_power_policy(
         let answer = power_policy(&response, vm_id, Some(policy))?;
         // A server without `stop` restarts the VM meanwhile, which the pending note says; the
         // bill of a stopped VM would contradict it.
-        if policy == GuestPoweroff::Stop && answer["on_guest_poweroff_reason"] != "host-unsupported"
-        {
+        if policy == GuestPoweroff::Stop && !host_unsupported(&view_of(&answer)) {
             ctx.note(
                 "once applied, a VM shut down from inside stays stopped, and is still billed as a \
                  stopped VM until it is deleted",
@@ -440,10 +443,11 @@ fn update_power_policy(
 /// VM meanwhile, which a person who set `stop` must know; `awaiting-ack`, or no reason, is a
 /// policy on its way.
 fn note_pending(ctx: &Context<'_>, answer: &Value) {
-    if answer["on_guest_poweroff_pending"] != true {
+    let policy: Vm = view_of(answer);
+    if policy.on_guest_poweroff_pending != Some(true) {
         return;
     }
-    if answer["on_guest_poweroff_reason"] == "host-unsupported" {
+    if host_unsupported(&policy) {
         ctx.note(
             "the VM's server does not support `stop` yet, so it restarts the VM meanwhile when \
              its own operating system powers it off",
@@ -454,6 +458,12 @@ fn note_pending(ctx: &Context<'_>, answer: &Value) {
              true until it does",
         );
     }
+}
+
+/// Whether the VM's server does not support `stop` (`on_guest_poweroff_reason`
+/// `host-unsupported`), and restarts the VM meanwhile.
+fn host_unsupported(policy: &Vm) -> bool {
+    policy.on_guest_poweroff_reason.as_deref() == Some("host-unsupported")
 }
 
 /// The attestation as text mode shows it: `verdict` `unknown` reads "not proven". Swagger
@@ -529,18 +539,17 @@ fn create(ctx: &Context<'_>, client: &Client, args: &VmCreate) -> Result<Printed
     let ports = open_ports(args);
     let launched = match step {
         Step::Sent(response) => response.document()?,
-        Step::DryRun(mut doc) => {
-            if !ports.is_empty() {
-                let rules = open_ports_request(VM_ID_STAND_IN, &ports);
-                doc["requests"] = ctx.describe_each(client, &[&request, &rules])?;
-                // The URL is built by the HTTP library, which takes no `<`, so the id is a
-                // stand-in there, written as the placeholder once the URL is built.
-                if let Some(Value::String(url)) = doc.pointer_mut("/requests/1/url") {
-                    *url = url.replace(
-                        &format!("/{VM_ID_STAND_IN}/"),
-                        &format!("/{VM_ID_PLACEHOLDER}/"),
-                    );
-                }
+        Step::DryRun(doc) if ports.is_empty() => return Ok(Printed::Document(doc)),
+        Step::DryRun(_) => {
+            let rules = open_ports_request(VM_ID_STAND_IN, &ports);
+            let mut doc = ctx.dry_run_of(client, &[&request, &rules])?;
+            // The URL is built by the HTTP library, which takes no `<`, so the id is a
+            // stand-in there, written as the placeholder once the URL is built.
+            if let Some(Value::String(url)) = doc.pointer_mut("/requests/1/url") {
+                *url = url.replace(
+                    &format!("/{VM_ID_STAND_IN}/"),
+                    &format!("/{VM_ID_PLACEHOLDER}/"),
+                );
             }
             return Ok(Printed::Document(doc));
         }
@@ -553,11 +562,11 @@ fn create(ctx: &Context<'_>, client: &Client, args: &VmCreate) -> Result<Printed
     }
     // Kept before the wait takes the 202: a polled document that omits the field must not
     // turn a failed attach into a warning about an address that does not exist.
-    let launch_error = launched
-        .get("public_ip_error")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let backup_error = launched.get("backup_error").cloned();
+    let Vm {
+        public_ip_error: launch_error,
+        backup_error,
+        ..
+    } = view_of(&launched);
     // A failed attach leaves no address that could turn `network_ready`, so the wait then
     // ends at `running`.
     let goal = if args.public_ip && launch_error.is_none() {
@@ -578,7 +587,7 @@ fn create(ctx: &Context<'_>, client: &Client, args: &VmCreate) -> Result<Printed
     if args.backup_interval.is_some()
         && let Printed::Document(vm) = &printed
     {
-        backup_warning(ctx, vm, backup_error.as_ref());
+        backup_warning(ctx, vm, &backup_error);
     }
     Ok(printed)
 }
@@ -592,8 +601,12 @@ fn create(ctx: &Context<'_>, client: &Client, args: &VmCreate) -> Result<Printed
 /// `running`, and a later failure shows only in `hipc compute vms get`. Unverified: whether a
 /// pending 202 carries a "not yet" reason, which would make every `--no-wait` launch with
 /// `--backup-interval` warn.
-fn backup_warning(ctx: &Context<'_>, vm: &Value, launched: Option<&Value>) {
-    let error = vm.get("backup_error").or(launched).and_then(Value::as_str);
+fn backup_warning(ctx: &Context<'_>, vm: &Value, launched: &Slot<String>) {
+    let printed = view_of::<Vm>(vm).backup_error;
+    let error = match &printed {
+        Slot::Missing => launched.value(),
+        printed => printed.value(),
+    };
     if let Some(error) = error {
         ctx.warning(&format!(
             "the VM launched without its scheduled backups: the API says {}",
@@ -609,10 +622,8 @@ fn backup_warning(ctx: &Context<'_>, vm: &Value, launched: Option<&Value>) {
 /// asked for, so that is the warning. Otherwise the address blocks inbound traffic, as after
 /// `public-ip create`.
 fn address_warning(ctx: &Context<'_>, vm: &Value, launch_error: Option<&str>, ports: &[u16]) {
-    let error = vm
-        .get("public_ip_error")
-        .and_then(Value::as_str)
-        .or(launch_error);
+    let vm: Vm = view_of(vm);
+    let error = vm.public_ip_error.as_deref().or(launch_error);
     if let Some(error) = error {
         ctx.warning(&format!(
             "the VM launched without its public IPv4: the API says {}",
@@ -626,8 +637,8 @@ fn address_warning(ctx: &Context<'_>, vm: &Value, launch_error: Option<&str>, po
     }
     // The id comes from the server, and the warning names a command to run with it.
     let vm_id = vm
-        .get("vm_id")
-        .and_then(Value::as_str)
+        .vm_id
+        .as_deref()
         .and_then(|id| crate::cli::as_argument(id, crate::cli::vm_id))
         .unwrap_or("<vm_id>");
     ctx.warning(&inbound_blocked(vm_id));
@@ -667,18 +678,27 @@ fn open_ports(args: &VmCreate) -> Vec<u16> {
     ports
 }
 
-/// The rules `--open-port` sets on a new VM: one `tcp` rule for `ports` with no
-/// `source_cidrs`, which swagger reads as every source. A new VM has no rules, so the PUT
-/// replaces none, and it carries no `base_revision`.
-fn open_ports_rules(ports: &[u16]) -> Value {
+/// The rule `--open-port` sets on a new VM: one `tcp` rule for `ports` with no
+/// `source_cidrs`, which swagger reads as every source.
+fn open_ports_rule(ports: &[u16]) -> Value {
     let ports: Vec<String> = ports.iter().map(u16::to_string).collect();
     json!({
-        "rules": [{
-            "protocol": "tcp",
-            "ports": ports,
-            "description": "opened at launch by hipc",
-        }],
+        "protocol": "tcp",
+        "ports": ports,
+        "description": "opened at launch by hipc",
     })
+}
+
+/// The body of the PUT `--open-port` sends, as a launch prints it ([`with_firewall`]) and its
+/// hint names it: the one rule of [`open_ports_rule`]. A new VM has no rules, so the PUT
+/// replaces none, and it carries no `base_revision`.
+fn open_ports_rules(ports: &[u16]) -> Value {
+    let rule = open_ports_rule(ports);
+    serde_json::to_value(compute::FirewallUpdateBody {
+        rules: std::slice::from_ref(&rule),
+        base_revision: None,
+    })
+    .expect("a firewall body is plain JSON data")
 }
 
 /// `PUT .../firewall/` of the VM `vm_id` with [`open_ports_rules`].
@@ -740,11 +760,10 @@ fn open_launched_ports(
 ) -> Result<()> {
     // The id goes into the PUT's path, so it is held to the rule of the `vm_id` argument; a
     // leading `-` is fine there, and only matters to a printed command (the hint below).
-    let vm_id = launched
-        .get("vm_id")
-        .and_then(Value::as_str)
+    let vm_id = view_of::<Vm>(launched)
+        .vm_id
         .filter(|id| crate::cli::vm_id(id).is_ok());
-    let Some(vm_id) = vm_id else {
+    let Some(vm_id) = vm_id.as_deref() else {
         return Err(Error::internal(
             "the launch answer has no usable `vm_id`, so the firewall rule was not set",
         )
@@ -931,55 +950,36 @@ fn launch_action(args: &VmCreate, dedicated: Option<Dedicated>) -> String {
 /// The create body: exactly the flags given, nothing defaulted. `public_key` is
 /// the checked text of `--ssh-public-key-file`; swagger installs it beside the
 /// `ssh_key_ids` keys when both are given.
-fn create_body(args: &VmCreate, public_key: Option<&str>, dedicated: Option<Dedicated>) -> Value {
-    let mut body = Map::new();
-    body.insert("flavor".to_owned(), args.flavor.clone().into());
-    for (key, value) in [
-        ("name", &args.name),
-        ("image", &args.image),
-        ("region", &args.region),
-        ("placement_group", &args.placement_group),
-    ] {
-        if let Some(value) = value {
-            body.insert(key.to_owned(), value.clone().into());
-        }
-    }
-    if !args.ssh_key_ids.is_empty() {
-        body.insert("ssh_key_ids".to_owned(), args.ssh_key_ids.clone().into());
-    }
-    if let Some(key) = public_key {
-        body.insert("ssh_public_key".to_owned(), key.into());
-    }
-    if args.public_ip {
-        body.insert("public_ip".to_owned(), true.into());
-    }
-    if let Some(tier) = args.os_disk_tier {
-        body.insert("os_disk_tier".to_owned(), tier.code().into());
-    }
-    if let Some(Dedicated { disk, count }) = dedicated {
-        let disks = json!({
-            "tier": disk.tier.code(),
-            "count": count,
-            "min_size_gb": disk.min_size_gb,
-        });
-        body.insert("dedicated_disks".to_owned(), disks);
+fn create_body<'a>(
+    args: &'a VmCreate,
+    public_key: Option<&'a str>,
+    dedicated: Option<Dedicated>,
+) -> compute::VmCreateBody<'a> {
+    compute::VmCreateBody {
+        flavor: &args.flavor,
+        name: args.name.as_deref(),
+        image: args.image.as_deref(),
+        region: args.region.as_deref(),
+        placement_group: args.placement_group.as_deref(),
+        ssh_key_ids: &args.ssh_key_ids,
+        ssh_public_key: public_key,
+        public_ip: args.public_ip,
+        os_disk_tier: args.os_disk_tier.map(DiskTier::code),
+        dedicated_disks: dedicated.map(|Dedicated { disk, count }| compute::DedicatedDisks {
+            tier: disk.tier.code(),
+            count,
+            min_size_gb: disk.min_size_gb,
+        }),
         // Swagger: `dedicated_disks` needs `pinned_ack: true` (422 `dedicated-ack-required`),
         // the customer's acknowledgement that the VM is pinned to its server. The question,
         // or `--yes`, is that acknowledgement, and the action names the pinning.
         // `pinned_ack_version` is not sent: only a read of `GET /api/compute/prices/` gives
         // it, and swagger refuses only a stale one (422 `dedicated-ack-stale`).
-        body.insert("pinned_ack".to_owned(), true.into());
+        pinned_ack: dedicated.is_some(),
+        backup_interval_s: args.backup_interval.map(BackupInterval::seconds),
+        failover_mode: args.failover.map(FailoverMode::code),
+        on_guest_poweroff: args.on_guest_poweroff.map(GuestPoweroff::code),
     }
-    if let Some(interval) = args.backup_interval {
-        body.insert("backup_interval_s".to_owned(), interval.seconds().into());
-    }
-    if let Some(mode) = args.failover {
-        body.insert("failover_mode".to_owned(), mode.code().into());
-    }
-    if let Some(policy) = args.on_guest_poweroff {
-        body.insert("on_guest_poweroff".to_owned(), policy.code().into());
-    }
-    Value::Object(body)
 }
 
 /// What ends a launch wait.
@@ -996,12 +996,12 @@ enum Goal {
 
 /// Where a launch stands, from the VM's `status`, `boot_stalled`, and `network_ready`.
 #[derive(Debug)]
-enum Launch<'a> {
+enum Launch {
     /// The goal is met.
     Done,
     /// A terminal status: `failed` without `boot_stalled`, `decommissioning`, or
     /// `decommissioned`.
-    Ended(&'a str),
+    Ended(VmStatus),
     /// Not there yet, so the wait goes on.
     Waiting(Pending),
 }
@@ -1019,24 +1019,23 @@ enum Pending {
     Unreachable,
 }
 
-fn launch_state(vm: &Value, goal: Goal) -> Launch<'_> {
-    let field = |key| vm.get(key);
-    match field("status").and_then(Value::as_str) {
-        Some("running") => match goal {
+fn launch_state(vm: &Value, goal: Goal) -> Launch {
+    let vm: Vm = view_of(vm);
+    match vm.status {
+        Some(VmStatus::Running) => match goal {
             Goal::Running => Launch::Done,
-            Goal::Reachable
-                if field("network_ready").and_then(Value::as_bool) == Some(true)
-                    || field("public_ip_error").is_some_and(Value::is_string) =>
-            {
+            Goal::Reachable if vm.network_ready == Some(true) || vm.public_ip_error.is_some() => {
                 Launch::Done
             }
             Goal::Reachable => Launch::Waiting(Pending::Unreachable),
         },
-        Some("failed") if field("boot_stalled").and_then(Value::as_bool) == Some(true) => {
+        Some(VmStatus::Failed) if vm.boot_stalled == Some(true) => {
             Launch::Waiting(Pending::Stalled)
         }
-        Some(status @ ("failed" | "decommissioning" | "decommissioned")) => Launch::Ended(status),
-        _ => Launch::Waiting(Pending::Booting),
+        Some(
+            status @ (VmStatus::Failed | VmStatus::Decommissioning | VmStatus::Decommissioned),
+        ) => Launch::Ended(status),
+        Some(VmStatus::Other(_)) | None => Launch::Waiting(Pending::Booting),
     }
 }
 
@@ -1056,11 +1055,7 @@ fn wait(
     goal: Goal,
     timeout: Duration,
 ) -> Result<Printed> {
-    let Some(vm_id) = launched
-        .get("vm_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-    else {
+    let Some(vm_id) = view_of::<Vm>(&launched).vm_id else {
         return Err(
             Error::internal("the launch answer has no `vm_id`, so it cannot be waited on")
                 .with_hint(format!("run `{VMS}` to find the new VM"))
@@ -1136,7 +1131,7 @@ impl Wait for VmLaunch<'_> {
                 let message = format!(
                     "the VM {} reached {} instead of `running`",
                     self.vm_quoted,
-                    phrase::quote(status)
+                    phrase::quote(status.as_str())
                 );
                 Next::Stop(Err(Error::new(Code::PartialFailure, message)
                     .with_hint(self.hint)
@@ -1152,7 +1147,7 @@ impl Wait for VmLaunch<'_> {
     fn take(&mut self, answer: Value) -> Result<()> {
         // A document for another VM, or for none, is not this launch: printing it would
         // report another VM's status as this one's.
-        match answer.get("vm_id").and_then(Value::as_str) {
+        match view_of::<Vm>(&answer).vm_id {
             Some(id) if id == self.vm_id => {
                 self.vm = answer;
                 Ok(())
@@ -1304,16 +1299,12 @@ fn exposure_create(ctx: &Context<'_>, args: &ExposureCreate) -> Result<Printed> 
             "pass `--mode raw`",
         ));
     }
-    let mut body = Map::new();
-    body.insert("port".to_owned(), args.port.into());
-    if let Some(mode) = args.mode {
-        body.insert("mode".to_owned(), mode.code().into());
-    }
-    if let Some(protocol) = args.protocol {
-        body.insert("protocol".to_owned(), protocol.code().into());
-    }
     let request = Request::to(&compute::EXPOSURE_CREATE, [&args.vm_id])
-        .json(&Value::Object(body))
+        .json(&compute::ExposureCreateBody {
+            port: args.port,
+            mode: args.mode.map(ExposeMode::code),
+            protocol: args.protocol.map(ExposeProtocol::code),
+        })
         .listed_by(VMS);
     let port = match args.protocol {
         Some(protocol) => format!("`{}` port `{}`", protocol.code(), args.port),
@@ -1328,14 +1319,14 @@ fn exposure_create(ctx: &Context<'_>, args: &ExposureCreate) -> Result<Printed> 
     let client = ctx.load_authed_client()?;
     print_with(ctx, &client, &request, gate, |response| {
         let exposure = response.document()?;
+        let seen: compute::Exposure = view_of(&exposure);
         // The server's `edge_sees_traffic` decides the note, not the mode that was asked
         // for. Swagger sets it in `raw` mode too, where the edge reads the traffic only when
         // the protocol inside does not encrypt it, so the note repeats the flag and claims
         // no more.
-        if exposure.get("edge_sees_traffic") == Some(&Value::Bool(true)) {
-            let endpoint = exposure
-                .get("endpoint")
-                .and_then(Value::as_str)
+        if seen.edge_sees_traffic == Some(true) {
+            let endpoint = seen
+                .endpoint
                 .map_or_else(|| "this exposure".to_owned(), phrase::quote);
             ctx.warning(&format!(
                 "the API reports that the edge sees the traffic to {endpoint}: it is not end \
@@ -1425,17 +1416,14 @@ fn backups(ctx: &Context<'_>, client: &Client, command: &Backups) -> Result<Prin
 fn policy_update(ctx: &Context<'_>, client: &Client, args: &BackupPolicyUpdate) -> Result<Printed> {
     let vm_id = &args.vm_id;
     let seconds = args.interval.seconds();
-    let mut body = Map::new();
-    body.insert("interval_s".to_owned(), seconds.into());
-    let failover = match args.failover {
-        Some(mode) => {
-            body.insert("failover_mode".to_owned(), mode.code().into());
-            format!(", with {}", failover_clause(mode))
-        }
-        None => String::new(),
-    };
+    let failover = args.failover.map_or_else(String::new, |mode| {
+        format!(", with {}", failover_clause(mode))
+    });
     let request = Request::to(&compute::BACKUP_POLICY_UPDATE, [vm_id])
-        .json(&Value::Object(body))
+        .json(&compute::BackupPolicyBody {
+            interval_s: seconds,
+            failover_mode: args.failover.map(FailoverMode::code),
+        })
         .listed_by(VMS)
         .about(format!(
             "back up the VM `{vm_id}` every {}{failover}",
@@ -1467,31 +1455,28 @@ const NAME_PLACEHOLDER: &str = "<the VM's name>";
 fn restore(ctx: &Context<'_>, client: &Client, args: &BackupRestore) -> Result<Printed> {
     let vm_id = &args.vm_id;
     let point = &args.run_id;
-    let body = |name: &str| {
-        let mut body = Map::new();
-        body.insert("point_id".to_owned(), point.clone().into());
-        // Swagger: "Only `mode: in_place` is available".
-        body.insert("mode".to_owned(), "in_place".into());
-        body.insert("confirm".to_owned(), name.into());
-        if args.accept_rollback {
-            body.insert("accept_rollback".to_owned(), true.into());
-        }
-        Value::Object(body)
+    let post = |name: &str| {
+        Request::to(&compute::BACKUP_RESTORE, [vm_id]).json(&compute::BackupRestoreBody {
+            point_id: point,
+            mode: compute::RestoreMode::InPlace,
+            confirm: name,
+            accept_rollback: args.accept_rollback,
+        })
     };
-    let post = |name: &str| Request::to(&compute::BACKUP_RESTORE, [vm_id]).json(&body(name));
     let read = Request::to(&compute::VM, [vm_id])
         .about(format!("get the VM `{vm_id}`"))
         .listed_by(VMS);
     let draft = post(NAME_PLACEHOLDER);
     let checked = match ctx.check_write(client, &draft)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(client, &[&read, &draft])?;
-            return Ok(Printed::Document(doc));
+        Write::DryRun(_) => {
+            return ctx
+                .dry_run_of(client, &[&read, &draft])
+                .map(Printed::Document);
         }
         Write::Checked(checked) => checked,
     };
-    let vm = ctx.send(client, &read)?.document()?;
-    let Some(name) = vm.get("name").and_then(Value::as_str) else {
+    let vm: Vm = view_of(&ctx.send(client, &read)?.document()?);
+    let Some(name) = vm.name.as_deref() else {
         return Err(Error::internal(format!(
             "the VM `{vm_id}` has no `name`, so the restore's `confirm` cannot be filled"
         )));
@@ -1524,16 +1509,13 @@ fn restore(ctx: &Context<'_>, client: &Client, args: &BackupRestore) -> Result<P
     })
 }
 
-/// Whether the server answered `status` with the compute error slug `slug`. Swagger names
-/// such slugs in prose but not the field that carries them, and types compute error bodies
-/// as `{error}`, so `error` and `code` are both read.
+/// Whether the server answered `status` with the compute error slug `slug`
+/// ([`compute::Refusal`]).
 fn refused_as(error: &Error, status: u16, slug: &str) -> bool {
     error.http_status() == Some(status)
-        && error.details().is_some_and(|body| {
-            ["code", "error"]
-                .iter()
-                .any(|key| body.get(*key).and_then(Value::as_str) == Some(slug))
-        })
+        && error
+            .details()
+            .is_some_and(|body| view_of::<compute::Refusal>(body).is(slug))
 }
 
 fn ssh_keys(ctx: &Context<'_>, command: &SshKeys) -> Result<Printed> {
@@ -1555,8 +1537,11 @@ fn ssh_keys(ctx: &Context<'_>, command: &SshKeys) -> Result<Printed> {
             public_key_file,
         } => {
             let public_key = read_public_key(public_key_file, "--public-key-file")?;
-            let request = Request::to(&compute::SSH_KEY_CREATE, [])
-                .json(&json!({ "name": name, "public_key": public_key }));
+            let request =
+                Request::to(&compute::SSH_KEY_CREATE, []).json(&compute::SshKeyCreateBody {
+                    name,
+                    public_key: &public_key,
+                });
             let request = request.about(format!("store the SSH key {}", phrase::quote(name)));
             let client = ctx.load_authed_client()?;
             print_body(ctx, &client, &request, Gate::Confirm { consequence: None })
