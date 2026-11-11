@@ -5,6 +5,8 @@
 //! an effect.
 
 #[cfg(test)]
+mod doc_commands;
+#[cfg(test)]
 mod help_agrees;
 mod routes;
 mod rows;

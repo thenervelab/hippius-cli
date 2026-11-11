@@ -1,13 +1,17 @@
 //! End-to-end checks of the machine contract (`TENETS.md` tenets 2, 3, 4 and 7) for the
 //! commands that need no network. Each test spawns the built `hipc` binary. Two more checks
-//! are about documentation: the `hipc` commands `README.md` shows are in `hipc schema` and
-//! parse, and no top-level doc holds a merge conflict marker.
+//! are about documentation: a `hipc` command `README.md` shows parses, and no top-level doc
+//! holds a merge conflict marker.
+//!
+//! The sweeps over every command, its help, and every command the pages show run in-process,
+//! in `spec::help_agrees` and `spec::doc_commands`, on the parser the binary parses with; a
+//! spawn per page and per flag was most of this suite's time. One row of each stays here, so
+//! the binary is held to what they check.
 //!
 //! These tests always pipe stdout, so `auto` mode is JSON in all of them. How the mode
 //! depends on `CI`, `AI_AGENT`, and a terminal is unit-tested in `src/output.rs`, where
 //! they are inputs, and at a real terminal in `tests/e2e/prompt.rs`.
 
-use std::collections::BTreeSet;
 use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
@@ -417,77 +421,6 @@ fn the_install_one_liner_is_the_scripts_own() {
     }
 }
 
-/// Every command path `hipc schema` lists, each as its words joined by one space.
-fn schema_paths() -> BTreeSet<String> {
-    let doc = json(&hipc(&["schema"]).stdout);
-    let commands = doc["commands"].as_array().expect("the schema has commands");
-    commands
-        .iter()
-        .map(|command| {
-            let words = command["path"].as_array().expect("a path is an array");
-            let words: Vec<&str> = words
-                .iter()
-                .map(|w| w.as_str().expect("a path word is a string"))
-                .collect();
-            words.join(" ")
-        })
-        .collect()
-}
-
-/// Shell words that end the arguments of a `hipc` command in the README.
-const SHELL_OPERATORS: [&str; 6] = ["|", "||", "&&", ";", ">", ">>"];
-
-/// Each `hipc` command in `readme`, as the text it was read from and its arguments: every
-/// command on a line of a fenced code block, and every command in an inline code span
-/// outside one. A command with no arguments is skipped, because a bare `hipc` names the
-/// binary, not a command.
-fn readme_commands(readme: &str) -> Vec<(&str, Vec<&str>)> {
-    let mut in_block = false;
-    let mut commands = Vec::new();
-    for line in readme.lines() {
-        if line.trim_start().starts_with("```") {
-            in_block = !in_block;
-        } else if in_block {
-            commands.extend(commands_in(line).into_iter().map(|args| (line, args)));
-        } else {
-            // Split on backticks, the odd pieces are the inline code spans.
-            for span in line.split('`').skip(1).step_by(2) {
-                commands.extend(commands_in(span).into_iter().map(|args| (span, args)));
-            }
-        }
-    }
-    commands
-}
-
-/// The arguments of each `hipc` command in `text`. A word `hipc` starts a command, also after
-/// `(` or `$(`, so the README names the binary file `./hipc`. Its arguments are the words
-/// after it, up to a shell operator, a `#` comment, or a word that ends in `)` or `;`,
-/// which closes a subshell or the command.
-fn commands_in(text: &str) -> Vec<Vec<&str>> {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let mut commands = Vec::new();
-    for (i, word) in words.iter().enumerate() {
-        if word.trim_start_matches(['$', '(']) != "hipc" {
-            continue;
-        }
-        let mut args = Vec::new();
-        for word in &words[i + 1..] {
-            if SHELL_OPERATORS.contains(word) || word.starts_with('#') {
-                break;
-            }
-            let arg = word.trim_end_matches([')', ';']);
-            args.push(arg);
-            if arg.len() < word.len() {
-                break;
-            }
-        }
-        if !args.is_empty() {
-            commands.push(args);
-        }
-    }
-    commands
-}
-
 /// The repository's prose files, read at compile time. A merge that leaves conflict markers
 /// in Rust fails to build, but one in a Markdown file passed every test once, so they are
 /// checked here.
@@ -548,100 +481,14 @@ fn a_conflict_marker_is_found_and_a_heading_underline_is_not() {
     );
 }
 
-/// Every `hipc` command the README, `docs/getting-started.md`, and `docs/agents.md` show, in
-/// a code block or an inline code span, starts with a command path of `hipc schema`, and `hipc`
-/// parses it, so a rename that forgets a page fails here. The parse runs the command with
-/// `--help`, which reads no file and touches no network, and fails on a word the command
-/// does not take, such as the old `show` after `hipc billing stripe`. A stale word that the
-/// command takes as a positional argument still parses; only the path and the flags are
-/// checked. A page may not show a global flag before the path, or a placeholder in it.
+/// The binary parses a command a page shows, as the in-process check
+/// `spec::doc_commands::page_commands_start_with_a_schema_path_and_parse` does for every
+/// command of the README, `docs/getting-started.md`, and `docs/agents.md`.
 #[test]
-fn readme_commands_start_with_a_schema_path_and_parse() {
-    let paths = schema_paths();
-    let mut found = BTreeSet::new();
-    for (page, markdown) in COMMAND_PAGES {
-        for (source, args) in readme_commands(markdown) {
-            let source = source.trim();
-            let line = args.join(" ");
-            // The longest path, so `hipc compute vms list` is not read as a shorter one.
-            let path = (1..=args.len())
-                .rev()
-                .map(|n| args[..n].join(" "))
-                .find(|path| paths.contains(path));
-            let Some(path) = path else {
-                panic!(
-                    "{page} `{source}`: `hipc {line}` starts with no `hipc schema` path \
-                     (a renamed command, or a flag before the path)"
-                );
-            };
-            found.insert((page, path));
-
-            let out = hipc(&[args.as_slice(), &["--help"]].concat());
-            assert_eq!(
-                out.status.code(),
-                Some(0),
-                "{page} `{source}`: `hipc {line}` does not parse: {}",
-                text(&out.stderr)
-            );
-        }
-    }
-
-    // A scan that stopped finding a page's commands would pass with nothing to check.
-    let anchors = [
-        ("README.md", "auth login"),
-        ("README.md", "auth status"),
-        ("README.md", "billing transactions"),
-        ("README.md", "schema"),
-        ("README.md", "completions"),
-        ("README.md", "api"),
-        ("docs/getting-started.md", "auth login"),
-        ("docs/getting-started.md", "account use"),
-        ("docs/getting-started.md", "completions"),
-        ("docs/agents.md", "schema"),
-        ("docs/agents.md", "auth login"),
-        ("docs/agents.md", "api"),
-    ];
-    for (page, expected) in anchors {
-        assert!(
-            found.contains(&(page, expected.to_owned())),
-            "{page} shows no `hipc {expected}`"
-        );
-    }
-}
-
-/// The README scan reads every command on a fenced line, after `(` and `$(` too, and the
-/// commands of inline code spans outside fences, skipping a bare `hipc`; arguments end at a
-/// shell operator, a comment, or a word that ends in `)` or `;`.
-#[test]
-fn readme_commands_reads_fences_and_inline_spans() {
-    // After the first line, each line ends a command on one stop alone: `|`, `>`, a
-    // closing `)`, `#`, `&&`, a trailing `;`, `>>`, `||`, and a bare `;`.
-    let readme = "run `hipc schema` or `hipc`, not hipc account\n```sh\n\
-                  hipc auth login --token-file x | hipc schema > out\n\
-                  echo $(hipc account) (hipc --json schema) ./hipc\n\
-                  hipc version # note\n\
-                  hipc version && hipc schema\n\
-                  hipc schema; hipc auth status >> log\n\
-                  hipc account || hipc account ; hipc\n```\n";
-    let commands: Vec<Vec<&str>> = readme_commands(readme)
-        .into_iter()
-        .map(|(_, args)| args)
-        .collect();
-    let expected: [&[&str]; 12] = [
-        &["schema"],
-        &["auth", "login", "--token-file", "x"],
-        &["schema"],
-        &["account"],
-        &["--json", "schema"],
-        &["version"],
-        &["version"],
-        &["schema"],
-        &["schema"],
-        &["auth", "status"],
-        &["account"],
-        &["account"],
-    ];
-    assert_eq!(commands, expected);
+fn a_readme_command_parses() {
+    assert!(README.contains("hipc billing transactions --all"));
+    let out = hipc(&["billing", "transactions", "--all", "--help"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
 }
 
 #[test]
