@@ -30,6 +30,44 @@ macro_rules! routes {
     };
 }
 
+/// Declares a server vocabulary, the values a field of an answer takes, as an enum with one
+/// variant per value `hipc` acts on and `Other` for any other text, so a value the
+/// server adds is not an error. `as_str` gives the server's spelling back, for a message.
+macro_rules! vocabulary {
+    (
+        $(#[$doc:meta])*
+        $name:ident { $($(#[$variant_doc:meta])* $variant:ident = $text:literal,)+ }
+    ) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+        #[serde(from = "String")]
+        pub enum $name {
+            $($(#[$variant_doc])* $variant,)+
+            /// A value `hipc` does not act on, as the API spells it.
+            Other(String),
+        }
+
+        impl $name {
+            /// The value as the API spells it.
+            pub fn as_str(&self) -> &str {
+                match self {
+                    $(Self::$variant => $text,)+
+                    Self::Other(text) => text,
+                }
+            }
+        }
+
+        impl From<String> for $name {
+            fn from(text: String) -> Self {
+                match text.as_str() {
+                    $($text => Self::$variant,)+
+                    _ => Self::Other(text),
+                }
+            }
+        }
+    };
+}
+
 pub mod account;
 pub mod billing;
 pub mod cdn;
@@ -45,6 +83,8 @@ pub mod s3;
 pub mod support;
 
 use std::fmt;
+
+use serde::Serialize;
 
 use crate::encode::percent_encode_keeping;
 use crate::error::Code;
@@ -383,6 +423,16 @@ impl Placeholder {
             .and_then(|inner| inner.strip_suffix('}'))
     }
 }
+
+/// The body of a POST that carries nothing, `{}`, as the console sends it: a Kubernetes node
+/// removal, an operation's cancel and resume, and a WAF version's rollback.
+#[derive(Debug, Serialize)]
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "a struct with braces is written as `{}`, the empty body the routes take; a unit \
+              struct would be `null`"
+)]
+pub struct EmptyBody {}
 
 /// Whether `value`, one path segment, fits the `{name}` placeholder: a non-empty segment, and
 /// for the names whose value the server's router takes as a number, digits. A database and

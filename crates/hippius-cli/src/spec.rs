@@ -1337,9 +1337,7 @@ mod tests {
         );
         let remove_others = api["guards"][2]["when"].as_str().unwrap();
         assert!(
-            remove_others.contains(
-                "a `PUT` of `/api/v1/operator/nodes/<node_id>/storage/`"
-            ),
+            remove_others.contains("a `PUT` of `/api/v1/operator/nodes/<node_id>/storage/`"),
             "{remove_others}"
         );
         assert!(

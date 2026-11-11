@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 use zeroize::Zeroizing;
 
 /// A JSON value that holds secrets, such as a request body built from a secrets file or an
@@ -25,14 +25,6 @@ impl SecretValue {
     /// The value, to change in place: whatever it holds when dropped is cleared.
     pub fn as_value_mut(&mut self) -> &mut Value {
         &mut self.0
-    }
-
-    /// `object` with this value as its field `key`, appended after the fields it holds; the
-    /// whole object is cleared when dropped.
-    #[must_use = "the secret is now in the returned value"]
-    pub fn within(mut self, key: &str, mut object: Map<String, Value>) -> Self {
-        object.insert(key.to_owned(), std::mem::take(&mut self.0));
-        Self(Value::Object(object))
     }
 }
 
@@ -76,17 +68,11 @@ mod tests {
         clear_owned(serde_json::json!({"a": [1, "s", {"k": "v"}, null, true], "b": 2.5}));
     }
 
-    /// A secret put inside an object comes after the fields it already holds, and `Debug`
-    /// shows nothing of either.
+    /// A secret value changes in place, and `Debug` shows nothing of it.
     #[test]
-    fn a_secret_value_nests_in_order_and_shows_nothing() {
-        let outer = Map::from_iter([("provider".to_owned(), Value::from("cloudflare"))]);
-        let mut body = SecretValue::new(serde_json::json!({"api_token": "cf-secret"}))
-            .within("credentials", outer);
-        assert_eq!(
-            serde_json::to_string(body.as_value()).unwrap(),
-            r#"{"provider":"cloudflare","credentials":{"api_token":"cf-secret"}}"#
-        );
+    fn a_secret_value_changes_in_place_and_shows_nothing() {
+        let mut body =
+            SecretValue::new(serde_json::json!({"provider": "cloudflare", "api_token": "cf"}));
         body.as_value_mut()["provider"] = Value::from("route53");
         assert_eq!(body.as_value()["provider"], "route53");
         let shown = format!("{body:?}");

@@ -20,12 +20,12 @@
 
 use std::time::{Duration, Instant};
 
-use hippius::routes::compute;
-use hippius::{AppSecrets, Code, Error, Request, Result, SecretValue, phrase};
+use hippius::routes::compute::{self, BootPhase, Vm, VmStatus};
+use hippius::{AppSecrets, Code, Error, Request, Result, SecretValue, Slot, phrase, view_of};
 use serde_json::{Map, Value};
 
 use super::{APPS, Compose, Hashed, check_hash, read_compose, unavailable_hint};
-use crate::cli::{AppCreate, DiskTier, FailoverMode, GuestPoweroff};
+use crate::cli::{AppCreate, BackupInterval, DiskTier, FailoverMode, GuestPoweroff};
 use crate::commands::Printed;
 use crate::commands::compute::{
     POLL_INTERVAL, STAYS_STOPPED, backups_clause, balance_hint, launch_wait,
@@ -38,7 +38,7 @@ const SECRETS_FLAG: &str = "--secrets-file";
 
 pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
     let timeout = launch_wait(ctx, args.wait, args.no_wait, args.wait_timeout);
-    let compose = read_compose(&args.compose_file)?;
+    let compose = read_compose(&args.compose.path)?;
     let secrets = args
         .secrets_file
         .as_deref()
@@ -49,21 +49,20 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
     compose.warn_of_invisible_bytes(ctx);
     let client = ctx.load_authed_client()?;
     let action = launch_action(args);
-    let launch = |body: &Value| {
+    let launch = |secrets: Option<&Value>| {
         Request::to(&compute::APP_ENGINE_APP_CREATE, [])
-            .json(body)
+            .json(&create_body(args, &compose, secrets))
             .about(&action)
             .listed_by(APPS)
     };
     let validate = compose.request(&compute::APP_ENGINE_VALIDATE, "validate");
-    let placeholders = secrets
-        .as_ref()
-        .map(|secrets| SecretValue::new(secrets.placeholder_body()));
-    let draft = launch(create_body(args, &compose, placeholders).as_value());
+    let placeholders = secrets.as_ref().map(AppSecrets::placeholder_body);
+    let draft = launch(placeholders.as_ref());
     let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(&client, &[&validate, &draft])?;
-            return Ok(Printed::Document(doc));
+        Write::DryRun(_) => {
+            return ctx
+                .dry_run_of(&client, &[&validate, &draft])
+                .map(Printed::Document);
         }
         Write::Checked(checked) => checked,
     };
@@ -87,8 +86,9 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
     let redactions: &[String] = redactions.as_ref().map_or(&[], |texts| texts.as_slice());
     // The body's copies of the values are cleared once it is serialized, the file's with
     // `secrets`, and the request's bytes when it is dropped.
-    let request =
-        launch(create_body(args, &compose, secrets.as_ref().map(AppSecrets::body)).as_value());
+    let values = secrets.as_ref().map(AppSecrets::body);
+    let request = launch(values.as_ref().map(SecretValue::as_value));
+    drop(values);
     drop(secrets);
     let response = ctx
         .send_confirmed(&client, &request, &confirmed)
@@ -98,10 +98,11 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
         .map_err(|error| sanitized(error, &action, redactions))?;
     // The 202 is the app, with the compose facts; when it names a hash, it must be the file's,
     // or the launch measures other bytes. The app exists by then, so it is printed.
-    match launched.get("compose_sha256") {
-        None | Some(Value::Null) => {}
-        Some(Value::String(hash)) if hash.eq_ignore_ascii_case(&compose.sha256) => {}
-        Some(_) => {
+    let app: Vm = view_of(&launched);
+    match app.compose_sha256 {
+        Slot::Missing | Slot::Null => {}
+        Slot::Value(hash) if hash.eq_ignore_ascii_case(&compose.sha256) => {}
+        Slot::Value(_) | Slot::Other => {
             let why = format!(
                 "the API hashed other bytes than {}: the `compose_sha256` of its launch answer is \
                  not `{}`, the SHA-256 hipc computed",
@@ -113,7 +114,7 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
     }
     // An answer without a `vm_id` names no app to follow or delete, whether or not hipc
     // waits, so both are internal, with the answer printed so what it holds is not lost.
-    if launched.get("vm_id").and_then(Value::as_str).is_none() {
+    if app.vm_id.is_none() {
         return Err(Error::internal("the launch answer has no `vm_id`")
             .with_hint(format!("run `{APPS}` to find the new app"))
             .after_write(printable(&launched, redactions)));
@@ -154,40 +155,25 @@ fn launch_action(args: &AppCreate) -> String {
     action
 }
 
-/// The launch body: the flavor, the compose byte for byte, `secrets` when there are any, and
-/// exactly the flags given. `public_ip` is never sent: the server's default, true, is the
-/// only value it takes.
-fn create_body(args: &AppCreate, compose: &Compose, secrets: Option<SecretValue>) -> SecretValue {
-    let mut fields = Map::new();
-    fields.insert("flavor".to_owned(), args.flavor.clone().into());
-    fields.insert("compose".to_owned(), compose.text.clone().into());
-    let mut body = match secrets {
-        Some(secrets) => secrets.within("secrets", fields),
-        None => SecretValue::new(Value::Object(fields)),
-    };
-    let body_fields = body
-        .as_value_mut()
-        .as_object_mut()
-        .expect("the body is built as an object above");
-    for (key, value) in [
-        ("name", args.name.as_deref()),
-        ("region", args.region.as_deref()),
-        ("os_disk_tier", args.os_disk_tier.map(DiskTier::code)),
-        ("placement_group", args.placement_group.as_deref()),
-        (
-            "on_guest_poweroff",
-            args.on_guest_poweroff.map(GuestPoweroff::code),
-        ),
-        ("failover_mode", args.failover.map(FailoverMode::code)),
-    ] {
-        if let Some(value) = value {
-            body_fields.insert(key.to_owned(), value.into());
-        }
+/// The launch body ([`compute::AppCreateBody`]), with `secrets` when there are any: the
+/// values, or their placeholders in a dry run.
+fn create_body<'a>(
+    args: &'a AppCreate,
+    compose: &'a Compose,
+    secrets: Option<&'a Value>,
+) -> compute::AppCreateBody<'a> {
+    compute::AppCreateBody {
+        flavor: &args.flavor,
+        compose: &compose.text,
+        secrets,
+        name: args.name.as_deref(),
+        region: args.region.as_deref(),
+        os_disk_tier: args.os_disk_tier.map(DiskTier::code),
+        placement_group: args.placement_group.as_deref(),
+        on_guest_poweroff: args.on_guest_poweroff.map(GuestPoweroff::code),
+        failover_mode: args.failover.map(FailoverMode::code),
+        backup_interval_s: args.backup_interval.map(BackupInterval::seconds),
     }
-    if let Some(interval) = args.backup_interval {
-        body_fields.insert("backup_interval_s".to_owned(), interval.seconds().into());
-    }
-    body
 }
 
 /// Refuses a launch whose secrets are not the ones the compose declares, as validate read
@@ -202,15 +188,14 @@ fn check_secret_names(
     secrets: Option<&AppSecrets>,
     compose: &Compose,
 ) -> Result<()> {
-    let declared: Vec<&str> = match parsed.get("secret_names") {
-        Some(Value::Array(names)) if names.iter().all(Value::is_string) => {
-            names.iter().filter_map(Value::as_str).collect()
-        }
-        other => {
-            let answered = if other.is_none_or(Value::is_null) {
-                "without `secret_names`"
-            } else {
+    let names = view_of::<compute::Validated>(parsed).secret_names;
+    let declared: Vec<&str> = match &names {
+        Slot::Value(names) => names.iter().map(String::as_str).collect(),
+        missing @ (Slot::Missing | Slot::Null | Slot::Other) => {
+            let answered = if missing.is_set() {
                 "a `secret_names` that is not a list of names"
+            } else {
+                "without `secret_names`"
             };
             return Err(Error::internal(format!(
                 "cannot check the declared secrets: the API's check of {} answered {answered}",
@@ -308,17 +293,40 @@ fn printable(value: &Value, redactions: &[String]) -> Value {
     Value::Object(out)
 }
 
-/// Whether `text`, under the top-level `key`, has the one shape hipc reads that key as: a
-/// `vm_id` by the rule of the argument, a `compose_sha256` of 64 hex digits, a status or phase
-/// token, or a kebab `error`.
+/// The top-level fields of an app answer ([`compute::Vm`]) that [`printable`] shows as they
+/// came, each with the one shape it is read as. A field the API adds is not here, so it is
+/// redacted like free text: adding one is a review of why its shape cannot hold a value sent.
+const SHAPED: [(&str, Fits); 6] = [
+    // The id the poll, the note, and the hint name, held to the rule of the argument.
+    ("vm_id", is_vm_id),
+    // What the launch is measured by, compared with the hash of the file sent.
+    ("compose_sha256", is_sha256),
+    // Status words the wait reads.
+    ("status", is_token),
+    ("boot_phase", is_token),
+    ("power_state", is_token),
+    // The slug of a failure, which a person searches for.
+    ("error", is_kebab),
+];
+
+/// Whether a field's text has the one shape [`SHAPED`] reads it as.
+type Fits = fn(&str) -> bool;
+
+/// Whether `text`, under the top-level `key`, has the one shape [`SHAPED`] reads that key as.
 fn shaped(key: &str, text: &str) -> bool {
-    match key {
-        "vm_id" => crate::cli::vm_id(text).is_ok(),
-        "compose_sha256" => text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit()),
-        "status" | "boot_phase" | "power_state" => is_token(text),
-        "error" => is_kebab(text),
-        _ => false,
-    }
+    SHAPED
+        .iter()
+        .any(|(field, fits)| *field == key && fits(text))
+}
+
+/// Whether `text` is a `vm_id` by the rule of the argument.
+fn is_vm_id(text: &str) -> bool {
+    crate::cli::vm_id(text).is_ok()
+}
+
+/// Whether `text` is a SHA-256 of 64 hex digits.
+fn is_sha256(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Whether `text` is a status word such as `running` or `pulling_images`: 1 to 64 lowercase
@@ -471,14 +479,14 @@ enum Launch {
 }
 
 fn launch_state(app: &Value) -> Launch {
-    let field = |key| app.get(key).and_then(Value::as_str);
-    let stalled = app.get("boot_stalled").and_then(Value::as_bool) == Some(true);
-    match (field("status"), field("boot_phase")) {
-        (Some("running"), Some("running")) => Launch::Done,
-        (Some("failed"), _) if stalled => Launch::Waiting,
-        (Some("decommissioning"), _) => Launch::Ended("decommissioning"),
-        (Some("decommissioned"), _) => Launch::Ended("decommissioned"),
-        (Some("failed"), _) | (_, Some("failed")) => Launch::Ended("failed"),
+    let app: Vm = view_of(app);
+    let stalled = app.boot_stalled == Some(true);
+    match (app.status, app.boot_phase) {
+        (Some(VmStatus::Running), Some(BootPhase::Running)) => Launch::Done,
+        (Some(VmStatus::Failed), _) if stalled => Launch::Waiting,
+        (Some(VmStatus::Decommissioning), _) => Launch::Ended("decommissioning"),
+        (Some(VmStatus::Decommissioned), _) => Launch::Ended("decommissioned"),
+        (Some(VmStatus::Failed), _) | (_, Some(BootPhase::Failed)) => Launch::Ended("failed"),
         _ => Launch::Waiting,
     }
 }
@@ -499,7 +507,7 @@ fn wait(
 ) -> Result<Printed> {
     let print = |app: &Value| printable(app, redactions);
     // `create` refused an answer without one before the wait.
-    let vm_id = launched["vm_id"].as_str().unwrap_or_default().to_owned();
+    let vm_id = view_of::<Vm>(&launched).vm_id.unwrap_or_default();
     // The id is quoted only once it passes the rule of the argument, as the poll URL needs,
     // and holds no value sent: the printable copy redacts such an id, and the note, the poll's
     // `--debug` line, the error, and the hint would otherwise print it raw on stderr.
@@ -591,7 +599,7 @@ impl Wait for AppLaunch<'_> {
 
     fn take(&mut self, answer: Value) -> Result<()> {
         // A document for another app, or for none, is not this launch.
-        match answer.get("vm_id").and_then(Value::as_str) {
+        match view_of::<Vm>(&answer).vm_id {
             Some(id) if id == self.vm_id => {
                 self.app = answer;
                 Ok(())
@@ -599,8 +607,8 @@ impl Wait for AppLaunch<'_> {
             other => {
                 let named = match other {
                     Some(other)
-                        if crate::cli::vm_id(other).is_ok()
-                            && !hippius::holds_secret(other, self.redactions) =>
+                        if crate::cli::vm_id(&other).is_ok()
+                            && !hippius::holds_secret(&other, self.redactions) =>
                     {
                         format!("the app {}", phrase::quote(other))
                     }

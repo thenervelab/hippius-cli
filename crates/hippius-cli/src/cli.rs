@@ -39,7 +39,9 @@ mod support;
 pub(crate) mod values;
 mod waf;
 
-pub(crate) use crate::cli::app_engine::{AppCreate, AppEngine, AppEngineApps, GuestComponents};
+pub(crate) use crate::cli::app_engine::{
+    AppCreate, AppEngine, AppEngineApps, GuestComponents, MAX_COMPOSE_BYTES,
+};
 pub(crate) use crate::cli::hub_keys::{HubKeys, KeyCreate};
 pub(crate) use crate::cli::hub_models::{HubEvents, HubModels};
 pub(crate) use crate::cli::kubernetes::{
@@ -54,8 +56,9 @@ pub(crate) use crate::cli::projects::{
     QuotaLimit, QuotaUpdate,
 };
 pub(crate) use waf::{
-    CdnLists, CdnWaf, GroupBy, ListItems, RuleAction, TierZones, WafAnalytics, WafEvents, WafMode,
-    WafRateLimits, WafRules, WafTest, WafUpdate, WafVersions,
+    BlockContentType, BlockStatus, CdnLists, CdnWaf, GroupBy, ListItems, RuleAction, TierZones,
+    WafAnalytics, WafEvents, WafMode, WafRateLimits, WafRules, WafTest, WafTier, WafUpdate,
+    WafVersions,
 };
 
 pub(crate) use crate::cli::account::{

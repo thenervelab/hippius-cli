@@ -52,8 +52,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64ct::{Base64, Encoding as _};
+use base64ct::{Base64, Base64Unpadded, Base64Url, Base64UrlUnpadded, Encoding as _};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
@@ -65,8 +66,10 @@ use crate::ids::random_uuid;
 use crate::phrase::{named, quote, quote_path};
 use crate::private_file::{Guarded, NamedBy};
 use crate::private_object::load_private_object;
+use crate::routes::kubernetes::{ClusterKeys, Sealed};
 use crate::secret::clear_owned;
 use crate::time::{clock_hint, http_date, rfc3339};
+use crate::view::view_of;
 
 /// The `kind` of the key file.
 const KIND: &str = "hippius-k8s-cluster-key";
@@ -77,8 +80,26 @@ const VERSION: u64 = 1;
 /// The bytes of every key in the file.
 const KEY_BYTES: usize = 32;
 
-/// The prefix of a drop's signed message.
-const DROP_DOMAIN: &str = "hippius-k8s-drop:v1";
+/// The names and versions of the signing protocol, version 1 (module docs). A version 2 is a
+/// sibling constant, picked where the protocol is.
+struct Protocol {
+    /// The prefix of a drop's signed message.
+    drop_domain: &'static str,
+    /// The `dom` of a signed operation.
+    operation_domain: &'static str,
+    /// The `v` of a signed operation: the envelope's version.
+    envelope_version: u64,
+    /// The `kv` of a signed operation: the version of the key that signs it.
+    key_version: u64,
+}
+
+/// Version 1 of the protocol, the one the console and the backend speak.
+const V1: Protocol = Protocol {
+    drop_domain: "hippius-k8s-drop:v1",
+    operation_domain: "hippius-k8s-op",
+    envelope_version: 1,
+    key_version: 1,
+};
 
 /// How long a signed operation stays valid, in seconds: the lifetime the console gives its
 /// own signatures, under the backend's one-hour cap with room for a slow queue.
@@ -89,9 +110,9 @@ pub struct ClusterKey {
     sign: SigningKey,
     /// The X25519 secret, kept here rather than in a `crypto_box::SecretKey` ([`box_key`]).
     box_secret: Zeroizing<[u8; KEY_BYTES]>,
-    /// The two public keys in standard base64, as the cluster records them.
-    sign_public: String,
-    box_public: String,
+    /// The two public keys, which the cluster records.
+    sign_public: [u8; KEY_BYTES],
+    box_public: [u8; KEY_BYTES],
     /// The file it came from, and the flag that named it, for messages.
     path: PathBuf,
     flag: &'static str,
@@ -174,8 +195,8 @@ impl ClusterKey {
         Ok(Self {
             sign,
             box_secret,
-            sign_public: Base64::encode_string(&*sign_public),
-            box_public: Base64::encode_string(&*box_public),
+            sign_public: *sign_public,
+            box_public: *box_public,
             path: path.to_owned(),
             flag,
         })
@@ -184,7 +205,9 @@ impl ClusterKey {
     /// The key, checked against `cluster`, the cluster `id` as the API returned it: both
     /// public keys must be the ones it was created with, as the console checks. The box key
     /// opens the kubeconfig and the signing key consents to node operations, so a file that
-    /// matches on one only is another cluster's.
+    /// matches on one only is another cluster's. The keys are compared as the bytes they
+    /// decode to (standard or URL-safe base64, padded or not, line breaks dropped), so a
+    /// server that spells them another way than the console wrote them still matches.
     ///
     /// # Errors
     ///
@@ -192,17 +215,18 @@ impl ClusterKey {
     /// `client_sign_pubkey` or `client_box_pubkey`.
     pub fn matched(&self, id: u64, cluster: &Value) -> Result<MatchedKey<'_>> {
         let named = named(id, cluster);
-        let public = |field: &str| {
-            cluster.get(field).and_then(Value::as_str).ok_or_else(|| {
+        let keys: ClusterKeys = view_of(cluster);
+        let public = |field: &str, text: Option<&str>| {
+            text.map(decode_public).ok_or_else(|| {
                 Error::internal(format!(
                     "cannot check the cluster key file against the Kubernetes cluster \
                      {named}: the API answered without its `{field}`"
                 ))
             })
         };
-        if public("client_sign_pubkey")? != self.sign_public
-            || public("client_box_pubkey")? != self.box_public
-        {
+        let sign = public("client_sign_pubkey", keys.client_sign_pubkey.as_deref())?;
+        let sealed_to = public("client_box_pubkey", keys.client_box_pubkey.as_deref())?;
+        if sign != Some(self.sign_public) || sealed_to != Some(self.box_public) {
             return Err(Error::usage(
                 format!(
                     "the cluster key file {} is not the key of the Kubernetes cluster {named}: \
@@ -215,10 +239,7 @@ impl ClusterKey {
         Ok(MatchedKey {
             key: self,
             id,
-            guest: cluster
-                .get("guest_sign_pubkey")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            guest: keys.guest_sign_pubkey,
             named,
         })
     }
@@ -228,8 +249,8 @@ impl ClusterKey {
 impl fmt::Debug for ClusterKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClusterKey")
-            .field("sign_public", &self.sign_public)
-            .field("box_public", &self.box_public)
+            .field("sign_public", &Base64::encode_string(&self.sign_public))
+            .field("box_public", &Base64::encode_string(&self.box_public))
             .finish_non_exhaustive()
     }
 }
@@ -274,13 +295,14 @@ impl MatchedKey<'_> {
         let Some(guest) = &self.guest else {
             return Err(not_yet("published the key that signs its kubeconfig"));
         };
-        if secrets.get("guest_sign_pubkey").and_then(Value::as_str) != Some(guest) {
+        let secrets: Sealed = view_of(secrets);
+        if secrets.guest_sign_pubkey.as_ref() != Some(guest) {
             return Err(Error::internal(format!(
                 "the key that signs the secrets of the Kubernetes cluster {named} changed \
                  between two reads, so nothing was decrypted"
             )));
         }
-        let Some((ciphertext, signature)) = launch_drop(secrets, "kubeconfig") else {
+        let Some((ciphertext, signature)) = launch_drop(&secrets, "kubeconfig") else {
             return Err(not_yet("handed over its kubeconfig"));
         };
         let refused = |why: &str| {
@@ -308,8 +330,8 @@ impl MatchedKey<'_> {
             })
     }
 
-    /// One `add_node` operation for the cluster, signed now with a new request id, as
-    /// `{request_uuid, issued_at, expires_at, signature}`. `params` are the pool's
+    /// One `add_node` operation for the cluster, signed now with a new request id. `params`
+    /// are the pool's
     /// `signing_params` as the API returned them, with `replaces` added for a replacement.
     /// `issued_at` is the time of `answered`, the API's answer to the last read before this,
     /// by its `Date` header (or the local clock: `issued_at`).
@@ -320,7 +342,11 @@ impl MatchedKey<'_> {
     /// canonical JSON would print differently, when the system gives no random bytes, when
     /// `answered` has a `Date` more than five minutes from the local clock, or when it has no
     /// `Date` and the local clock is set before 1970.
-    pub fn sign_add_node(&self, params: &Map<String, Value>, answered: &Response) -> Result<Value> {
+    pub fn sign_add_node(
+        &self,
+        params: &Map<String, Value>,
+        answered: &Response,
+    ) -> Result<SignedOperation> {
         let request_id = random_uuid("a request id")?;
         let issued_at = issued_at(answered.date(), SystemTime::now())?;
         self.add_node_at(params, &request_id, issued_at)
@@ -332,18 +358,18 @@ impl MatchedKey<'_> {
         params: &Map<String, Value>,
         request_uuid: &str,
         issued_at: u64,
-    ) -> Result<Value> {
+    ) -> Result<SignedOperation> {
         let expires_at = issued_at + ENVELOPE_LIFETIME_SECS;
         let envelope = json!({
-            "v": 1,
-            "dom": "hippius-k8s-op",
+            "v": V1.envelope_version,
+            "dom": V1.operation_domain,
             "cluster": self.id.to_string(),
             "req": request_uuid,
             "kind": "add_node",
             "params": params,
             "iat": issued_at,
             "exp": expires_at,
-            "kv": 1,
+            "kv": V1.key_version,
         });
         let bytes = canonical(&envelope).ok_or_else(|| {
             Error::internal(format!(
@@ -353,13 +379,28 @@ impl MatchedKey<'_> {
             ))
         })?;
         let signature = self.key.sign.sign(bytes.as_bytes());
-        Ok(json!({
-            "request_uuid": request_uuid,
-            "issued_at": issued_at,
-            "expires_at": expires_at,
-            "signature": Base64::encode_string(&signature.to_bytes()),
-        }))
+        Ok(SignedOperation {
+            request_uuid: request_uuid.to_owned(),
+            issued_at,
+            expires_at,
+            signature: Base64::encode_string(&signature.to_bytes()),
+        })
     }
+}
+
+/// A signed node operation, as a node pool scale and a node replacement send it: the request
+/// id, the window it is valid in, and the signature. Only these go out; the envelope that is
+/// signed is built again by the backend.
+#[derive(Debug, Serialize)]
+pub struct SignedOperation {
+    /// A fresh lowercase v4 UUID, the envelope's `req`.
+    request_uuid: String,
+    /// The envelope's `iat`, Unix seconds.
+    issued_at: u64,
+    /// The envelope's `exp`, Unix seconds.
+    expires_at: u64,
+    /// The Ed25519 signature of the envelope's canonical JSON, standard base64.
+    signature: String,
 }
 
 /// The `crypto_box` key of `secret`, built for one use and dropped after it. `crypto_box` 0.9.1
@@ -428,6 +469,22 @@ fn secret_text(fields: &mut Map<String, Value>, field: &str) -> Option<Zeroizing
     }
 }
 
+/// A public key the API returned, decoded: standard or URL-safe base64, padded or not, with
+/// any line breaks or spaces dropped, so a server that spells the key another way than the
+/// console wrote it is still read; `None` when no such reading is [`KEY_BYTES`] bytes.
+fn decode_public(text: &str) -> Option<[u8; KEY_BYTES]> {
+    let text: String = text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let mut key = [0_u8; KEY_BYTES];
+    let fits = |decoded: std::result::Result<&[u8], base64ct::Error>| {
+        decoded.is_ok_and(|decoded| decoded.len() == KEY_BYTES)
+    };
+    let decoded = fits(Base64::decode(&text, &mut key))
+        || fits(Base64Unpadded::decode(&text, &mut key))
+        || fits(Base64Url::decode(&text, &mut key))
+        || fits(Base64UrlUnpadded::decode(&text, &mut key));
+    decoded.then_some(key)
+}
+
 /// `text` decoded from standard base64 into exactly [`KEY_BYTES`] bytes, or `None`.
 fn decode_key(text: &str) -> Option<Zeroizing<[u8; KEY_BYTES]>> {
     let mut key = Zeroizing::new([0_u8; KEY_BYTES]);
@@ -441,18 +498,15 @@ fn decode_key(text: &str) -> Option<Zeroizing<[u8; KEY_BYTES]>> {
 /// `operation`, among the drops that have both. Newest is by `created_at` read as a time, so
 /// `...:00Z` and `...:00.5Z` order as the times they are, not as text; a drop whose
 /// `created_at` is not an RFC 3339 time counts as older than any that is.
-fn launch_drop<'a>(secrets: &'a Value, kind: &str) -> Option<(&'a str, &'a str)> {
-    let text = |drop: &'a Value, field: &str| drop.get(field).and_then(Value::as_str);
+fn launch_drop<'a>(secrets: &'a Sealed, kind: &str) -> Option<(&'a str, &'a str)> {
     secrets
-        .get("drops")?
-        .as_array()?
+        .drops
+        .as_ref()?
         .iter()
-        .filter(|drop| {
-            text(drop, "kind") == Some(kind) && drop.get("operation").is_none_or(Value::is_null)
-        })
+        .filter(|drop| drop.kind.as_deref() == Some(kind) && !drop.operation.is_set())
         .filter_map(|drop| {
-            let pair = (text(drop, "ciphertext")?, text(drop, "signature")?);
-            Some((text(drop, "created_at").and_then(rfc3339), pair))
+            let pair = (drop.ciphertext.as_deref()?, drop.signature.as_deref()?);
+            Some((drop.created_at.as_deref().and_then(rfc3339), pair))
         })
         .max_by_key(|(created_at, _)| *created_at)
         .map(|(_, pair)| pair)
@@ -483,7 +537,7 @@ fn verify_drop(guest: &str, cluster: u64, kind: &str, ciphertext: &str, signatur
 fn drop_message(cluster: u64, kind: &str, ciphertext: &str) -> String {
     let digest = Sha256::digest(ciphertext.as_bytes());
     let hex = hex(&digest);
-    format!("{DROP_DOMAIN}:{cluster}:{kind}:{hex}")
+    format!("{}:{cluster}:{kind}:{hex}", V1.drop_domain)
 }
 
 /// `value` as the backend's canonical JSON (module docs), or `None` for a number that is not

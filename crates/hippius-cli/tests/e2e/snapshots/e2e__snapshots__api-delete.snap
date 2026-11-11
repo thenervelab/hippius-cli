@@ -15,5 +15,5 @@ expression: dry_run(args)
     }
   ],
   "confirmation": true,
-  "confirmation_when": "the method is not `GET` or `HEAD`, or the path is `/api/network/me/`, whose first call creates the network, with or without the trailing slash or a format suffix; a write to a route no command lists in its `routes` also warns that `hipc` does not know it"
+  "confirmation_when": "the method is not `GET` or `HEAD`, or the request is a `GET` or `HEAD` of `/api/network/me/`, whose read may create something, with or without the trailing slash or a format suffix; a write to a route no command lists in its `routes` also warns that `hipc` does not know it"
 }

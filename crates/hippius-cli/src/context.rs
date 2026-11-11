@@ -32,6 +32,16 @@ pub(crate) enum Step {
     DryRun(Value),
 }
 
+/// The outcome of [`Context::call_confirmed`].
+#[derive(Debug)]
+pub(crate) enum ConfirmedStep {
+    /// The write was confirmed and sent, and its answer was a 2xx; the [`Confirmed`] covers
+    /// the later writes its question named.
+    Sent(Response, Confirmed),
+    /// `--dry-run`: this document describes the request, and nothing was sent.
+    DryRun(Value),
+}
+
 /// Whether a request needs a confirmation before it is sent.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Gate<'a> {
@@ -330,7 +340,7 @@ impl<'a> Context<'a> {
     pub(crate) fn call(&self, client: &Client, request: &Request, gate: Gate<'_>) -> Result<Step> {
         match gate {
             Gate::Open if self.global.dry_run => {
-                self.dry_run_document(client, request).map(Step::DryRun)
+                self.dry_run_of(client, &[request]).map(Step::DryRun)
             }
             // An open request meets the same refusals in `transmit`.
             Gate::Open => {
@@ -340,14 +350,31 @@ impl<'a> Context<'a> {
                 );
                 self.transmit(client, request).map(Step::Sent)
             }
-            Gate::Confirm { consequence } => match self.check_write(client, request)? {
-                Write::DryRun(doc) => Ok(Step::DryRun(doc)),
-                Write::Checked(checked) => {
-                    let confirmed = self.confirm_write(checked, &request.action(), consequence)?;
-                    self.send_confirmed(client, request, &confirmed)
-                        .map(Step::Sent)
+            Gate::Confirm { consequence } => {
+                match self.call_confirmed(client, request, consequence)? {
+                    ConfirmedStep::DryRun(doc) => Ok(Step::DryRun(doc)),
+                    ConfirmedStep::Sent(response, _covers_nothing_more) => Ok(Step::Sent(response)),
                 }
-            },
+            }
+        }
+    }
+
+    /// [`Context::call`] of a write confirmed with `consequence`, keeping the [`Confirmed`] for
+    /// the later writes its question named, such as the firewall rule a VM launch with
+    /// `--open-port` sets.
+    pub(crate) fn call_confirmed(
+        &self,
+        client: &Client,
+        request: &Request,
+        consequence: Option<&str>,
+    ) -> Result<ConfirmedStep> {
+        match self.check_write(client, request)? {
+            Write::DryRun(doc) => Ok(ConfirmedStep::DryRun(doc)),
+            Write::Checked(checked) => {
+                let confirmed = self.confirm_write(checked, &request.action(), consequence)?;
+                let response = self.send_confirmed(client, request, &confirmed)?;
+                Ok(ConfirmedStep::Sent(response, confirmed))
+            }
         }
     }
 
@@ -360,7 +387,7 @@ impl<'a> Context<'a> {
     /// so a confirmed write never fails on either (tenet 5).
     pub(crate) fn check_write(&self, client: &Client, draft: &Request) -> Result<Write> {
         if self.global.dry_run {
-            return self.dry_run_document(client, draft).map(Write::DryRun);
+            return self.dry_run_of(client, &[draft]).map(Write::DryRun);
         }
         let account = client.account_header(draft)?;
         let project = client.project_header(draft)?;
@@ -429,12 +456,6 @@ impl<'a> Context<'a> {
         Ok(doc)
     }
 
-    /// The `--dry-run` document of a command that sends `request` alone:
-    /// [`Context::dry_run_of`] that one request.
-    pub(crate) fn dry_run_document(&self, client: &Client, request: &Request) -> Result<Value> {
-        self.dry_run_of(client, &[request])
-    }
-
     /// The `--dry-run` document of a command whose real run sends `requests`: `dry_run`, then
     /// `requests`, the [`Context::describe`] document of each, in the order a real run sends
     /// them, reads included. A value only a read can give is a `<...>` placeholder in the
@@ -442,18 +463,11 @@ impl<'a> Context<'a> {
     /// `requests`, and a reader finds the requests in one place (tenet 5). A field a command
     /// adds, such as `reads_first`, goes after them.
     pub(crate) fn dry_run_of(&self, client: &Client, requests: &[&Request]) -> Result<Value> {
-        let requests = self.describe_each(client, requests)?;
-        Ok(json!({ "dry_run": true, "requests": requests }))
-    }
-
-    /// The [`Context::describe`] document of each of `requests`, in order: the `requests` of
-    /// [`Context::dry_run_of`].
-    pub(crate) fn describe_each(&self, client: &Client, requests: &[&Request]) -> Result<Value> {
-        requests
+        let requests = requests
             .iter()
             .map(|request| self.describe(client, request))
-            .collect::<Result<Vec<_>>>()
-            .map(Value::Array)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(json!({ "dry_run": true, "requests": requests }))
     }
 
     /// Sends `request` with no dry-run check and no confirmation: a read, or a write of a
@@ -465,7 +479,7 @@ impl<'a> Context<'a> {
     /// For a write of a command whose row asks, and under `--dry-run`.
     pub(crate) fn send(&self, client: &Client, request: &Request) -> Result<Response> {
         assert!(
-            request.is_read() || self.asks == Confirmation::Never,
+            sendable_unconfirmed(self.asks, request.is_read()),
             "a write of a command whose schema row asks is sent with its Confirmed"
         );
         self.transmit(client, request)
@@ -587,6 +601,12 @@ impl<'a> Context<'a> {
             &mut output::note,
         )
     }
+}
+
+/// Whether a request goes out without a [`Confirmed`] from a command whose row asks as `asks`
+/// says: a read always does, and a write only when the row never asks.
+fn sendable_unconfirmed(asks: Confirmation, is_read: bool) -> bool {
+    is_read || asks == Confirmation::Never
 }
 
 /// `action`, then the account, the project, and the billing account `checked` carries, as in
@@ -728,6 +748,36 @@ mod tests {
     use hippius::Code;
 
     use super::*;
+
+    /// A write of a command whose schema row asks, always or sometimes, cannot go out through
+    /// `Context::send`: only `send_confirmed` with the `Confirmed` of its question sends it.
+    #[test]
+    fn only_a_command_that_never_asks_sends_a_write_unconfirmed() {
+        for asks in [Confirmation::Always, Confirmation::When("x")] {
+            assert!(sendable_unconfirmed(asks, true), "{asks:?}");
+            assert!(!sendable_unconfirmed(asks, false), "{asks:?}");
+        }
+        assert!(sendable_unconfirmed(Confirmation::Never, false));
+    }
+
+    /// `unasked` is for a row that asks only sometimes; on a row that always asks it is a bug
+    /// in the command, which must ask.
+    #[test]
+    #[should_panic(expected = "only a command whose schema row asks sometimes")]
+    fn a_write_a_command_always_asks_about_cannot_go_unasked() {
+        use clap::Parser as _;
+        let cli = crate::cli::Cli::try_parse_from(["hipc", "version"]).unwrap();
+        let terminal = Terminal::detect();
+        let mode = terminal.resolve(&cli.global);
+        let ctx = Context::new(&cli.global, &terminal, mode, &[], Confirmation::Always);
+        let checked = Checked {
+            account: None,
+            project: None,
+            billing: None,
+            skipped_billing: None,
+        };
+        drop(ctx.unasked(checked));
+    }
 
     /// A write that failed after it may have reached the server counts as done, so a later
     /// failure says `partial`; a failed read and a write refused before it went out do not.

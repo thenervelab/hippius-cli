@@ -112,11 +112,11 @@ fn methods_phrase(voice: Voice, methods: &[Method]) -> String {
         _ => Some(format!("a {}", named(&writes))),
     };
     let reads = (!reads.is_empty()).then(|| named(&reads));
-    match (reads, writes) {
-        (Some(reads), Some(writes)) => format!("{reads} or {writes}"),
-        (Some(one), None) | (None, Some(one)) => one,
-        (None, None) => String::new(),
-    }
+    reads
+        .into_iter()
+        .chain(writes)
+        .collect::<Vec<_>>()
+        .join(" or ")
 }
 
 /// The routes `hipc api` never sends whatever the flags, each as "<methods> of <path>", and
@@ -343,4 +343,36 @@ pub(crate) fn provisioning_reads(voice: Voice) -> Vec<String> {
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every set of methods a rule can hold reads as one phrase, in either voice.
+    #[test]
+    fn methods_read_as_a_rule_names_them() {
+        use Method::{Delete, Get, Head, Patch, Post, Put};
+        let said = |methods: &[Method]| methods_phrase(Voice::Schema, methods);
+        assert_eq!(said(&METHODS), "any method");
+        assert_eq!(said(&WRITES), "a write");
+        assert_eq!(said(&[Post, Put, Patch]), "a write other than `DELETE`");
+        assert_eq!(said(&[Post, Put]), "a `POST` or `PUT`");
+        assert_eq!(said(&[Get, Head]), "`GET` or `HEAD`");
+        assert_eq!(said(&[Get, Head, Delete]), "`GET` or `HEAD` or a `DELETE`");
+        assert_eq!(methods_phrase(Voice::Help, &[Get, Head]), "GET or HEAD");
+    }
+
+    /// The help names a route as `hipc api` takes it and leaves out an operator route, which
+    /// the schema names whole.
+    #[test]
+    fn the_help_and_the_schema_name_a_route_in_their_own_voice() {
+        let template = "/api/cdn/zones/{zone_id}/";
+        assert_eq!(Voice::Schema.path(template), "`/api/cdn/zones/<zone_id>/`");
+        assert_eq!(Voice::Help.path(template), "/cdn/zones/<zone_id>/");
+        let operator = UNLISTED[0];
+        assert!(Voice::Schema.lists(operator) && !Voice::Help.lists(operator));
+        assert!(leaves_out(RouteFlag::RemoveOthers));
+        assert!(!leaves_out(RouteFlag::Public));
+    }
 }

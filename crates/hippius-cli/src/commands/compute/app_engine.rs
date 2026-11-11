@@ -24,18 +24,13 @@ mod create;
 use std::path::Path;
 
 use hippius::routes::{Route, compute};
-use hippius::{Error, Request, Response, Result, phrase};
-use serde_json::{Value, json};
+use hippius::{Error, Request, Response, Result, Slot, phrase, view_of};
+use serde_json::Value;
 
-use crate::cli::{AppEngine, AppEngineApps, GuestComponents};
+use crate::cli::{AppEngine, AppEngineApps, GuestComponents, MAX_COMPOSE_BYTES};
 use crate::commands::files::write_output_file;
 use crate::commands::{Input, Printed, print_list_with, print_with};
 use crate::context::{Context, Gate};
-
-/// The largest compose file read. The server's limit is lower (`max_compose_bytes` in `hipc
-/// compute app-engine get`) and it refuses a larger one itself;
-/// this cap, the config file's, only stops a wrong path (a log, an image) from being read whole.
-const MAX_COMPOSE_BYTES: u64 = 1024 * 1024;
 
 /// The command that lists the `vm_id`s, for the hint of a 404 on an app route.
 const APPS: &str = "hipc compute app-engine apps list";
@@ -48,8 +43,9 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
                 Request::to(&compute::APP_ENGINE_INFO, []).about("get the App Engine limits");
             send(ctx, &request, |response| {
                 let info = response.document()?;
-                if info.get("enabled") == Some(&Value::Bool(false)) {
-                    let why = match info.get("reason").and_then(Value::as_str) {
+                let limits: compute::AppEngineInfo = view_of(&info);
+                if limits.enabled == Some(false) {
+                    let why = match limits.reason {
                         Some(reason) => format!(": the API says {}", phrase::quote(reason)),
                         None => String::new(),
                     };
@@ -58,11 +54,11 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
                 Ok(info)
             })
         }
-        AppEngine::Validate { compose_file } => validate(ctx, compose_file),
+        AppEngine::Validate { compose } => validate(ctx, &compose.path),
         AppEngine::Fix {
-            compose_file,
+            compose,
             output_file,
-        } => fix(ctx, compose_file, output_file.as_deref()),
+        } => fix(ctx, &compose.path, output_file.as_deref()),
         // Swagger types the list as a bare array with no page parameters, so it is read whole
         // and printed as the list envelope, as the VM list is.
         AppEngine::Apps(AppEngineApps::List) => {
@@ -82,10 +78,8 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
                 let app = response.document()?;
                 // The server writes `verify_command`, and a hostile origin could make it any
                 // shell text, so a person is told to read it before running it.
-                if app
-                    .pointer("/evidence/verify_command")
-                    .is_some_and(|c| !c.is_null())
-                {
+                let evidence = view_of::<compute::App>(&app).evidence;
+                if evidence.is_some_and(|evidence| evidence.verify_command.is_set()) {
                     ctx.warning(
                         "`evidence.verify_command` comes from the API: read it before running \
                          it, and never pipe it to a shell",
@@ -115,7 +109,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
                 .listed_by(APPS);
             show(ctx, &request, |response| {
                 let components = response.document()?;
-                if components.get("needs_operator") == Some(&Value::Bool(true)) {
+                if view_of::<compute::GuestComponents>(&components).needs_operator == Some(true) {
                     ctx.warning(&format!(
                         "an earlier upgrade of `{vm_id}` failed, and Hippius must recover its VM"
                     ));
@@ -129,7 +123,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
                 .listed_by(APPS);
             show(ctx, &request, |response| {
                 let upgrade = response.document()?;
-                if upgrade.get("job") == Some(&Value::Null) {
+                if view_of::<compute::GuestUpgrade>(&upgrade).job == Slot::Null {
                     ctx.note(&format!("`{vm_id}` was never upgraded"));
                 }
                 Ok(upgrade)
@@ -205,7 +199,9 @@ impl Compose {
     /// read's.
     fn request(&self, route: &Route<0>, verb: &str) -> Request {
         Request::to(route, [])
-            .json(&json!({ "compose": self.text }))
+            .json(&compute::ComposeBody {
+                compose: &self.text,
+            })
             .changes_nothing()
             .about(format!("{verb} {}", self.name))
     }
@@ -256,7 +252,8 @@ fn fix(ctx: &Context<'_>, file: &Path, output: Option<&Path>) -> Result<Printed>
     let request = compose.request(&compute::APP_ENGINE_FIX, "fix");
     show(ctx, &request, |response| {
         let fixed = response.document()?;
-        let Some(text) = fixed.get("fixed_compose").and_then(Value::as_str) else {
+        let view: compute::Fixed = view_of(&fixed);
+        let Some(text) = view.fixed_compose.as_deref() else {
             return Err(response.refused("the API answered without a `fixed_compose` string"));
         };
         let sha256 = hippius::sha256_hex(text.as_bytes());
@@ -268,10 +265,10 @@ fn fix(ctx: &Context<'_>, file: &Path, output: Option<&Path>) -> Result<Printed>
                 phrase::quote(output.display())
             ));
         }
-        for change in semantic_changes(&fixed) {
+        for change in semantic_changes(&view) {
             ctx.warning(&change);
         }
-        if fixed.get("valid") == Some(&Value::Bool(false)) {
+        if view.valid == Some(false) {
             ctx.warning(
                 "`fixed_compose` is still not valid: `unresolved` lists what was not fixed",
             );
@@ -282,21 +279,19 @@ fn fix(ctx: &Context<'_>, file: &Path, output: Option<&Path>) -> Result<Printed>
 
 /// A warning for each change of a fix that alters what runs (`semantic` true), so a person
 /// reviews it before using `fixed_compose`.
-fn semantic_changes(fixed: &Value) -> Vec<String> {
-    let Some(Value::Array(changes)) = fixed.get("changes") else {
-        return Vec::new();
-    };
-    changes
+fn semantic_changes(fixed: &compute::Fixed) -> Vec<String> {
+    fixed
+        .changes
         .iter()
-        .filter(|change| change.get("semantic") == Some(&Value::Bool(true)))
+        .flatten()
+        .filter(|change| change.semantic == Some(true))
         .map(|change| {
             let at = change
-                .get("line")
-                .and_then(Value::as_u64)
+                .line
                 .map_or_else(String::new, |line| format!(" at line {line}"));
             let says = change
-                .get("description")
-                .and_then(Value::as_str)
+                .description
+                .as_ref()
                 .map_or_else(String::new, |text| {
                     format!(": the API says {}", phrase::quote(text))
                 });

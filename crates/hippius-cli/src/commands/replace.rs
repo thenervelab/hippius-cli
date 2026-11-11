@@ -153,11 +153,10 @@ pub(crate) fn replace_list(
         replace.write.clone()
     };
     let checked = match ctx.check_write(client, &draft)? {
-        Write::DryRun(mut doc) => {
-            if reads {
-                doc["reads_first"] = ctx.describe(client, &replace.read)?;
-                doc["requests"] = ctx.describe_each(client, &[&replace.read, &draft])?;
-            }
+        Write::DryRun(doc) if !reads => return Ok(Printed::Document(doc)),
+        Write::DryRun(_) => {
+            let mut doc = ctx.dry_run_of(client, &[&replace.read, &draft])?;
+            doc["reads_first"] = ctx.describe(client, &replace.read)?;
             return Ok(Printed::Document(doc));
         }
         Write::Checked(checked) => checked,

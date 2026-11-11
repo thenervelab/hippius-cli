@@ -1112,7 +1112,10 @@ fn an_account_deletion_request_is_never_sent() {
     hipc()
         .run(&["api", "--reveal", "GET", "/account/deletion/"])
         .ok();
-    sent_unknown(&hipc().run(&["api", "DELETE", "/account/deletion/", "--yes"]));
+    // `hipc` knows the withdrawal (it has a row), so it warns of nothing.
+    hipc()
+        .run(&["api", "DELETE", "/account/deletion/", "--yes"])
+        .ok();
     assert_eq!(server.requests().len(), 2);
 }
 
@@ -1404,7 +1407,7 @@ fn a_network_isolation_change_needs_change_isolation_first() {
         "--change-isolation",
         "--yes",
     ]);
-    let doc = sent_unknown(&doc);
+    let doc = doc.ok();
     assert_eq!(doc["isolation"], "deny_intra");
     let requests = server.requests();
     assert_eq!(requests.len(), 2);
@@ -1497,12 +1500,9 @@ fn a_guard_holds_for_every_write_method_and_letter_case() {
         "/api/account/deletion/",
         Reply::json(200, "{}"),
     )]);
-    sent_unknown(&Hipc::against(&home, &withdraw).run(&[
-        "api",
-        "DELETE",
-        "/account/deletion/",
-        "--yes",
-    ]));
+    Hipc::against(&home, &withdraw)
+        .run(&["api", "DELETE", "/account/deletion/", "--yes"])
+        .ok();
     assert_eq!(withdraw.requests().len(), 1);
 }
 
@@ -1752,12 +1752,8 @@ fn the_uncurated_whole_replaces_need_remove_others() {
     assert!(server.requests().is_empty());
     for (method, path) in writes {
         let run = hipc().run(&["api", method, path, BODY, body, "--remove-others", "--yes"]);
-        // The operator storage route is one no command sends.
-        if path.contains("/operator/") {
-            sent_unknown(&run);
-        } else {
-            run.ok();
-        }
+        // The operator storage route, which no command sends, is one `hipc` knows too.
+        run.ok();
     }
     assert_eq!(server.requests().len(), writes.len());
 }

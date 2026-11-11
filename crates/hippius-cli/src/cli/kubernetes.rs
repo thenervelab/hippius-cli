@@ -129,18 +129,30 @@ pub(crate) enum Clusters {
     Kubeconfig(ClusterKubeconfig),
 }
 
+/// `--cluster-key-file`, which the kubeconfig and a node replacement need and read the same
+/// way, so its help is written once.
 #[derive(Debug, Args)]
-pub(crate) struct ClusterKubeconfig {
-    /// The cluster id from hipc compute kubernetes clusters list
-    #[arg(value_parser = number(CLUSTER_ID))]
-    pub(crate) cluster_id: u64,
+pub(crate) struct ClusterKeyFile {
     /// The key file the console saved when it created the cluster, hippius-cluster-<name>.key;
     /// it must be a regular file only its owner can read (chmod 600)
     ///
     /// It is read only as a regular file of the current user, never through a symlink, with
     /// no bits for the group or others; there is no stdin form.
-    #[arg(long, value_name = "PATH")]
-    pub(crate) cluster_key_file: PathBuf,
+    #[arg(
+        id = "cluster_key_file",
+        long = "cluster-key-file",
+        value_name = "PATH"
+    )]
+    pub(crate) path: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ClusterKubeconfig {
+    /// The cluster id from hipc compute kubernetes clusters list
+    #[arg(value_parser = number(CLUSTER_ID))]
+    pub(crate) cluster_id: u64,
+    #[command(flatten)]
+    pub(crate) key: ClusterKeyFile,
     /// The file to create for the kubeconfig; it must not exist yet
     #[arg(long, value_name = "PATH", value_parser = new_kubeconfig_file)]
     pub(crate) output_file: PathBuf,
@@ -390,13 +402,8 @@ pub(crate) struct NodeReplace {
     /// The node's name from hipc compute kubernetes node-pools list
     #[arg(value_parser = node_name)]
     pub(crate) node_name: String,
-    /// The key file the console saved when it created the cluster, hippius-cluster-<name>.key;
-    /// it must be a regular file only its owner can read (chmod 600)
-    ///
-    /// It is read only as a regular file of the current user, never through a symlink, with
-    /// no bits for the group or others; there is no stdin form.
-    #[arg(long, value_name = "PATH")]
-    pub(crate) cluster_key_file: PathBuf,
+    #[command(flatten)]
+    pub(crate) key: ClusterKeyFile,
 }
 
 /// A node name: it goes into the URL path, so only the characters a name has are accepted.

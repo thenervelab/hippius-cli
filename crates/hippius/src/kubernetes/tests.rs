@@ -173,8 +173,8 @@ fn flip_bit(text: &str, index: usize) -> String {
 #[test]
 fn the_keys_derive_the_public_keys_pynacl_derives() {
     let key = vector_key();
-    assert_eq!(key.sign_public, SIGN_PUBLIC);
-    assert_eq!(key.box_public, BOX_PUBLIC);
+    assert_eq!(b64(&key.sign_public), SIGN_PUBLIC);
+    assert_eq!(b64(&key.box_public), BOX_PUBLIC);
     let guest = SigningKey::from_bytes(&range(101, 133));
     assert_eq!(b64(guest.verifying_key().as_bytes()), GUEST);
     let other = SigningKey::from_bytes(&range(201, 233));
@@ -536,10 +536,12 @@ fn sign_vector(id: u64, params: &Map<String, Value>, uuid: &str, iat: u64) -> Va
     let key = vector_key();
     let mut cluster = cluster(Some(GUEST));
     cluster["id"] = json!(id);
-    key.matched(id, &cluster)
+    let signed = key
+        .matched(id, &cluster)
         .unwrap()
         .add_node_at(params, uuid, iat)
-        .unwrap()
+        .unwrap();
+    serde_json::to_value(signed).unwrap()
 }
 
 #[test]
@@ -639,12 +641,13 @@ fn each_signed_add_node_has_a_fresh_v4_request_id_and_verifies() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let first = matched
-        .sign_add_node(&params, &Response::dated(None))
-        .unwrap();
-    let second = matched
-        .sign_add_node(&params, &Response::dated(None))
-        .unwrap();
+    let sign = || {
+        let signed = matched
+            .sign_add_node(&params, &Response::dated(None))
+            .unwrap();
+        serde_json::to_value(signed).unwrap()
+    };
+    let (first, second) = (sign(), sign());
     assert_ne!(first["request_uuid"], second["request_uuid"]);
     for signed in [first, second] {
         let uuid = signed["request_uuid"].as_str().unwrap();
@@ -734,8 +737,8 @@ fn an_add_node_is_signed_at_the_server_time_of_the_answer() {
     let signed = matched
         .sign_add_node(&add_node_params(), &answered)
         .unwrap();
-    assert_eq!(signed["issued_at"], server);
-    assert_eq!(signed["expires_at"], server + 3000);
+    assert_eq!(signed.issued_at, server);
+    assert_eq!(signed.expires_at, server + 3000);
     let far = Response::dated(Some("Sun, 06 Nov 1994 08:49:37 GMT"));
     let error = matched.sign_add_node(&add_node_params(), &far).unwrap_err();
     assert_eq!(error.code(), Code::Internal);
@@ -1097,5 +1100,39 @@ fn debug_shows_the_public_keys_and_never_a_secret_key() {
             assert!(!shown.contains(&format!("{secret:?}")), "{shown}");
             assert!(!shown.contains(&hex(&secret)), "{shown}");
         }
+    }
+}
+
+/// The API's public keys are compared as the bytes they decode to: the same keys spelled
+/// URL-safe, without padding, or wrapped still match, and other bytes, or text that is no
+/// key, are another cluster's.
+#[test]
+fn a_cluster_key_spelled_another_way_still_matches() {
+    let key = vector_key();
+    let respelled = |text: &str, how: fn(&[u8]) -> String| {
+        let mut bytes = [0_u8; 32];
+        Base64::decode(text, &mut bytes).unwrap();
+        how(&bytes)
+    };
+    let spellings: [fn(&[u8]) -> String; 4] = [
+        |bytes| Base64Url::encode_string(bytes),
+        |bytes| Base64Unpadded::encode_string(bytes),
+        |bytes| Base64UrlUnpadded::encode_string(bytes),
+        |bytes| {
+            let text = Base64::encode_string(bytes);
+            format!("{}\n{}", &text[..20], &text[20..])
+        },
+    ];
+    for how in spellings {
+        let mut theirs = cluster(Some(GUEST));
+        theirs["client_sign_pubkey"] = json!(respelled(SIGN_PUBLIC, how));
+        theirs["client_box_pubkey"] = json!(respelled(BOX_PUBLIC, how));
+        assert!(key.matched(42, &theirs).is_ok(), "{theirs}");
+    }
+    for not_a_key in ["", "not base64!", &b64(&[7; 31])] {
+        let mut theirs = cluster(Some(GUEST));
+        theirs["client_box_pubkey"] = json!(not_a_key);
+        let error = key.matched(42, &theirs).unwrap_err();
+        assert_eq!(error.code(), Code::Usage, "{not_a_key}");
     }
 }

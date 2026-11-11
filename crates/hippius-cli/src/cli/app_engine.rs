@@ -37,14 +37,8 @@ pub(crate) enum AppEngine {
         "hipc compute app-engine validate --compose-file -",
     ]))]
     Validate {
-        /// The compose file, a regular file (not a symlink) of UTF-8 text of at most 1 MiB, sent
-        /// byte for byte; - reads stdin
-        ///
-        /// The server takes a smaller file: at most max_compose_bytes from hipc compute app-engine
-        /// get. /dev/stdin and <(...) are refused, as they are not regular files, so pass - for
-        /// stdin.
-        #[arg(long, value_name = "PATH")]
-        compose_file: PathBuf,
+        #[command(flatten)]
+        compose: ComposeFile,
     },
     /// Rewrite a compose file into the App Engine grammar; saves nothing on the server
     ///
@@ -59,14 +53,8 @@ pub(crate) enum AppEngine {
         "hipc compute app-engine fix --compose-file compose.yaml --output-file fixed.yaml",
     ]))]
     Fix {
-        /// The compose file, a regular file (not a symlink) of UTF-8 text of at most 1 MiB, sent
-        /// byte for byte; - reads stdin
-        ///
-        /// The server takes a smaller file: at most max_compose_bytes from hipc compute app-engine
-        /// get. /dev/stdin and <(...) are refused, as they are not regular files, so pass - for
-        /// stdin.
-        #[arg(long, value_name = "PATH")]
-        compose_file: PathBuf,
+        #[command(flatten)]
+        compose: ComposeFile,
         /// The file to create for fixed_compose; it must not exist yet
         #[arg(long, value_name = "PATH", value_parser = new_compose_file)]
         output_file: Option<PathBuf>,
@@ -147,20 +135,47 @@ pub(crate) enum AppEngineApps {
 /// values; an app takes no image, SSH key, or dedicated disk (the server refuses them with
 /// `app-field-not-allowed`: the sealed image has no SSH), and no `--public-ip`, since every
 /// app gets one and the server refuses a launch without (`app-public-ip-required`).
+/// The largest compose file `hipc` reads, in bytes. The server's limit is lower
+/// (`max_compose_bytes` in `hipc compute app-engine get`) and it refuses a larger one itself;
+/// this cap, the config file's, only stops a wrong path (a log, an image) from being read whole.
+pub(crate) const MAX_COMPOSE_BYTES: u64 = 1024 * 1024;
+
+/// `--compose-file`, which `validate`, `fix`, and `apps create` read the same way, so its help
+/// is written once, with the limit [`MAX_COMPOSE_BYTES`] says.
+#[derive(Debug, Args)]
+pub(crate) struct ComposeFile {
+    #[arg(
+        id = "compose_file",
+        long = "compose-file",
+        value_name = "PATH",
+        help = compose_help(),
+        long_help = format!(
+            "{}\n\nThe server takes a smaller file: at most max_compose_bytes from hipc compute \
+             app-engine get. /dev/stdin and <(...) are refused, as they are not regular files, \
+             so pass - for stdin.",
+            compose_help()
+        )
+    )]
+    pub(crate) path: PathBuf,
+}
+
+/// The short help of `--compose-file`.
+fn compose_help() -> String {
+    format!(
+        "The compose file, a regular file (not a symlink) of UTF-8 text of at most {} MiB, sent \
+         byte for byte; - reads stdin",
+        MAX_COMPOSE_BYTES / (1024 * 1024)
+    )
+}
+
 #[derive(Debug, Args)]
 pub(crate) struct AppCreate {
     /// The flavor code from hipc compute flavors; hipc compute app-engine get names the
     /// smallest an app takes (min_flavor)
     #[arg(long, value_parser = flavor)]
     pub(crate) flavor: String,
-    /// The compose file, a regular file (not a symlink) of UTF-8 text of at most 1 MiB, sent
-    /// byte for byte; - reads stdin
-    ///
-    /// The server takes a smaller file: at most max_compose_bytes from hipc compute app-engine
-    /// get. /dev/stdin and <(...) are refused, as they are not regular files, so pass - for
-    /// stdin.
-    #[arg(long, value_name = "PATH")]
-    pub(crate) compose_file: PathBuf,
+    #[command(flatten)]
+    pub(crate) compose: ComposeFile,
     /// A JSON object of each secret's name to its value, which the compose declares in
     /// x-hippius.secrets
     ///
