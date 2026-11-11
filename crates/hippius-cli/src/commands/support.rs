@@ -9,8 +9,7 @@
 //! upload) and the chat handoff stay on `hipc api`.
 
 use hippius::routes::support;
-use hippius::{Code, Error, Request, Result, phrase};
-use serde_json::{Map, Value, json};
+use hippius::{Code, Error, Request, Result, phrase, view_of};
 use zeroize::Zeroizing;
 
 use crate::cli::{
@@ -47,7 +46,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Support) -> Result<Printed> {
             let text = message(body)?;
             let client = client_without_token_in(ctx, &[&text])?;
             let request = Request::to(&support::MESSAGE_CREATE, [ticket_id])
-                .json(&json!({ "body": text }))
+                .json(&support::MessageCreateBody { body: &text })
                 .listed_by("hipc support tickets list")
                 .about(format!("reply to the ticket `{ticket_id}`"));
             print_body(ctx, &client, &request, Gate::Open)
@@ -77,25 +76,28 @@ fn close(ctx: &Context<'_>, ticket_id: u64, status: TicketUpdateStatus) -> Resul
         .listed_by("hipc support tickets list")
         .about(format!("get the ticket `{ticket_id}`"));
     let draft = Request::to(&support::TICKET_UPDATE, [&ticket_id])
-        .json(&json!({ "status": status.code() }))
+        .json(&support::TicketUpdateBody {
+            status: status.code(),
+        })
         .listed_by("hipc support tickets list")
         .about(format!("close the ticket `{ticket_id}`"));
     let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(&client, &[&read, &draft])?;
-            return Ok(Printed::Document(doc));
+        Write::DryRun(_) => {
+            return ctx
+                .dry_run_of(&client, &[&read, &draft])
+                .map(Printed::Document);
         }
         Write::Checked(checked) => checked,
     };
-    let ticket = ctx.send(&client, &read)?.document()?;
-    if ticket.get("status").and_then(Value::as_str) == Some(status.code()) {
+    let ticket: support::Ticket = view_of(&ctx.send(&client, &read)?.document()?);
+    if ticket.status.as_deref() == Some(status.code()) {
         return Err(Error::new(
             Code::Conflict,
             format!("the ticket `{ticket_id}` is already closed"),
         ));
     }
     // Swagger requires a subject; a ticket without one is still closed, named by its id.
-    let action = match ticket.get("subject").and_then(Value::as_str) {
+    let action = match ticket.subject {
         Some(subject) => format!("close the ticket `{ticket_id}`, {}", phrase::quote(subject)),
         None => format!("close the ticket `{ticket_id}`"),
     };
@@ -119,14 +121,13 @@ fn list_tickets(ctx: &Context<'_>, args: &TicketList) -> Result<Printed> {
 
 /// `POST /api/support/tickets/ {"subject", "description", "priority"?}`.
 fn create_request(args: &TicketCreate, description: &str) -> Request {
-    let mut body = Map::new();
-    body.insert("subject".to_owned(), args.subject.as_str().into());
-    body.insert("description".to_owned(), description.into());
-    if let Some(priority) = args.priority {
-        body.insert("priority".to_owned(), priority.code().into());
-    }
+    let body = support::TicketCreateBody {
+        subject: &args.subject,
+        description,
+        priority: args.priority.map(crate::cli::TicketPriority::code),
+    };
     Request::to(&support::TICKET_CREATE, [])
-        .json(&Value::Object(body))
+        .json(&body)
         .about(format!(
             "open the support ticket {}",
             phrase::quote(&args.subject)

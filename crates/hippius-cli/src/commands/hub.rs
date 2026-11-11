@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use hippius::routes::{API_BASE, Route, hub};
 use hippius::{
     CHECK_FIRST_HINT, Client, Code, ConfigFile, Error, HubMarker, Request, Result, SideEffects,
-    Source, phrase,
+    Source, phrase, view_of,
 };
 use serde_json::{Map, Value, json};
 
@@ -113,7 +113,7 @@ pub(crate) const PERMANENT: Gate<'static> = Gate::Confirm {
 /// `not_found` when no row has that name.
 fn repository_named(rows: Vec<Value>, wanted: &str) -> Result<Value> {
     rows.into_iter()
-        .find(|row| row.get("name").and_then(Value::as_str) == Some(wanted))
+        .find(|row| view_of::<hub::Repository>(row).name.as_deref() == Some(wanted))
         .ok_or_else(|| {
             Error::new(
                 Code::NotFound,
@@ -201,12 +201,12 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
         Ok(id) => Value::from(id),
         Err(_) => Value::from(format!("<looked up from {}>", args.plan)),
     };
-    let draft = Request::to(&hub::SUBSCRIBE, []).json(&json!({ "plan_id": plan_id }));
+    let draft = Request::to(&hub::SUBSCRIBE, []).json(&hub::SubscribeBody { plan_id: &plan_id });
     // The reads a real run sends after the question, which a dry run lists.
     let plans = Request::to(&hub::PLANS, []).about("list the Hub plans");
     let subscriptions = Request::to(&hub::SUBSCRIPTIONS, []).about("list the Hub subscriptions");
     let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(mut doc) => {
+        Write::DryRun(_) => {
             // Which subscriptions a real run cancels is known only after it reads them, which
             // a dry run does not do: the document adds the DELETE it may send first, once per
             // active paid subscription, with the id left as a placeholder, and lists it in
@@ -223,13 +223,13 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
                     .strip_prefix(API_BASE)
                     .expect("a route's template starts with the API base"),
             );
-            let mut requests = vec![&plans, &subscriptions];
-            if args.replace {
-                doc["may_cancel_first"] = ctx.describe(&client, &cancel)?;
-                requests.push(&cancel);
+            if !args.replace {
+                return ctx
+                    .dry_run_of(&client, &[&plans, &subscriptions, &draft])
+                    .map(Printed::Document);
             }
-            requests.push(&draft);
-            doc["requests"] = ctx.describe_each(&client, &requests)?;
+            let mut doc = ctx.dry_run_of(&client, &[&plans, &subscriptions, &cancel, &draft])?;
+            doc["may_cancel_first"] = ctx.describe(&client, &cancel)?;
             return Ok(Printed::Document(doc));
         }
         Write::Checked(checked) => checked,
@@ -267,7 +267,9 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
         cancelled.push(*id);
     }
     let request = Request::to(&hub::SUBSCRIBE, [])
-        .json(&json!({ "plan_id": plan_id }))
+        .json(&hub::SubscribeBody {
+            plan_id: &plan_id.into(),
+        })
         .about(format!("subscribe to the Hub plan `{}`", args.plan));
     // A body that is not JSON, or none, goes through `after_cancels` too, so the cancels
     // are named.
@@ -515,19 +517,19 @@ fn read_list(ctx: &Context<'_>, client: &Client, request: &Request) -> Result<Ve
 
 /// The plan id for a numeric id or a name in any case, from the catalog.
 fn resolve_plan(plans: &[Value], wanted: &str) -> Result<u64> {
-    let id_of = |plan: &Value| plan.get("id").and_then(Value::as_u64);
+    let plans: Vec<hub::Plan> = plans.iter().map(view_of).collect();
     let found = match wanted.parse::<u64>() {
-        Ok(id) => plans.iter().find(|p| id_of(p) == Some(id)),
+        Ok(id) => plans.iter().find(|p| p.id == Some(id)),
         Err(_) => plans.iter().find(|p| {
-            p.get("name")
-                .and_then(Value::as_str)
+            p.name
+                .as_deref()
                 .is_some_and(|name| name.eq_ignore_ascii_case(wanted))
         }),
     };
-    found.and_then(id_of).ok_or_else(|| {
+    found.and_then(|plan| plan.id).ok_or_else(|| {
         let names: Vec<String> = plans
             .iter()
-            .filter_map(|p| p.get("name").and_then(Value::as_str))
+            .filter_map(|p| p.name.as_deref())
             .map(phrase::quote)
             .collect();
         Error::usage(
@@ -549,10 +551,14 @@ fn resolve_plan(plans: &[Value], wanted: &str) -> Result<u64> {
 /// `subscription_id` is not a number. Skipping such a row would let the subscribe charge
 /// twice; it cannot be cancelled by id either.
 fn active_paid(plans: &[Value], subscriptions: &[Value]) -> Result<Vec<u64>> {
+    let plans: Vec<hub::Plan> = plans.iter().map(view_of).collect();
     let free = |plan_id: u64| {
         plans.iter().any(|p| {
-            p.get("id").and_then(Value::as_u64) == Some(plan_id)
-                && p.get("price_credits").and_then(Value::as_f64) == Some(0.0)
+            p.id == Some(plan_id)
+                && p.price_credits
+                    .as_ref()
+                    .and_then(serde_json::Number::as_f64)
+                    == Some(0.0)
         })
     };
     let unreadable = || {
@@ -563,19 +569,12 @@ fn active_paid(plans: &[Value], subscriptions: &[Value]) -> Result<Vec<u64>> {
         .with_hint("run `hipc hub subscription get` to see the subscriptions as the API sent them")
     };
     let mut paid = Vec::new();
-    for row in subscriptions {
-        let active = row
-            .get("active")
-            .and_then(Value::as_bool)
-            .ok_or_else(unreadable)?;
-        if !active || row.get("plan_id").and_then(Value::as_u64).is_some_and(free) {
+    for row in subscriptions.iter().map(view_of::<hub::PlanSubscription>) {
+        let active = row.active.ok_or_else(unreadable)?;
+        if !active || row.plan_id.is_some_and(free) {
             continue;
         }
-        let id = row
-            .get("subscription_id")
-            .and_then(Value::as_u64)
-            .ok_or_else(unreadable)?;
-        paid.push(id);
+        paid.push(row.subscription_id.ok_or_else(unreadable)?);
     }
     Ok(paid)
 }
@@ -666,7 +665,7 @@ fn update_namespace(ctx: &Context<'_>, visibility: Visibility, public: bool) -> 
         ("private", "only logins with access can pull from it")
     };
     let request = Request::to(&hub::PUBLICITY_UPDATE, [])
-        .json(&json!({ "public": opens }))
+        .json(&hub::PublicityUpdateBody { public: opens })
         .about(format!("make the Hub namespace {word}"));
     let consequence = format!("{who}, and its storage allowance changes");
     let gate = Gate::Confirm {
@@ -1064,7 +1063,7 @@ fn provision(
     check_namespace(name)?;
     require_reveal_or_file(ctx, reveal, secret_file.is_some())?;
     let request = Request::to(&hub::NAMESPACE_CREATE, [])
-        .json(&json!({ "namespace": name }))
+        .json(&hub::NamespaceCreateBody { namespace: name })
         .about(format!("create the Hub namespace `{name}`"));
     // Without a file the question says nothing of the secret, as it always has.
     let consequence = secret_file.map(|_| shown_once("its robot secret", secret_file));

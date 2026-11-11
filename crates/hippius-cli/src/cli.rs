@@ -59,7 +59,7 @@ pub(crate) use waf::{
 };
 
 pub(crate) use crate::cli::account::{
-    Access, Account, BillingAccounts, Costs, Grant, GrantArg, InviteCreate, Invites,
+    Access, Account, BillingAccounts, Costs, Grant, GrantArg, GrantTarget, InviteCreate, Invites,
     MarketingConsent, MemberUpdate, Members, Notifications, Projects, Referrals,
 };
 pub(crate) use crate::cli::api::Api;
@@ -85,7 +85,7 @@ pub(crate) use crate::cli::databases::{
     TLS_FILES,
 };
 pub(crate) use crate::cli::drive::{
-    Drive, DriveChange, DriveSubscribe, DriveSubscription, PayFrom,
+    Drive, DriveChange, DriveSubscribe, DriveSubscription, PayFrom, Period,
 };
 pub(crate) use crate::cli::exposures::{ExposeMode, ExposeProtocol, ExposureCreate, Exposures};
 pub(crate) use crate::cli::firewall::{Firewall, FirewallUpdate};
@@ -99,11 +99,12 @@ pub(crate) use crate::cli::runners::{
 };
 pub(crate) use crate::cli::s3::{
     AclUpdate, BucketAcl, BucketObjects, Buckets, Configure, Funding, MAX_CONTINUATION_TOKEN_BYTES,
-    ObjectsList, PlanSetting, Presign, S3, S3Subscription, StorageCap, TokenCreate, TokenKind,
-    TokenRotate, TokenTarget, Tokens, continuation_token,
+    ObjectsList, PlanSetting, Presign, S3, S3Subscription, ScopeType, StorageCap, TokenCreate,
+    TokenKind, TokenRotate, TokenTarget, Tokens, continuation_token,
 };
 pub(crate) use crate::cli::support::{
-    Support, TicketBody, TicketCreate, TicketList, TicketMessages, TicketUpdateStatus, Tickets,
+    Support, TicketBody, TicketCreate, TicketList, TicketMessages, TicketPriority,
+    TicketUpdateStatus, Tickets,
 };
 
 /// `hipc`: the Hippius console control plane.

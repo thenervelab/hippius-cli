@@ -6,10 +6,12 @@
 
 use hippius::routes::drive;
 use hippius::{Request, Result};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::cli::{Drive, DriveChange, DriveSubscribe, DriveSubscription};
-use crate::commands::{Printed, list, plan_setting, print_envelope, print_with, subscribed};
+use crate::commands::{
+    Printed, SettingChange, list, plan_setting, print_envelope, print_with, subscribed,
+};
 use crate::context::{self, Context, Gate};
 
 pub(crate) fn run(ctx: &Context<'_>, command: &Drive) -> Result<Printed> {
@@ -80,14 +82,13 @@ fn subscription(
 
 /// `POST /api/drive/subscription/ {"plan", "payment", "period"?}`.
 fn subscribe_request(args: &DriveSubscribe) -> Request {
-    let mut body = Map::new();
-    body.insert("plan".to_owned(), args.plan.code().into());
-    body.insert("payment".to_owned(), args.pay_from.code().into());
-    if let Some(period) = args.period {
-        body.insert("period".to_owned(), period.code().into());
-    }
+    let body = drive::SubscribeBody {
+        plan: args.plan.code(),
+        payment: args.pay_from.code(),
+        period: args.period.map(crate::cli::Period::code),
+    };
     Request::to(&drive::SUBSCRIBE, [])
-        .json(&Value::Object(body))
+        .json(&body)
         .about(format!("buy the Drive plan `{}`", args.plan.code()))
 }
 
@@ -96,20 +97,38 @@ fn subscribe_request(args: &DriveSubscribe) -> Request {
 /// balance.
 fn change_request(args: &DriveChange) -> Result<(Request, Gate<'static>)> {
     let Some(plan) = args.plan else {
-        return plan_setting(&drive::SUBSCRIPTION_CHANGE, "Drive", &args.setting);
+        return plan_setting(
+            &drive::SUBSCRIPTION_CHANGE,
+            "Drive",
+            &args.setting,
+            setting_body,
+        );
     };
-    let mut body = Map::new();
-    body.insert("plan".to_owned(), plan.code().into());
-    if let Some(period) = args.period {
-        body.insert("period".to_owned(), period.code().into());
-    }
+    let body = drive::PlanChangeBody {
+        plan: plan.code(),
+        period: args.period.map(crate::cli::Period::code),
+    };
     let request = Request::to(&drive::SUBSCRIPTION_CHANGE, [])
-        .json(&Value::Object(body))
+        .json(&body)
         .about(format!("switch the Drive plan to `{}`", plan.code()));
     let gate = Gate::Confirm {
         consequence: Some("it is paid from the balance"),
     };
     Ok((request, gate))
+}
+
+/// The Drive plan PATCH that keeps the plan and changes `change`.
+fn setting_body(change: SettingChange) -> drive::SettingChangeBody<'static> {
+    match change {
+        SettingChange::Funding(funding) => drive::SettingChangeBody {
+            funding: Some(funding),
+            ..drive::SettingChangeBody::default()
+        },
+        SettingChange::StorageCap(cap) => drive::SettingChangeBody {
+            storage_cap_bytes: Some(cap),
+            ..drive::SettingChangeBody::default()
+        },
+    }
 }
 
 /// What a Drive plan cancel leaves, for its question and `hipc api`'s.

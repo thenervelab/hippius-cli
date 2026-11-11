@@ -598,10 +598,21 @@ fn projects_transfer_refuses_an_accounts_answer_without_one_own_account() {
     let args = projects(&["transfer", PROJECT, "--to-account", TARGET]);
     let none = "the API's accounts list does not mark exactly one account as the token's own \
                 with `is_owner`";
+    // Read as `hipc account list` reads it: an answer without an `accounts` list says so.
+    for accounts in ["{}", r#"{"accounts":{}}"#, "[]"] {
+        offered(
+            &args,
+            (&projects_answer(), accounts),
+            &["/api/accounts/projects/", "/api/accounts/"],
+            (
+                "internal",
+                "the API answered `GET /api/accounts/` without an `accounts` list",
+            ),
+            false,
+        );
+    }
     for accounts in [
         r#"{"accounts":[]}"#,
-        "{}",
-        r#"{"accounts":{}}"#,
         // The first is no longer taken for the own account.
         r#"{"accounts":[{"id":"acct_ffffffffffffffffffff"}]}"#,
         r#"{"accounts":[{"id":"acct_ffffffffffffffffffff","is_owner":"true"}]}"#,

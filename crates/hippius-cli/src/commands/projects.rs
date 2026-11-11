@@ -10,12 +10,12 @@
 //! The project transfers, `/api/accounts/project-transfers/`, are personal: they are the
 //! token's own account's whichever account is selected, so they never take the header.
 
-use hippius::routes;
+use hippius::routes::{self, account::NameBody};
 use hippius::{
     BillingId, Client, Code, ConfigFile, Error, ProjectId, Request, Result, Selection, Source,
-    phrase,
+    phrase, view_of,
 };
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use crate::cli::{
     BillingAccounts, Budget, BudgetUpdate, Costs, ProjectTransfer, ProjectTransfers, Projects,
@@ -54,13 +54,16 @@ pub(crate) fn projects(ctx: &Context<'_>, command: &Projects) -> Result<Printed>
         Projects::Create(args) => {
             // The console sends `billing: null` for the Default billing account.
             let request = Request::to(&routes::account::PROJECT_CREATE, [])
-                .json(&json!({ "name": args.name, "billing": null }))
+                .json(&routes::account::ProjectCreateBody {
+                    name: &args.name,
+                    billing: None,
+                })
                 .about(format!("create the project {}", phrase::quote(&args.name)));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         Projects::Update(args) => {
             let request = Request::to(&routes::account::PROJECT_UPDATE, [&args.project_id])
-                .json(&json!({ "name": args.name }))
+                .json(&NameBody { name: &args.name })
                 .listed_by(PROJECTS)
                 .about(format!(
                     "rename the project `{}` to {}",
@@ -150,7 +153,7 @@ pub(crate) fn billing_accounts(ctx: &Context<'_>, command: &BillingAccounts) -> 
         ),
         BillingAccounts::Create { name } => {
             let request = Request::to(&routes::account::BILLING_ACCOUNT_CREATE, [])
-                .json(&json!({ "name": name }))
+                .json(&NameBody { name })
                 .about(format!(
                     "create the billing account {}",
                     phrase::quote(name)
@@ -165,7 +168,7 @@ pub(crate) fn billing_accounts(ctx: &Context<'_>, command: &BillingAccounts) -> 
                 &routes::account::BILLING_ACCOUNT_UPDATE,
                 [billing_account_id],
             )
-            .json(&json!({ "name": name }))
+            .json(&NameBody { name })
             .listed_by(BILLING_ACCOUNTS)
             .about(format!(
                 "rename the billing account `{billing_account_id}` to {}",
@@ -251,7 +254,9 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
     }
     let write = |project: &str, from: &str| {
         Request::to(&routes::account::PROJECT_TRANSFER, [&args.project_id])
-            .json(&json!({ "to_account": args.to_account }))
+            .json(&routes::account::ProjectTransferBody {
+                to_account: &args.to_account,
+            })
             .listed_by(PROJECTS)
             .about(format!(
                 "offer the project {project} to the account `{}`{from}",
@@ -264,27 +269,26 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
     let projects = Request::to(&routes::account::PROJECTS, [])
         .about("list the projects")
         .listed_by(PROJECTS);
-    let accounts =
-        Request::to(&routes::account::ACCOUNTS, []).about("list the accounts the token can act in");
+    let accounts = account::accounts_request();
     let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(mut doc) => {
-            let reads: Vec<&Request> = if member.is_some() {
-                vec![&projects, &draft]
+        Write::DryRun(_) => {
+            let reads: &[&Request] = if member.is_some() {
+                &[&projects, &draft]
             } else {
-                vec![&projects, &accounts, &draft]
+                &[&projects, &accounts, &draft]
             };
-            doc["requests"] = ctx.describe_each(&client, &reads)?;
-            return Ok(Printed::Document(doc));
+            return ctx.dry_run_of(&client, reads).map(Printed::Document);
         }
         Write::Checked(checked) => checked,
     };
     let list = keyed_list(ctx.send(&client, &projects)?.json()?, &projects, "projects")?;
-    let Some(project) = list["items"]
+    let project = list["items"]
         .as_array()
         .into_iter()
         .flatten()
-        .find(|project| project.get("id").and_then(Value::as_str) == Some(&args.project_id))
-    else {
+        .map(view_of::<routes::account::ProjectEntry>)
+        .find(|project| project.id.as_deref() == Some(args.project_id.as_str()));
+    let Some(project) = project else {
         let account = member.as_ref().map_or_else(
             || "the token's own account".to_owned(),
             |id| format!("the account `{id}`"),
@@ -299,14 +303,14 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
         );
         return Err(missing.with_hint(format!("run `{PROJECTS}` to see the project ids")));
     };
-    let named = match project.get("name").and_then(Value::as_str) {
+    let named = match project.name {
         Some(name) => format!("{} ({shown_id})", phrase::quote(name)),
         None => shown_id,
     };
     let from = if member.is_some() {
         String::new()
     } else {
-        let id = own_account_id(&ctx.send(&client, &accounts)?.json()?)?;
+        let id = own_account_id(ctx.send(&client, &accounts)?.json()?)?;
         // A state `hipc` read that rules the write out (tenet 4): `conflict`.
         if id == args.to_account {
             let same = Error::new(Code::Conflict, same_account(&args.to_account));
@@ -326,24 +330,19 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
 }
 
 /// The token's own account's id, from the account the answer marks with `is_owner`
-/// ([`account::own_account`]), not from its place in the list.
+/// ([`account::own_account`]), not from its place in the list. The answer is read as
+/// `hipc account list` reads it ([`account::accounts_page`]).
 ///
 /// # Errors
 ///
-/// `internal` when no one account is marked, or the one marked has no string `id`: the
-/// offer's source is then unknown, so the offer is not sent, since the check against
-/// `--to-account` and the question would rest on a guess.
-fn own_account_id(answer: &Value) -> Result<String> {
-    let accounts = answer
-        .get("accounts")
-        .and_then(Value::as_array)
-        .map_or(&[][..], Vec::as_slice);
-    let own = account::own_account(accounts).ok_or_else(account::no_own_account)?;
-    accounts
-        .get(own)
-        .and_then(|account| account.get("id"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+/// `internal` for an answer without an `accounts` list, when no one account is marked, or the
+/// one marked has no string `id`: the offer's source is then unknown, so the offer is not
+/// sent, since the check against `--to-account` and the question would rest on a guess.
+fn own_account_id(answer: Value) -> Result<String> {
+    let accounts = account::accounts_page(answer)?.items;
+    let own = account::own_account(&accounts).ok_or_else(account::no_own_account)?;
+    view_of::<routes::account::AccountEntry>(&accounts[own])
+        .id
         .ok_or_else(|| Error::internal("the account the API marks as the token's own has no `id`"))
 }
 
@@ -488,11 +487,11 @@ fn budget_update(ctx: &Context<'_>, args: &BudgetUpdate) -> Result<Printed> {
         "allowing new launches over it"
     };
     let request = Request::to(&routes::account::PROJECT_BUDGET_UPDATE, [&args.project_id])
-        .json(&json!({
-            "monthly_limit": limit,
-            "thresholds": thresholds,
-            "block_launch_over": args.block_launches,
-        }))
+        .json(&routes::account::ProjectBudgetUpdateBody {
+            monthly_limit: &limit,
+            thresholds: &thresholds,
+            block_launch_over: args.block_launches,
+        })
         .listed_by(PROJECTS)
         .about(format!(
             "set the monthly budget of the project `{}` to `{limit}` USD, mailing at {} percent \
@@ -523,18 +522,32 @@ fn quota(ctx: &Context<'_>, command: &Quota) -> Result<Printed> {
 }
 
 fn quota_update(ctx: &Context<'_>, args: &QuotaUpdate) -> Result<Printed> {
-    let mut limits = Map::new();
-    let mut shown = Vec::new();
-    for (key, limit) in args.limits() {
-        let (value, text) = match limit {
-            QuotaLimit::At(n) => (Value::from(n), format!("`{key}` to `{n}`")),
-            QuotaLimit::None => (Value::Null, format!("`{key}` to none of its own")),
-        };
-        limits.insert(key.to_owned(), value);
-        shown.push(text);
-    }
+    let shown: Vec<String> = args
+        .limits()
+        .into_iter()
+        .map(|(key, limit)| match limit {
+            QuotaLimit::At(n) => format!("`{key}` to `{n}`"),
+            QuotaLimit::None => format!("`{key}` to none of its own"),
+        })
+        .collect();
+    let sent = |limit: Option<QuotaLimit>| {
+        limit.map(|limit| match limit {
+            QuotaLimit::At(n) => Some(n),
+            QuotaLimit::None => None,
+        })
+    };
+    let limits = routes::account::QuotaLimits {
+        vms: sent(args.vms),
+        databases: sent(args.databases),
+        clusters: sent(args.clusters),
+        vcpus: sent(args.vcpus),
+        memory_gb: sent(args.memory),
+        disk_gb: sent(args.disk),
+        public_ips: sent(args.public_ips),
+        runners: sent(args.runners),
+    };
     let request = Request::to(&routes::account::PROJECT_QUOTA_UPDATE, [&args.project_id])
-        .json(&json!({ "limits": limits }))
+        .json(&routes::account::ProjectQuotaUpdateBody { limits })
         .listed_by(PROJECTS)
         .about(format!(
             "set the compute limits of the project `{}`: {}",
@@ -569,15 +582,12 @@ pub(crate) fn project_transfers(ctx: &Context<'_>, command: &ProjectTransfers) -
                 Some(text) => BillingId::parse(text, &Source::Argument)?,
                 None => None,
             };
-            let (body, billed) = match &billing {
-                Some(id) => (
-                    json!({ "billing": id.as_str() }),
-                    format!("the billing account `{}`", id.as_str()),
-                ),
-                None => (
-                    json!({ "billing": null }),
-                    "the Default billing account".to_owned(),
-                ),
+            let body = routes::account::ProjectTransferAcceptBody {
+                billing: billing.as_ref().map(BillingId::as_str),
+            };
+            let billed = match &billing {
+                Some(id) => format!("the billing account `{}`", id.as_str()),
+                None => "the Default billing account".to_owned(),
             };
             let write = |named: &str| {
                 Request::to(&routes::account::PROJECT_TRANSFER_ACCEPT, [transfer_id])
@@ -649,41 +659,45 @@ fn decide(
     let read = transfers_read();
     let draft = write(&format!("`{id}`")).listed_by(TRANSFERS);
     let checked = match ctx.check_write(client, &draft)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(client, &[&read, &draft])?;
-            return Ok(Printed::Document(doc));
+        Write::DryRun(_) => {
+            return ctx
+                .dry_run_of(client, &[&read, &draft])
+                .map(Printed::Document);
         }
         Write::Checked(checked) => checked,
     };
     let lists = transfer_lists(ctx.send(client, &read)?.json()?)?;
-    let (list, other, missing) = match side {
+    let (list, missing) = match side {
         Side::Incoming => (
             lists.incoming,
-            ("from", "from_account"),
             format!("the project transfer `{id}` is not one offered to the token's own account"),
         ),
         Side::Outgoing => (
             lists.outgoing,
-            ("to", "to_account"),
             format!("the project transfer `{id}` is not one the token's own account offered"),
         ),
     };
-    let Some(transfer) = list
+    let transfer = list
         .iter()
-        .find(|transfer| transfer.get("id").and_then(Value::as_u64) == Some(id))
-    else {
+        .map(view_of::<routes::account::TransferEntry>)
+        .find(|transfer| transfer.id == Some(id));
+    let Some(transfer) = transfer else {
         // Missing from a page that is not the last says nothing about a later page.
         lists.links.into_complete(transfers_read().target())?;
         // Decided by what the server listed, not by the command line (tenet 4).
         let missing = Error::new(Code::NotFound, missing);
         return Err(missing.with_hint(format!("run `{TRANSFERS}` to see the transfer ids")));
     };
+    let (by, other) = match side {
+        Side::Incoming => ("from", transfer.from_account),
+        Side::Outgoing => ("to", transfer.to_account),
+    };
     let mut named = format!("`{id}`");
-    if let Some(project) = principal(transfer.get("project")) {
+    if let Some(project) = principal(transfer.project.as_ref()) {
         named.push_str(&format!(" of the project {project}"));
     }
-    if let Some(account) = principal(transfer.get(other.1)) {
-        named.push_str(&format!(" {} the account {account}", other.0));
+    if let Some(account) = principal(other.as_ref()) {
+        named.push_str(&format!(" {by} the account {account}"));
     }
     let request = write(&named).listed_by(TRANSFERS);
     ctx.confirm_write(checked, &request.action(), None)?;
@@ -699,15 +713,19 @@ fn decide(
 
 /// A project or account as a transfer names it, `{id, name}`, for a message: its name and
 /// id in backticks, or whichever of the two it has; `None` with neither.
-fn principal(value: Option<&Value>) -> Option<String> {
+fn principal(value: Option<&routes::account::Principal>) -> Option<String> {
     principal_as(value, |text| phrase::quote(text))
 }
 
 /// [`principal`] with each part written by `shown`: in backticks for a message, as is for a
 /// text-mode table cell, which the output layer escapes itself.
-fn principal_as(value: Option<&Value>, shown: impl Fn(&str) -> String) -> Option<String> {
-    let field = |key| value.and_then(|v| v.get(key)).and_then(Value::as_str);
-    match (field("name"), field("id")) {
+fn principal_as(
+    value: Option<&routes::account::Principal>,
+    shown: impl Fn(&str) -> String,
+) -> Option<String> {
+    let name = value.and_then(|v| v.name.as_deref());
+    let id = value.and_then(|v| v.id.as_deref());
+    match (name, id) {
         (Some(name), Some(id)) => Some(format!("{} ({})", shown(name), shown(id))),
         (Some(text), None) | (None, Some(text)) => Some(shown(text)),
         (None, None) => None,
@@ -756,7 +774,8 @@ fn transfers_for_a_person(mut envelope: Value) -> Value {
     let items = envelope.get_mut("items").and_then(Value::as_array_mut);
     for transfer in items.into_iter().flatten().filter_map(Value::as_object_mut) {
         for key in ["project", "from_account", "to_account"] {
-            if let Some(shown) = principal_as(transfer.get(key), str::to_owned) {
+            let named = transfer.get(key).map(view_of::<routes::account::Principal>);
+            if let Some(shown) = principal_as(named.as_ref(), str::to_owned) {
                 transfer.insert(key.to_owned(), Value::String(shown));
             }
         }

@@ -11,9 +11,9 @@
 //! user's code on chain on first use, paid by the server's signer, and a rename changes a
 //! label stored on Hippius only. So no command here is confirmed (tenet 5).
 
-use hippius::routes;
-use hippius::{Request, Result, phrase};
-use serde_json::{Value, json};
+use hippius::routes::{self, account::NameBody};
+use hippius::{Request, Result, phrase, view_of};
+use serde_json::Value;
 
 use crate::cli::Referrals;
 use crate::commands::{Printed, print_body, print_list_with};
@@ -37,13 +37,13 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Referrals) -> Result<Printed> {
         }
         Referrals::Create { name } => {
             let request = Request::to(&routes::account::REFERRAL_CODE_CREATE, [])
-                .json(&json!({ "name": name }))
+                .json(&NameBody { name })
                 .about(format!("create the referral link {}", phrase::quote(name)));
             print_body(ctx, &client, &request, Gate::Open)
         }
         Referrals::Update { referral_id, name } => {
             let request = Request::to(&routes::account::REFERRAL_CODE_UPDATE, [referral_id])
-                .json(&json!({ "name": name }))
+                .json(&NameBody { name })
                 .listed_by(LIST)
                 .about(format!(
                     "rename the referral link `{referral_id}` to {}",
@@ -79,10 +79,10 @@ fn warn_on_codes(ctx: &Context<'_>, envelope: &Value) {
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|item| item.get("code").and_then(Value::as_str))
+        .filter_map(|item| view_of::<routes::account::ReferralEntry>(item).code)
         .filter(|code| !code.is_empty());
     let first = codes.next();
-    if codes.any(|code| Some(code) != first) {
+    if codes.any(|code| Some(&code) != first.as_ref()) {
         ctx.warning(
             "these links carry more than one referral `code`, though a user has only one: \
              check each link's `code` before sharing it",
