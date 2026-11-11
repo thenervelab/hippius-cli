@@ -324,23 +324,6 @@ pub(crate) struct ProfileUpdate {
     pub(crate) billing_email: Option<String>,
 }
 
-impl ProfileUpdate {
-    /// Each field of the profile, as the route names it, and the value given for it.
-    pub(crate) fn fields(&self) -> [(&'static str, Option<&str>); 9] {
-        [
-            ("company_name", self.company_name.as_deref()),
-            ("address_line1", self.address_line1.as_deref()),
-            ("address_line2", self.address_line2.as_deref()),
-            ("city", self.city.as_deref()),
-            ("postal_code", self.postal_code.as_deref()),
-            ("region", self.region.as_deref()),
-            ("country", self.country.as_deref()),
-            ("tax_id", self.tax_id.as_deref()),
-            ("billing_email", self.billing_email.as_deref()),
-        ]
-    }
-}
-
 /// `--country`: two ASCII letters, sent in upper case as the console sends them, or empty to
 /// clear the field.
 fn country(value: &str) -> Result<String, String> {

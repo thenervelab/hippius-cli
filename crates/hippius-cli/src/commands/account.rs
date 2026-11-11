@@ -23,13 +23,13 @@ use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
 
 use crate::cli::{
-    Access, Account, Grant, GrantArg, GrantTarget, InviteCreate, Invites, MarketingConsent,
-    MemberUpdate, Members, Notifications,
+    Account, Grant, GrantArg, GrantTarget, InviteCreate, Invites, MarketingConsent, MemberUpdate,
+    Members, Notifications,
 };
 use crate::commands::replace::{Entry, Found, Replace, replace_list};
 use crate::commands::{
     Decided, Input, Printed, keyed_page, print_body, print_body_or, print_keyed_list, projects,
-    read_then_write, referrals, store_selection,
+    read_then_write, referrals, sent_fields, store_selection,
 };
 use crate::context::{self, Context, DryRun, Gate, Step, WritePlan};
 
@@ -216,17 +216,6 @@ fn notifications(ctx: &Context<'_>, command: &Notifications) -> Result<Printed> 
             Request::to(&account::NOTIFICATIONS, []).about("read the notification settings")
         }
         Notifications::Update(args) => {
-            off = args
-                .fields()
-                .into_iter()
-                .filter(|(key, given)| *given == Some(false) && ALERTS.contains(key))
-                .map(|(key, _)| key)
-                .collect();
-            let given = args
-                .fields()
-                .into_iter()
-                .filter_map(|(key, given)| given.map(|_| key));
-            let named = phrase::ticked(given, "and");
             let body = account::NotificationsUpdateBody {
                 email_enabled: args.email_enabled,
                 low_credit_alerts: args.low_credit_alerts,
@@ -235,6 +224,12 @@ fn notifications(ctx: &Context<'_>, command: &Notifications) -> Result<Printed> 
                 marketing_emails: args.marketing_emails,
                 provider_advice_emails: args.provider_advice_emails,
             };
+            let sent = sent_fields(&body);
+            off = ALERTS
+                .into_iter()
+                .filter(|key| sent.get(*key) == Some(&Value::Bool(false)))
+                .collect();
+            let named = phrase::ticked(sent.keys(), "and");
             Request::to(&account::NOTIFICATIONS_UPDATE, [])
                 .json(&body)
                 .about(format!("update the notification settings {named}"))
@@ -654,8 +649,13 @@ fn update_member(ctx: &Context<'_>, args: &MemberUpdate) -> Result<Printed> {
             )
         });
     }
-    for (key, value) in permissions(&args.access) {
-        if let Some(value) = value {
+    let body = account::MemberUpdateBody {
+        grants: grants.as_deref().map(grant_bodies),
+        can_manage_team: args.access.manage_team,
+        can_billing: args.access.billing_permission,
+    };
+    for (key, value) in sent_fields(&body) {
+        if key != "grants" {
             changes.push(format!("set `{key}` to `{value}`"));
         }
     }
@@ -667,11 +667,6 @@ fn update_member(ctx: &Context<'_>, args: &MemberUpdate) -> Result<Printed> {
         ));
     }
     let id = args.member_id;
-    let body = account::MemberUpdateBody {
-        grants: grants.as_deref().map(grant_bodies),
-        can_manage_team: args.access.manage_team,
-        can_billing: args.access.billing_permission,
-    };
     let request = Request::to(&account::MEMBER_UPDATE, [&id])
         .listed_by(MEMBERS_LIST_COMMAND)
         .json(&body)
@@ -787,18 +782,19 @@ fn member_grants(answer: &Value, id: u64) -> Option<Result<Vec<Entry>>> {
 /// `--grant` is an empty list, and a permission not given is `false`.
 fn create_invite(ctx: &Context<'_>, args: &InviteCreate) -> Result<Printed> {
     let grants = grant_list(&args.access.grants)?.unwrap_or_default();
-    let mut given = labels(&grants);
-    for (key, value) in permissions(&args.access) {
-        if value == Some(true) {
-            given.push(format!("`{key}`"));
-        }
-    }
     let body = account::InviteCreateBody {
         email: &args.email,
         grants: grant_bodies(&grants),
         can_manage_team: args.access.manage_team.unwrap_or(false),
         can_billing: args.access.billing_permission.unwrap_or(false),
     };
+    // The permissions are the body's other `true` fields.
+    let mut given = labels(&grants);
+    for (key, value) in sent_fields(&body) {
+        if value == Value::Bool(true) {
+            given.push(format!("`{key}`"));
+        }
+    }
     let granted = if given.is_empty() {
         "nothing".to_owned()
     } else {
@@ -855,14 +851,6 @@ fn grant_list(args: &[GrantArg]) -> Result<Option<Vec<Grant>>> {
         }
     }
     Ok((!args.is_empty()).then_some(grants))
-}
-
-/// The two permissions, by their body keys, for a confirmation.
-fn permissions(access: &Access) -> [(&'static str, Option<bool>); 2] {
-    [
-        ("can_manage_team", access.manage_team),
-        ("can_billing", access.billing_permission),
-    ]
 }
 
 /// Each grant as the console sends it: `scope` and `level`, and `project` or `billing`

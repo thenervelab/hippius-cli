@@ -617,6 +617,15 @@ pub(crate) fn print_envelope(
     })
 }
 
+/// Each top-level field `body` sends, with its value, in the order it sends them: what a
+/// question names is read from the body, so no field is named and not sent, or sent and not
+/// named.
+pub(crate) fn sent_fields(body: &impl serde::Serialize) -> Map<String, Value> {
+    serde_json::to_value(body)
+        .and_then(serde_json::from_value)
+        .expect("a request body that names fields is a JSON object")
+}
+
 /// `route`, the PATCH of a Drive or S3 subscription, that keeps the plan: `--pay-from` or
 /// `--storage-cap`, sent as [`SettingChangeBody`] writes it. The command's `change` group takes
 /// one of them when `--plan` is absent. `service` names the plan in the question, as `Drive` or
