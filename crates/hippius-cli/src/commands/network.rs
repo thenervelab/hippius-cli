@@ -12,7 +12,7 @@
 
 use hippius::phrase::quote;
 use hippius::routes::{Route, network};
-use hippius::{Error, ISSUES_URL, Request, Response, Result};
+use hippius::{Error, ISSUES_URL, Request, Response, Result, view_of};
 use serde_json::{Value, json};
 
 use crate::cli::{Groups, Network, Peers, Policies, VpcResources, VpcRouters, Vpcs};
@@ -127,7 +127,7 @@ fn peers(ctx: &Context<'_>, command: &Peers) -> Result<Printed> {
         // which is why `renamed` trusts nothing but an answer that carries the new name.
         Peers::Update { peer_id, name } => {
             let request = Request::to(&network::PEER_UPDATE, [peer_id])
-                .json(&json!({ "name": name }))
+                .json(&network::PeerUpdateBody { name })
                 .listed_by("hipc network peers list")
                 .about(format!(
                     "rename the network peer `{peer_id}` to {}",
@@ -173,11 +173,7 @@ fn renamed(response: &Response, peer_id: &str, name: &str) -> Result<Value> {
     // (tenet 15), as the JSON literal when it is not a string. Swagger types the id as a
     // string, and the list may carry it as a number, so either is compared as text; an
     // answer without an `id`, or with one of another type, is judged by its `name`.
-    let id = match answer.get("id") {
-        Some(Value::String(id)) => Some(id.clone()),
-        Some(Value::Number(id)) => Some(id.to_string()),
-        _ => None,
-    };
+    let id = view_of::<network::Peer>(&answer).id;
     let why = match (id, answer.get("name")) {
         (Some(id), _) if id != peer_id => {
             format!("the API answered about another peer, {}", quote(id))

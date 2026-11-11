@@ -14,13 +14,15 @@
 
 use std::path::Path;
 
-use hippius::routes::{Route, cdn};
-use hippius::{Client, Error, Request, Response, Result, SideEffects, phrase};
+use hippius::routes::cdn::{self, BlockResponse, WafUpdateBody};
+use hippius::routes::{EmptyBody, Route};
+use hippius::{Client, Error, Request, Response, Result, SideEffects, phrase, view_of};
 use serde_json::{Map, Value, json};
 
+use crate::cli::{BlockContentType, BlockStatus, WafTier};
 use crate::cli::{CdnLists, CdnWaf, GroupBy, ListItems, RuleAction, StatsStep, WafAnalytics};
 use crate::cli::{WafEvents, WafMode, WafRateLimits, WafRules, WafTest, WafUpdate, WafVersions};
-use crate::commands::cdn::{MAX_RULES_BYTES, ZONES, shown, with_query};
+use crate::commands::cdn::{MAX_RULES_BYTES, ZONES, fields_set, with_query};
 use crate::commands::replace::{self, Entry, Found, Replace, replace_list};
 use crate::commands::{Input, Printed, print_body, print_body_or, print_keyed_list};
 use crate::context::{Context, Gate, Step, Write};
@@ -107,51 +109,45 @@ const BILLED: &str = ", which is billed from the balance while the mode is not `
 /// every change publishes a version, a mode other than `off` is billed, and `off` stops
 /// the protection.
 fn update(ctx: &Context<'_>, args: &WafUpdate) -> Result<Printed> {
-    let mut body = Map::new();
-    if let Some(mode) = args.mode {
-        body.insert("mode".to_owned(), mode.code().into());
-    }
-    if let Some(tier) = args.tier {
-        body.insert("tier".to_owned(), tier.code().into());
-    }
-    if let Some(sampling) = args.event_sampling {
-        body.insert("event_sampling".to_owned(), sampling.into());
-    }
-    let mut set: Vec<String> = body
-        .iter()
-        .map(|(key, value)| format!("`{key}` to {}", shown(value)))
-        .collect();
-    let mut block = Map::new();
-    if let Some(status) = args.block_status {
-        block.insert("status".to_owned(), status.code().into());
-    }
-    if let Some(content_type) = args.block_content_type {
-        block.insert("content_type".to_owned(), content_type.code().into());
-    }
-    set.extend(
-        block
-            .iter()
-            .map(|(key, value)| format!("`block_response.{key}` to {}", shown(value))),
-    );
-    if let Some(path) = &args.block_body_file {
-        let page = Input {
-            path,
-            flag: "--block-body-file",
-            what: "block page body",
-        };
-        block.insert(
-            "body".to_owned(),
-            page.read_text(MAX_BLOCK_BODY_BYTES)?.into(),
-        );
-        set.push(format!(
-            "`block_response.body` to the text of {}",
-            page.name()
-        ));
-    }
-    if !block.is_empty() {
-        body.insert("block_response".to_owned(), Value::Object(block));
-    }
-    if body.is_empty() {
+    let settings = WafUpdateBody {
+        mode: args.mode.map(WafMode::code),
+        tier: args.tier.map(WafTier::code),
+        event_sampling: args.event_sampling,
+        block_response: None,
+    };
+    let page = BlockResponse {
+        status: args.block_status.map(BlockStatus::code),
+        content_type: args.block_content_type.map(BlockContentType::code),
+        body: None,
+    };
+    let mut set = fields_set(&settings, "");
+    set.extend(fields_set(&page, "block_response."));
+    let page_body = match &args.block_body_file {
+        Some(path) => {
+            let page = Input {
+                path,
+                flag: "--block-body-file",
+                what: "block page body",
+            };
+            let text = page.read_text(MAX_BLOCK_BODY_BYTES)?;
+            set.push(format!(
+                "`block_response.body` to the text of {}",
+                page.name()
+            ));
+            Some(text)
+        }
+        None => None,
+    };
+    let page = BlockResponse {
+        body: page_body.as_deref(),
+        ..page
+    };
+    let changes_page = page.status.is_some() || page.content_type.is_some() || page.body.is_some();
+    let body = WafUpdateBody {
+        block_response: changes_page.then_some(page),
+        ..settings
+    };
+    if set.is_empty() {
         return Err(Error::usage(
             "`hipc cdn waf update` was given nothing to change",
             "pass at least one setting to change, such as `--mode`",
@@ -167,7 +163,7 @@ fn update(ctx: &Context<'_>, args: &WafUpdate) -> Result<Printed> {
         .then_some("the zone's WAF rules stop applying, and its WAF billing stops");
     let request = Request::to(&cdn::WAF_UPDATE, [&args.zone_id])
         .listed_by(ZONES)
-        .json(&Value::Object(body))
+        .json(&body)
         .about(format!(
             "update the WAF of the CDN zone `{}`: set {}{billed}",
             args.zone_id,
@@ -251,13 +247,11 @@ fn test(ctx: &Context<'_>, args: &WafTest) -> Result<Printed> {
             format!("remove `{key}` from the request"),
         ));
     }
-    let mut body = Map::new();
-    if let Some(expression) = &args.expression {
-        body.insert("expression".to_owned(), expression.as_str().into());
-    }
-    body.insert("request".to_owned(), sample);
     let request = Request::to(&cdn::WAF_TEST, [&args.zone_id])
-        .json(&Value::Object(body))
+        .json(&cdn::WafTestBody {
+            expression: args.expression.as_deref(),
+            request: &sample,
+        })
         .about(format!(
             "test a request against the WAF of the CDN zone `{}`",
             args.zone_id
@@ -415,7 +409,7 @@ fn update_rules(ctx: &Context<'_>, update: &ListUpdate<'_>, list: &RuleList) -> 
     // `0` or null is unverified, and a null would make every update `internal`, leaving
     // `hipc api PUT ... --remove-others`, which sends no `If-Match`.
     let current = |answer: Value| {
-        let version = answer.get("version").and_then(Value::as_u64);
+        let version = view_of::<cdn::WafRules>(&answer).version;
         match (rule_entries(&answer, list), version) {
             (Some(entries), Some(version)) => Ok(Found {
                 entries,
@@ -476,9 +470,9 @@ fn check_rules(
     current: impl FnOnce(Value) -> Result<Found>,
 ) -> Result<Step> {
     let draft = write.clone().if_match(VERSION_PLACEHOLDER);
-    if let Write::DryRun(mut doc) = ctx.check_write(client, &draft)? {
+    if let Write::DryRun(_) = ctx.check_write(client, &draft)? {
+        let mut doc = ctx.dry_run_of(client, &[&replace.read, &draft])?;
         doc["reads_first"] = ctx.describe(client, &replace.read)?;
-        doc["requests"] = ctx.describe_each(client, &[&replace.read, &draft])?;
         return Ok(Step::DryRun(doc));
     }
     let found = current(ctx.send(client, &replace.read)?.document()?)?;
@@ -498,10 +492,10 @@ fn check_rules(
 /// ignored `dry_run` would have published the file, so the hint reads what is published.
 fn checked(response: &Response, zone_id: &str, list: &RuleList) -> Result<Value> {
     let answer = response.document()?;
-    let published = answer.get("rules").is_some() || answer.get("version").is_some();
-    match answer.get("valid") {
-        Some(Value::Bool(true)) if !published => Ok(answer),
-        Some(Value::Bool(false)) if !published => Err(response
+    let check: cdn::WafCheck = view_of(&answer);
+    match check.valid {
+        Some(true) if !check.published() => Ok(answer),
+        Some(false) if !check.published() => Err(response
             .invalid("the API says the list is not valid")
             .with_hint("fix the list as `details` says, then run the check again")),
         _ => Err(response
@@ -607,7 +601,7 @@ fn versions(ctx: &Context<'_>, command: &WafVersions) -> Result<Printed> {
         } => {
             let request = Request::to(&cdn::WAF_ROLLBACK, [zone_id, version_number])
                 .listed_by(format!("hipc cdn waf versions list {zone_id}"))
-                .json(&json!({}))
+                .json(&EmptyBody {})
                 .about(format!(
                     "roll the WAF of the CDN zone `{zone_id}` back to version `{version_number}`"
                 ));
@@ -642,19 +636,16 @@ pub(super) fn lists(ctx: &Context<'_>, command: &CdnLists) -> Result<Printed> {
             description,
             items_file,
         } => {
-            let mut body = Map::new();
-            body.insert("name".to_owned(), list_name.as_str().into());
-            body.insert("kind".to_owned(), kind.code().into());
-            if let Some(description) = description {
-                body.insert("description".to_owned(), description.as_str().into());
-            }
-            if let Some(path) = items_file {
-                body.insert("items".to_owned(), read_items(path)?.into());
-            }
+            let items = items_file.as_deref().map(read_items).transpose()?;
             // A list costs nothing and filters nothing until a rule names it, so it is not
             // confirmed; a second create of the name is refused (`list_exists`).
             let request = Request::to(&cdn::LIST_CREATE, [])
-                .json(&Value::Object(body))
+                .json(&cdn::ListCreateBody {
+                    name: list_name,
+                    kind: kind.code(),
+                    description: description.as_deref(),
+                    items: items.as_deref(),
+                })
                 .about(format!("create the WAF list `{list_name}`"));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
@@ -666,7 +657,7 @@ pub(super) fn lists(ctx: &Context<'_>, command: &CdnLists) -> Result<Printed> {
         } => {
             let request = Request::to(&cdn::LIST_UPDATE, [list_name])
                 .listed_by(LISTS)
-                .json(&json!({ "description": description }))
+                .json(&cdn::ListUpdateBody { description })
                 .about(format!(
                     "change the description of the WAF list `{list_name}`"
                 ));
@@ -703,7 +694,7 @@ fn items(ctx: &Context<'_>, command: &ListItems) -> Result<Printed> {
                     "add {} to the WAF list `{list_name}`",
                     phrase::count(items.len() as u64, "item")
                 ))
-                .json(&json!({ "items": items }));
+                .json(&cdn::ItemsBody { items: &items });
             // An item changes what every zone whose WAF uses the list lets through or blocks.
             let gate = Gate::Confirm {
                 consequence: Some(LIST_REPUBLISHES),
@@ -722,7 +713,7 @@ fn items(ctx: &Context<'_>, command: &ListItems) -> Result<Printed> {
                     "remove {} from the WAF list `{list_name}`",
                     phrase::count(items.len() as u64, "item")
                 ))
-                .json(&json!({ "items": items }));
+                .json(&cdn::ItemsBody { items: &items });
             let gate = Gate::Confirm {
                 consequence: Some(LIST_REPUBLISHES),
             };
@@ -745,7 +736,7 @@ fn items(ctx: &Context<'_>, command: &ListItems) -> Result<Printed> {
                         "replace every item of the WAF list `{list_name}` with {}",
                         phrase::count(items.len() as u64, "item")
                     ))
-                    .json(&json!({ "items": items })),
+                    .json(&cdn::ItemsBody { items: &items }),
                 consequence: Some(LIST_REPUBLISHES),
                 entries: entries.collect(),
                 remove_others: *remove_others,

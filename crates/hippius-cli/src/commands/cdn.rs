@@ -14,8 +14,9 @@ pub(crate) mod waf;
 
 use std::cmp::Ordering;
 
-use hippius::routes::cdn;
-use hippius::{Client, DnsCredentials, Error, Request, Result, phrase};
+use hippius::routes::cdn::{self, Origin, ZoneUpdateBody};
+use hippius::{Client, DnsCredentials, Error, Request, Result, phrase, view_of};
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
@@ -113,7 +114,7 @@ fn cap_update(
     let patch = |about: &str| {
         Request::to(&cdn::CAP_UPDATE, [&zone_id])
             .listed_by(ZONES)
-            .json(&json!({ "monthly_cap": monthly_cap }))
+            .json(&cdn::CapUpdateBody { monthly_cap })
             .about(about)
     };
     let read = Request::to(&cdn::CAP, [&zone_id])
@@ -121,26 +122,23 @@ fn cap_update(
         .listed_by(ZONES);
     let draft = patch(&set);
     let checked = match ctx.check_write(client, &draft)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(client, &[&read, &draft])?;
-            return Ok(Printed::Document(doc));
+        Write::DryRun(_) => {
+            return ctx
+                .dry_run_of(client, &[&read, &draft])
+                .map(Printed::Document);
         }
         Write::Checked(checked) => checked,
     };
-    let current = ctx.send(client, &read)?.document()?;
-    let old = match current.get("monthly_cap_credits") {
-        Some(Value::String(text)) => Some(text.clone()),
-        Some(Value::Number(number)) => Some(number.to_string()),
-        _ => None,
-    };
+    let current: cdn::Cap = view_of(&ctx.send(client, &read)?.document()?);
+    let old = current.monthly_cap_credits;
     // `monthly_cap_credits` is rounded to a few decimals, so a cap just above the one in force
     // could read as equal; `monthly_cap` holds it exactly, in base units, and decides when it
     // is a digit string. The parser refuses a new cap with more decimals than base units
     // hold, so the new cap always has base units, and the order is unknown only when the read
     // holds no amount to compare with.
     let base = current
-        .get("monthly_cap")
-        .and_then(Value::as_str)
+        .monthly_cap
+        .as_deref()
         .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()));
     let order = match (base, base_units(monthly_cap)) {
         (Some(base), Some(new)) => compare(&new, base),
@@ -395,7 +393,11 @@ fn cache_match(found: &Value) -> Option<Value> {
 /// `POST /api/cdn/estimate/` with only the keys given. It changes nothing, so it is not
 /// confirmed.
 fn estimate(ctx: &Context<'_>, args: &CdnEstimate) -> Result<Printed> {
-    let mut body = Map::new();
+    let mut body = cdn::EstimateBody {
+        requests: args.requests,
+        custom_domains: args.custom_hostnames,
+        ..cdn::EstimateBody::default()
+    };
     if !args.traffic.is_empty() {
         let mut gb = Map::new();
         for entry in &args.traffic {
@@ -412,15 +414,7 @@ fn estimate(ctx: &Context<'_>, args: &CdnEstimate) -> Result<Printed> {
                 ));
             }
         }
-        body.insert("gb".to_owned(), Value::Object(gb));
-    }
-    for (key, value) in [
-        ("requests", args.requests),
-        ("custom_domains", args.custom_hostnames),
-    ] {
-        if let Some(value) = value {
-            body.insert(key.to_owned(), value.into());
-        }
+        body.gb = Some(gb);
     }
     if !args.waf.is_empty() {
         let mut waf = Map::new();
@@ -433,10 +427,10 @@ fn estimate(ctx: &Context<'_>, args: &CdnEstimate) -> Result<Printed> {
                 ));
             }
         }
-        body.insert("waf".to_owned(), Value::Object(waf));
+        body.waf = Some(waf);
     }
     let request = Request::to(&cdn::ESTIMATE, [])
-        .json(&Value::Object(body))
+        .json(&body)
         .about("estimate the CDN cost")
         .changes_nothing();
     print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
@@ -493,34 +487,30 @@ fn create_zone(ctx: &Context<'_>, args: &ZoneCreate) -> Result<Printed> {
         ),
     )?;
     let client = &ctx.load_authed_client()?;
-    let mut origin = Map::new();
-    origin.insert("kind".to_owned(), "s3".into());
-    origin.insert("bucket".to_owned(), args.bucket.as_str().into());
-    let mut settings = Map::new();
-    settings_into(&args.settings, &mut origin, &mut settings);
-    let mut body = Map::new();
-    body.insert("name".to_owned(), args.name.as_str().into());
-    body.insert("origin".to_owned(), Value::Object(origin));
-    body.extend(settings);
-    if let Some(cap) = &args.monthly_cap {
-        body.insert("monthly_cap".to_owned(), cap.as_str().into());
-    }
-    let with_cors = match cors {
-        Some(Cors { policy, file }) => {
-            let with = if policy.is_null() {
-                ", with no CORS policy".to_owned()
-            } else {
-                format!(", with the whole CORS policy in {file}")
-            };
-            body.insert("cors".to_owned(), policy);
-            with
-        }
+    let settings = &args.settings;
+    let body = cdn::ZoneCreateBody {
+        name: &args.name,
+        origin: Origin {
+            kind: Some("s3"),
+            bucket: Some(&args.bucket),
+            prefix: settings.prefix.as_deref(),
+        },
+        shield_region: settings.shield_region.as_deref(),
+        index_document: settings.index_document.as_deref(),
+        spa_fallback: settings.spa_fallback,
+        spa_fallback_exclude: exclusions(settings),
+        monthly_cap: args.monthly_cap.as_deref(),
+        cors: cors.as_ref().map(|cors| &cors.policy),
+    };
+    let with_cors = match &cors {
+        Some(Cors { policy, .. }) if policy.is_null() => ", with no CORS policy".to_owned(),
+        Some(Cors { file, .. }) => format!(", with the whole CORS policy in {file}"),
         None => String::new(),
     };
     // That a private bucket's prefix becomes public is part of the action, so the refusal an
     // agent reads says it too, not only the prompt.
     let request = Request::to(&cdn::ZONE_CREATE, [])
-        .json(&Value::Object(body))
+        .json(&body)
         .about(format!(
             "create the CDN zone `{}` serving `{published}`, which makes that prefix public if \
              the bucket is private{with_cors}",
@@ -531,7 +521,8 @@ fn create_zone(ctx: &Context<'_>, args: &ZoneCreate) -> Result<Printed> {
     };
     print_with(ctx, client, &request, gate, |response| {
         let zone = response.document()?;
-        if zone.pointer("/origin/private") == Some(&Value::Bool(true)) {
+        let origin = view_of::<cdn::Zone>(&zone).origin;
+        if origin.is_some_and(|origin| origin.private == Some(true)) {
             ctx.warning(&format!(
                 "this zone makes the prefix `{published}` public: anyone can read it through the \
                  zone's hostnames"
@@ -556,99 +547,105 @@ fn create_zone(ctx: &Context<'_>, args: &ZoneCreate) -> Result<Printed> {
 fn update_zone(ctx: &Context<'_>, args: &ZoneUpdate) -> Result<Printed> {
     check_settings(&args.settings)?;
     let cors = read_cors(&args.settings)?;
-    let mut origin = Map::new();
-    if let Some(bucket) = &args.bucket {
-        origin.insert("bucket".to_owned(), bucket.as_str().into());
-    }
-    let mut body = Map::new();
-    if let Some(name) = &args.name {
-        body.insert("name".to_owned(), name.as_str().into());
-    }
-    if let Some(redirect) = args.redirect_https {
-        body.insert("redirect_https".to_owned(), redirect.into());
-    }
-    settings_into(&args.settings, &mut origin, &mut body);
-    if body.is_empty() && origin.is_empty() && cors.is_none() {
+    let settings = &args.settings;
+    let body = ZoneUpdateBody {
+        name: args.name.as_deref(),
+        redirect_https: args.redirect_https,
+        shield_region: settings.shield_region.as_deref(),
+        index_document: settings.index_document.as_deref(),
+        spa_fallback: settings.spa_fallback,
+        spa_fallback_exclude: exclusions(settings),
+        ..ZoneUpdateBody::default()
+    };
+    let prefix = settings.prefix.as_deref();
+    let origin = (args.bucket.is_some() || prefix.is_some()).then_some(Origin {
+        kind: None,
+        bucket: args.bucket.as_deref(),
+        prefix,
+    });
+    let set = fields_set(&body, "");
+    if set.is_empty() && origin.is_none() && cors.is_none() {
         // An empty PATCH changes nothing and only returns the zone.
         return Err(Error::usage(
             "`hipc cdn zones update` was given nothing to change",
             "pass at least one field to change, such as `--name`",
         ));
     }
-    let set = zone_changes(&mut body, cors);
-    let patch = |origin: Map<String, Value>| zone_patch(ctx, args, body.clone(), &set, origin);
+    let set = zone_changes(&set, cors.as_ref());
+    let body = ZoneUpdateBody {
+        cors: cors.as_ref().map(|cors| &cors.policy),
+        ..body
+    };
+    let patch = |origin: Option<Origin<'_>>| zone_patch(ctx, args, &body, &set, origin);
     let client = ctx.load_authed_client()?;
     let gate = Gate::Confirm { consequence: None };
-    if args.bucket.is_some() || !origin.contains_key("prefix") {
+    if args.bucket.is_some() || prefix.is_none() {
         return print_body(ctx, &client, &patch(origin)?, gate);
     }
     let read = Request::to(&cdn::ZONE, [&args.zone_id])
         .listed_by(ZONES)
         .about(format!("get the CDN zone `{}`", args.zone_id));
-    let with_origin = |kept: &Map<String, Value>| {
-        let mut whole = kept.clone();
-        whole.extend(origin.clone());
-        whole
-    };
-    let placeholder = Map::from_iter([
-        ("kind".to_owned(), Value::from("<the zone's origin kind>")),
-        ("bucket".to_owned(), Value::from("<the zone's bucket>")),
-    ]);
-    let draft = patch(with_origin(&placeholder))?;
+    let draft = patch(Some(Origin {
+        kind: Some("<the zone's origin kind>"),
+        bucket: Some("<the zone's bucket>"),
+        prefix,
+    }))?;
     let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(&client, &[&read, &draft])?;
-            return Ok(Printed::Document(doc));
+        Write::DryRun(_) => {
+            return ctx
+                .dry_run_of(&client, &[&read, &draft])
+                .map(Printed::Document);
         }
         Write::Checked(checked) => checked,
     };
     let zone = ctx.send(&client, &read)?.document()?;
-    let kept = zone_origin(&zone, &args.zone_id)?;
-    let request = patch(with_origin(&kept))?;
+    let (kind, bucket) = zone_origin(&zone, &args.zone_id)?;
+    let request = patch(Some(Origin {
+        kind: kind.as_deref(),
+        bucket: Some(&bucket),
+        prefix,
+    }))?;
     ctx.confirm_write(checked, &request.action(), None)?;
     ctx.send(&client, &request)?
         .document()
         .map(Printed::Document)
 }
 
-/// The `kind` and `bucket` of the `origin` of `zone`, a zone read, which a PATCH of the prefix
-/// alone sends with it.
+/// The `kind`, when it is text, and the `bucket` of the `origin` of `zone`, a zone read, which
+/// a PATCH of the prefix alone sends with it.
 ///
 /// # Errors
 ///
 /// `internal` when the origin has no `bucket` string: the PATCH would then send a partial
 /// origin.
-fn zone_origin(zone: &Value, zone_id: &str) -> Result<Map<String, Value>> {
-    let origin = zone.get("origin");
-    let text = |key: &str| {
-        origin
-            .and_then(|origin| origin.get(key))
-            .filter(|v| v.is_string())
-    };
-    let Some(bucket) = text("bucket") else {
+fn zone_origin(zone: &Value, zone_id: &str) -> Result<(Option<String>, String)> {
+    let origin = view_of::<cdn::Zone>(zone).origin.unwrap_or_default();
+    let Some(bucket) = origin.bucket else {
         return Err(Error::internal(format!(
             "the CDN zone `{zone_id}` has no `origin.bucket`, so its prefix cannot be changed \
              alone"
         ))
         .with_hint("pass `--bucket` with `--prefix`"));
     };
-    let mut kept = Map::new();
-    if let Some(kind) = text("kind") {
-        kept.insert("kind".to_owned(), kind.clone());
-    }
-    kept.insert("bucket".to_owned(), bucket.clone());
-    Ok(kept)
+    Ok((origin.kind, bucket))
 }
 
-/// The changes of a zone update other than its origin, as its question names them, with the
-/// CORS policy put in `body`. The policy is named by its file, not by its keys: it replaces
-/// the whole policy, which is what `--yes` agrees to.
-fn zone_changes(body: &mut Map<String, Value>, cors: Option<Cors>) -> String {
-    let set: Vec<String> = body
-        .iter()
-        .map(|(key, value)| format!("`{key}` to {}", shown(value)))
-        .collect();
-    let set = match set.as_slice() {
+/// Each field `body` sends, as a question names it, in the order it is sent: `` `name` to
+/// `site` ``, with `within` before each key, such as `block_response.`.
+fn fields_set(body: &impl Serialize, within: &str) -> Vec<String> {
+    let body = serde_json::to_value(body).expect("a request body is plain JSON data");
+    body.as_object()
+        .into_iter()
+        .flatten()
+        .map(|(key, value)| format!("`{within}{key}` to {}", shown(value)))
+        .collect()
+}
+
+/// The changes of a zone update other than its origin, as its question names them: `set`, the
+/// fields ([`fields_set`]), then the CORS policy. The policy is named by its file, not by its
+/// keys: it replaces the whole policy, which is what `--yes` agrees to.
+fn zone_changes(set: &[String], cors: Option<&Cors>) -> String {
+    let set = match set {
         [] => String::new(),
         set => format!("set {}", phrase::join(set, "and")),
     };
@@ -660,7 +657,6 @@ fn zone_changes(body: &mut Map<String, Value>, cors: Option<Cors>) -> String {
     } else {
         format!("replace its whole CORS policy with the one in {file}")
     };
-    body.insert("cors".to_owned(), policy);
     if set.is_empty() {
         cors
     } else {
@@ -668,50 +664,55 @@ fn zone_changes(body: &mut Map<String, Value>, cors: Option<Cors>) -> String {
     }
 }
 
-/// The PATCH of a zone update: `body`, with `origin` when it is not empty, and a question that
+/// The PATCH of a zone update: `body`, with `origin` when there is one, and a question that
 /// names `set` and every key of the origin, so the refusal an agent reads says what would
 /// change and which bucket and prefix would be published.
 fn zone_patch(
     ctx: &Context<'_>,
     args: &ZoneUpdate,
-    mut body: Map<String, Value>,
+    body: &ZoneUpdateBody<'_>,
     set: &str,
-    origin: Map<String, Value>,
+    origin: Option<Origin<'_>>,
 ) -> Result<Request> {
-    let action = if origin.is_empty() {
-        format!("update the CDN zone `{}`: {set}", args.zone_id)
-    } else {
-        require_public(
-            ctx,
-            args.public,
-            &format!(
-                "the new origin of the CDN zone `{}` would be readable by anyone if its bucket is \
-                 private",
-                args.zone_id
-            ),
-        )?;
-        // The kind a read adds is the zone's own, not a change.
-        let to: Vec<String> = origin
-            .iter()
-            .filter(|(key, _)| *key != "kind")
-            .map(|(key, value)| format!("the {key} {}", shown(value)))
-            .collect();
-        let and_set = if set.is_empty() {
-            String::new()
-        } else {
-            format!(", and {set}")
-        };
-        body.insert("origin".to_owned(), Value::Object(origin));
-        format!(
-            "move the CDN zone `{}` to {}, which purges the whole zone and makes what it then \
-             serves public if the bucket is private{and_set}",
-            args.zone_id,
-            phrase::join(&to, "and")
-        )
+    let action = match &origin {
+        None => format!("update the CDN zone `{}`: {set}", args.zone_id),
+        Some(origin) => {
+            require_public(
+                ctx,
+                args.public,
+                &format!(
+                    "the new origin of the CDN zone `{}` would be readable by anyone if its \
+                     bucket is private",
+                    args.zone_id
+                ),
+            )?;
+            // The kind a read adds is the zone's own, not a change.
+            let to: Vec<String> = [("bucket", origin.bucket), ("prefix", origin.prefix)]
+                .into_iter()
+                .filter_map(|(key, value)| {
+                    value.map(|value| format!("the {key} {}", shown(&Value::from(value))))
+                })
+                .collect();
+            let and_set = if set.is_empty() {
+                String::new()
+            } else {
+                format!(", and {set}")
+            };
+            format!(
+                "move the CDN zone `{}` to {}, which purges the whole zone and makes what it \
+                 then serves public if the bucket is private{and_set}",
+                args.zone_id,
+                phrase::join(&to, "and")
+            )
+        }
+    };
+    let body = ZoneUpdateBody {
+        origin,
+        ..body.clone()
     };
     Ok(Request::to(&cdn::ZONE_UPDATE, [&args.zone_id])
         .listed_by(ZONES)
-        .json(&Value::Object(body))
+        .json(&body)
         .about(action))
 }
 
@@ -782,33 +783,10 @@ fn check_count(flag: &str, given: usize, max: usize, holder: &str) -> Result<()>
     ))
 }
 
-/// Adds the fields `create` and `update` share: `prefix` into the origin, the rest into
-/// the body, each only when given.
-fn settings_into(
-    settings: &ZoneSettings,
-    origin: &mut Map<String, Value>,
-    body: &mut Map<String, Value>,
-) {
-    if let Some(prefix) = &settings.prefix {
-        origin.insert("prefix".to_owned(), prefix.as_str().into());
-    }
-    for (key, value) in [
-        ("shield_region", &settings.shield_region),
-        ("index_document", &settings.index_document),
-    ] {
-        if let Some(value) = value {
-            body.insert(key.to_owned(), value.as_str().into());
-        }
-    }
-    if let Some(fallback) = settings.spa_fallback {
-        body.insert("spa_fallback".to_owned(), fallback.into());
-    }
-    if !settings.spa_fallback_exclude.is_empty() {
-        body.insert(
-            "spa_fallback_exclude".to_owned(),
-            settings.spa_fallback_exclude.clone().into(),
-        );
-    }
+/// The `--spa-fallback-exclude` paths, or `None` when none is given, so the key is left out.
+fn exclusions(settings: &ZoneSettings) -> Option<&[String]> {
+    let excluded = settings.spa_fallback_exclude.as_slice();
+    (!excluded.is_empty()).then_some(excluded)
 }
 
 /// A field's new value as a question names it: in backticks, `""` for an empty string,
@@ -848,7 +826,7 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
         CdnHostnames::Create { zone_id, hostname } => {
             let request = Request::to(&cdn::HOSTNAME_CREATE, [zone_id])
                 .listed_by(ZONES)
-                .json(&json!({ "hostname": hostname }))
+                .json(&cdn::HostnameCreateBody { hostname })
                 .about(format!(
                     "add the custom hostname `{hostname}` to the CDN zone `{zone_id}`"
                 ));
@@ -946,10 +924,12 @@ fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
     } = args;
     let provider = provider.provider();
     let credentials = DnsCredentials::load(credentials_file, "--credentials-file", provider)?;
-    let provider_field = || Map::from_iter([("provider".to_owned(), provider.code().into())]);
-    let request = |body: &Value| {
+    let request = |credentials: &Value| {
         Request::to(&cdn::HOSTNAME_DNS_SETUP, [zone_id, hostname])
-            .json(body)
+            .json(&cdn::DnsSetupBody {
+                provider: provider.code(),
+                credentials,
+            })
             .listed_by(format!("hipc cdn hostnames list {zone_id}"))
             .about(format!(
                 "write the DNS records of the custom hostname `{hostname}` at `{}`",
@@ -957,9 +937,7 @@ fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
             ))
     };
     let client = ctx.load_authed_client()?;
-    let mut placeholders = provider_field();
-    placeholders.insert("credentials".to_owned(), credentials.placeholder_body());
-    let draft = request(&Value::Object(placeholders));
+    let draft = request(&credentials.placeholder_body());
     let checked = match ctx.check_write(&client, &draft)? {
         Write::DryRun(doc) => return Ok(Printed::Document(doc)),
         Write::Checked(checked) => checked,
@@ -969,12 +947,7 @@ fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
     let action = draft.action();
     // The body's copies of the credential are cleared once it is serialized, and the request's
     // bytes when it is dropped (tenet 8).
-    let request = request(
-        credentials
-            .body()
-            .within("credentials", provider_field())
-            .as_value(),
-    );
+    let request = request(credentials.body().as_value());
     ctx.send(&client, &request)
         .and_then(|response| response.document())
         .map(|done| Printed::Document(dns_setup_answer(done, provider.code())))
@@ -1039,11 +1012,11 @@ fn purge(ctx: &Context<'_>, client: &Client, args: &CdnPurge) -> Result<Printed>
         "a purge takes",
     )?;
     let body = if args.everything {
-        json!({ "all": true })
+        cdn::PurgeBody::All(true)
     } else if args.paths.is_empty() {
-        json!({ "prefixes": args.prefixes })
+        cdn::PurgeBody::Prefixes(&args.prefixes)
     } else {
-        json!({ "paths": args.paths })
+        cdn::PurgeBody::Paths(&args.paths)
     };
     let request = Request::to(&cdn::PURGE_CREATE, [&args.zone_id])
         .json(&body)
@@ -1052,7 +1025,7 @@ fn purge(ctx: &Context<'_>, client: &Client, args: &CdnPurge) -> Result<Printed>
     print_with(ctx, client, &request, Gate::Open, |response| {
         let body = response.document()?;
         // A zone id starts with `z`, so the printed command cannot read it as a flag.
-        if let Some(id) = body.get("id").and_then(Value::as_u64)
+        if let Some(id) = view_of::<cdn::Purge>(&body).id
             && let Some(command) =
                 ctx.next_command(&format!("cdn purges get {} {id}", args.zone_id))
         {

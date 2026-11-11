@@ -54,8 +54,9 @@ pub(crate) use crate::cli::projects::{
     QuotaLimit, QuotaUpdate,
 };
 pub(crate) use waf::{
-    CdnLists, CdnWaf, GroupBy, ListItems, RuleAction, TierZones, WafAnalytics, WafEvents, WafMode,
-    WafRateLimits, WafRules, WafTest, WafUpdate, WafVersions,
+    BlockContentType, BlockStatus, CdnLists, CdnWaf, GroupBy, ListItems, RuleAction, TierZones,
+    WafAnalytics, WafEvents, WafMode, WafRateLimits, WafRules, WafTest, WafTier, WafUpdate,
+    WafVersions,
 };
 
 pub(crate) use crate::cli::account::{
