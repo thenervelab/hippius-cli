@@ -1,7 +1,11 @@
 //! The Hub: plans, the subscription, the namespace and its robot, keys, repositories and
 //! artifacts, events, usage, and the model index.
 
+use serde::{Deserialize, Serialize};
+use serde_json::Number;
+
 use crate::routes::{Guard, Route, RouteFlag};
+use crate::view::field;
 
 routes! {
     /// The Hub plans.
@@ -95,4 +99,82 @@ routes! {
 
     /// One version of a model.
     MODEL_VERSION: 2 = Route::get("/api/models/{model..}/{reference}/").own_account();
+}
+
+/// The body of [`SUBSCRIBE`]. A dry run shows a plan given by name as a placeholder, so the
+/// id is any JSON value.
+#[derive(Debug, Serialize)]
+pub struct SubscribeBody<'a> {
+    /// The plan's id.
+    pub plan_id: &'a serde_json::Value,
+}
+
+/// The body of [`PUBLICITY_UPDATE`].
+#[derive(Debug, Serialize)]
+pub struct PublicityUpdateBody {
+    /// Whether anyone may pull from the namespace without logging in.
+    pub public: bool,
+}
+
+/// The body of [`NAMESPACE_CREATE`].
+#[derive(Debug, Serialize)]
+pub struct NamespaceCreateBody<'a> {
+    /// The namespace's name.
+    pub namespace: &'a str,
+}
+
+/// The body of [`KEY_CREATE`]: `expires_days` only when it is given.
+#[derive(Debug, Serialize)]
+pub struct KeyCreateBody<'a> {
+    /// The key's name.
+    pub name: &'a str,
+    /// The key's role.
+    pub role: &'a str,
+    /// The days until it expires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_days: Option<u32>,
+}
+
+/// One plan of [`PLANS`], as far as `hipc` decides on it.
+#[derive(Debug, Default, Deserialize)]
+pub struct Plan {
+    /// The plan's id.
+    #[serde(default, deserialize_with = "field")]
+    pub id: Option<u64>,
+    /// The plan's name.
+    #[serde(default, deserialize_with = "field")]
+    pub name: Option<String>,
+    /// Its monthly price in credits, as sent.
+    #[serde(default, deserialize_with = "field")]
+    pub price_credits: Option<Number>,
+}
+
+/// One row of [`SUBSCRIPTIONS`], as far as `hipc` decides on it.
+#[derive(Debug, Default, Deserialize)]
+pub struct PlanSubscription {
+    /// Whether it is active.
+    #[serde(default, deserialize_with = "field")]
+    pub active: Option<bool>,
+    /// The plan it is to.
+    #[serde(default, deserialize_with = "field")]
+    pub plan_id: Option<u64>,
+    /// The id a cancel takes.
+    #[serde(default, deserialize_with = "field")]
+    pub subscription_id: Option<u64>,
+}
+
+/// A key of [`KEY_CREATE`]'s answer, as far as `hipc` decides on it.
+#[derive(Debug, Default, Deserialize)]
+pub struct Key {
+    /// The key's id, which the rotate takes.
+    #[serde(default, deserialize_with = "field")]
+    pub id: Option<u64>,
+}
+
+/// One repository of [`REPOSITORIES`], as far as `hipc` decides on it.
+#[derive(Debug, Default, Deserialize)]
+pub struct Repository {
+    /// The repository's name.
+    #[serde(default, deserialize_with = "field")]
+    pub name: Option<String>,
 }

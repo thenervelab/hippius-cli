@@ -1,5 +1,7 @@
 //! Hippius Drive plans and the subscription.
 
+use serde::Serialize;
+
 use crate::routes::Route;
 
 routes! {
@@ -23,4 +25,42 @@ routes! {
 
     /// The Drive subscription's history.
     HISTORY: 0 = Route::get("/api/drive/subscription/history/").own_account().paged();
+}
+
+/// The body of [`SUBSCRIBE`].
+#[derive(Debug, Serialize)]
+pub struct SubscribeBody<'a> {
+    /// The plan's code.
+    pub plan: &'a str,
+    /// How it is paid, such as `credits`.
+    pub payment: &'a str,
+    /// The billing period, when one is chosen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period: Option<&'a str>,
+}
+
+/// The body of [`SUBSCRIPTION_CHANGE`] that switches the plan. It has no `payment`: plan
+/// changes are paid from the balance.
+#[derive(Debug, Serialize)]
+pub struct PlanChangeBody<'a> {
+    /// The new plan's code.
+    pub plan: &'a str,
+    /// The billing period, when one is chosen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period: Option<&'a str>,
+}
+
+/// The body of [`SUBSCRIPTION_CHANGE`] that keeps the plan and changes one setting.
+#[derive(Debug, Default, Serialize)]
+#[expect(
+    clippy::option_option,
+    reason = "a cap left out keeps its value, and `null` is the default cap"
+)]
+pub struct SettingChangeBody<'a> {
+    /// How each later renewal is paid: `credits` or `card`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub funding: Option<&'a str>,
+    /// The cap on bytes stored past the quota; `null` is the default cap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_cap_bytes: Option<Option<u64>>,
 }
