@@ -35,10 +35,10 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         Err(error) => return output::clap_error(terminal.resolve_from_args(args), &error, args),
     };
     let mode = terminal.resolve(&cli.global);
-    let row = match spec::row(&path) {
-        Ok(row) => row,
-        Err(error) => return output::failure(mode, &error),
-    };
+    // A command the parser ran with no schema row is a bug that `spec`'s walking test keeps
+    // from shipping; should one ship, the run asks before every write and ends in the row's
+    // `internal` error object, never a panic.
+    let row = spec::row(&path);
     if let Some(refusal) = repeated_global(args) {
         return output::failure(mode, &refusal);
     }
@@ -47,13 +47,18 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         .skip(1)
         .map(|word| word.to_string_lossy().into_owned())
         .collect();
-    let ctx = Context::new(&cli.global, &terminal, mode, &words, row.confirmation());
+    let asks = row
+        .as_ref()
+        .map_or(spec::Confirmation::Always, spec::Spec::confirmation);
+    let ctx = Context::new(&cli.global, &terminal, mode, &words, asks);
     // A wait for another run's lock of the config or an AWS file is a note, so a run that
     // waits for another one's question does not seem to hang.
     if matches!(mode, output::Mode::Text) && !cli.global.quiet {
         hippius::on_lock_wait(|waiting| output::note(&format!("note: {waiting}\n")));
     }
-    let ran = guarded(&ctx, || execute(&ctx, &cli.command));
+    let ran = guarded(&ctx, || {
+        spec::row(&path).and_then(|_| execute(&ctx, &cli.command))
+    });
     let warnings = run_warnings(&ctx);
     let print = |mut document: Value, layout: Layout| {
         if !sets_next_step(&cli.command) {
@@ -62,8 +67,8 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         if let Some(note) = output::empty_note(&document, layout) {
             ctx.note(note);
         }
-        if layout == Layout::DryRun {
-            spec::add_confirmation(&row, &mut document);
+        if let (Layout::DryRun, Ok(row)) = (layout, &row) {
+            spec::add_confirmation(row, &mut document);
         }
         output::add_warnings(mode, &mut document, &warnings);
         output::document(mode, &document, ctx.side_effects(), layout)

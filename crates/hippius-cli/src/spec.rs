@@ -1695,6 +1695,33 @@ mod tests {
         );
     }
 
+    /// A path under a group that names none of its commands has no row, in every group the
+    /// row lookup splits by.
+    #[test]
+    fn a_path_that_names_no_command_has_no_row() {
+        let groups: [&[&str]; 15] = [
+            &[],
+            &["auth"],
+            &["account"],
+            &["billing"],
+            &["drive"],
+            &["s3"],
+            &["hub"],
+            &["compute"],
+            &["compute", "app-engine"],
+            &["compute", "databases"],
+            &["compute", "kubernetes"],
+            &["compute", "runners"],
+            &["cdn"],
+            &["network"],
+            &["support"],
+        ];
+        for group in groups {
+            let path = [group, &["no-such-command"]].concat();
+            assert!(spec(&path).is_none(), "{path:?}");
+        }
+    }
+
     #[test]
     fn unknown_or_partial_paths_have_no_row() {
         assert!(spec(&["nope"]).is_none());
