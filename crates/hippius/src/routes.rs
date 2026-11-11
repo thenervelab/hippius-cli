@@ -450,7 +450,7 @@ impl<const N: usize> Route<N> {
 
     /// The path with `values` in its placeholders, in order, each percent-encoded as
     /// RFC 3986 (section 3.3) encodes a path segment: the characters a segment may hold as
-    /// they are ([`SEGMENT_KEEPS`]) stay, a `{name..}` placeholder keeps the `/` between its
+    /// they are (`SEGMENT_KEEPS`) stay, a `{name..}` placeholder keeps the `/` between its
     /// segments, and a `{name}` one encodes it, so no value reaches another route. A Hub
     /// digest such as `sha256:0a1b` goes as it is.
     pub fn path(&self, values: [&dyn fmt::Display; N]) -> String {
