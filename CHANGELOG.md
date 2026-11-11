@@ -100,7 +100,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - An error answer whose body cannot be read, or is larger than 32 MiB, keeps its status's code and says in its message that the body was not read, rather than reading as an answer with no body. TENETS tenet 3 says so.
 - A failure whose record of what was done cannot be written to stdout, other than to a closed pipe, is `internal`, as any other stdout write failure is, and its message names the failure it replaces; before, the record was lost without a word.
 - Backspace at the hidden token prompt erases the last character whole, not its last byte.
-- A note after `hipc hub namespace create` no longer says no `robot_secret` was issued when the answer holds the secret under another of its names.
+- A note after `hipc hub namespace create` no longer says no `robot_secret` was issued, or suggests the rotate that would replace it, when the answer holds the secret under another of its names, with or without `--secret-file`; the `docker login` note names the field the secret came in.
 - A redacted all-digit value no longer turns a number into `<redacted>` when only zeros differ: numbers are compared with it by value, so a value `1000` leaves the counts `1` and `10` as they are.
 - A list answer that names its next page in `next_before`, `next_cursor`, or `cursor` and has no `next` link, where `hipc` reads a `next` link (a list command's page, a list read whole, or `hipc api --all`), exits 1 `internal` rather than being printed as the whole list. TENETS tenet 6 says so.
 
