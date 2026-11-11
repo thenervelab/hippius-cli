@@ -30,7 +30,7 @@ use crate::method::{Access, Method};
 use crate::phrase::quote;
 use crate::project;
 use crate::redact::{is_secret_field, token_spellings};
-use crate::routes::{API_BASE, Endpoint, Guard, Route, RouteFlag};
+use crate::routes::{API_BASE, Endpoint, Guard, Paging, Route, RouteFlag};
 use crate::selector::{BillingId, ProjectId, Selection, Selector};
 use crate::source::{Given, Source};
 use crate::time::date_of_unix_day;
@@ -95,6 +95,8 @@ pub struct Request {
     /// Whether the request may change state: from the method, unless
     /// [`Request::changes_nothing`] or [`Request::provisions`] says otherwise.
     access: Access,
+    /// How the route pages its list, from its row ([`Request::paging`]).
+    paging: Option<Paging>,
 }
 
 impl Request {
@@ -117,6 +119,7 @@ impl Request {
             } else {
                 Access::Write
             },
+            paging: None,
         }
     }
 
@@ -134,7 +137,17 @@ impl Request {
         let target = path
             .strip_prefix(API_BASE)
             .expect("a route's template starts with the API base, which `Route::new` checks");
-        Self::new(route.method(), target)
+        Self {
+            paging: route.endpoint().paging(),
+            ..Self::new(route.method(), target)
+        }
+    }
+
+    /// How the route the request was built for ([`Request::to`]) pages its list, as its row
+    /// says; `None` for a route the server does not page and for a request built from a
+    /// written target.
+    pub fn paging(&self) -> Option<Paging> {
+        self.paging
     }
 
     /// Names what the request does: a verb phrase with its literals in backticks, such as
@@ -279,6 +292,7 @@ impl fmt::Debug for Request {
             .field("if_match", &self.if_match.is_some())
             .field("idempotency_key", &self.idempotency_key.is_some())
             .field("access", &self.access)
+            .field("paging", &self.paging)
             .finish()
     }
 }

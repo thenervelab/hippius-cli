@@ -10,10 +10,12 @@
 //! inside an object do; its `next` and `previous` links do not, because the token
 //! says where the list goes on.
 //!
-//! One route pages by cursor instead: `GET /api/runners/jobs/` answers
-//! `{results, next_before}`. [`cursor_page`] reads that shape, and only where a caller asks
-//! for it, so an object that happens to hold `results` is never taken for a cursor page.
-//! Its token is the cursor, as a decimal string.
+//! A route that pages another way says so on its row ([`crate::routes::Paging`]), and its
+//! answer is read into the same [`Page`], with the token the server gave as its [`Next`]: the
+//! runner jobs answer `{results, next_before}`, which [`cursor_page`] reads, and only where a
+//! caller asks for it, so an object that happens to hold `results` is never taken for a
+//! cursor page. An answer [`page`] reads that names a next page in a cursor field rather than
+//! in `next` is refused: read as DRF's, it would print a short list as if it were complete.
 
 use serde_json::{Map, Value};
 
@@ -21,25 +23,49 @@ use crate::error::{Error, Result};
 use crate::phrase::quote;
 use crate::url::without_query_values;
 
+/// The fields that hold the next page of a list paged by cursor. [`page`] refuses an answer
+/// that sets one and no `next` link: a route that moved to cursor paging while a command
+/// still reads it by page number.
+const CURSOR_FIELDS: [&str; 3] = ["next_before", "next_cursor", "cursor"];
+
 /// One page of a list answer.
 #[derive(Debug)]
 pub struct Page {
     /// The items on this page.
     pub items: Vec<Value>,
-    /// The `next` link of a paginated answer, or `None` on the last page and for a bare
-    /// array.
-    pub next: Option<String>,
+    /// Where the list goes on, or `None` on the last page and for a bare array.
+    pub next: Option<Next>,
     /// The answer's other fields, such as `count`, kept beside the items in the envelope:
-    /// everything but `results` and the `next` and `previous` links. Empty for a bare
+    /// everything but the items and the fields that name the next page. Empty for a bare
     /// array.
     pub fields: Map<String, Value>,
+}
+
+/// Where a list goes on after a [`Page`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Next {
+    /// A DRF `next` link: its `page` number is the token ([`Page::next_page_token`]), and
+    /// `hipc api --all` follows it as it is.
+    Link(String),
+    /// The token itself, which goes back in the route's token query: a cursor, a
+    /// continuation token, or a page number worked out from the answer.
+    Token(String),
+}
+
+impl Next {
+    /// The link or the token, as the server gave it.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Link(text) | Self::Token(text) => text,
+        }
+    }
 }
 
 /// Reads a list answer: a bare array, or a paginated `{results, next}` object.
 ///
 /// # Errors
 ///
-/// `internal` for any other shape.
+/// `internal` for any other shape, and as [`page_beside`].
 pub fn page(answer: Value) -> Result<Page> {
     match answer {
         Value::Array(items) => Ok(Page {
@@ -62,15 +88,26 @@ pub fn page(answer: Value) -> Result<Page> {
 ///
 /// # Errors
 ///
-/// `internal` when `next` is neither a string nor null.
+/// `internal` when `next` is neither a string nor null, and when there is no `next` link but
+/// a cursor field (`next_before`, `next_cursor`, or `cursor`) names a next page.
 pub fn page_beside(items: Vec<Value>, mut fields: Map<String, Value>) -> Result<Page> {
     let next = match fields.shift_remove("next") {
         None | Some(Value::Null) => None,
-        Some(Value::String(next)) => Some(next),
+        Some(Value::String(next)) => Some(Next::Link(next)),
         // Treating a malformed link as the last page would print a short list as if it
         // were complete.
         Some(_) => return Err(not_a_list()),
     };
+    if next.is_none()
+        && let Some(field) = CURSOR_FIELDS
+            .into_iter()
+            .find(|field| fields.get(*field).is_some_and(|value| !value.is_null()))
+    {
+        return Err(Error::internal(format!(
+            "the API answered a list whose next page is named by `{field}`, a cursor, where \
+             `hipc` reads a `next` link, so the rest of the list is unknown"
+        )));
+    }
     fields.shift_remove("previous");
     Ok(Page {
         items,
@@ -80,22 +117,24 @@ pub fn page_beside(items: Vec<Value>, mut fields: Map<String, Value>) -> Result<
 }
 
 impl Page {
-    /// The `page` number of the `next` link, the token `--page-token` takes.
+    /// The token `--page-token` takes for the next page: the `page` number of a `next` link,
+    /// or the token itself.
     ///
     /// # Errors
     ///
     /// `internal` when there is a `next` link without a numeric `page` parameter: it cannot
     /// be expressed as a token, and dropping it would hide that more pages exist.
     pub fn next_page_token(&self) -> Result<Option<String>> {
-        let Some(next) = &self.next else {
-            return Ok(None);
-        };
-        page_number(next).map(Some).ok_or_else(|| {
-            Error::internal(format!(
-                "the API's `next` link {} has no page number",
-                quote(without_query_values(next))
-            ))
-        })
+        match &self.next {
+            None => Ok(None),
+            Some(Next::Token(token)) => Ok(Some(token.clone())),
+            Some(Next::Link(next)) => page_number(next).map(Some).ok_or_else(|| {
+                Error::internal(format!(
+                    "the API's `next` link {} has no page number",
+                    quote(without_query_values(next))
+                ))
+            }),
+        }
     }
 
     /// This page as the envelope `hipc` prints for one page of a longer list.
@@ -126,16 +165,16 @@ impl Page {
     ///
     /// # Errors
     ///
-    /// `internal` when the answer has a `next` link. Dropping it would print, or decide
-    /// on, a short list as if it were complete; the Hub double-charge guard would miss an
-    /// active plan on page 2.
+    /// `internal` when the answer names a next page. Dropping it would print, or decide on,
+    /// a short list as if it were complete; the Hub double-charge guard would miss an active
+    /// plan on page 2.
     pub fn into_complete(self, path: &str) -> Result<Vec<Value>> {
         match self.next {
             None => Ok(self.items),
             Some(next) => Err(Error::internal(format!(
                 "the API split a list into pages, and this command reads it whole: its `next` \
                  link is {}",
-                quote(without_query_values(&next))
+                quote(without_query_values(next.as_str()))
             ))
             .with_hint(format!(
                 "run `hipc api GET {path}` to see the answer and its `next` link"
@@ -144,47 +183,27 @@ impl Page {
     }
 }
 
-/// One page of a cursor list, `{"results": [...], "next_before": <integer or null>}`.
-#[derive(Debug)]
-pub struct CursorPage {
-    /// The items on this page.
-    pub items: Vec<Value>,
-    /// The server's `next_before` as a decimal string, or `None` on the last page: the
-    /// token `--page-token` takes, which goes back as `?before=`.
-    pub next_page_token: Option<String>,
-    /// The answer's other fields, such as `count`, kept beside the items in the envelope,
-    /// as [`Page`] keeps them.
-    pub fields: Map<String, Value>,
-}
-
-impl CursorPage {
-    /// This page as the envelope `hipc` prints for one page of a longer list.
-    pub fn envelope(self) -> Value {
-        page_envelope(self.items, self.next_page_token, self.fields)
-    }
-}
-
 /// Reads a cursor page: an object with a `results` array and a `next_before` that is a
-/// non-negative integer or null. The console types `next_before` as `number | null` and
-/// never omits it.
+/// non-negative integer or null, whose token is the cursor as a decimal string, which goes
+/// back as `?before=`. The console types `next_before` as `number | null` and never omits it.
 ///
 /// # Errors
 ///
 /// `internal` for any other shape, a missing `next_before` included: reading it as the
 /// last page would print a short list as if it were complete.
-pub fn cursor_page(answer: Value) -> Result<CursorPage> {
+pub fn cursor_page(answer: Value) -> Result<Page> {
     let Value::Object(mut map) = answer else {
         return Err(not_a_list());
     };
     let Some(Value::Array(items)) = map.shift_remove("results") else {
         return Err(not_a_list());
     };
-    let next_page_token = match map.shift_remove("next_before") {
+    let next = match map.shift_remove("next_before") {
         Some(Value::Null) => None,
         // As a number, so the token is one spelling of the cursor whatever the server
         // wrote (`812`, not `812.0` or `8.12e2`, which `as_u64` refuses).
         Some(Value::Number(cursor)) => match cursor.as_u64() {
-            Some(cursor) => Some(cursor.to_string()),
+            Some(cursor) => Some(Next::Token(cursor.to_string())),
             None => return Err(not_a_cursor(&format!("`{cursor}`"))),
         },
         // The kind, not the value: a server string or object has no place in the message.
@@ -203,9 +222,9 @@ pub fn cursor_page(answer: Value) -> Result<CursorPage> {
             ));
         }
     };
-    Ok(CursorPage {
+    Ok(Page {
         items,
-        next_page_token,
+        next,
         fields: map,
     })
 }
@@ -274,7 +293,7 @@ mod tests {
         let signed = "https://h/api/x/?sig=s3cr3t&cursor=abc";
         let no_number = Page {
             items: Vec::new(),
-            next: Some(signed.to_owned()),
+            next: Some(Next::Link(signed.to_owned())),
             fields: Map::new(),
         };
         let message = no_number.next_page_token().unwrap_err().to_string();
@@ -282,7 +301,7 @@ mod tests {
         assert!(message.contains("sig=<redacted>"), "{message}");
         let paginated = Page {
             items: Vec::new(),
-            next: Some(signed.to_owned()),
+            next: Some(Next::Link(signed.to_owned())),
             fields: Map::new(),
         };
         let error = paginated.into_complete("/x/").unwrap_err();
@@ -330,8 +349,10 @@ mod tests {
         let page = page(answer).unwrap();
         assert_eq!(page.items, [json!({"id": 1})]);
         assert_eq!(
-            page.next.as_deref(),
-            Some("https://api.hippius.com/api/ssh-keys/?page=2")
+            page.next,
+            Some(Next::Link(
+                "https://api.hippius.com/api/ssh-keys/?page=2".to_owned()
+            ))
         );
         let last = super::page(json!({"next": null, "results": []})).unwrap();
         assert_eq!(last.next, None);
@@ -373,7 +394,7 @@ mod tests {
     fn one_page_envelope_carries_the_next_token_or_refuses_a_link_without_one() {
         let with_next = Page {
             items: vec![json!(1)],
-            next: Some("https://x/a/?page=2".into()),
+            next: Some(Next::Link("https://x/a/?page=2".into())),
             fields: Map::new(),
         };
         assert_eq!(
@@ -391,7 +412,7 @@ mod tests {
         );
         let cursor = Page {
             items: vec![],
-            next: Some("https://x/a/?cursor=abc".into()),
+            next: Some(Next::Link("https://x/a/?cursor=abc".into())),
             fields: Map::new(),
         };
         assert_eq!(cursor.envelope().unwrap_err().code().as_str(), "internal");
@@ -401,14 +422,14 @@ mod tests {
     fn a_cursor_page_carries_its_cursor_as_a_decimal_token() {
         let page = cursor_page(json!({"results": [{"id": 1}], "next_before": 812})).unwrap();
         assert_eq!(page.items, [json!({"id": 1})]);
-        assert_eq!(page.next_page_token.as_deref(), Some("812"));
+        assert_eq!(page.next_page_token().unwrap().as_deref(), Some("812"));
         assert_eq!(
-            page.envelope(),
+            page.envelope().unwrap(),
             json!({"items": [{"id": 1}], "next_page_token": "812"})
         );
         let last = cursor_page(json!({"results": [], "next_before": null})).unwrap();
         assert_eq!(
-            last.envelope(),
+            last.envelope().unwrap(),
             json!({"items": [], "next_page_token": null})
         );
     }
@@ -424,7 +445,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            page.envelope(),
+            page.envelope().unwrap(),
             json!({"count": 3, "items": [{"id": 1}], "next_page_token": "812"})
         );
     }
@@ -495,6 +516,54 @@ mod tests {
             json!({"items": [], "next_page_token": null})
         );
         assert!(page(json!([1])).unwrap().fields.is_empty());
+    }
+
+    /// A list read by page number whose answer names its next page in a cursor field, and
+    /// not in `next`, would print as complete: it is refused, read whole or one page at a
+    /// time. A cursor field that is null, or beside a `next` link, names nothing more.
+    #[test]
+    fn a_cursor_field_without_a_next_link_is_refused() {
+        for field in CURSOR_FIELDS {
+            for cursor in [json!(812), json!("abc")] {
+                let answer = json!({"count": 9, "next": null, "results": [1], field: cursor});
+                let error = page(answer).unwrap_err();
+                assert_eq!(
+                    error.message(),
+                    format!(
+                        "the API answered a list whose next page is named by `{field}`, a \
+                         cursor, where `hipc` reads a `next` link, so the rest of the list is \
+                         unknown"
+                    )
+                );
+                let keyed = Map::from_iter([(field.to_owned(), cursor)]);
+                assert!(page_beside(vec![json!(1)], keyed).is_err(), "{field}");
+            }
+            let last = json!({"results": [1], field: null});
+            assert_eq!(page(last).unwrap().items, [json!(1)]);
+            let linked = json!({"next": "https://x/a/?page=2", "results": [], field: 3});
+            let linked = page(linked).unwrap();
+            assert_eq!(linked.next_page_token().unwrap().as_deref(), Some("2"));
+            assert_eq!(linked.fields.get(field), Some(&json!(3)));
+        }
+    }
+
+    /// A token a reader worked out is the next page's token as it is, and a list read whole
+    /// that has one is refused as one with a `next` link is.
+    #[test]
+    fn a_token_is_the_next_page_as_it_is() {
+        let page = Page {
+            items: vec![json!(1)],
+            next: Some(Next::Token("t2".to_owned())),
+            fields: Map::new(),
+        };
+        assert_eq!(page.next.as_ref().map(Next::as_str), Some("t2"));
+        assert_eq!(page.next_page_token().unwrap().as_deref(), Some("t2"));
+        let error = page.into_complete("/x/").unwrap_err();
+        assert_eq!(
+            error.message(),
+            "the API split a list into pages, and this command reads it whole: its `next` link \
+             is `t2`"
+        );
     }
 
     #[test]

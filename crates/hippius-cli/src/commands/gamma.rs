@@ -151,7 +151,7 @@ fn link(ctx: &Context<'_>, path: &Path) -> Result<Printed> {
         );
         return ctx
             .dry_run_of(&client, &[&challenge, &unsigned])
-            .map(Printed::Document);
+            .map(Printed::from);
     }
     let answer = view_of(&ctx.send(&client, &challenge)?.document()?);
     let billing::HotkeyChallenge {

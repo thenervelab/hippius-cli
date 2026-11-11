@@ -35,12 +35,11 @@ pub(super) fn run(ctx: &Context<'_>, command: &HubModels) -> Result<Printed> {
         // Swagger lists no parameter, but the index pages by `page` and `page_size` and
         // answers `{page, page_size, total, results}` with no `next` link (the `hippius-hub`
         // client and the Hub's model pages), so the next page comes from `total`.
-        HubModels::List(args) => list::run_by_total(
+        HubModels::List(args) => list::run(
             ctx,
             &client,
             &Request::to(&hub::MODELS, []).about("list the Hub models"),
             args,
-            list::RESULTS,
         ),
         // An object of three lists (`formats`, `architectures`, `quantizations`), the
         // filters of the index, printed as sent.
@@ -58,14 +57,13 @@ pub(super) fn run(ctx: &Context<'_>, command: &HubModels) -> Result<Printed> {
         } => match reference {
             // The versions page as the index does, `{page, page_size, total, artifacts}`
             // with no `next` link, so they are listed as the index is.
-            None => list::run_by_total(
+            None => list::run(
                 ctx,
                 &client,
                 &Request::to(&hub::MODEL, [model])
                     .listed_by("hipc hub models list")
                     .about(format!("get the Hub model `{model}`")),
                 page,
-                "artifacts",
             ),
             Some(reference) => print_body(
                 ctx,

@@ -50,7 +50,7 @@ use crate::cli::{ClusterKubeconfig, NodePoolScale, NodeReplace};
 use crate::commands::Printed;
 use crate::commands::compute::kubernetes::{CLUSTERS, cluster_get, list_request, read_list};
 use crate::commands::files::write_output_file;
-use crate::context::{Context, Gate, Step, Write};
+use crate::context::{Context, Gate, Step, Write, WritePlan};
 
 /// The flag that names the cluster key file.
 const KEY_FILE: &str = "--cluster-key-file";
@@ -72,7 +72,7 @@ pub(super) fn kubeconfig(ctx: &Context<'_>, args: &ClusterKubeconfig) -> Result<
         Step::DryRun(_) => {
             return ctx
                 .dry_run_of(&client, &[&read, &secrets])
-                .map(Printed::Document);
+                .map(Printed::from);
         }
         Step::Sent(response) => response.document()?,
     };
@@ -121,13 +121,12 @@ pub(super) fn scale(ctx: &Context<'_>, args: &NodePoolScale) -> Result<Printed> 
              pool shrinks>",
         ),
     });
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(_) => {
-            // The reads before the question, the two after it, and the write (tenet 5).
-            let [cluster, pools, operations] = &reads;
-            let sends = [cluster, pools, operations, pools, operations, &draft];
-            return ctx.dry_run_of(&client, &sends).map(Printed::Document);
-        }
+    // The reads before the question, the two after it, and the write (tenet 5). Not
+    // `read_then_write`: the pool is read again after the question.
+    let [cluster, pools, operations] = &reads;
+    let plan = WritePlan::new(&[cluster, pools, operations, pools, operations], &draft);
+    let checked = match ctx.check_write(&client, &plan)? {
+        Write::DryRun(doc) => return Ok(doc.into()),
         Write::Checked(checked) => checked,
     };
     let cluster = ctx.send(&client, &reads[0])?.document()?;
@@ -227,13 +226,12 @@ pub(super) fn replace(ctx: &Context<'_>, args: &NodeReplace) -> Result<Printed> 
         operation: "<an add_node signed with the cluster key file over the pool's \
                     signing_params, with `replaces`>",
     });
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(_) => {
-            // The reads before the question, the two after it, and the write (tenet 5).
-            let [cluster, pools, operations] = &reads;
-            let sends = [cluster, pools, operations, pools, operations, &draft];
-            return ctx.dry_run_of(&client, &sends).map(Printed::Document);
-        }
+    // The reads before the question, the two after it, and the write (tenet 5). Not
+    // `read_then_write`: the pool is read again after the question.
+    let [cluster, pools, operations] = &reads;
+    let plan = WritePlan::new(&[cluster, pools, operations, pools, operations], &draft);
+    let checked = match ctx.check_write(&client, &plan)? {
+        Write::DryRun(doc) => return Ok(doc.into()),
         Write::Checked(checked) => checked,
     };
     let cluster = ctx.send(&client, &reads[0])?.document()?;

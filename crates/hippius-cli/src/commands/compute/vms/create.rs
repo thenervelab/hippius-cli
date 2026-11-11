@@ -73,19 +73,13 @@ pub(super) fn create(ctx: &Context<'_>, client: &Client, args: &VmCreate) -> Res
     let ports = open_ports(args);
     let (launched, confirmed) = match step {
         ConfirmedStep::Sent(response, confirmed) => (response.document()?, confirmed),
-        ConfirmedStep::DryRun(doc) if ports.is_empty() => return Ok(Printed::Document(doc)),
+        ConfirmedStep::DryRun(doc) if ports.is_empty() => return Ok(doc.into()),
         ConfirmedStep::DryRun(_) => {
             let rules = open_ports_request(VM_ID_STAND_IN, &ports);
-            let mut doc = ctx.dry_run_of(client, &[&request, &rules])?;
-            // The URL is built by the HTTP library, which takes no `<`, so the id is a
-            // stand-in there, written as the placeholder once the URL is built.
-            if let Some(Value::String(url)) = doc.pointer_mut("/requests/1/url") {
-                *url = url.replace(
-                    &format!("/{VM_ID_STAND_IN}/"),
-                    &format!("/{VM_ID_PLACEHOLDER}/"),
-                );
-            }
-            return Ok(Printed::Document(doc));
+            let doc = ctx.dry_run_of(client, &[&request, &rules])?;
+            return Ok(doc
+                .with_placeholder_in_urls(VM_ID_STAND_IN, VM_ID_PLACEHOLDER)
+                .into());
         }
     };
     // The rules the PUT set, added to the VM printed on success and after a wait that ends

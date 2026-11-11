@@ -10,8 +10,10 @@ use serde_json::Value;
 use crate::cli::{VmId, VmTarget, Vms};
 use crate::commands::compute::VMS;
 use crate::commands::compute::power_policy::power_policy_command;
-use crate::commands::{Printed, print_body, print_envelope, print_keyed_list, print_with};
-use crate::context::{Context, Gate, Write};
+use crate::commands::{
+    Decided, Printed, print_body, print_envelope, print_keyed_list, print_with, read_then_write,
+};
+use crate::context::{Context, Gate, WritePlan};
 use crate::output::Mode;
 
 /// `POST .../stop/`, confirmed: a stop takes down what the VM serves. Text mode warns that
@@ -154,24 +156,16 @@ fn vm_delete(ctx: &Context<'_>, client: &Client, vm_id: &VmId) -> Result<Printed
         .about(format!("get the VM `{vm_id}`"))
         .listed_by(VMS);
     let draft = delete(&format!("`{vm_id}`"));
-    let checked = match ctx.check_write(client, &draft)? {
-        Write::DryRun(_) => {
-            return ctx
-                .dry_run_of(client, &[&read, &draft])
-                .map(Printed::Document);
-        }
-        Write::Checked(checked) => checked,
+    let decide = || {
+        let vm: Vm = view_of(&ctx.send(client, &read)?.document()?);
+        let named = match vm.name {
+            Some(name) => format!("{} (`{vm_id}`)", phrase::quote(name)),
+            None => format!("`{vm_id}`"),
+        };
+        Ok(Decided::asked(delete(&named), Some(VM_LEFT_BILLED)))
     };
-    let vm: Vm = view_of(&ctx.send(client, &read)?.document()?);
-    let named = match vm.name {
-        Some(name) => format!("{} (`{vm_id}`)", phrase::quote(name)),
-        None => format!("`{vm_id}`"),
-    };
-    let request = delete(&named);
-    let confirmed = ctx.confirm_write(checked, &request.action(), Some(VM_LEFT_BILLED))?;
-    ctx.send_confirmed(client, &request, &confirmed)?
-        .document()
-        .map(Printed::Document)
+    let plan = WritePlan::new(&[&read], &draft);
+    read_then_write(ctx, client, &plan, decide, |sent| sent?.document())
 }
 
 /// What a VM delete leaves billed (swagger, `DELETE /api/compute/vms/{vm_id}/`), for its

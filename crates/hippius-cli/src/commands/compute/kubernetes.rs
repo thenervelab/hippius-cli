@@ -42,8 +42,10 @@ use crate::cli::{
     ClusterTarget, Clusters, Kubernetes, KubernetesBackups, NodePoolCreate, NodePools, Nodes,
     OperationTarget, Operations,
 };
-use crate::commands::{Printed, print_body, print_envelope, print_keyed_list, require_reveal};
-use crate::context::{Context, Gate, Write};
+use crate::commands::{
+    Decided, Printed, print_body, print_envelope, print_keyed_list, read_then_write, require_reveal,
+};
+use crate::context::{Context, Gate, WritePlan};
 
 /// The command that lists the cluster ids, for the hint of a 404 on a cluster route.
 const CLUSTERS: &str = "hipc compute kubernetes clusters list";
@@ -163,20 +165,12 @@ fn cluster_delete(ctx: &Context<'_>, client: &Client, id: u64) -> Result<Printed
     };
     let read = cluster_get(id);
     let draft = delete(&format!("`{id}`"));
-    let checked = match ctx.check_write(client, &draft)? {
-        Write::DryRun(_) => {
-            return ctx
-                .dry_run_of(client, &[&read, &draft])
-                .map(Printed::Document);
-        }
-        Write::Checked(checked) => checked,
+    let decide = || {
+        let cluster = ctx.send(client, &read)?.document()?;
+        Ok(Decided::asked(delete(&phrase::named(id, &cluster)), None))
     };
-    let cluster = ctx.send(client, &read)?.document()?;
-    let request = delete(&phrase::named(id, &cluster));
-    let confirmed = ctx.confirm_write(checked, &request.action(), None)?;
-    ctx.send_confirmed(client, &request, &confirmed)?
-        .document()
-        .map(Printed::Document)
+    let plan = WritePlan::new(&[&read], &draft);
+    read_then_write(ctx, client, &plan, decide, |sent| sent?.document())
 }
 
 /// What `operations cancel` and `operations resume` do to an operation.
@@ -256,15 +250,23 @@ fn operation(ctx: &Context<'_>, target: &OperationTarget, verb: Verb) -> Result<
         "{} the operation `{op_id}` of the Kubernetes cluster `{id}`",
         verb.segment()
     ));
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(_) => {
-            return ctx
-                .dry_run_of(&client, &[&read, &draft])
-                .map(Printed::Document);
-        }
-        Write::Checked(checked) => checked,
+    let decide = || {
+        let op = actionable(target, verb, &read_list(ctx, &client, &read)?)?;
+        Ok(Decided::asked(
+            post(operation_action(verb, &op, id, op_id)),
+            None,
+        ))
     };
-    let found = read_list(ctx, &client, &read)?
+    let plan = WritePlan::new(&[&read], &draft);
+    read_then_write(ctx, &client, &plan, decide, |sent| sent?.document())
+}
+
+/// The operation `target` names in `listed`, the cluster's operations, when `verb` may act
+/// on it; refused otherwise, so nothing is sent after the read.
+fn actionable(target: &OperationTarget, verb: Verb, listed: &[Value]) -> Result<Operation> {
+    let (id, op_id) = (target.cluster.cluster_id, target.operation_id);
+    let operations = format!("hipc compute kubernetes operations list {id}");
+    let found = listed
         .iter()
         .map(view_of::<Operation>)
         .find(|op| op.id == Some(op_id));
@@ -313,11 +315,7 @@ fn operation(ctx: &Context<'_>, target: &OperationTarget, verb: Verb) -> Result<
              cancel {id} {op_id}`"
         )));
     }
-    let request = post(operation_action(verb, &op, id, op_id));
-    let confirmed = ctx.confirm_write(checked, &request.action(), None)?;
-    ctx.send_confirmed(&client, &request, &confirmed)?
-        .document()
-        .map(Printed::Document)
+    Ok(op)
 }
 
 /// Whether `op` is blocked on data a node would lose, which a resume can only get past with

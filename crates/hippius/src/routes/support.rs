@@ -4,12 +4,12 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::routes::Route;
+use crate::routes::{Paging, Route};
 use crate::view::field;
 
 routes! {
     /// The caller's tickets.
-    TICKETS: 0 = Route::get("/api/support/tickets/").personal().paged();
+    TICKETS: 0 = Route::get("/api/support/tickets/").personal().paged(Paging::Numbered);
 
     /// Opens a ticket.
     TICKET_CREATE: 0 = Route::post("/api/support/tickets/").personal();
@@ -21,7 +21,7 @@ routes! {
     TICKET_UPDATE: 1 = Route::patch("/api/support/tickets/{ticket_id}/").personal();
 
     /// A ticket's messages.
-    MESSAGES: 1 = Route::get("/api/support/tickets/{ticket_id}/messages/").personal().paged();
+    MESSAGES: 1 = Route::get("/api/support/tickets/{ticket_id}/messages/").personal().paged(Paging::Numbered);
 
     /// Replies on a ticket.
     MESSAGE_CREATE: 1 = Route::post("/api/support/tickets/{ticket_id}/messages/").personal();

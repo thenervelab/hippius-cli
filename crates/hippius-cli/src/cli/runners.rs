@@ -79,7 +79,9 @@ pub(crate) enum RunnerLimit {
     /// default. Lowering the cap, or keeping it, is not. The amount is sent in monthly_cap,
     /// without leading or trailing zeros and with at most 18 digits after the point, and an
     /// answer whose monthly_cap_credits is not that amount is an error. While the limit is not
-    /// enabled on the server, the read answers 404 and nothing is written.
+    /// enabled on the server, the read answers 404 and nothing is written. The read and the
+    /// write are separate requests, since the route takes no version, so a change someone else
+    /// makes between them is not seen.
     #[command(after_help = examples(&[
         "hipc compute runners limit update --monthly-cap 50",
         "hipc compute runners limit update --monthly-cap none --yes",

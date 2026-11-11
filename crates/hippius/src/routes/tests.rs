@@ -101,7 +101,7 @@ fn policy(endpoint: &Endpoint) -> Endpoint {
     Endpoint {
         method: Method::Get,
         template: "",
-        paged: false,
+        paging: None,
         ..*endpoint
     }
 }
@@ -223,7 +223,9 @@ fn each_builder_method_sets_its_part_of_the_policy() {
         (Take::Refuse, Take::Refuse)
     );
     assert!(!endpoint.reveals && !endpoint.provisions && !endpoint.permanent);
-    assert!(!endpoint.undone_on_503 && !endpoint.paged && !endpoint.account_beside_billing);
+    assert!(
+        !endpoint.undone_on_503 && endpoint.paging.is_none() && !endpoint.account_beside_billing
+    );
     assert_eq!(endpoint.guard, Guard::None);
 
     let personal = Route::<0>::put("/api/a/").personal();
@@ -247,7 +249,7 @@ fn each_builder_method_sets_its_part_of_the_policy() {
         .provisions()
         .permanent()
         .undone_on_503()
-        .paged()
+        .paged(Paging::Cursor)
         .guard(Guard::Refused {
             why: "why",
             hint: "hint",
@@ -259,6 +261,7 @@ fn each_builder_method_sets_its_part_of_the_policy() {
     );
     assert!(endpoint.reveals && endpoint.provisions && endpoint.permanent);
     assert!(endpoint.undone_on_503 && endpoint.paged() && endpoint.account_beside_billing);
+    assert_eq!(endpoint.paging(), Some(Paging::Cursor));
     assert_eq!(
         endpoint.guard(),
         Guard::Refused {
@@ -292,4 +295,33 @@ fn a_route_with_the_wrong_count_is_refused() {
 #[should_panic(expected = "a route starts with `/api/`")]
 fn a_route_outside_the_base_is_refused() {
     let _outside = Route::<0>::get("/v2/a/");
+}
+
+/// Each paging style names the queries its pages are asked for with, and says whether its
+/// pages are numbered.
+#[test]
+fn each_paging_style_names_its_queries() {
+    let styles = [
+        (Paging::Numbered, true, "page", Some("page_size")),
+        (
+            Paging::Totalled { items: "artifacts" },
+            true,
+            "page",
+            Some("page_size"),
+        ),
+        (Paging::Cursor, false, "before", None),
+        (
+            Paging::Continuation,
+            false,
+            "continuation_token",
+            Some("max_keys"),
+        ),
+    ];
+    for (paging, numbered, token, size) in styles {
+        assert_eq!(
+            (paging.numbered(), paging.token_query(), paging.size_query()),
+            (numbered, token, size),
+            "{paging:?}"
+        );
+    }
 }

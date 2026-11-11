@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::routes::{Guard, Route, RouteFlag};
+use crate::routes::{Guard, Paging, Route, RouteFlag};
 use crate::view::{Slot, each, field, nested};
 
 /// Why `hipc api` refuses an App Engine launch or compose update whose body sets `secrets`.
@@ -154,7 +154,7 @@ routes! {
         .project();
 
     /// The caller's SSH keys.
-    SSH_KEYS: 0 = Route::get("/api/ssh-keys/").personal().paged();
+    SSH_KEYS: 0 = Route::get("/api/ssh-keys/").personal().paged(Paging::Numbered);
 
     /// One SSH key.
     SSH_KEY: 1 = Route::get("/api/ssh-keys/{key_id}/").personal();

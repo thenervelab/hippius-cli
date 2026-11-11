@@ -1328,6 +1328,36 @@ mod tests {
         }
     }
 
+    /// A read-then-write whose route takes no version says, in its help, that the read and
+    /// the write are separate requests, so a caller knows a change made between them is not
+    /// seen.
+    #[test]
+    fn an_unversioned_read_then_write_says_its_read_and_write_are_separate() {
+        let mut root = Cli::command();
+        root.build();
+        let paths: [&[&str]; 3] = [
+            &["compute", "runners", "settings", "update"],
+            &["compute", "runners", "limit", "update"],
+            &["billing", "auto-reload", "update"],
+        ];
+        for path in paths {
+            let command = path.iter().fold(&mut root, |command, name| {
+                command
+                    .find_subcommand_mut(name)
+                    .expect("the command exists")
+            });
+            let help = command.render_long_help().to_string();
+            let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                help.contains(
+                    "The read and the write are separate requests, since the route takes no \
+                     version"
+                ),
+                "{path:?}: {help}"
+            );
+        }
+    }
+
     /// No help text, at any depth, names the API schema file: the help says what the API
     /// documents, in its own words.
     #[test]

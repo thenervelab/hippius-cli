@@ -259,9 +259,7 @@ fn status(ctx: &Context<'_>) -> Result<Printed> {
     let check = Request::to(&routes::account::ACCOUNTS, []).about("check the token");
     let me = Request::to(&routes::account::USER, []).about("read the signed-in user");
     if ctx.dry_run() {
-        return ctx
-            .dry_run_of(&client, &[&check, &me])
-            .map(Printed::Document);
+        return ctx.dry_run_of(&client, &[&check, &me]).map(Printed::from);
     }
     let _token_works = ctx.send(&client, &check)?;
     let mut doc = json!({

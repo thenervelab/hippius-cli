@@ -4,7 +4,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use crate::routes::Route;
+use crate::routes::{Paging, Route};
 use crate::view::{field, text_or_number};
 
 routes! {
@@ -12,10 +12,10 @@ routes! {
     BALANCE: 0 = Route::get("/api/billing/credits/balance/").scoped().billing();
 
     /// The credit transactions.
-    TRANSACTIONS: 0 = Route::get("/api/billing/transactions/").own_account().paged();
+    TRANSACTIONS: 0 = Route::get("/api/billing/transactions/").own_account().paged(Paging::Numbered);
 
     /// The invoices.
-    INVOICES: 0 = Route::get("/api/billing/invoices/").scoped().billing().paged();
+    INVOICES: 0 = Route::get("/api/billing/invoices/").scoped().billing().paged(Paging::Numbered);
 
     /// One invoice as a PDF.
     INVOICE_PDF: 1 = Route::get("/api/billing/invoices/{invoice_id}/pdf/").scoped().billing();
@@ -67,7 +67,7 @@ routes! {
     GAMMA: 0 = Route::get("/api/billing/gamma/").own_account();
 
     /// The gamma conversions.
-    GAMMA_CONVERSIONS: 0 = Route::get("/api/billing/gamma/conversions/").own_account().paged();
+    GAMMA_CONVERSIONS: 0 = Route::get("/api/billing/gamma/conversions/").own_account().paged(Paging::Numbered);
 
     /// One gamma conversion.
     GAMMA_CONVERSION: 1 = Route::get("/api/billing/gamma/conversions/{conversion_id}/")

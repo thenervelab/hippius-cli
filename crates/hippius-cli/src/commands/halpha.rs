@@ -23,7 +23,7 @@ use crate::commands::Printed;
 use crate::commands::credits::to_credits;
 use crate::commands::poll::{Next, Schedule, Wait, poll_until};
 use crate::commands::print_with;
-use crate::context::{Context, Gate, Write};
+use crate::context::{Context, Gate, Write, WritePlan};
 use crate::output::Mode;
 use crate::units::{ONE, Planck};
 
@@ -367,19 +367,17 @@ pub(crate) fn top_up(
         ),
     }
     .about(format!("buy credits with `{alpha}` hAlpha"));
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(_) => {
-            // The polls of the follow are left out, as a VM launch's are (tenet 5).
-            let requests: &[&Request] = if retry.is_some() {
-                &[&read, &draft]
-            } else {
-                &[&read, &recent, &draft]
-            };
-            let mut doc = ctx.dry_run_of(&client, requests)?;
-            // The quote is read before the question, as a list replace reads its list.
-            doc["reads_first"] = ctx.describe(&client, &read)?;
-            return Ok(Printed::Document(doc));
-        }
+    // The polls of the follow are left out, as a VM launch's are (tenet 5).
+    let reads: &[&Request] = if retry.is_some() {
+        &[&read]
+    } else {
+        &[&read, &recent]
+    };
+    // Not `read_then_write`: a person's answer can take long enough for another buy to start,
+    // so the purchases are read again after the question.
+    let checked = match ctx.check_write(&client, &WritePlan::new(reads, &draft))? {
+        // The quote is read before the question, as a list replace reads its list.
+        Write::DryRun(doc) => return Ok(doc.reads_first(ctx.describe(&client, &read)?).into()),
         Write::Checked(checked) => checked,
     };
     let quote = Quote::read(&ctx.send(&client, &read)?.document()?)?;

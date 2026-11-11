@@ -24,7 +24,7 @@ use hippius::{Client, Error, Request, Result, phrase};
 use serde_json::Value;
 
 use crate::commands::Printed;
-use crate::context::{Context, Write};
+use crate::context::{Context, Write, WritePlan};
 
 /// One entry of a list, by its key.
 #[derive(Debug)]
@@ -152,13 +152,16 @@ pub(crate) fn replace_list(
     } else {
         replace.write.clone()
     };
-    let checked = match ctx.check_write(client, &draft)? {
-        Write::DryRun(doc) if !reads => return Ok(Printed::Document(doc)),
-        Write::DryRun(_) => {
-            let mut doc = ctx.dry_run_of(client, &[&replace.read, &draft])?;
-            doc["reads_first"] = ctx.describe(client, &replace.read)?;
-            return Ok(Printed::Document(doc));
+    let plan = if reads {
+        WritePlan::new(&[&replace.read], &draft)
+    } else {
+        WritePlan::new(&[], &draft)
+    };
+    let checked = match ctx.check_write(client, &plan)? {
+        Write::DryRun(doc) if reads => {
+            return Ok(doc.reads_first(ctx.describe(client, &replace.read)?).into());
         }
+        Write::DryRun(doc) => return Ok(doc.into()),
         Write::Checked(checked) => checked,
     };
     let action = replace.write.action();

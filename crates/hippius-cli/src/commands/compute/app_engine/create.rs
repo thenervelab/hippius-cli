@@ -28,7 +28,7 @@ use crate::commands::Printed;
 use crate::commands::compute::launch::{
     Kind, STAYS_STOPPED, backups_clause, balance_hint, launch_wait, os_disk_clause, wait,
 };
-use crate::context::{Context, Write};
+use crate::context::{Context, Write, WritePlan};
 
 /// The flag that names the secrets file, in its placeholders and hints.
 const SECRETS_FLAG: &str = "--secrets-file";
@@ -55,12 +55,10 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
     let validate = compose.request(&compute::APP_ENGINE_VALIDATE, "validate");
     let placeholders = secrets.as_ref().map(AppSecrets::placeholder_body);
     let draft = launch(placeholders.as_ref());
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(_) => {
-            return ctx
-                .dry_run_of(&client, &[&validate, &draft])
-                .map(Printed::Document);
-        }
+    // Not `read_then_write`: the secret values go into a body only once the launch is
+    // confirmed, and its answer is checked against the compose after it is sent.
+    let checked = match ctx.check_write(&client, &WritePlan::new(&[&validate], &draft))? {
+        Write::DryRun(doc) => return Ok(doc.into()),
         Write::Checked(checked) => checked,
     };
     let parsed = ctx

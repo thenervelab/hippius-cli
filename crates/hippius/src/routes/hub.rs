@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Number;
 
-use crate::routes::{Guard, Route, RouteFlag};
+use crate::routes::{Guard, Paging, Route, RouteFlag};
 use crate::view::field;
 
 routes! {
@@ -97,13 +97,13 @@ routes! {
         .permanent();
 
     /// The model index.
-    MODELS: 0 = Route::get("/api/models/").own_account().paged();
+    MODELS: 0 = Route::get("/api/models/").own_account().paged(Paging::Totalled { items: "results" });
 
     /// The model index's filters.
     MODEL_FORMATS: 0 = Route::get("/api/models/formats/").own_account();
 
     /// One model, with its versions.
-    MODEL: 1 = Route::get("/api/models/{model..}/").own_account().paged();
+    MODEL: 1 = Route::get("/api/models/{model..}/").own_account().paged(Paging::Totalled { items: "artifacts" });
 
     /// One version of a model.
     MODEL_VERSION: 2 = Route::get("/api/models/{model..}/{reference}/").own_account();
