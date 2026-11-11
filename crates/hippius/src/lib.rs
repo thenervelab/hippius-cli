@@ -72,7 +72,7 @@ pub use crate::selector::{BillingId, DEFAULT, ProjectId, Selection};
 pub use crate::source::{Given, Source};
 pub use crate::time::{Now, date_of_unix_day, rfc3339_seconds};
 pub use crate::url::without_query_values;
-pub use crate::view::view_of;
+pub use crate::view::{Slot, TextOrNumber, view_of};
 pub use crate::wallet::{
     Hotkey, INVISIBLE_JOINS, holds_checked_phrase, holds_phrase, phrase_in_argv, read_hotkey_file,
 };
