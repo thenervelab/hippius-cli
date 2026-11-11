@@ -168,7 +168,7 @@ The config file is `~/.hippius/config.toml`, or the path in `HIPPIUS_CONFIG`. It
 - `hipc` refuses a config that is a symlink, is not a regular file, is larger than 1 MiB, belongs to another user, or has any permission bit for the group or others, and a directory that is a symlink or that others can write. The checks run on the open descriptor, not the path.
 - `hipc s3 configure` holds the AWS files to the same rules.
 - `hipc` never changes a mode for you; the error names the `chmod` that fixes it. Access-control lists are not checked.
-- A key `hipc` does not know, at the top level, in a profile, or in its `hub_subscribe` marker, such as one a newer `hipc` wrote, is accepted, kept as it is when `hipc` rewrites the file, and named once per run by where it is in a `warning:` line (a `warnings` entry in JSON), never by its name or value. Two versions of `hipc` can share one file.
+- A key `hipc` does not know, at the top level, in a profile, or in its `hub_subscribe` marker, such as one a newer `hipc` wrote, is accepted, kept as it is when `hipc` rewrites the file, and named once per run that reads the file by where it is in a `warning:` line (a `warnings` entry in JSON), never by its name or value. Two versions of `hipc` can share one file.
 - A change rewrites the whole file, so comments are not kept. The rename splits a hard link: the other name keeps the old contents, tokens included. The change that splits it warns, once; later changes see a file with one link and do not.
 - `hipc` clears its own copies of the token from memory when it is done with them, best effort, sets its core dump limit to zero at start, and on Linux marks itself not dumpable, so a crash dump or another process of the user does not get the token from it.
 

@@ -157,14 +157,22 @@ fn secret_in_argv(args: &[OsString]) -> Option<hippius::Error> {
 /// file stores, in any spelling an error would redact it in. Best effort: a config file that
 /// cannot be read holds no token here, and the error that follows names that file, not the
 /// command line.
+///
+/// The read is silent: it runs before the command is known, so a warning about the file (a key
+/// this `hipc` does not know) is left to a command that reads the file itself, and `hipc
+/// version`, `schema`, and `completions` give none.
 fn holds_a_known_token(line: &str) -> bool {
     let variable = crate::context::env_os("HIPPIUS_TOKEN")
         .and_then(|value| value.into_string().ok())
         .and_then(|value| {
             hippius::Token::new(&value, &hippius::Source::Variable("HIPPIUS_TOKEN")).ok()
         });
-    variable.is_some_and(|token| token.is_in(line))
-        || crate::context::config().is_ok_and(|config| config.holds_a_stored_token(line))
+    if variable.is_some_and(|token| token.is_in(line)) {
+        return true;
+    }
+    let stored = crate::context::config().is_ok_and(|config| config.holds_a_stored_token(line));
+    let _left_to_the_command = hippius::take_unknown_keys_warning();
+    stored
 }
 
 /// The refusal of a command line that holds an API token ([`holds_a_known_token`]): `usage`,

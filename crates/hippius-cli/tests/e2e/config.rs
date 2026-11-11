@@ -136,6 +136,29 @@ fn a_config_key_this_hipc_does_not_know_is_kept_and_warned_about_once() {
     );
 }
 
+/// A command that never reads the config file, such as `version`, `schema`, or `completions`,
+/// does not warn about a key in it: the scan of the command line for a stored token reads the
+/// file before the command is known, and keeps quiet.
+#[test]
+fn a_command_that_does_not_read_the_config_does_not_warn_about_it() {
+    let home = Home::new();
+    home.write_config("[profiles.default]\nsurprise = \"s3cr3t-value\"\n");
+    for args in [
+        &["version"][..],
+        &["schema"],
+        &["completions", "bash"],
+        &["--output", "text", "version"],
+    ] {
+        let run = Hipc::new(&home).run(args);
+        assert_eq!(run.code(), Some(0), "{args:?}: {}", run.stderr());
+        assert_eq!(run.stderr(), "", "{args:?}");
+        assert!(
+            !run.stdout().contains("holds keys this hipc does not know"),
+            "{args:?}"
+        );
+    }
+}
+
 /// A result with no place for a `warnings` field, the array `--all` prints or a body printed
 /// as the server sent it, keeps its shape, and JSON mode prints the warnings beside it on
 /// stderr as one `{"warnings": [...]}` object.
