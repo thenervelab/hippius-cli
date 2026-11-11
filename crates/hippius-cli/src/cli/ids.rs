@@ -296,8 +296,8 @@ mod tests {
         assert!(VmId::parse(&"a".repeat(64)).is_ok());
         for bad in ["", "a/b", "a?b", "a.b", &"a".repeat(65)] {
             assert_eq!(
-                VmId::parse(bad).map(|id| id.to_string()),
-                Err("a VM id is 1 to 64 letters, digits, `-`, and `_`".to_owned()),
+                VmId::parse(bad).err().as_deref(),
+                Some("a VM id is 1 to 64 letters, digits, `-`, and `_`"),
                 "{bad}"
             );
         }
@@ -358,8 +358,8 @@ mod tests {
             "0f8fad5b-d9cb-469f-a165-70867728950e-",
         ] {
             assert_eq!(
-                TokenId::parse(bad).map(|id| id.to_string()),
-                Err("a token id is a UUID, from `hipc s3 tokens list`".to_owned()),
+                TokenId::parse(bad).err().as_deref(),
+                Some("a token id is a UUID, from `hipc s3 tokens list`"),
                 "{bad}"
             );
         }
