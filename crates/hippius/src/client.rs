@@ -3058,6 +3058,45 @@ mod tests {
         }
     }
 
+    /// A refusal names the method the request sent and the route the guard comes from, with
+    /// each placeholder as a person types it: a write that borrows another write's refusal
+    /// on its route names its own method, and a `body` key the refusal depends on is named.
+    #[test]
+    fn a_refusal_names_the_method_sent_and_the_route_of_its_guard() {
+        let c = client(Selection::Own);
+        let message = |method, target: &str, body: Option<&str>| {
+            let mut request = Request::new(method, target);
+            if let Some(body) = body {
+                request = request.raw_json(body.as_bytes().to_vec());
+            }
+            c.route_flags(&request).unwrap_err().message().to_owned()
+        };
+        assert_eq!(
+            message(Method::Head, "/kubernetes/clusters/7/secrets/", None),
+            "`hipc api` does not send `HEAD /api/kubernetes/clusters/<cluster_id>/secrets/`: \
+             its answer holds the cluster's sealed kubeconfig"
+        );
+        assert_eq!(
+            message(Method::Put, "/registry/subscribe/", None),
+            "`hipc api` does not send `PUT /api/registry/subscribe/`: it reads no current plan \
+             first, so it could start a second paid Hub subscription"
+        );
+        assert_eq!(
+            message(
+                Method::Patch,
+                "/compute/app-engine/apps/v1/compose/",
+                Some(r#"{"secrets":{}}"#)
+            ),
+            "`hipc api` does not send `PATCH /api/compute/app-engine/apps/<vm_id>/compose/` \
+             with `secrets`: the body holds the app's secret values"
+        );
+        assert_eq!(
+            message(Method::Delete, "/auth/token/", None),
+            "`hipc api` does not send `DELETE /api/auth/token/`: the route hands out the \
+             account's API token"
+        );
+    }
+
     #[test]
     fn dry_run_describes_without_header_values() {
         let c = client(member());
