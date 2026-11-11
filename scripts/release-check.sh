@@ -630,6 +630,8 @@ storage_checks() {
   expect_code "missing drive checkout is not_found" not_found
   online "s3 plans" 0 s3 plans
   expect "s3 catalog" '(.plans | length) > 0'
+  # A plan purchase or change checks its code against plans[].code before it buys.
+  expect "each s3 plan has the code a purchase checks" 'all(.plans[]; (.code | type) == "string")'
   online "s3 subscription get" 0 s3 subscription get
   expect "s3 mode" 'has("mode")'
   online "s3 subscription history" 0 s3 subscription history --limit 5
@@ -840,6 +842,9 @@ compute_catalog_checks() {
   expect "public IP availability" 'has("regions")'
   online "compute backups options" 0 compute backups options
   expect "backup options" 'has("intervals")'
+  # A backup policy update checks its interval against intervals[].seconds before it sends.
+  expect "each backup interval has the seconds a policy update checks" \
+    'all(.intervals[]; (.seconds | type) == "number")'
   online "compute runners settings get" 0 compute runners settings get
   expect "runner settings" 'has("enabled")'
   online "compute runners installations list" 0 compute runners installations list
@@ -855,6 +860,8 @@ compute_catalog_checks() {
       '.error.code == "not_found" and (.error.hint | test("not enabled on this server"))'
   else
     expect "runner limit has its cap in credits" 'has("monthly_cap_credits")'
+    # limit update reads monthly_cap too, a name no API document gives.
+    expect "runner limit names its base-unit cap monthly_cap" 'has("monthly_cap")'
   fi
   online "compute ssh-keys list" 0 compute ssh-keys list
   expect "ssh keys envelope" 'has("items") and has("next_page_token")'
@@ -934,6 +941,18 @@ database_checks() {
       result SKIP "$read" "the account has no database"
     fi
   done
+  # The delete question and note name the backup bucket and token the server makes for a
+  # database by a pattern seen once live; these rows show whether it still holds.
+  if [[ -n "$db" ]]; then
+    online "s3 buckets list, for the backup bucket of a database" 0 s3 buckets list
+    expect "the database's backup bucket is named hippius-db-<id>-backups" \
+      "any(.items[]; .name == \"hippius-db-$db-backups\")"
+    online "s3 tokens list, for the backup token of a database" 0 s3 tokens list
+    expect "the database's backup token is named db-<id>-backup-writer" \
+      "any(.items[]; .name == \"db-$db-backup-writer\")"
+  else
+    result SKIP "database backup bucket and token names" "the account has no database"
+  fi
 }
 
 # Every Kubernetes read, once on a cluster id that does not exist (404, which needs no state),
@@ -961,6 +980,16 @@ kubernetes_checks() {
       if [[ "$read" == "compute kubernetes clusters events" ]]; then
         expect "cluster events envelope" \
           '(.items | type) == "array" and has("next_page_token") and .next_page_token == null'
+      fi
+      # A scale signs as many adds as the console's projection of the pool's size counts,
+      # from these fields; the server is not known to count the same way.
+      if [[ "$read" == "compute kubernetes node-pools list" ]]; then
+        expect "each pool has the fields the scale projection counts" \
+          'all(.items[]; has("name") and all((.nodes // [])[]; has("name") and has("state")))'
+      fi
+      if [[ "$read" == "compute kubernetes operations list" ]]; then
+        expect "each operation has the fields the scale projection counts" \
+          'all(.items[]; has("kind") and has("state"))'
       fi
     else
       result SKIP "$read" "the account has no Kubernetes cluster"
@@ -1125,6 +1154,12 @@ waf_checks() {
     if [[ -n "$zone" ]]; then
       # shellcheck disable=SC2086 # the command's words are separate arguments
       online "$read" 0 $read "$zone"
+      # An update sends the version it read as If-Match. The docs give 0 before the first
+      # publish; a null there would make every update of an unpublished zone fail.
+      if [[ "$read" == "cdn waf rules get" || "$read" == "cdn waf rate-limits get" ]]; then
+        expect "$read has a whole version, 0 before the first publish" \
+          '(.version | type) == "number" and .version >= 0 and (.version | floor) == .version'
+      fi
     else
       result SKIP "$read" "the account has no CDN zone"
     fi
@@ -1692,7 +1727,8 @@ refusal_checks() {
   offline "membership on hub keys" 2 --account "$other" hub keys list
   expect_code "hub keys refuse a membership" account_scope_unsupported
   # --reveal is not a confirmation: a create with it still needs --yes, and a rotate with
-  # --yes still needs --reveal. A role the Hub client does not offer is usage.
+  # --yes still needs --reveal. A role that is not a lowercase code is usage; which roles exist
+  # is the server's to say.
   offline "hub keys create without --yes" 2 hub keys create --name hipc-dry-run-check \
     --role read --reveal
   expect_code "hub keys create is confirmation_required" confirmation_required
@@ -1709,9 +1745,9 @@ refusal_checks() {
   expect_code "hub events refuse a membership" account_scope_unsupported
   offline "model without its namespace" 2 hub models get llama
   expect_code "a model needs its namespace" usage
-  offline "hub keys create with an unknown role" 2 hub keys create --name hipc-dry-run-check \
-    --role write --reveal --yes
-  expect_code "an unknown key role is usage" usage
+  offline "hub keys create with a role that is no code" 2 hub keys create \
+    --name hipc-dry-run-check --role Read --reveal --yes
+  expect_code "a role that is no code is usage" usage
   offline "membership on hub repositories" 2 --account "$other" hub repositories list
   expect_code "hub repositories refuse a membership" account_scope_unsupported
   offline "membership on a hub delete --dry-run" 2 --account "$other" --dry-run \
@@ -1852,7 +1888,7 @@ refusal_checks() {
   # The launch options, each checked before anything is sent.
   local vm=(compute vms create --flavor small --ssh-key-id 1)
   offline "os disk tier outside the enum" 2 "${vm[@]}" --os-disk-tier sata --yes
-  offline "launch backup interval outside the set" 2 "${vm[@]}" --backup-interval 600 --yes
+  offline "launch backup interval of no seconds" 2 "${vm[@]}" --backup-interval 0 --yes
   offline "dedicated disk under 1000 GiB" 2 "${vm[@]}" --dedicated-disk 999:hdd --yes
   expect_err "a small dedicated disk is usage" \
     '.error.code == "usage" and (.error.message | test("a dedicated disk is"))'
