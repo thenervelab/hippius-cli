@@ -14,7 +14,7 @@ use crate::commands::{
     Catalog, Decided, Printed, keyed_list, print_body, print_body_or, print_list_with,
     read_then_write, send_from_catalog,
 };
-use crate::context::{Context, Gate, Step, WritePlan};
+use crate::context::{ConfirmedStep, Context, Gate, WritePlan};
 
 pub(super) fn backups(ctx: &Context<'_>, client: &Client, command: &Backups) -> Result<Printed> {
     let get = |request: Request| print_body(ctx, client, &request, Gate::Open);
@@ -89,7 +89,20 @@ fn policy_update(ctx: &Context<'_>, client: &Client, args: &BackupPolicyUpdate) 
     let consequence = "stored backups are billed per GB-hour from the balance, at the price \
                        `hipc compute backups options` shows";
     let wanted = seconds.to_string();
-    let catalog = Catalog {
+    let catalog = intervals(&wanted);
+    match send_from_catalog(ctx, client, Some(&catalog), &request, Some(consequence))? {
+        ConfirmedStep::Sent(response, _covers_nothing_more) => {
+            response.document().map(Printed::Document)
+        }
+        ConfirmedStep::DryRun(doc) => Ok(doc.into()),
+    }
+}
+
+/// The backup intervals the server offers, which `wanted`, a whole number of seconds, is
+/// checked against before a policy update or a launch with `--backup-interval` sends it
+/// (owner decisions D5 and D19): `intervals[].seconds` of the backup options.
+pub(super) fn intervals(wanted: &str) -> Catalog<'_> {
+    Catalog {
         read: options(),
         codes: |answer| {
             let options: compute::BackupOptions = view_of(answer);
@@ -101,12 +114,8 @@ fn policy_update(ctx: &Context<'_>, client: &Client, args: &BackupPolicyUpdate) 
                 .collect()
         },
         what: "a backup interval",
-        wanted: &wanted,
+        wanted,
         listed_by: "hipc compute backups options",
-    };
-    match send_from_catalog(ctx, client, &catalog, &request, Some(consequence))? {
-        Step::Sent(response) => response.document().map(Printed::Document),
-        Step::DryRun(doc) => Ok(doc.into()),
     }
 }
 

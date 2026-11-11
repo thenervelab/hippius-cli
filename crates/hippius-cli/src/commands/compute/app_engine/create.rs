@@ -4,7 +4,7 @@
 //! run, which sends nothing and shows a placeholder for each value; the token; `POST
 //! validate/` with the compose alone, which changes nothing; the local checks of its answer
 //! (the hash, and that the secrets given are the ones the compose declares); the question;
-//! the launch. So a refused compose, a wrong hash, or a missing or undeclared secret stops
+//! with `--backup-interval`, the read of the backup options that must list it; the launch. So a refused compose, a wrong hash, or a missing or undeclared secret stops
 //! before money is spent and before any value leaves the machine.
 //!
 //! A secret value goes in the launch's body and nowhere else. The dry run holds placeholders,
@@ -25,6 +25,7 @@ use serde_json::{Map, Value};
 use super::{APPS_LIST_COMMAND, Compose, Hashed, check_hash, read_compose, unavailable_hint};
 use crate::cli::{AppCreate, DiskTier, FailoverMode, GuestPoweroff};
 use crate::commands::Printed;
+use crate::commands::compute::backups;
 use crate::commands::compute::launch::{
     Kind, STAYS_STOPPED, backups_clause, balance_hint, launch_wait, os_disk_clause, wait,
 };
@@ -55,9 +56,20 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
     let validate = compose.request(&compute::APP_ENGINE_VALIDATE, "validate");
     let placeholders = secrets.as_ref().map(AppSecrets::placeholder_body);
     let draft = launch(placeholders.as_ref());
+    // A backup interval the server does not offer is refused after the question and before
+    // the launch, as `backups policy update` refuses it (owner decision D19).
+    let interval = args
+        .launch
+        .backup_interval
+        .map(|seconds| seconds.to_string());
+    let intervals = interval.as_deref().map(backups::intervals);
+    let before: Vec<&Request> = [&validate]
+        .into_iter()
+        .chain(intervals.iter().map(|catalog| &catalog.read))
+        .collect();
     // Not `read_then_write`: the secret values go into a body only once the launch is
     // confirmed, and its answer is checked against the compose after it is sent.
-    let checked = match ctx.check_write(&client, &WritePlan::new(&[&validate], &draft))? {
+    let checked = match ctx.check_write(&client, &WritePlan::new(&before, &draft))? {
         Write::DryRun(doc) => return Ok(doc.into()),
         Write::Checked(checked) => checked,
     };
@@ -77,6 +89,9 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
     check_secret_names(&parsed, secrets.as_ref(), &compose)?;
     let question = format!("{action}, billed per hour from the balance");
     let confirmed = ctx.confirm_write(checked, &question, None)?;
+    if let Some(intervals) = &intervals {
+        intervals.check(ctx, &client)?;
+    }
     let redactions = secrets.as_ref().map(AppSecrets::redactions);
     let redactions: &[String] = redactions.as_ref().map_or(&[], |texts| texts.as_slice());
     // The body's copies of the values are cleared once it is serialized, the file's with

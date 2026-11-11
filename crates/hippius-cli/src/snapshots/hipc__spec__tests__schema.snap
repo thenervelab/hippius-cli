@@ -3236,10 +3236,6 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         {
           "method": "POST",
           "path": "/api/s3/subscription/"
-        },
-        {
-          "method": "GET",
-          "path": "/api/s3/plans/"
         }
       ]
     },
@@ -3304,10 +3300,6 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         {
           "method": "PATCH",
           "path": "/api/s3/subscription/"
-        },
-        {
-          "method": "GET",
-          "path": "/api/s3/plans/"
         }
       ]
     },
@@ -5655,6 +5647,10 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         {
           "method": "GET",
           "path": "/api/compute/app-engine/apps/{vm_id}/"
+        },
+        {
+          "method": "GET",
+          "path": "/api/compute/backup-options/"
         }
       ]
     },
@@ -6200,6 +6196,10 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         {
           "method": "PUT",
           "path": "/api/compute/vms/{vm_id}/firewall/"
+        },
+        {
+          "method": "GET",
+          "path": "/api/compute/backup-options/"
         }
       ]
     },

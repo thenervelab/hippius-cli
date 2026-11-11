@@ -35,7 +35,7 @@ use serde_json::{Map, Value};
 use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::cli::{Funding, PlanSetting, StorageCap};
-use crate::context::{self, Context, DryRun, Gate, Step, Write, WritePlan};
+use crate::context::{self, ConfirmedStep, Context, DryRun, Gate, Step, Write, WritePlan};
 
 /// Whether `error` is the API's refusal of a call made before `route` set the account's service up:
 /// a 403 whose `detail` is exactly `You must call <route> first.`, the sentence both setup routes
@@ -512,41 +512,58 @@ pub(crate) struct Catalog<'a> {
     pub(crate) listed_by: &'a str,
 }
 
-/// Sends `write` once `catalog` lists the code it sends, as `hipc hub subscription subscribe`
-/// resolves its plan: the question first, then the catalog read, then the write. A code the
-/// catalog does not list is refused (`usage`) after the read, and nothing is written. A dry run
-/// reads nothing and lists the read and the write.
-pub(crate) fn send_from_catalog(
-    ctx: &Context<'_>,
-    client: &Client,
-    catalog: &Catalog<'_>,
-    write: &Request,
-    consequence: Option<&str>,
-) -> Result<Step> {
-    let plan = WritePlan::new(&[&catalog.read], write);
-    let checked = match ctx.check_write(client, &plan)? {
-        Write::DryRun(doc) => return Ok(Step::DryRun(doc)),
-        Write::Checked(checked) => checked,
-    };
-    let confirmed = ctx.confirm_write(checked, &write.action(), consequence)?;
-    let codes = (catalog.codes)(&ctx.send(client, &catalog.read)?.json()?);
-    if !codes.iter().any(|code| code == catalog.wanted) {
+impl Catalog<'_> {
+    /// Sends the catalog read and refuses (`usage`) a [`Catalog::wanted`] it does not list,
+    /// naming what it does list.
+    ///
+    /// # Errors
+    ///
+    /// The read's error, an answer that is not JSON, and the refusal.
+    pub(crate) fn check(&self, ctx: &Context<'_>, client: &Client) -> Result<()> {
+        let codes = (self.codes)(&ctx.send(client, &self.read)?.json()?);
+        if codes.iter().any(|code| code == self.wanted) {
+            return Ok(());
+        }
         let offered = if codes.is_empty() {
             "the server lists none".to_owned()
         } else {
             let quoted: Vec<String> = codes.iter().map(phrase::quote).collect();
             format!("the server offers {}", phrase::join(&quoted, "and"))
         };
-        return Err(Error::usage(
+        Err(Error::usage(
             format!(
                 "{} `{}` is not one the server offers: {offered}",
-                catalog.what, catalog.wanted
+                self.what, self.wanted
             ),
-            format!("run `{}` to see them", catalog.listed_by),
-        ));
+            format!("run `{}` to see them", self.listed_by),
+        ))
     }
-    ctx.send_confirmed(client, write, &confirmed)
-        .map(Step::Sent)
+}
+
+/// Sends `write`, confirmed with `consequence`, once `catalog`, when given, lists the code it
+/// sends, as `hipc hub subscription subscribe` resolves its plan: the question first, then the
+/// catalog read, then the write. A code the catalog does not list is refused (`usage`) after
+/// the read, and nothing is written ([`Catalog::check`]). A dry run reads nothing and lists
+/// the read and the write. Without a catalog this is [`Context::call_confirmed`].
+pub(crate) fn send_from_catalog(
+    ctx: &Context<'_>,
+    client: &Client,
+    catalog: Option<&Catalog<'_>>,
+    write: &Request,
+    consequence: Option<&str>,
+) -> Result<ConfirmedStep> {
+    let Some(catalog) = catalog else {
+        return ctx.call_confirmed(client, write, consequence);
+    };
+    let plan = WritePlan::new(&[&catalog.read], write);
+    let checked = match ctx.check_write(client, &plan)? {
+        Write::DryRun(doc) => return Ok(ConfirmedStep::DryRun(doc)),
+        Write::Checked(checked) => checked,
+    };
+    let confirmed = ctx.confirm_write(checked, &write.action(), consequence)?;
+    catalog.check(ctx, client)?;
+    let response = ctx.send_confirmed(client, write, &confirmed)?;
+    Ok(ConfirmedStep::Sent(response, confirmed))
 }
 
 /// Sends `request`, a GET of a list, and prints what `render` makes of the answer, the list

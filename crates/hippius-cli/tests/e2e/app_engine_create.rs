@@ -130,12 +130,18 @@ fn launching_server() -> Server {
 }
 
 /// A server that validates with `secret_names` declared and answers the launch with `launch`.
+/// Its backup options list the intervals 900 and 3600 seconds.
 fn answering_server(secret_names: &[&str], launch: Reply) -> Server {
     Server::start(vec![
         route_of(
             &compute::APP_ENGINE_VALIDATE,
             [],
             Reply::json(200, &validated(secret_names)),
+        ),
+        route_of(
+            &compute::BACKUP_OPTIONS,
+            [],
+            Reply::json(200, r#"{"intervals":[{"seconds":900},{"seconds":3600}]}"#),
         ),
         route_of(&compute::APP_ENGINE_APP_CREATE, [], launch),
     ])
@@ -200,8 +206,10 @@ fn the_flags_go_in_the_body_and_an_empty_or_absent_file_sends_no_secrets() {
     Hipc::against(&files.home, &server)
         .run(&create_args(&files.compose, &flags))
         .ok();
+    // The backup options are read after the question, between the validate and the launch.
+    assert_eq!(server.requests()[1].path(), "/api/compute/backup-options/");
     assert_eq!(
-        server.requests()[1].json(),
+        server.requests()[2].json(),
         json!({
             "flavor": "small",
             "compose": COMPOSE,
@@ -218,9 +226,52 @@ fn the_flags_go_in_the_body_and_an_empty_or_absent_file_sends_no_secrets() {
         .run(&create_args(&files.compose, &["--yes"]))
         .ok();
     assert_eq!(
-        server.requests()[3].json(),
+        server.requests()[4].json(),
         json!({ "flavor": "small", "compose": COMPOSE })
     );
+    assert_eq!(
+        server.requests().len(),
+        5,
+        "no read without --backup-interval"
+    );
+}
+
+/// An interval the backup options do not list is refused (`usage`) after the validate and
+/// the question, and the app is not launched (owner decision D19). The dry run lists the
+/// validate, the read of the options, then the launch.
+#[test]
+fn a_backup_interval_the_server_does_not_offer_launches_no_app() {
+    let files = files();
+    let server = answering_server(&[], Reply::json(202, &launched("provisioning")));
+    let flags = ["--backup-interval", "7200", "--yes"];
+    let error = Hipc::against(&files.home, &server)
+        .run(&create_args(&files.compose, &flags))
+        .fails(2, "usage");
+    assert_eq!(
+        error["message"],
+        "a backup interval `7200` is not one the server offers: the server offers `900` and \
+         `3600`"
+    );
+    let paths: Vec<String> = server
+        .requests()
+        .iter()
+        .map(|r| r.path().to_owned())
+        .collect();
+    assert_eq!(paths, [VALIDATE, "/api/compute/backup-options/"]);
+    let doc = Hipc::against(&files.home, &server)
+        .run(&create_args(
+            &files.compose,
+            &["--backup-interval", "900", "--dry-run"],
+        ))
+        .ok();
+    let methods: Vec<&str> = doc["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(methods, ["POST", "GET", "POST"]);
+    assert_eq!(server.requests().len(), 2);
 }
 
 /// The grammar refuses what an app cannot take before anything is read: a failover without
