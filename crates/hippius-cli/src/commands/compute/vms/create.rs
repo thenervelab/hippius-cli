@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::cli::{BackupInterval, DedicatedDisk, DiskTier, FailoverMode, GuestPoweroff, VmCreate};
 use crate::commands::compute::launch::{
-    Goal, STAYS_STOPPED, backups_clause, balance_hint, launch_wait, wait,
+    Goal, Kind, STAYS_STOPPED, backups_clause, balance_hint, launch_wait, os_disk_clause, wait,
 };
 use crate::commands::compute::public_ip::inbound_blocked;
 use crate::commands::compute::ssh_keys::read_public_key;
@@ -110,7 +110,7 @@ pub(super) fn create(ctx: &Context<'_>, client: &Client, args: &VmCreate) -> Res
         Goal::Running
     };
     let printed = match timeout {
-        Some(timeout) => wait(ctx, client, launched, goal, timeout),
+        Some(timeout) => wait(ctx, client, launched, Kind::Vm(goal), timeout),
         None => Ok(Printed::Document(launched)),
     };
     let printed = with_launch_firewall(printed, firewall.as_ref())?;
@@ -393,11 +393,7 @@ fn launch_action(args: &VmCreate, dedicated: Option<Dedicated>) -> String {
         );
     }
     if let Some(tier) = args.os_disk_tier {
-        let tier = tier.code();
-        clauses.push(format!(
-            "an OS disk on tier `{tier}` or faster, fixed for the VM's life and billed at the \
-             `{tier}` price that `hipc compute prices` shows (`vm_by_os_disk_tier`)"
-        ));
+        clauses.push(os_disk_clause(tier));
     }
     if let Some(Dedicated { disk, count }) = dedicated {
         clauses.push(format!(

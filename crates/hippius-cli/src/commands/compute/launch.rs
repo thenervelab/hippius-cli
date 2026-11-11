@@ -3,13 +3,16 @@
 
 use std::time::{Duration, Instant};
 
-use hippius::routes::compute::{self, Vm, VmStatus};
+use hippius::routes::Route;
+use hippius::routes::compute::{self, BootPhase, Vm, VmStatus};
 use hippius::{Client, Code, Error, Failure, Request, Result, phrase, view_of};
 use serde_json::Value;
 
-use crate::cli::{BackupInterval, FailoverMode};
+use crate::cli::{BackupInterval, DiskTier, FailoverMode};
 use crate::commands::Printed;
 use crate::commands::compute::VMS;
+use crate::commands::compute::app_engine::APPS;
+use crate::commands::compute::app_engine::create::{printable, sanitized};
 use crate::commands::poll::{Next, Schedule, Wait, poll_until};
 use crate::context::Context;
 
@@ -21,6 +24,16 @@ pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// is then billed while it sits stopped.
 pub(crate) const STAYS_STOPPED: &str = "a power-off from inside the VM leaving it stopped, and \
                                         billed as a stopped VM until it is started or deleted";
+
+/// The launch clause of `--os-disk-tier`, for the VM and the app questions: the tier is a
+/// minimum, fixed for the VM's life, and where its price is shown.
+pub(super) fn os_disk_clause(tier: DiskTier) -> String {
+    let tier = tier.code();
+    format!(
+        "an OS disk on tier `{tier}` or faster, fixed for the VM's life and billed at the \
+         `{tier}` price that `hipc compute prices` shows (`vm_by_os_disk_tier`)"
+    )
+}
 
 /// The launch clause of `--backup-interval`, for the VM and the app questions: how often, the
 /// failover, and that stored backups are billed, so neither question can leave the bill out.
@@ -88,7 +101,7 @@ pub(crate) fn launch_wait(
     waits.then(|| wait_timeout.map_or(WAIT_TIMEOUT, Duration::from_secs))
 }
 
-/// What ends a launch wait.
+/// What ends a VM launch wait.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Goal {
     /// `status` is `running`.
@@ -100,32 +113,134 @@ pub(super) enum Goal {
     Reachable,
 }
 
-/// Where a launch stands, from the VM's `status`, `boot_stalled`, and `network_ready`.
-#[derive(Debug)]
+/// What a launch launched, which decides when its wait ends, what it prints, and how its
+/// messages name it.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Kind<'a> {
+    /// A VM, waited on until the [`Goal`].
+    Vm(Goal),
+    /// An App Engine app, waited on until its status and its boot phase are both `running`.
+    /// Every decision reads the documents as they came; every document printed, and every
+    /// error of a poll, is cleared of `redactions`, the spellings of the secret values the
+    /// launch sent ([`printable`], [`sanitized`]).
+    App { redactions: &'a [String] },
+}
+
+impl Kind<'_> {
+    /// What it is, as a message names it.
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Vm(_) => "VM",
+            Self::App { .. } => "app",
+        }
+    }
+
+    /// The command that lists them, for a hint that cannot name the one launched.
+    fn list(self) -> &'static str {
+        match self {
+            Self::Vm(_) => VMS,
+            Self::App { .. } => APPS,
+        }
+    }
+
+    /// The command that reads one, without its id.
+    fn get(self) -> &'static str {
+        match self {
+            Self::Vm(_) => "hipc compute vms get",
+            Self::App { .. } => "hipc compute app-engine apps get",
+        }
+    }
+
+    /// The read the wait polls.
+    fn poll(self) -> &'static Route<1> {
+        match self {
+            Self::Vm(_) => &compute::VM,
+            Self::App { .. } => &compute::APP_ENGINE_APP,
+        }
+    }
+
+    /// What the wait waits for, as the note names it.
+    fn until(self) -> &'static str {
+        match self {
+            Self::Vm(Goal::Reachable) => "it is running and its public IPv4 is reachable",
+            Self::Vm(Goal::Running) | Self::App { .. } => "it is running",
+        }
+    }
+
+    /// Whether a message may quote `id`, the id an answer gives: a VM's always, through
+    /// `phrase::quote`; an app's only when it can be polled, since the printed copy of an
+    /// app redacts any id that may be a value sent, and a message must not print it raw.
+    fn may_quote(self, id: &str) -> bool {
+        match self {
+            Self::Vm(_) => true,
+            Self::App { .. } => self.pollable(id).is_ok(),
+        }
+    }
+
+    /// Whether `id` can go into the poll URL, or why not: it must pass the rule of the `vm_id`
+    /// argument, so `a?b=1` or `a/b` cannot poll another route, and an app's must hold no
+    /// value sent.
+    fn pollable(self, id: &str) -> std::result::Result<(), String> {
+        match self {
+            Self::App { redactions } if hippius::holds_secret(id, redactions) => {
+                Err("it may be a secret value sent".to_owned())
+            }
+            Self::Vm(_) | Self::App { .. } => crate::cli::vm_id(id).map(drop),
+        }
+    }
+
+    /// Where the launch stands by `doc`, the last document seen.
+    fn state(self, doc: &Value) -> Launch {
+        match self {
+            Self::Vm(goal) => vm_state(doc, goal),
+            Self::App { .. } => app_state(doc),
+        }
+    }
+
+    /// `doc` as it is printed.
+    fn printed(self, doc: Value) -> Value {
+        match self {
+            Self::Vm(_) => doc,
+            Self::App { redactions } => printable(&doc, redactions),
+        }
+    }
+
+    /// The error of a poll, `action`, that failed.
+    fn failed(self, error: Error, action: &str) -> Error {
+        match self {
+            Self::Vm(_) => error,
+            Self::App { redactions } => sanitized(error, action, redactions),
+        }
+    }
+}
+
+/// Where a launch stands.
+#[derive(Debug, PartialEq, Eq)]
 enum Launch {
-    /// The goal is met.
+    /// The wait's end is reached.
     Done,
-    /// A terminal status: `failed` without `boot_stalled`, `decommissioning`, or
-    /// `decommissioned`.
-    Ended(VmStatus),
+    /// A status it does not come back from, as the message quotes it.
+    Ended(&'static str),
     /// Not there yet, so the wait goes on.
     Waiting(Pending),
 }
 
 /// Why a launch wait goes on, which a timeout names.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum Pending {
     /// `pending`, `provisioning`, a missing status, or a status this version does not
     /// know, which may be new and transient.
     Booting,
     /// `failed` with `boot_stalled` true. Swagger: such a VM "returns to `running` by itself
-    /// once the guest signals", so it is not terminal.
+    /// once the guest signals", so it is not terminal; an app is a VM, so it is waited on too.
     Stalled,
     /// `running`, but `network_ready` is not true yet.
     Unreachable,
 }
 
-fn launch_state(vm: &Value, goal: Goal) -> Launch {
+/// Where a VM launch stands, from its `status`, `boot_stalled`, and `network_ready`: it ends
+/// at `failed` without `boot_stalled`, `decommissioning`, or `decommissioned`.
+fn vm_state(vm: &Value, goal: Goal) -> Launch {
     let vm: Vm = view_of(vm);
     match vm.status {
         Some(VmStatus::Running) => match goal {
@@ -138,17 +253,33 @@ fn launch_state(vm: &Value, goal: Goal) -> Launch {
         Some(VmStatus::Failed) if vm.boot_stalled == Some(true) => {
             Launch::Waiting(Pending::Stalled)
         }
-        Some(
-            status @ (VmStatus::Failed | VmStatus::Decommissioning | VmStatus::Decommissioned),
-        ) => Launch::Ended(status),
+        Some(VmStatus::Failed) => Launch::Ended("failed"),
+        Some(VmStatus::Decommissioning) => Launch::Ended("decommissioning"),
+        Some(VmStatus::Decommissioned) => Launch::Ended("decommissioned"),
         Some(VmStatus::Other(_)) | None => Launch::Waiting(Pending::Booting),
     }
 }
 
-/// Polls the launched VM until `goal` is met, its status is terminal, or `timeout` has
-/// passed. Every failure prints the last VM document seen, so `vm_id` is not lost, and is
-/// never retryable: a retry of the create would launch, and bill, a second VM
-/// (`TENETS.md` tenet 4).
+/// Where an App Engine launch stands, from the app's `status`, `boot_phase`, and
+/// `boot_stalled`. Swagger documents neither field's values on an app, so these are the
+/// VM's, unverified on an app: it ends at a terminal VM status, or a `boot_phase` of `failed`.
+fn app_state(app: &Value) -> Launch {
+    let app: Vm = view_of(app);
+    let stalled = app.boot_stalled == Some(true);
+    match (app.status, app.boot_phase) {
+        (Some(VmStatus::Running), Some(BootPhase::Running)) => Launch::Done,
+        (Some(VmStatus::Failed), _) if stalled => Launch::Waiting(Pending::Stalled),
+        (Some(VmStatus::Decommissioning), _) => Launch::Ended("decommissioning"),
+        (Some(VmStatus::Decommissioned), _) => Launch::Ended("decommissioned"),
+        (Some(VmStatus::Failed), _) | (_, Some(BootPhase::Failed)) => Launch::Ended("failed"),
+        _ => Launch::Waiting(Pending::Booting),
+    }
+}
+
+/// Polls what a launch launched until its wait ends ([`Kind::state`]), it reaches a status it
+/// does not come back from, or `timeout` has passed. Every failure prints the last document
+/// seen, so `vm_id` is not lost, and is never retryable: a retry of the launch would launch,
+/// and bill, a second VM (`TENETS.md` tenet 4).
 ///
 /// A poll can end up to `--request-timeout` past the deadline, because the last request
 /// is not cut short. A run killed during the wait prints nothing on stdout; text mode
@@ -158,90 +289,103 @@ pub(super) fn wait(
     ctx: &Context<'_>,
     client: &Client,
     launched: Value,
-    goal: Goal,
+    kind: Kind<'_>,
     timeout: Duration,
 ) -> Result<Printed> {
-    let Some(vm_id) = view_of::<Vm>(&launched).vm_id else {
+    let noun = kind.noun();
+    let Some(id) = view_of::<Vm>(&launched).vm_id else {
         return Err(
             Error::internal("the launch answer has no `vm_id`, so it cannot be waited on")
-                .with_hint(format!("run `{VMS}` to find the new VM"))
-                .after_write(launched),
+                .with_hint(format!("run `{}` to find the new {noun}", kind.list()))
+                .after_write(kind.printed(launched)),
         );
     };
-    // The id comes from the server, so every message quotes it through `phrase::quote`.
-    let vm_quoted = phrase::quote(&vm_id);
-    let hint = match crate::cli::as_argument(&vm_id, crate::cli::vm_id) {
+    let quoted = kind.may_quote(&id);
+    let named = if quoted {
+        format!("the {noun} {}", phrase::quote(&id))
+    } else {
+        format!("the {noun}")
+    };
+    let argument = quoted
+        .then(|| crate::cli::as_argument(&id, crate::cli::vm_id))
+        .flatten();
+    let hint = match argument {
         Some(id) => format!(
             "run {} to see where the launch stands",
-            phrase::quote(format!("hipc compute vms get {id}"))
+            phrase::quote(format!("{} {id}", kind.get()))
         ),
-        None => format!("run `{VMS}` to find the new VM"),
+        None => format!("run `{}` to find the new {noun}", kind.list()),
     };
-    if let Launch::Waiting(_) = launch_state(&launched, goal) {
-        // The id goes into the poll URL, so it is held to the rule of the `vm_id` argument
-        // before the first poll: `a?b=1` or `a/b` would poll another route. A launch answer
-        // that already meets the goal or is terminal needs no poll, so it is not refused.
-        if let Err(rule) = crate::cli::vm_id(&vm_id) {
-            let message = format!(
-                "the launch answer names the VM {vm_quoted}, which `hipc` cannot poll: {rule}"
-            );
+    // A launch answer that already ends the wait needs no poll, so its id is not refused.
+    if let Launch::Waiting(_) = kind.state(&launched) {
+        if let Err(rule) = kind.pollable(&id) {
+            let message = if quoted {
+                format!("the launch answer names {named}, which `hipc` cannot poll: {rule}")
+            } else {
+                format!("the launch answer names the {noun} by an id `hipc` cannot poll: {rule}")
+            };
             return Err(Error::internal(message)
                 .with_hint(hint)
-                .after_write(launched));
+                .after_write(kind.printed(launched)));
         }
-        let until = match goal {
-            Goal::Running => "it is running",
-            Goal::Reachable => "it is running and its public IPv4 is reachable",
-        };
-        ctx.note(&format!(
-            "launched the VM {vm_quoted}; waiting until {until}"
-        ));
+        ctx.note(&format!("launched {named}; waiting until {}", kind.until()));
     }
-    let request = Request::to(&compute::VM, [&vm_id]).about(format!("poll the VM {vm_quoted}"));
+    let request = Request::to(kind.poll(), [&id]).about(format!("poll {named}"));
     let schedule = Schedule {
         first: POLL_INTERVAL,
         interval: POLL_INTERVAL,
         deadline: Instant::now() + timeout,
     };
-    let launch = VmLaunch {
-        vm: launched,
-        goal,
+    let launch = LaunchWait {
+        kind,
+        doc: launched,
         pending: Pending::Booting,
-        vm_id: &vm_id,
-        vm_quoted: &vm_quoted,
+        id: &id,
+        named: &named,
         hint: &hint,
+        action: request.action(),
         timeout,
     };
     poll_until(ctx, client, &request, schedule, launch)
 }
 
-/// The wait of a VM launch: the last VM document seen, and what the wait says of it.
-struct VmLaunch<'a> {
-    vm: Value,
-    goal: Goal,
-    /// What the VM was waiting for when it was last looked at.
+/// The wait of a launch: the last document seen, and what the wait says of it.
+struct LaunchWait<'a> {
+    kind: Kind<'a>,
+    doc: Value,
+    /// What the launch was waiting for when it was last looked at.
     pending: Pending,
-    vm_id: &'a str,
-    vm_quoted: &'a str,
+    id: &'a str,
+    /// The launched VM or app, as the messages name it.
+    named: &'a str,
     hint: &'a str,
+    /// The poll's action, for the error of a failed poll ([`Kind::failed`]).
+    action: String,
     timeout: Duration,
 }
 
-impl Wait for VmLaunch<'_> {
+impl LaunchWait<'_> {
+    /// The last document seen, as it is printed.
+    fn printed(&mut self) -> Value {
+        self.kind.printed(std::mem::take(&mut self.doc))
+    }
+}
+
+impl Wait for LaunchWait<'_> {
     type Output = Printed;
 
     fn next(&mut self) -> Next<Printed> {
-        match launch_state(&self.vm, self.goal) {
-            Launch::Done => Next::Stop(Ok(Printed::Document(std::mem::take(&mut self.vm)))),
+        match self.kind.state(&self.doc) {
+            Launch::Done => Next::Stop(Ok(Printed::Document(self.printed()))),
             Launch::Ended(status) => {
                 let message = format!(
-                    "the VM {} reached {} instead of `running`",
-                    self.vm_quoted,
-                    phrase::quote(status.as_str())
+                    "{} reached {} instead of `running`",
+                    self.named,
+                    phrase::quote(status)
                 );
                 Next::Stop(Err(Error::new(Failure::PartialFailure, message)
                     .with_hint(self.hint)
-                    .after_write(std::mem::take(&mut self.vm))))
+                    .after_write(self.printed())))
             }
             Launch::Waiting(pending) => {
                 self.pending = pending;
@@ -254,50 +398,99 @@ impl Wait for VmLaunch<'_> {
         // A document for another VM, or for none, is not this launch: printing it would
         // report another VM's status as this one's.
         match view_of::<Vm>(&answer).vm_id {
-            Some(id) if id == self.vm_id => {
-                self.vm = answer;
+            Some(id) if id == self.id => {
+                self.doc = answer;
                 Ok(())
             }
             other => {
-                let named = match other {
-                    Some(other) => format!("the VM {}", phrase::quote(other)),
-                    None => "no VM".to_owned(),
+                let noun = self.kind.noun();
+                let other = match other {
+                    Some(other) if self.kind.may_quote(&other) => {
+                        format!("the {noun} {}", phrase::quote(other))
+                    }
+                    Some(_) => format!("another {noun}"),
+                    None => format!("no {noun}"),
                 };
                 let message = format!(
-                    "the poll of the VM {} answered with the document of {named}",
-                    self.vm_quoted
+                    "the poll of {} answered with the document of {other}",
+                    self.named
                 );
                 Err(Error::internal(message)
                     .with_hint(self.hint)
-                    .after_write(std::mem::take(&mut self.vm)))
+                    .after_write(self.printed()))
             }
         }
     }
 
-    fn timed_out(self) -> Result<Printed> {
-        let (vm, after) = (
-            self.vm_quoted,
-            phrase::count(self.timeout.as_secs(), "second"),
-        );
+    fn timed_out(mut self) -> Result<Printed> {
+        let (named, after) = (self.named, phrase::count(self.timeout.as_secs(), "second"));
         let message = match self.pending {
-            Pending::Booting => format!("the VM {vm} was not running after {after}"),
+            Pending::Booting => format!("{named} was not running after {after}"),
             Pending::Stalled => format!(
-                "the VM {vm} was not running after {after}: its boot stalled (`boot_stalled`) \
-                 and has not recovered"
+                "{named} was not running after {after}: its boot stalled (`boot_stalled`) and \
+                 has not recovered"
             ),
             Pending::Unreachable => format!(
-                "the VM {vm} was running, but its public IPv4 was not reachable \
-                 (`network_ready`) after {after}"
+                "{named} was running, but its public IPv4 was not reachable (`network_ready`) \
+                 after {after}"
             ),
         };
         Err(Error::new(Failure::Timeout, message)
             .with_hint(self.hint)
-            .after_write(self.vm))
+            .after_write(self.printed()))
     }
 
     // A poll is a read, so polling on after a passing outage cannot launch twice: the last
     // good document is kept, and only a run of failures ends the wait.
-    fn failed(self, error: Error) -> Error {
-        error.with_hint(self.hint).after_write(self.vm)
+    fn failed(mut self, error: Error) -> Error {
+        let error = self.kind.failed(error, &self.action);
+        error.with_hint(self.hint).after_write(self.printed())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn an_app_launch_is_done_only_when_status_and_boot_phase_are_running() {
+        let state = |app: Value| app_state(&app);
+        assert_eq!(
+            state(json!({"status": "running", "boot_phase": "running"})),
+            Launch::Done
+        );
+        for app in [
+            json!({"status": "running", "boot_phase": "pulling"}),
+            json!({"status": "running"}),
+            json!({"status": "provisioning", "boot_phase": "running"}),
+            json!({}),
+            json!({"status": 1, "boot_phase": null}),
+        ] {
+            assert_eq!(
+                state(app.clone()),
+                Launch::Waiting(Pending::Booting),
+                "{app}"
+            );
+        }
+        assert_eq!(
+            state(json!({"status": "failed", "boot_stalled": true})),
+            Launch::Waiting(Pending::Stalled)
+        );
+        for (app, ended) in [
+            (
+                json!({"status": "failed", "boot_phase": "running"}),
+                "failed",
+            ),
+            (json!({"status": "decommissioning"}), "decommissioning"),
+            (json!({"status": "decommissioned"}), "decommissioned"),
+            (
+                json!({"status": "running", "boot_phase": "failed"}),
+                "failed",
+            ),
+        ] {
+            assert_eq!(state(app.clone()), Launch::Ended(ended), "{app}");
+        }
     }
 }

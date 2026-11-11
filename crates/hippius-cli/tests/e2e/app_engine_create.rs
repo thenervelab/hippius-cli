@@ -1474,8 +1474,9 @@ fn the_question_names_the_os_disk_tier() {
     assert_eq!(
         error["message"],
         "this would launch an app VM of flavor `small` with a public IPv4, with an OS disk on \
-         tier `hdd` or faster, billed at the `hdd` price that `hipc compute prices` shows \
-         (`vm_by_os_disk_tier`), billed per hour from the balance, and `--yes` was not passed"
+         tier `hdd` or faster, fixed for the VM's life and billed at the `hdd` price that `hipc \
+         compute prices` shows (`vm_by_os_disk_tier`), billed per hour from the balance, and \
+         `--yes` was not passed"
     );
 }
 
@@ -1490,6 +1491,28 @@ fn a_stalled_boot_is_waited_on() {
         .ok();
     assert_eq!(doc["status"], "running");
     assert_eq!(server.requests().len(), 4);
+}
+
+/// A boot that stays stalled until `--wait-timeout` is `timeout`, and the message says the
+/// boot stalled, as a VM launch's does.
+#[test]
+fn a_stalled_boot_that_does_not_recover_is_timeout() {
+    let files = files();
+    let stalled = r#"{"vm_id":"vm-1a2b","status":"failed","boot_stalled":true}"#;
+    let server = waiting_server(vec![Reply::json(200, stalled)]);
+    let run = Hipc::against(&files.home, &server).run(&create_args(
+        &files.compose,
+        &["--wait-timeout", "1", "--yes"],
+    ));
+    assert_eq!(run.code(), Some(1), "{}", run.stderr());
+    assert_eq!(run.json()["boot_stalled"], true);
+    let error: Value = serde_json::from_str(run.stderr().lines().last().unwrap()).unwrap();
+    assert_eq!(error["error"]["code"], "timeout");
+    assert_eq!(
+        error["error"]["message"],
+        "the app `vm-1a2b` was not running after 1 second: its boot stalled (`boot_stalled`) \
+         and has not recovered"
+    );
 }
 
 /// Runs a launch with the secrets `secrets` against a server that validates `names` and
