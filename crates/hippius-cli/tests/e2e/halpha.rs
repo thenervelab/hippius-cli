@@ -579,18 +579,18 @@ fn a_failed_purchase_is_an_error_with_the_row_on_stdout() {
     let run = top_up(&server, &["--yes"]);
     assert_eq!(run.code(), Some(1));
     assert_eq!(run.json()["status"], "failed");
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "partial_failure");
+    let error = run.error();
+    assert_eq!(error["code"], "partial_failure");
     assert_eq!(
-        error["error"]["message"],
+        error["message"],
         "the purchase `p_1` failed on chain: the API says `SlippageExceeded`"
     );
     assert_eq!(
-        error["error"]["details"],
+        error["details"],
         json!({"purchase": "p_1", "status": "failed", "error": "SlippageExceeded"})
     );
-    assert_eq!(error["error"]["side_effects"], "partial");
-    assert_eq!(error["error"]["retryable"], false);
+    assert_eq!(error["side_effects"], "partial");
+    assert_eq!(error["retryable"], false);
 }
 
 #[test]
@@ -603,14 +603,14 @@ fn an_unknown_status_is_a_partial_failure_and_a_missing_id_a_warning() {
     let run = top_up(&server, &["--yes"]);
     assert_eq!(run.code(), Some(1));
     assert_eq!(run.json()["status"], "refunded");
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "partial_failure");
+    let error = run.error();
+    assert_eq!(error["code"], "partial_failure");
     assert_eq!(
-        error["error"]["message"],
+        error["message"],
         "the purchase `p_1` is `refunded`, a status `hipc` does not know"
     );
     assert_eq!(
-        error["error"]["details"],
+        error["details"],
         json!({"purchase": "p_1", "status": "refunded"})
     );
     let no_id = route_of(
@@ -679,10 +679,10 @@ fn the_follow_waits_out_a_passing_outage_and_reports_a_lasting_one() {
         "queued",
         "the last row seen is on stdout"
     );
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "permission");
+    let error = run.error();
+    assert_eq!(error["code"], "permission");
     assert_eq!(
-        error["error"]["hint"],
+        error["hint"],
         "run `hipc api GET /billing/native/purchases/` to see where the purchase `p_1` stands"
     );
 }
@@ -1162,9 +1162,6 @@ fn a_failed_purchase_without_an_error_says_only_that_it_failed() {
     ]);
     let run = top_up(&server, &["--yes"]);
     assert_eq!(run.code(), Some(1));
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(
-        error["error"]["message"],
-        "the purchase `p_1` failed on chain"
-    );
+    let error = run.error();
+    assert_eq!(error["message"], "the purchase `p_1` failed on chain");
 }

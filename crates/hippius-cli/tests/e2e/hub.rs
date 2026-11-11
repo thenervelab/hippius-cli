@@ -354,10 +354,10 @@ fn a_second_cancel_failing_is_a_partial_failure_and_nothing_is_bought() {
     let run = subscribe(&server, &["--plan", "builder", "--replace", "--yes"]);
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
     assert_eq!(run.json(), json!({"cancelled": [8]}));
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "partial_failure");
-    assert_eq!(error["error"]["details"][0]["step"], "cancel");
-    assert_eq!(error["error"]["details"][0]["code"], "conflict");
+    let error = run.error();
+    assert_eq!(error["code"], "partial_failure");
+    assert_eq!(error["details"][0]["step"], "cancel");
+    assert_eq!(error["details"][0]["code"], "conflict");
     assert!(!server.calls().iter().any(|m| m.starts_with("POST")));
 }
 
@@ -1050,10 +1050,10 @@ fn a_post_answering_5xx_after_a_cancel_is_partial_and_keeps_the_hint() {
     let run = subscribe(&server, &["--plan", "builder", "--replace", "--yes"]);
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
     assert_eq!(run.json(), json!({"cancelled": [8]}));
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["side_effects"], "partial");
-    assert_eq!(error["error"]["details"][0]["code"], "unavailable");
-    assert!(error["error"]["details"][0].get("hint").is_some());
+    let error = run.error();
+    assert_eq!(error["side_effects"], "partial");
+    assert_eq!(error["details"][0]["code"], "unavailable");
+    assert!(error["details"][0].get("hint").is_some());
 }
 
 #[test]
@@ -1063,10 +1063,10 @@ fn a_post_with_a_body_that_is_not_json_or_empty_still_names_the_cancels() {
         let run = subscribe(&server, &["--plan", "builder", "--replace", "--yes"]);
         assert_eq!(run.code(), Some(1), "{}", run.stderr());
         assert_eq!(run.json(), json!({"cancelled": [8]}));
-        let error: Value = serde_json::from_str(run.stderr()).unwrap();
-        assert_eq!(error["error"]["code"], "partial_failure");
-        assert_eq!(error["error"]["side_effects"], "partial");
-        assert_eq!(error["error"]["details"][0]["step"], "subscribe");
+        let error = run.error();
+        assert_eq!(error["code"], "partial_failure");
+        assert_eq!(error["side_effects"], "partial");
+        assert_eq!(error["details"][0]["step"], "subscribe");
     }
 }
 

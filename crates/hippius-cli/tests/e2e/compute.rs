@@ -937,10 +937,10 @@ fn a_failing_poll_keeps_the_last_vm_on_stdout() {
     assert_eq!(fails_with_vm(&run, "unavailable")["status"], "pending");
     assert_eq!(server.requests().len(), 5, "one launch and four polls");
     // The 502 alone would be retryable, but a retry of the create launches a second VM.
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["retryable"], false);
+    let error = run.error();
+    assert_eq!(error["retryable"], false);
     assert!(
-        error["error"]["hint"]
+        error["hint"]
             .as_str()
             .unwrap()
             .contains("where the launch stands")
@@ -956,8 +956,8 @@ fn a_poll_answer_that_is_not_json_or_empty_keeps_the_last_vm() {
         ]);
         let run = create(&server, &["--wait", "--yes"]);
         assert_eq!(fails_with_vm(&run, "internal")["status"], "pending");
-        let error: Value = serde_json::from_str(run.stderr()).unwrap();
-        assert_eq!(error["error"]["retryable"], false);
+        let error = run.error();
+        assert_eq!(error["retryable"], false);
     }
 }
 
@@ -1135,9 +1135,9 @@ fn a_launch_answer_without_a_vm_id_is_internal_and_printed() {
     let run = create(&server, &["--wait", "--yes"]);
     assert_eq!(run.code(), Some(1));
     assert_eq!(run.json(), json!({"status": "pending"}));
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "internal");
-    assert_eq!(error["error"]["side_effects"], "partial");
+    let error = run.error();
+    assert_eq!(error["code"], "internal");
+    assert_eq!(error["side_effects"], "partial");
 }
 
 #[test]
@@ -2054,18 +2054,18 @@ fn a_launched_vm_whose_id_cannot_be_polled_is_internal_not_usage() {
         let run = create(&server, &["--wait", "--yes"]);
         assert_eq!(run.code(), Some(1), "a launch went through: never exit 2");
         assert_eq!(run.json()["vm_id"], id);
-        let error: Value = serde_json::from_str(run.stderr()).unwrap();
-        assert_eq!(error["error"]["code"], "internal");
-        assert_eq!(error["error"]["side_effects"], "partial");
+        let error = run.error();
+        assert_eq!(error["code"], "internal");
+        assert_eq!(error["side_effects"], "partial");
         assert_eq!(
-            error["error"]["message"],
+            error["message"],
             format!(
                 "the launch answer names the VM `{id}`, which `hipc` cannot poll: a VM id is 1 \
                  to 64 letters, digits, `-`, and `_`"
             )
         );
         assert_eq!(
-            error["error"]["hint"],
+            error["hint"],
             "run `hipc compute vms list` to find the new VM"
         );
         assert_eq!(server.requests().len(), 1, "{id}: no poll is sent");
@@ -2094,9 +2094,9 @@ fn a_poll_answer_for_another_vm_ends_the_wait() {
             printed["status"], "pending",
             "{answer}: this VM's last document"
         );
-        let stderr: Value = serde_json::from_str(run.stderr()).unwrap();
+        let stderr = run.error();
         assert_eq!(
-            stderr["error"]["message"],
+            stderr["message"],
             format!("the poll of the VM `{VM}` answered with the document of {named}")
         );
         assert_eq!(server.requests().len(), 2);
@@ -2699,9 +2699,9 @@ fn a_wait_for_network_ready_that_runs_out_is_timeout_and_keeps_the_vm() {
     let doc = fails_with_vm(&run, "timeout");
     assert_eq!(doc["status"], "running");
     assert_eq!(doc["network_ready"], false);
-    let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
+    let error = run.error();
     assert_eq!(
-        error["error"]["message"],
+        error["message"],
         format!(
             "the VM `{VM}` was running, but its public IPv4 was not reachable \
              (`network_ready`) after 1 second"
@@ -2774,9 +2774,9 @@ fn a_stalled_boot_that_does_not_recover_is_timeout() {
     ]);
     let run = create(&server, &["--wait-timeout", "1", "--yes"]);
     assert_eq!(fails_with_vm(&run, "timeout")["boot_stalled"], true);
-    let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
+    let error = run.error();
     assert_eq!(
-        error["error"]["message"],
+        error["message"],
         format!(
             "the VM `{VM}` was not running after 1 second: its boot stalled (`boot_stalled`) \
              and has not recovered"
@@ -3714,9 +3714,9 @@ fn a_launch_whose_ports_cannot_be_opened_is_a_partial_failure() {
     let run = create(&server, &["--open-port", "80", "--no-wait", "--yes"]);
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
     assert_eq!(run.json(), json!({"status": "pending"}));
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "internal");
-    assert_eq!(error["error"]["side_effects"], "partial");
+    let error = run.error();
+    assert_eq!(error["code"], "internal");
+    assert_eq!(error["side_effects"], "partial");
     assert_eq!(server.requests().len(), 1);
 }
 
@@ -3736,9 +3736,9 @@ fn a_launched_id_with_a_leading_dash_still_gets_its_rules() {
     ]);
     let run = create(&server, &["--open-ssh", "--no-wait", "--yes"]);
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "partial_failure");
-    let hint = error["error"]["hint"].as_str().unwrap();
+    let error = run.error();
+    assert_eq!(error["code"], "partial_failure");
+    let hint = error["hint"].as_str().unwrap();
     assert!(
         hint.starts_with("run `hipc compute firewall update --rules-file - --yes -- -vm1` with "),
         "{hint}"
@@ -3770,8 +3770,8 @@ fn a_launched_id_with_a_leading_dash_still_gets_its_rules() {
     )]);
     let run = create(&server, &["--open-ssh", "--no-wait", "--yes"]);
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "internal");
+    let error = run.error();
+    assert_eq!(error["code"], "internal");
     assert_eq!(server.requests().len(), 1);
 }
 

@@ -84,10 +84,10 @@ fn one_failed_leg_still_prints_the_others_and_exits_partial_failure() {
     let done = run.json();
     assert_eq!(done["partial_failure"], true);
     assert_eq!(done["items"].as_array().unwrap().len(), 3);
-    let error: serde_json::Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "partial_failure");
+    let error = run.error();
+    assert_eq!(error["code"], "partial_failure");
     assert_eq!(
-        error["error"]["details"],
+        error["details"],
         json!([{
             "service": "s3",
             "http_status": 503,
@@ -96,7 +96,7 @@ fn one_failed_leg_still_prints_the_others_and_exits_partial_failure() {
             "hint": "wait a few minutes, then run the command again"
         }])
     );
-    assert_eq!(error["error"]["side_effects"], "none");
+    assert_eq!(error["side_effects"], "none");
 }
 
 #[test]
@@ -133,10 +133,10 @@ fn an_unreadable_or_empty_leg_is_one_failure_among_the_rest() {
         let run = Hipc::against(&Home::new(), &server).run(&["billing", "subscriptions"]);
         assert_eq!(run.code(), Some(1), "{body:?}");
         assert_eq!(run.json()["items"].as_array().unwrap().len(), 3);
-        let error: serde_json::Value = serde_json::from_str(run.stderr()).unwrap();
-        assert_eq!(error["error"]["code"], "partial_failure");
-        assert_eq!(error["error"]["details"][0]["service"], "drive");
-        assert_eq!(error["error"]["details"][0]["code"], "internal");
+        let error = run.error();
+        assert_eq!(error["code"], "partial_failure");
+        assert_eq!(error["details"][0]["service"], "drive");
+        assert_eq!(error["details"][0]["code"], "internal");
     }
 }
 

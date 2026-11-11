@@ -676,15 +676,12 @@ fn an_unreadable_create_or_restore_answer_is_printed_as_unparsed_answer() {
             run.json(),
             json!({ "unparsed_answer": "password=pg-secret-1 \u{fffd}<html>" })
         );
-        let error: Value = serde_json::from_str(run.stderr()).unwrap();
-        assert_eq!(error["error"]["code"], "internal");
-        assert_eq!(error["error"]["side_effects"], "partial");
+        let error = run.error();
+        assert_eq!(error["code"], "internal");
+        assert_eq!(error["side_effects"], "partial");
         assert!(!run.stderr().contains("pg-secret-1"), "{}", run.stderr());
         assert!(
-            error["error"]["hint"]
-                .as_str()
-                .unwrap()
-                .contains("unparsed_answer"),
+            error["hint"].as_str().unwrap().contains("unparsed_answer"),
             "{error}"
         );
 
@@ -1208,10 +1205,10 @@ fn a_value_env_cannot_quote_writes_nothing_and_keeps_the_answer_on_stdout() {
         let run = create_into(&home, &server, &dir, &[]);
         assert_eq!(run.code(), Some(1), "{}", run.stderr());
         assert_eq!(run.json(), answer);
-        let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-        assert_eq!(error["error"]["code"], "internal");
-        assert_eq!(error["error"]["side_effects"], "partial");
-        let message = error["error"]["message"].as_str().unwrap();
+        let error = run.error();
+        assert_eq!(error["code"], "internal");
+        assert_eq!(error["side_effects"], "partial");
+        let message = error["message"].as_str().unwrap();
         assert!(
             message.contains("single quote, a backslash, or a control character"),
             "{message}"
@@ -1416,8 +1413,8 @@ fn a_file_made_during_the_create_is_kept_and_the_answer_stays_on_stdout() {
         let run = create_into(&home, &server, &dir, &[]);
         assert_eq!(run.code(), Some(1), "{}", run.stderr());
         assert_eq!(run.json(), with_credentials(database("provisioning")));
-        let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-        let message = error["error"]["message"].as_str().unwrap();
+        let error = run.error();
+        let message = error["message"].as_str().unwrap();
         assert!(
             message.contains(&format!("{planted}`: the system says `File exists")),
             "{message}"
@@ -1457,11 +1454,11 @@ fn a_directory_that_cannot_be_opened_keeps_the_answer_on_stdout() {
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
     assert_eq!(run.json(), with_credentials(database("provisioning")));
-    let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-    assert_eq!(error["error"]["code"], "internal");
-    assert_eq!(error["error"]["side_effects"], "partial");
+    let error = run.error();
+    assert_eq!(error["code"], "internal");
+    assert_eq!(error["side_effects"], "partial");
     assert_eq!(
-        error["error"]["message"],
+        error["message"],
         format!(
             "cannot create `{}`: its directory cannot be opened: permission is denied; every \
              credential is in the answer on stdout",
@@ -1558,9 +1555,9 @@ fn an_answer_without_tls_files_writes_nothing() {
         let run = create_into(&home, &server, &dir, &[]);
         assert_eq!(run.code(), Some(1), "{}", run.stderr());
         assert_eq!(run.json(), answer);
-        let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-        assert_eq!(error["error"]["code"], "internal");
-        assert_eq!(error["error"]["side_effects"], "partial");
+        let error = run.error();
+        assert_eq!(error["code"], "internal");
+        assert_eq!(error["side_effects"], "partial");
         no_tls_file(&dir);
     }
 }
@@ -1727,9 +1724,9 @@ fn a_restore_whose_files_cannot_be_written_keeps_the_answer_on_stdout() {
     let run = restore_into(&home, &server, &empty, &[]);
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
     assert_eq!(run.json(), database("provisioning"));
-    let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-    assert_eq!(error["error"]["code"], "internal");
-    assert_eq!(error["error"]["side_effects"], "partial");
+    let error = run.error();
+    assert_eq!(error["code"], "internal");
+    assert_eq!(error["side_effects"], "partial");
     no_tls_file(&empty);
 }
 

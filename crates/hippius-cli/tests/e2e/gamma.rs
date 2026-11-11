@@ -427,11 +427,11 @@ fn a_conversion_answer_without_an_id_is_a_partial_failure_with_the_answer() {
     ]);
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
     assert_eq!(run.json(), json!({"status": "pending"}));
-    let error: serde_json::Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "partial_failure");
-    assert_eq!(error["error"]["side_effects"], "partial");
+    let error = run.error();
+    assert_eq!(error["code"], "partial_failure");
+    assert_eq!(error["side_effects"], "partial");
     assert!(
-        error["error"]["hint"]
+        error["hint"]
             .as_str()
             .unwrap()
             .contains("hipc billing gamma conversions list")
@@ -590,10 +590,10 @@ fn the_gamma_refusals_name_what_helps() {
         let server = Server::start(vec![crate::common::any_request(Reply::json(status, &body))]);
         let run = Hipc::against(&Home::new(), &server).run(&args);
         assert_ne!(run.code(), Some(0), "{args:?}");
-        let error: serde_json::Value = serde_json::from_str(run.stderr()).unwrap();
-        assert_eq!(error["error"]["details"]["code"], code, "{args:?}");
+        let error = run.error();
+        assert_eq!(error["details"]["code"], code, "{args:?}");
         assert!(
-            error["error"]["hint"].as_str().unwrap().contains(hint),
+            error["hint"].as_str().unwrap().contains(hint),
             "{args:?}: {error}"
         );
     }

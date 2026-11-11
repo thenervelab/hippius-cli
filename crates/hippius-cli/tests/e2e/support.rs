@@ -556,8 +556,28 @@ fn a_ticket_text_with_a_split_token_or_an_access_key_is_refused() {
         ])
         .fails(2, "usage");
     assert!(!error.to_string().contains("6789"), "{error}");
-    // An access key whole in the subject is the command line's (the argv scan answers first,
-    // as for a token); one split between the subject and the message is the ticket text's.
+    assert!(server.requests().is_empty());
+    // Eleven listed words in a row, then one that is not listed, then more: no run of 12.
+    let eleven = "abandon ability able about above absent absorb abstract absurd abuse access";
+    reply(&format!("{eleven} zzz {eleven}")).ok();
+    // An everyday message, many of whose words are on the list, is sent, and so are twelve
+    // listed words in a row whose checksum fails.
+    reply("please help can you check this token error when you have that file").ok();
+    reply(
+        "Hello, my bucket upload failed again today after the network change; please check \
+         the access log, the account balance, and the invoice for this month. Thank you!",
+    )
+    .ok();
+    assert_eq!(server.requests().len(), 3);
+}
+
+/// An access key whole in the subject is the command line's to refuse (the argv scan answers
+/// first, as for a token); one split between the subject and the message is the ticket
+/// text's. Neither refusal quotes the words, and nothing is sent.
+#[test]
+fn an_access_key_in_the_subject_is_refused() {
+    let server = Server::start(vec![]);
+    let home = Home::new();
     let key = crate::common::SEED_PHRASES[0];
     let (first, last) = key.split_at(key.match_indices(' ').nth(5).map_or(0, |(at, _)| at));
     for (subject, message, says) in [
@@ -592,18 +612,6 @@ fn a_ticket_text_with_a_split_token_or_an_access_key_is_refused() {
         assert!(!error.to_string().contains("curtain"), "{error}");
     }
     assert!(server.requests().is_empty());
-    // Eleven listed words in a row, then one that is not listed, then more: no run of 12.
-    let eleven = "abandon ability able about above absent absorb abstract absurd abuse access";
-    reply(&format!("{eleven} zzz {eleven}")).ok();
-    // An everyday message, many of whose words are on the list, is sent, and so are twelve
-    // listed words in a row whose checksum fails.
-    reply("please help can you check this token error when you have that file").ok();
-    reply(
-        "Hello, my bucket upload failed again today after the network change; please check \
-         the access log, the account balance, and the invoice for this month. Thank you!",
-    )
-    .ok();
-    assert_eq!(server.requests().len(), 3);
 }
 
 #[test]

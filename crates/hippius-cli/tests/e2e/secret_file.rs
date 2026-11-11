@@ -376,10 +376,10 @@ fn a_secret_that_cannot_be_moved_whole_keeps_the_answer_on_stdout() {
         assert_eq!(run.code(), Some(1), "{answer}: {}", run.stderr());
         // The answer as sent, since the secret is moved before `hipc` adds its login command.
         assert_eq!(run.json(), answer);
-        let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-        assert_eq!(error["error"]["code"], "internal");
-        assert_eq!(error["error"]["side_effects"], "partial");
-        let message = error["error"]["message"].as_str().unwrap();
+        let error = run.error();
+        assert_eq!(error["code"], "internal");
+        assert_eq!(error["side_effects"], "partial");
+        let message = error["message"].as_str().unwrap();
         assert!(message.contains(words), "{message}");
         assert!(std::fs::symlink_metadata(&file).is_err(), "{answer}");
     }
@@ -502,10 +502,10 @@ fn a_refused_hub_answer_keeps_the_secret_in_the_file() {
             std::fs::read_to_string(&file).expect("the secret was written"),
             ROBOT_SECRET
         );
-        let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-        assert_eq!(error["error"]["code"], "internal");
-        assert_eq!(error["error"]["side_effects"], "partial");
-        let message = error["error"]["message"].as_str().expect("a message");
+        let error = run.error();
+        assert_eq!(error["code"], "internal");
+        assert_eq!(error["side_effects"], "partial");
+        let message = error["message"].as_str().expect("a message");
         assert!(message.contains(words), "{message}");
         assert!(
             message.ends_with(&format!("; the secret is in `{}`", file.display())),
@@ -539,10 +539,10 @@ fn a_hub_answer_with_a_login_command_is_not_printed_when_the_file_fails() {
     assert_eq!(run.json(), json!({"robot_secret": ROBOT_SECRET}));
     assert!(!run.stdout().contains("docker"), "{}", run.stdout());
     assert!(!run.stderr().contains(ROBOT_SECRET), "{}", run.stderr());
-    let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-    assert_eq!(error["error"]["code"], "internal");
-    assert_eq!(error["error"]["side_effects"], "partial");
-    let message = error["error"]["message"].as_str().expect("a message");
+    let error = run.error();
+    assert_eq!(error["code"], "internal");
+    assert_eq!(error["side_effects"], "partial");
+    let message = error["message"].as_str().expect("a message");
     assert!(
         message.contains("holds a `docker login` command")
             && message.contains("printed only the secret on stdout"),
