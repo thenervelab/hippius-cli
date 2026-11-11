@@ -1,6 +1,8 @@
 //! API origins and URLs as `hipc` checks and quotes them: the origin a token may go to, and a
 //! URL with its query values withheld before any message repeats it.
 
+use std::borrow::Cow;
+
 use crate::error::{Error, Result};
 use crate::phrase::quote;
 use crate::source::Source;
@@ -205,6 +207,20 @@ pub fn without_query_values(url: &str) -> String {
         })
         .collect();
     format!("{base}?{}", names.join("&"))
+}
+
+/// `path` without its query.
+pub(crate) fn without_query(path: &str) -> &str {
+    path.split_once('?').map_or(path, |(path, _)| path)
+}
+
+/// `path` with a trailing `/`: every route table and row matches a path as if it had one.
+pub(crate) fn with_trailing_slash(path: &str) -> Cow<'_, str> {
+    if path.ends_with('/') {
+        Cow::Borrowed(path)
+    } else {
+        Cow::Owned(format!("{path}/"))
+    }
 }
 
 #[cfg(test)]

@@ -2,10 +2,26 @@
 
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, TOKEN, api, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, TOKEN, api, draft, route};
 
 /// The flag that sends a request body from a file.
 const BODY: &str = "--body-file";
+
+/// [`Run::ok`] for a request to a route no command sends: it succeeds, and stderr holds only
+/// the JSON-mode warning that `hipc` does not know the route, beside the body on stdout.
+fn sent_unknown(run: &Run) -> serde_json::Value {
+    assert_eq!(run.code(), Some(0), "stderr: {}", run.stderr());
+    let aside: serde_json::Value = serde_json::from_str(run.stderr()).expect("one JSON object");
+    let warnings = aside["warnings"].as_array().expect("a warnings array");
+    assert!(
+        warnings.len() == 1
+            && warnings[0]
+                .as_str()
+                .is_some_and(|w| w.contains("does not know")),
+        "{aside}"
+    );
+    run.json()
+}
 
 #[test]
 fn a_2xx_body_is_printed_byte_for_byte() {
@@ -30,7 +46,7 @@ fn a_body_of_exactly_32_mib_is_read_and_one_byte_more_is_not() {
     let body = |len: usize| format!("\"{}\"", "a".repeat(len - 2));
     let at_cap = body(CAP);
     let server = Server::start(vec![route("GET", "/api/big/", Reply::json(200, &at_cap))]);
-    let run = Hipc::against(&Home::new(), &server).run(&["api", "GET", "/big/"]);
+    let run = Hipc::against(&Home::new(), &server).run(&["api", "--reveal", "GET", "/big/"]);
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert_eq!(run.stdout_bytes().len(), CAP);
 
@@ -39,7 +55,7 @@ fn a_body_of_exactly_32_mib_is_read_and_one_byte_more_is_not() {
         "/api/big/",
         Reply::json(200, &body(CAP + 1)),
     )]);
-    let run = Hipc::against(&Home::new(), &server).run(&["api", "GET", "/big/"]);
+    let run = Hipc::against(&Home::new(), &server).run(&["api", "--reveal", "GET", "/big/"]);
     assert_eq!(run.stdout(), "");
     let error = run.fails(1, "internal");
     assert!(
@@ -56,7 +72,7 @@ fn a_body_of_exactly_32_mib_is_read_and_one_byte_more_is_not() {
         "/api/big/",
         Reply::json(400, &body(CAP + 1)),
     )]);
-    let run = Hipc::against(&Home::new(), &server).run(&["api", "GET", "/big/"]);
+    let run = Hipc::against(&Home::new(), &server).run(&["api", "--reveal", "GET", "/big/"]);
     let error = run.fails(1, "validation");
     assert!(
         error["message"].as_str().unwrap().ends_with(
@@ -557,7 +573,7 @@ fn all_refuses_a_next_link_that_loops() {
         Reply::json(200, r#"{"next":"{base}/api/loop/","results":[1]}"#),
     )]);
     let error = Hipc::against(&Home::new(), &server)
-        .run(&["api", "GET", "/loop/", "--all"])
+        .run(&["api", "--reveal", "GET", "/loop/", "--all"])
         .fails(1, "internal");
     assert!(error["message"].as_str().unwrap().contains("leads back to"));
     // The repeat is caught before it is sent.
@@ -603,7 +619,7 @@ fn all_refuses_a_foreign_next_and_a_non_list() {
     ]);
     let home = Home::new();
     let foreign = Hipc::against(&home, &server)
-        .run(&["api", "GET", "/foreign/", "--all"])
+        .run(&["api", "--reveal", "GET", "/foreign/", "--all"])
         .fails(1, "internal");
     assert!(
         foreign["message"]
@@ -613,7 +629,7 @@ fn all_refuses_a_foreign_next_and_a_non_list() {
     );
     for path in ["/object/", "/string/"] {
         Hipc::against(&home, &server)
-            .run(&["api", "GET", path, "--all"])
+            .run(&["api", "--reveal", "GET", path, "--all"])
             .fails(1, "internal");
     }
 }
@@ -643,7 +659,12 @@ fn a_path_the_server_could_reroute_is_refused_before_sending() {
 #[test]
 fn a_url_in_the_query_is_part_of_the_path() {
     let server = Server::start(vec![route("GET", "/api/x/", Reply::json(200, "{}"))]);
-    let run = Hipc::against(&Home::new(), &server).run(&["api", "GET", "/x/?next=https://y/z"]);
+    let run = Hipc::against(&Home::new(), &server).run(&[
+        "api",
+        "--reveal",
+        "GET",
+        "/x/?next=https://y/z",
+    ]);
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert_eq!(server.only_request().target, "/api/x/?next=https://y/z");
 }
@@ -663,7 +684,7 @@ fn all_follows_a_next_link_given_as_a_path() {
         ),
     ]);
     let doc = Hipc::against(&Home::new(), &server)
-        .run(&["api", "GET", "/k/", "--all"])
+        .run(&["api", "--reveal", "GET", "/k/", "--all"])
         .ok();
     assert_eq!(doc, json!([1, 2]));
 }
@@ -677,7 +698,7 @@ fn all_stops_after_a_thousand_pages() {
         )
     });
     let error = Hipc::against(&Home::new(), &server)
-        .run(&["api", "GET", "/e/", "--all"])
+        .run(&["api", "--reveal", "GET", "/e/", "--all"])
         .fails(1, "internal");
     assert!(
         error["message"].as_str().unwrap().contains("1000 pages"),
@@ -718,7 +739,7 @@ fn a_next_link_the_client_refuses_is_internal_not_usage() {
         Reply::json(200, r#"{"next":"{base}/api/k/../x/?page=2","results":[]}"#),
     )]);
     Hipc::against(&Home::new(), &server)
-        .run(&["api", "GET", "/k/", "--all"])
+        .run(&["api", "--reveal", "GET", "/k/", "--all"])
         .fails(1, "internal");
 }
 
@@ -953,7 +974,7 @@ fn a_terminal_ticket_needs_reveal_first() {
         .run(&["api", "POST", path, "--reveal"])
         .fails(2, "confirmation_required");
     assert!(server.requests().is_empty());
-    let doc = hipc().run(&["api", "POST", path, "--yes", "--reveal"]).ok();
+    let doc = sent_unknown(&hipc().run(&["api", "POST", path, "--yes", "--reveal"]));
     assert_eq!(doc["ticket"], "t1ck3t");
     assert_eq!(server.requests().len(), 1);
 }
@@ -1088,10 +1109,10 @@ fn an_account_deletion_request_is_never_sent() {
         .fails(2, "usage");
     assert!(server.requests().is_empty());
     // Its other methods read or cancel the deletion, and are sent as any request is.
-    hipc().run(&["api", "GET", "/account/deletion/"]).ok();
     hipc()
-        .run(&["api", "DELETE", "/account/deletion/", "--yes"])
+        .run(&["api", "--reveal", "GET", "/account/deletion/"])
         .ok();
+    sent_unknown(&hipc().run(&["api", "DELETE", "/account/deletion/", "--yes"]));
     assert_eq!(server.requests().len(), 2);
 }
 
@@ -1122,7 +1143,7 @@ fn a_cluster_secrets_read_is_never_sent() {
             assert_eq!(
                 error["message"],
                 "`hipc api` does not send `HEAD /api/kubernetes/clusters/<cluster_id>/secrets/`: \
-                 the route answers the cluster's sealed kubeconfig",
+                 its answer holds the cluster's sealed kubeconfig",
                 "{argv:?}"
             );
         }
@@ -1371,18 +1392,19 @@ fn a_network_isolation_change_needs_change_isolation_first() {
         .fails(2, "confirmation_required");
     assert!(server.requests().is_empty());
     // A read of the mode is not guarded.
-    hipc().run(&["api", "GET", "/network/isolation/"]).ok();
-    let doc = hipc()
-        .run(&[
-            "api",
-            "POST",
-            "/network/isolation/",
-            BODY,
-            body,
-            "--change-isolation",
-            "--yes",
-        ])
+    hipc()
+        .run(&["api", "--reveal", "GET", "/network/isolation/"])
         .ok();
+    let doc = hipc().run(&[
+        "api",
+        "POST",
+        "/network/isolation/",
+        BODY,
+        body,
+        "--change-isolation",
+        "--yes",
+    ]);
+    let doc = sent_unknown(&doc);
     assert_eq!(doc["isolation"], "deny_intra");
     let requests = server.requests();
     assert_eq!(requests.len(), 2);
@@ -1475,9 +1497,12 @@ fn a_guard_holds_for_every_write_method_and_letter_case() {
         "/api/account/deletion/",
         Reply::json(200, "{}"),
     )]);
-    Hipc::against(&home, &withdraw)
-        .run(&["api", "DELETE", "/account/deletion/", "--yes"])
-        .ok();
+    sent_unknown(&Hipc::against(&home, &withdraw).run(&[
+        "api",
+        "DELETE",
+        "/account/deletion/",
+        "--yes",
+    ]));
     assert_eq!(withdraw.requests().len(), 1);
 }
 
@@ -1726,9 +1751,13 @@ fn the_uncurated_whole_replaces_need_remove_others() {
         .fails(2, "confirmation_required");
     assert!(server.requests().is_empty());
     for (method, path) in writes {
-        hipc()
-            .run(&["api", method, path, BODY, body, "--remove-others", "--yes"])
-            .ok();
+        let run = hipc().run(&["api", method, path, BODY, body, "--remove-others", "--yes"]);
+        // The operator storage route is one no command sends.
+        if path.contains("/operator/") {
+            sent_unknown(&run);
+        } else {
+            run.ok();
+        }
     }
     assert_eq!(server.requests().len(), writes.len());
 }
@@ -1893,7 +1922,7 @@ fn a_dotted_bucket_name_is_handled_as_any_bucket() {
         .fails(2, "public_required");
     assert!(server.requests().is_empty());
     hipc()
-        .run(&["api", "GET", "/objectstore/buckets/my.bucket/"])
+        .run(&["api", "--reveal", "GET", "/objectstore/buckets/my.bucket/"])
         .ok();
     assert_eq!(server.requests().len(), 1);
 }
@@ -2169,7 +2198,7 @@ fn the_neighbours_of_the_network_get_stay_reads() {
         "/networks/me/",
     ] {
         Hipc::against(&home, &server)
-            .run(&["api", "GET", path])
+            .run(&["api", "--reveal", "GET", path])
             .ok();
     }
     let requests = server.requests();
@@ -2425,4 +2454,95 @@ fn every_refusal_is_named_in_the_schema_and_the_help_with_its_methods() {
         }
     }
     assert!(server.requests().is_empty());
+}
+
+/// A `GET` of a route no command lists may answer with a secret, so it needs `--reveal` and
+/// is sent with it, without repeating a query value. A `HEAD` of it prints no answer and
+/// needs none, and neither does a `GET` of a route a command lists whose answer holds none.
+#[test]
+fn a_read_of_a_route_hipc_does_not_know_needs_reveal() {
+    let server = Server::start(vec![
+        route("GET", "/api/v2/compute/vms/", Reply::json(200, "[]")),
+        route("HEAD", "/api/v2/compute/vms/", Reply::json(200, "")),
+        route("GET", "/api/compute/vms/", Reply::json(200, "[1]")),
+    ]);
+    let hipc = || Hipc::against(&Home::new(), &server);
+    let error = hipc()
+        .run(&["api", "GET", "/v2/compute/vms/?q=s3cr3t"])
+        .fails(2, "reveal_required");
+    assert_eq!(
+        error["message"],
+        "`hipc` does not know `GET /v2/compute/vms/?q=<redacted>`, so its answer may hold a \
+         secret, and the command needs `--reveal` to print it"
+    );
+    assert!(server.requests().is_empty());
+    let run = hipc().run(&["api", "GET", "/v2/compute/vms/", "--reveal"]);
+    assert_eq!(
+        (run.code(), run.stdout()),
+        (Some(0), "[]"),
+        "{}",
+        run.stderr()
+    );
+    assert_eq!(run.stderr(), "");
+    let run = hipc().run(&["api", "HEAD", "/v2/compute/vms/"]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    let run = hipc().run(&["api", "GET", "/compute/vms/"]);
+    assert_eq!(
+        (run.code(), run.stdout()),
+        (Some(0), "[1]"),
+        "{}",
+        run.stderr()
+    );
+    // A dry run sends nothing, so it needs no `--reveal`.
+    let doc = hipc()
+        .run(&["api", "GET", "/v2/compute/vms/", "--dry-run"])
+        .ok();
+    assert_eq!(doc["dry_run"], true);
+    assert_eq!(server.requests().len(), 3);
+}
+
+/// A write to a route no command lists needs `--yes` as any write does, and warns that `hipc`
+/// does not know it: a `warning:` line in text mode, a `warnings` entry in JSON, on the
+/// refusal too. A write to a route a command lists does not warn.
+#[test]
+fn a_write_to_a_route_hipc_does_not_know_warns() {
+    let server = Server::start(vec![
+        route("POST", "/api/v2/compute/vms/", Reply::json(201, "{}")),
+        route("POST", "/api/compute/vms/", Reply::json(201, "{}")),
+    ]);
+    let hipc = || Hipc::against(&Home::new(), &server);
+    let warning = "`hipc` does not know `POST /v2/compute/vms/?q=<redacted>`: no command sends \
+                   it, so `hipc` cannot say what it changes";
+    let refused = hipc().run(&["api", "POST", "/v2/compute/vms/?q=s3cr3t"]);
+    assert_eq!(refused.code(), Some(2));
+    let object: serde_json::Value =
+        serde_json::from_str(refused.stderr()).expect("one JSON object");
+    assert_eq!(object["error"]["code"], "confirmation_required");
+    assert_eq!(object["warnings"], json!([warning]));
+    assert!(server.requests().is_empty());
+
+    let run = hipc().run(&["api", "POST", "/v2/compute/vms/?q=s3cr3t", "--yes"]);
+    assert_eq!(
+        (run.code(), run.stdout()),
+        (Some(0), "{}"),
+        "{}",
+        run.stderr()
+    );
+    assert_eq!(
+        run.stderr(),
+        format!("{}\n", json!({ "warnings": [warning] }))
+    );
+    let run = hipc().run(&[
+        "--output",
+        "text",
+        "api",
+        "POST",
+        "/v2/compute/vms/?q=s3cr3t",
+        "--yes",
+    ]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(run.stderr(), format!("warning: {warning}\n"));
+
+    let run = hipc().run(&["api", "POST", "/compute/vms/", "--yes"]);
+    assert_eq!((run.code(), run.stderr()), (Some(0), ""));
 }

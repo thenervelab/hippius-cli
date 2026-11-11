@@ -720,7 +720,7 @@ fn spec(path: &[&str]) -> Option<Spec> {
         // compute kubernetes clusters kubeconfig`.
         ["api"] => Some(Spec {
             confirmation: Confirmation::When(API_CONFIRMATION),
-            reveal: Reveal::When("the route answers with a secret"),
+            reveal: Reveal::When(API_REVEAL_WHEN),
             pagination: true,
             refused_when: Some(API_REFUSED_WHEN),
             guards: API_GUARDS,
@@ -751,12 +751,19 @@ const API_REFUSED_WHEN: &str = concat!(
      case, with or without the trailing slash or a format suffix"
 );
 
-/// When `hipc api` asks: the one route it confirms on a read is the one the rows of
-/// `hippius::PROVISIONING_ROUTES` name, written here so the text says which, in every form
-/// the route tables match.
+/// When `hipc api` asks: the one route it confirms on a read is the one row that
+/// `provisions`, written here so the text says which, in every form the route tables match.
+/// A write to a route no command lists is confirmed as any write is, with a warning.
 const API_CONFIRMATION: &str = "the method is not `GET` or `HEAD`, or the path is \
                                 `/api/network/me/`, whose first call creates the network, \
-                                with or without the trailing slash or a format suffix";
+                                with or without the trailing slash or a format suffix; a write \
+                                to a route no command lists in its `routes` also warns that \
+                                `hipc` does not know it";
+
+/// When `hipc api` needs `--reveal`: on a route whose answer `hipc` knows holds a secret, and
+/// on a `GET` of a route it does not know, whose answer may hold one (tenet 9).
+const API_REVEAL_WHEN: &str = "the route answers with a secret, or the request is a `GET` of a \
+                               route no command lists in its `routes`, whose answer may hold one";
 
 /// The rows of `hipc network`, by the path after `network`.
 fn network_spec(path: &[&str]) -> Option<Spec> {
@@ -1762,7 +1769,8 @@ mod tests {
                     "api".to_owned(),
                     "the method is not `GET` or `HEAD`, or the path is `/api/network/me/`, \
                      whose first call creates the network, with or without the trailing \
-                     slash or a format suffix"
+                     slash or a format suffix; a write to a route no command lists in its \
+                     `routes` also warns that `hipc` does not know it"
                 ),
             ]
         );
@@ -1774,12 +1782,7 @@ mod tests {
             .cloned()
             .unwrap();
         assert_eq!(api["confirmation"], true);
-        assert_eq!(
-            api["confirmation_when"],
-            "the method is not `GET` or `HEAD`, or the path is `/api/network/me/`, whose \
-             first call creates the network, with or without the trailing slash or a format \
-             suffix"
-        );
+        assert_eq!(api["confirmation_when"], API_CONFIRMATION);
     }
 
     #[test]
@@ -1953,7 +1956,7 @@ mod tests {
                 }
             })
             .collect();
-        let when = "the route answers with a secret";
+        let when = API_REVEAL_WHEN;
         let mut expected = vec![("api".to_owned(), when)];
         for path in [
             "s3 tokens create",
@@ -2587,12 +2590,33 @@ mod tests {
                 .collect();
             assert!(unlisted.is_empty(), "{path:?}: {unlisted:?} are not rows");
             if parts == ["api"] {
-                assert!(listed.is_empty());
+                assert_eq!(listed, Vec::<&hippius::routes::Endpoint>::new());
                 continue;
             }
             let pages = listed.iter().any(|endpoint| endpoint.paged());
             assert_eq!(row(&path).pagination, pages, "{path:?}");
         }
+    }
+
+    /// Every row of `hippius::routes` is a route some command lists, so "a route no command
+    /// lists in its `routes`", which is how `hipc schema` says when `hipc api` asks for
+    /// `--reveal` or warns, is exactly a route the client has no row for.
+    #[test]
+    fn every_row_is_a_route_some_command_lists() {
+        let root = Cli::command();
+        let listed: Vec<(hippius::Method, &str)> = command_paths(&root)
+            .iter()
+            .flat_map(|path| {
+                let parts: Vec<&str> = path.iter().map(String::as_str).collect();
+                routes::routes(&parts)
+            })
+            .map(|endpoint| (endpoint.method(), endpoint.template()))
+            .collect();
+        let unlisted: Vec<String> = hippius::routes::all()
+            .filter(|row| !listed.contains(&(row.method(), row.template())))
+            .map(|row| format!("{} {}", row.method(), row.template()))
+            .collect();
+        assert!(unlisted.is_empty(), "{unlisted:#?}");
     }
 
     /// A path under a group that names none of its commands lists no route, in every group
@@ -2619,7 +2643,10 @@ mod tests {
             let path = [group, &["no-such-command"]].concat();
             assert!(routes::routes(&path).is_empty(), "{path:?}");
         }
-        assert!(routes::routes(&["no-such-group"]).is_empty());
+        assert_eq!(
+            routes::routes(&["no-such-group"]),
+            Vec::<&hippius::routes::Endpoint>::new()
+        );
     }
 
     #[test]

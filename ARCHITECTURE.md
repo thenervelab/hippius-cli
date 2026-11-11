@@ -28,8 +28,8 @@ crates/hippius-cli   the `hipc` binary: argv, the output mode, every byte of out
 crates/hippius       the library: never prints, never reads argv
   client.rs          the HTTP client: origin, headers, limits, redirects, the answer
   routes.rs, routes/ every endpoint `hipc` calls, one constant per method and path, one file
-                     per service, with its header class and guards
-  account.rs         which account a request acts in, and the route policy tables
+                     per service, with its policy: the row decides
+  account.rs         which account a request acts in, and the policy of routes with no row
   project.rs         which project and billing account a request acts in
   config.rs          the config file and the settings of one run (tenet 8)
   json.rs            the list shapes of the API and the list envelope
@@ -42,7 +42,8 @@ crates/hippius       the library: never prints, never reads argv
                      the secret input files of App Engine and the CDN DNS setup
   leaf modules, which import no module above them:
   error.rs           `Error` and `Code`: the JSON error object and the exit codes (tenet 4)
-  redact.rs          the spellings of a secret, and their redaction from text and JSON (tenet 9)
+  redact.rs          the spellings of a secret, the names of secret fields, and their
+                     redaction from text and JSON (tenet 9)
   secret.rs          JSON values that hold secrets, cleared when dropped
   method.rs          the HTTP method, and whether a request may change state
   selector.rs        the account, project and billing account a run selects
@@ -114,31 +115,46 @@ place the client knows the base.
 constants), and `scripts/release-check.sh` and `scripts/manual_test.sh` read a route from
 there (`schema_route` in `scripts/lib.sh`) rather than keep their own copy.
 
-### The policy tables, and the checks that hold them together
+### The row decides; the tables serve routes with no row
 
-The tables in `account.rs` and `project.rs` still decide every header and guard
-(`SCOPED_PREFIXES`, `PERSONAL_PREFIXES`, `PERSONAL_PATHS`, `SECRET_ROUTES`,
-`PROVISIONING_ROUTES`, `PERMANENT_ROUTES`, `ROUTE_RULES`, the project and billing tables), and
-they also serve `hipc api`, which can send a route no row has. A row restates what they
-decide for its path, and these tests keep the copies equal:
+The client looks up the row of every request first (`routes::row`, by the path alone, as the
+server's router picks a route, then the method; a `HEAD` reaches the `GET` row) and takes its
+policy: the account class, project and billing handling, whether the answer reveals a
+secret, whether a read provisions, whether the route is permanent, whether a 503 means it was
+undone, and the guard `hipc api` applies. A guard that refuses carries why and the one path to
+the route's effect; the message names the method the request sent, so a write method that
+borrows the guard of another write method of its route names its own. The path is tried in
+each form the tables match (slashless, with a format suffix, in another letter case).
 
-- `routes::tests::every_row_agrees_with_the_policy_tables`: for each row, with its
-  placeholders filled, the account class, project and billing handling, secret, provisioning,
-  permanent and 503 flags, and `hipc api` guard equal what the tables decide. It lists every
-  disagreement at once.
-- `commands::api::tests::every_consequence_names_a_route_a_command_sends`: each route of
-  `CONSEQUENCES` is a row.
+A placeholder's name says what fills it, and for two names, the shape the server's router
+takes: `database_id` and `invoice_id` are digits (`fits` in `routes.rs`). A path with another
+value there is another route: `/api/databases/metrics/` is not one database's route, so the
+tables decide it.
+
+The tables in `account.rs` and `project.rs` (`SCOPED_PREFIXES`, `PERSONAL_PREFIXES`,
+`PERSONAL_PATHS`, the project and billing tables, and the secret and guard tables of the
+routes only `hipc api` reaches) decide only a path no row matches, and fail closed for one
+they do not list either (tenet 12). `hipc api` treats a route with no row as one `hipc`
+does not know: a `GET` needs `--reveal`, and a write warns (TENETS 7 and 9). These tests keep
+the two apart:
+
+- `routes::tests::the_header_tables_never_contradict_a_row`: where the header tables list a
+  path a row decides, its own or a literal path its placeholder takes, they say what the row
+  says, since they still decide the other methods of that path. A path they do not list is
+  the row's alone. It lists every disagreement at once.
+- `account::tests::no_table_entry_is_a_route_a_row_decides`: the secret and guard tables hold
+  only routes no row decides, so nothing is kept twice.
+- `routes::tests::every_row_is_reached_by_its_own_path`, and
+  `the_most_literal_row_wins_and_a_head_reaches_the_get`: the lookup itself.
 - `spec::tests::every_listed_route_is_a_row_that_pages_as_its_command_does`: every route
   `hipc schema` lists is a row, and a command takes the page flags exactly when one of its
-  routes is `paged`. `pagination::every_route_here_pages_as_its_row_says` holds the
-  end-to-end paging tables to the rows too.
+  routes is `paged`; `spec::tests::every_row_is_a_route_some_command_lists`: the converse,
+  so "a route no command lists" in `hipc schema` is exactly a route with no row.
+  `pagination::every_route_here_pages_as_its_row_says` holds the end-to-end paging tables
+  to the rows too.
 - Every request an end-to-end run sends is checked against the routes `hipc schema` lists for
   the command (`tests/e2e/common/routes.rs`), so a command that starts sending to another
   route fails until it is listed.
-
-**Planned** (the next step): the client consults the row first and falls back to the prefix
-tables only for a path with no row, so an unknown route still fails closed, and `hipc api`
-treats a route with no row as possibly secret on a read and unknown on a write.
 
 ### Still spelled outside the table
 
@@ -166,8 +182,7 @@ that serve a route with a query string or with several replies (`route_each`), w
    (or `run.rs` for `auth` and `account`).
 3. Its row in `spec.rs`. A test walks the parser and fails when a command has no row.
 4. Its routes: a constant in `hippius::routes` for each, built with `Request::to`, and the
-   command's arm in `spec/routes.rs` (see "How to add a route"); a route new to `hipc` also
-   goes in the library's policy tables while they decide.
+   command's arm in `spec/routes.rs` (see "How to add a route").
 5. An end-to-end test in `crates/hippius-cli/tests/e2e/` against the local server, and a row
    in `scripts/release-check.sh` (read-only against the live API), which reads the route
    from `hipc schema`.
@@ -178,10 +193,9 @@ that serve a route with a query string or with several replies (`route_each`), w
 A new route:
 
 1. Add its constant to the service's file in `crates/hippius/src/routes/`, with its
-   policy methods. Run `cargo test -p hippius routes::`: the agreement test says what the
-   policy tables decide for the path, and the row must say the same. If the route is new to
-   the tables too, add it there first (a scoped prefix, a secret route, a guard), since they
-   still decide.
+   policy methods; the row decides. Run `cargo test -p hippius routes:: account::`: where
+   the header tables list the path, they must say what the row says, and an entry of the
+   secret or guard tables that the row now decides must leave the table.
 2. Build the request with `Request::to(&routes::<service>::NAME, [values])`.
 3. Add the constant to the command's arm in `crates/hippius-cli/src/spec/routes.rs`. The
    end-to-end check fails on the first request the command sends to a route it does not
@@ -191,9 +205,10 @@ A new API version of an endpoint is the same steps, with the old constant kept. 
 ships `GET /api/v2/accounts/members/`, whose answer renames `members` to `results`:
 
 1. Add `MEMBERS_V2: 0 = Route::get("/api/v2/accounts/members/").scoped();` beside
-   `MEMBERS` in `routes/account.rs`. The agreement test then fails: `/api/v2/accounts/` is
-   under no prefix of `SCOPED_PREFIXES`, so the tables would refuse a membership on it. Add
-   the prefix (or, once the row decides, nothing): this is why the row carries the class.
+   `MEMBERS` in `routes/account.rs`. Nothing else: `/api/v2/accounts/` is under no prefix of
+   `SCOPED_PREFIXES`, so without the row a membership would be refused on it, and `hipc api`
+   would treat it as a route it does not know. The row decides, which is why it carries the
+   class.
 2. Point `members_list` in `commands/account.rs` at `routes::account::MEMBERS_V2`, and
    `["account", "members", ...]` in `spec/routes.rs` at the new constant. If `hipc` reads a
    renamed field to decide something (`members` in `member_grants`), change that read in

@@ -21,7 +21,11 @@ routes! {
     CLUSTER_SECRETS: 1 = Route::get("/api/kubernetes/clusters/{cluster_id}/secrets/")
         .scoped()
         .project()
-        .guard(Guard::Refused);
+        .guard(Guard::Refused {
+            why: "its answer holds the cluster's sealed kubeconfig",
+            hint: "run `hipc compute kubernetes clusters kubeconfig`, which opens the kubeconfig \
+                   with the cluster key file and writes it to a new file",
+        });
 
     /// The refused cluster requests.
     CLUSTER_REFUSALS: 0 = Route::get("/api/kubernetes/clusters/refusals/").scoped().project();

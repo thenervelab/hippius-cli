@@ -219,14 +219,20 @@ fn a_terminal_in_json_mode_gets_redacted_urls_and_escaped_bodies() {
         ("HIPPIUS_TOKEN_ORIGIN", server.url()),
     ];
     let (_, shown) = at_a_terminal(
-        &["api", "GET", "/x/?token=s3cr3t&page=2", "--dry-run"],
+        &[
+            "api",
+            "--reveal",
+            "GET",
+            "/x/?token=s3cr3t&page=2",
+            "--dry-run",
+        ],
         &env,
         b"",
         true,
     );
     assert!(!shown.contains("s3cr3t"), "{shown}");
     assert!(shown.contains("token=<redacted>"), "{shown}");
-    let (output, shown) = at_a_terminal(&["api", "GET", "/x/"], &env, b"", true);
+    let (output, shown) = at_a_terminal(&["api", "--reveal", "GET", "/x/"], &env, b"", true);
     assert!(output.status.success(), "{shown}");
     assert!(!shown.contains('\u{1b}'), "{shown:?}");
     assert!(shown.contains("\\u001b]0;owned\\u0007"), "{shown:?}");

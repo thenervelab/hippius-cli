@@ -60,9 +60,11 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
     }
     let ran = guarded(&ctx, || execute(&ctx, &cli.command));
     // Also after a failure: a command can write the config and then fail at a later step.
-    // Text mode warns on stderr; JSON mode, which writes no warning lines, adds the text to a
-    // `warnings` array beside the document or the error, so an agent sees it too.
-    let mut warnings = Vec::new();
+    // Text mode warns on stderr; JSON
+    // mode, which writes no warning lines, adds the text to a `warnings` array beside the
+    // document or the error, so an agent sees it too. The command's own run warnings were
+    // printed as they came.
+    let mut warnings = ctx.take_warnings();
     let split_link = hippius::take_split_link().map(|path| split_link_warning(&path));
     for warning in split_link
         .into_iter()

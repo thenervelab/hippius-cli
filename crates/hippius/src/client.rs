@@ -21,7 +21,7 @@ use ureq::unversioned::transport::{
     Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout,
 };
 
-use crate::account::{self, RouteRule};
+use crate::account::{self, Rule};
 use crate::config::{Credential, Settings};
 use crate::encode::percent_encode;
 use crate::error::{Code, Error, Result, SideEffects};
@@ -29,7 +29,7 @@ use crate::method::{Access, Method};
 use crate::phrase::quote;
 use crate::project;
 use crate::redact::token_spellings;
-use crate::routes::{API_BASE, Route, RouteFlag};
+use crate::routes::{API_BASE, Endpoint, Guard, Route, RouteFlag};
 use crate::selector::{BillingId, ProjectId, Selection};
 use crate::source::{Given, Source};
 use crate::url::{Origin, without_query_values};
@@ -479,7 +479,7 @@ struct Target {
 impl Target {
     /// The path on the API origin, without the query.
     fn api_path(&self) -> &str {
-        account::without_query(&self.path_and_query)
+        crate::url::without_query(&self.path_and_query)
     }
 }
 
@@ -775,31 +775,32 @@ impl Client {
     /// cluster's sealed kubeconfig.
     pub fn route_flags(&self, request: &Request) -> Result<Vec<RouteFlag>> {
         let target = self.target(request)?;
-        let rules = account::route_rules(request.method, target.api_path());
+        let body = request.body.as_deref().map(Vec::as_slice);
         let mut needed = Vec::new();
-        for rule in rules {
-            let flags = match rule {
-                RouteRule::Needs(flags) => flags,
-                RouteRule::NeedsWhenSet(flags, key) => {
-                    if sets_key(request.body.as_deref().map(Vec::as_slice), key) {
+        for Rule { guard, route } in account::route_rules(request.method, target.api_path()) {
+            let flags = match guard {
+                Guard::None => &[],
+                Guard::Needs(flags) => flags,
+                Guard::NeedsWhenSet(flags, key) => {
+                    if sets_key(body, key) {
                         flags
                     } else {
                         &[]
                     }
                 }
-                RouteRule::NeedsUnlessFalse(flags, key) => {
-                    if sets_key_to_false(request.body.as_deref().map(Vec::as_slice), key) {
+                Guard::NeedsUnlessFalse(flags, key) => {
+                    if sets_key_to_false(body, key) {
                         &[]
                     } else {
                         flags
                     }
                 }
-                RouteRule::Refused { message, hint } => {
-                    return Err(Error::usage(for_method(message, request.method), hint));
+                Guard::Refused { why, hint } => {
+                    return Err(refusal(request.method, route, None, why, hint));
                 }
-                RouteRule::RefusedWhenSet { key, message, hint } => {
-                    if sets_key(request.body.as_deref().map(Vec::as_slice), key) {
-                        return Err(Error::usage(for_method(message, request.method), hint));
+                Guard::RefusedWhenSet { key, why, hint } => {
+                    if sets_key(body, key) {
+                        return Err(refusal(request.method, route, Some(key), why, hint));
                     }
                     &[]
                 }
@@ -813,18 +814,17 @@ impl Client {
         Ok(needed)
     }
 
-    /// Whether `request` is the Hub namespace publicity `PATCH`, whose `--public` refusal
-    /// names the namespace rather than a bucket. It is the one route with a
-    /// `RouteRule::NeedsUnlessFalse` rule.
+    /// The row of `hippius::routes` that `request` reaches, in any of the forms the route
+    /// tables match (a slashless path, a format suffix, another letter case), or `None` for
+    /// a route `hipc` does not know: no command sends it, and only `hipc api` can. Like
+    /// [`Client::returns_secret`], it depends on the method and the target alone.
     ///
     /// # Errors
     ///
-    /// The same local refusals of the target as [`Client::route_flags`].
-    pub fn opens_a_namespace(&self, request: &Request) -> Result<bool> {
+    /// The same local refusals of the target as [`Client::returns_secret`].
+    pub fn route_of(&self, request: &Request) -> Result<Option<&'static Endpoint>> {
         let target = self.target(request)?;
-        Ok(account::route_rules(request.method, target.api_path())
-            .iter()
-            .any(|rule| matches!(rule, RouteRule::NeedsUnlessFalse(..))))
+        Ok(account::row_of(request.method, target.api_path()))
     }
 
     /// The account this client acts in.
@@ -1153,8 +1153,7 @@ impl Client {
         let error = status_error(&StatusAnswer {
             attempt: &attempt,
             write,
-            not_done_on_503: request.method == Method::Post
-                && crate::account::not_done_on_503(resolved.target.api_path()),
+            not_done_on_503: account::not_done_on_503(request.method, resolved.target.api_path()),
             status,
             body: &body,
             body_unread,
@@ -1321,7 +1320,7 @@ fn check_path(path_and_query: &str, written: &str) -> Result<()> {
             "remove the `#` and what follows it",
         ));
     }
-    let path = account::without_query(path_and_query);
+    let path = crate::url::without_query(path_and_query);
     // Any percent-encoding in the path is refused, not only `%2e`, `%2f`, and `%5c`: the
     // server decodes it, so `/registry/robot/rot%61te/` would reach a route the route
     // tables (account header, secret-issuing) did not recognize. No API path needs it.
@@ -1768,20 +1767,18 @@ fn wait_for(retry_after_ms: Option<u64>) -> Option<String> {
     })
 }
 
-/// `message`, a refusal that names the method of its row, such as
-/// ``... does not send `POST /api/...` ``, with that method replaced by `method`: a write
-/// borrows the refusal of another write method on its route (`account::route_rules`), and
-/// the message names what was asked.
-fn for_method(message: &str, method: Method) -> String {
-    ["POST", "PUT", "PATCH", "DELETE"]
-        .iter()
-        .find_map(|listed| {
-            let named = format!("`{listed} /");
-            message
-                .contains(&named)
-                .then(|| message.replacen(&named, &format!("`{method} /"), 1))
-        })
-        .unwrap_or_else(|| message.to_owned())
+/// The `usage` refusal of `hipc api` sending `method` to `route`, the template or pattern of
+/// the row that refuses it, written as a person types it (`<cluster_id>` for
+/// `{cluster_id}`), because of `why`; `key` names the body key the refusal depends on. The
+/// method is the request's, so a write that borrows the refusal of another write method of
+/// its route (`account::route_rules`) names what was asked.
+fn refusal(method: Method, route: &str, key: Option<&str>, why: &str, hint: &'static str) -> Error {
+    let route = route.replace('{', "<").replace('}', ">");
+    let with = key.map(|key| format!(" with `{key}`")).unwrap_or_default();
+    Error::usage(
+        format!("`hipc api` does not send `{method} {route}`{with}: {why}"),
+        hint,
+    )
 }
 
 /// The fields that hold a secret in a Hippius answer, dropped from an error body (tenet 9).
@@ -2648,7 +2645,7 @@ mod tests {
                 c.provisions(&request).map(|_| ()),
                 c.is_permanent(&request).map(|_| ()),
                 c.route_flags(&request).map(|_| ()),
-                c.opens_a_namespace(&request).map(|_| ()),
+                c.route_of(&request).map(|_| ()),
                 c.send(&request).map(|_| ()),
             ] {
                 assert_eq!(refused.unwrap_err().code(), Code::Usage, "{url}");

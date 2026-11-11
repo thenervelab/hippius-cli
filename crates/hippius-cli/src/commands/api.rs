@@ -7,6 +7,7 @@
 //! escaped. `--all` is the exception: it collects the pages into one JSON array, as `--all`
 //! does on every list command.
 
+use hippius::routes::{self, Endpoint};
 use hippius::{Client, Error, Method, Request, Result, RouteFlag};
 use serde_json::Value;
 
@@ -58,18 +59,40 @@ pub(crate) fn run(ctx: &Context<'_>, args: &Api) -> Result<Printed> {
     let config = context::config()?;
     let client = ctx.client(&config)?;
     refuse_token_to_support(ctx, &client, &config, &request, body.as_ref())?;
+    // `None` for a route `hipc` does not know: no command sends it.
+    let row = client.route_of(&request)?;
     // Before the selected account's refusals and the confirmation, as for every curated
-    // command (TENETS 5 and 9): `returns_secret` applies no account rule.
+    // command (TENETS 5 and 9): `returns_secret` applies no account rule. An answer `hipc`
+    // knows nothing of may hold a secret too, so a `GET` of a route with no row needs
+    // `--reveal` as well (tenet 9); a `HEAD` answer has no body to print.
     if client.returns_secret(&request)? {
         require_reveal(ctx, args.reveal)?;
+    } else if row.is_none() && method == Method::Get {
+        require_reveal(ctx, args.reveal).map_err(|refusal| {
+            refusal.with_message(format!(
+                "`hipc` does not know `{method} {}`, so its answer may hold a secret, and the \
+                 command needs `--reveal` to print it",
+                hippius::without_query_values(&args.path)
+            ))
+        })?;
+    }
+    // A write `hipc` does not know is sent as any write is, with `--yes`, but no curated
+    // command says what it changes.
+    if row.is_none() && !method.is_read() {
+        ctx.run_warning(&format!(
+            "`hipc` does not know `{method} {}`: no command sends it, so `hipc` cannot say \
+             what it changes",
+            hippius::without_query_values(&args.path)
+        ));
     }
     // After `--reveal` and before the same refusals, for the same reason. A route never
     // sent, such as an account deletion request, was refused already, inside
     // `returns_secret`, whatever the flags.
     // A route that needs two flags refuses for the first one missing, so a rerun with its
     // hint meets the second.
+    let namespace = row == Some(routes::hub::PUBLICITY_UPDATE.endpoint());
     for route_flag in client.route_flags(&request)? {
-        require_route_flag(ctx, args, route_flag, client.opens_a_namespace(&request)?)?;
+        require_route_flag(ctx, args, route_flag, namespace)?;
     }
     // A read that may create something, such as the first `GET /api/network/me/`, is a
     // write from here on: confirmed with the curated command's consequence, refused with a
@@ -99,7 +122,12 @@ pub(crate) fn run(ctx: &Context<'_>, args: &Api) -> Result<Printed> {
     let url = hippius::without_query_values(&client.url(&request)?);
     let request = request.about(format!("call `{method} {url}`"));
     let permanent = client.is_permanent(&request)?;
-    let consequence = client.route_value(&request, CONSEQUENCES)?.copied();
+    let consequence = row.and_then(|row| {
+        CONSEQUENCES
+            .iter()
+            .find(|(route, _)| *route == row)
+            .map(|&(_, consequence)| consequence)
+    });
     let gate = gate(&request, provisions, permanent, consequence);
     match ctx.call(&client, &request, gate)? {
         Step::Sent(response) => Ok(Printed::Body(response.into_bytes())),
@@ -193,64 +221,54 @@ fn gate(
     }
 }
 
-/// The deletes and cancels whose curated command says what they end, with that consequence,
-/// so `hipc api` asks the same question on the same route. Matched by
-/// [`hippius::Client::route_value`]: a slashless or suffixed path names its route too. A
-/// consequence a curated command builds from the read or the id, such as a database delete's,
-/// is not here.
-const CONSEQUENCES: &[(Method, &str, &str)] = &[
-    (Method::Delete, "/api/drive/subscription/", drive::CANCELLED),
-    (Method::Delete, "/api/s3/subscription/", s3::CANCELLED),
+/// The deletes and cancels whose curated command says what they end, by the route the
+/// command sends, with that consequence, so `hipc api` asks the same question on the same
+/// route. The route is the row a request reaches ([`Client::route_of`]), so a slashless or
+/// suffixed path names its route too. A consequence a curated command builds from the read
+/// or the id, such as a database delete's, is not here.
+const CONSEQUENCES: [(&Endpoint, &str); 14] = [
     (
-        Method::Delete,
-        "/api/registry/subscriptions/{id}/",
-        hub::CANCELLED,
+        routes::drive::SUBSCRIPTION_CANCEL.endpoint(),
+        drive::CANCELLED,
     ),
+    (routes::s3::SUBSCRIPTION_CANCEL.endpoint(), s3::CANCELLED),
+    (routes::hub::SUBSCRIPTION_CANCEL.endpoint(), hub::CANCELLED),
+    (routes::hub::KEY_DELETE.endpoint(), hub::keys::DELETED),
     (
-        Method::Delete,
-        "/api/registry/keys/{id}/",
-        hub::keys::DELETED,
-    ),
-    (
-        Method::Delete,
-        "/api/compute/vms/{id}/",
+        routes::compute::VM_DELETE.endpoint(),
         compute::VM_LEFT_BILLED,
     ),
     (
-        Method::Delete,
-        "/api/compute/vms/{id}/public-ip/",
+        routes::compute::PUBLIC_IP_DELETE.endpoint(),
         compute::IP_DETACHED,
     ),
     (
-        Method::Delete,
-        "/api/compute/vms/{id}/expose/{id}/",
+        routes::compute::EXPOSURE_DELETE.endpoint(),
         compute::EXPOSURE_DELETED,
     ),
-    (Method::Delete, "/api/cdn/zones/{id}/", cdn::ZONE_DELETED),
+    (routes::cdn::ZONE_DELETE.endpoint(), cdn::ZONE_DELETED),
     (
-        Method::Delete,
-        "/api/cdn/zones/{id}/hostnames/{id}/",
+        routes::cdn::HOSTNAME_DELETE.endpoint(),
         cdn::HOSTNAME_DELETED,
     ),
     (
-        Method::Delete,
-        "/api/runners/installations/{id}/",
+        routes::runners::INSTALLATION_DELETE.endpoint(),
         compute::runners::UNLINKED,
     ),
     (
-        Method::Delete,
-        "/api/network/peers/{id}/",
+        routes::network::PEER_DELETE.endpoint(),
         network::PEER_REMOVED,
     ),
     (
-        Method::Delete,
-        "/api/compute/vms/{id}/backup/",
+        routes::compute::BACKUP_POLICY_DELETE.endpoint(),
         compute::BACKUPS_KEPT,
     ),
-    (Method::Delete, "/api/ssh-keys/{id}/", compute::SSH_KEY_KEPT),
     (
-        Method::Delete,
-        "/api/cdn/lists/{id}/items/",
+        routes::compute::SSH_KEY_DELETE.endpoint(),
+        compute::SSH_KEY_KEPT,
+    ),
+    (
+        routes::cdn::LIST_ITEMS_REMOVE.endpoint(),
         cdn::waf::LIST_REPUBLISHES,
     ),
 ];
@@ -421,35 +439,5 @@ mod tests {
             ),
             Gate::Open
         ));
-    }
-
-    /// `template` with each placeholder written `{}`, so a row's named placeholders and a
-    /// table's `{id}`, `{n}`, and `{..}` compare equal.
-    fn unnamed(template: &str) -> String {
-        template
-            .split('/')
-            .map(|segment| {
-                if segment.starts_with('{') {
-                    "{}"
-                } else {
-                    segment
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("/")
-    }
-
-    /// Each consequence `hipc api` asks with is a curated command's, so its route is a row of
-    /// `hippius::routes`, with the method the command sends.
-    #[test]
-    fn every_consequence_names_a_route_a_command_sends() {
-        for (method, pattern, _) in CONSEQUENCES {
-            assert!(
-                hippius::routes::all()
-                    .any(|row| row.method() == *method
-                        && unnamed(row.template()) == unnamed(pattern)),
-                "{method} {pattern} has no row"
-            );
-        }
     }
 }

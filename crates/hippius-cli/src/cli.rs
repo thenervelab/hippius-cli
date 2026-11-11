@@ -871,19 +871,24 @@ pub(crate) struct SecretFile {
     pub(crate) path: Option<PathBuf>,
 }
 
-/// The long help of `hipc api --reveal`: the short help, then every route of the library's
-/// secret table except [`UNLISTED_SECRET_ROUTES`], written as `hipc api` takes the path. It is
-/// built from the table, so a route added there is listed here without a second edit.
+/// The long help of `hipc api --reveal`: the short help, then every route the library knows
+/// to return a secret except [`UNLISTED_SECRET_ROUTES`], written as `hipc api` takes the
+/// path, then the rule for a route `hipc` does not know. It is built from the routes and the
+/// table, so a route added there is listed here without a second edit.
 fn reveal_long_help() -> String {
     let mut text = "Print a secret; required for the requests that return one, or nothing is \
-                    sent\n\nThe requests that return one, where <id> is one path segment and \
-                    <n> a number:\n"
+                    sent\n\nThe requests that return one, where each <name> is one path \
+                    segment and <n> a number:\n"
         .to_owned();
-    for (method, route) in hippius::SECRET_ROUTES {
-        if !UNLISTED_SECRET_ROUTES.contains(&(*method, *route)) {
+    for (method, route) in hippius::secret_routes() {
+        if !UNLISTED_SECRET_ROUTES.contains(&(method, route)) {
             text.push_str(&format!("  {method} {}\n", typed_route(route)));
         }
     }
+    text.push_str(
+        "\nA GET of a route no command sends (one that no command of hipc schema lists in its \
+         routes) needs --reveal too: hipc does not know what its answer holds.\n",
+    );
     text
 }
 
@@ -893,17 +898,10 @@ fn reveal_long_help() -> String {
 /// route are joined on its line: `GET or HEAD /network/me/`. It is the line `hipc --help`
 /// shows for the command, so it stays short; the auth and account rules go in the long help.
 fn api_about() -> String {
-    let mut reads: Vec<(String, Vec<String>)> = Vec::new();
-    for (method, route) in hippius::PROVISIONING_ROUTES {
-        let typed = typed_route(route);
-        match reads.iter_mut().find(|(known, _)| *known == typed) {
-            Some((_, methods)) => methods.push(method.to_string()),
-            None => reads.push((typed, vec![method.to_string()])),
-        }
-    }
-    let reads: Vec<String> = reads
-        .into_iter()
-        .map(|(route, methods)| format!("{} {route}", methods.join(" or ")))
+    // A `HEAD` reaches the `GET` row of its route, so it provisions as the `GET` does.
+    let reads: Vec<String> = hippius::routes::all()
+        .filter(|row| row.provisions())
+        .map(|row| format!("{} or HEAD {}", row.method(), typed_route(row.template())))
         .collect();
     format!(
         "Call any console API endpoint; a method other than GET or HEAD needs --yes, as does \
@@ -950,7 +948,10 @@ fn api_long_about() -> String {
          (/cdn/zones/<zone_id>/waf/rules/, /cdn/zones/<zone_id>/waf/rate-limits/) is not \
          conditional and writes over a version another client published since it was read; hipc \
          cdn waf rules update and hipc cdn waf rate-limits update send the version they read and \
-         stop on a conflict. A 2xx answer larger than 32 MiB is not printed: it exits 1 internal. On an \
+         stop on a conflict. A route no command sends (one no command of hipc schema lists in its \
+         routes) is one hipc does not know: a GET of it needs --reveal, since its answer may hold \
+         a secret, and a write needs --yes, as any write does, and warns. A 2xx answer larger than \
+         32 MiB is not printed: it exits 1 internal. On an \
          error status a body that large is not read: the status decides the error, and its message \
          says the body was not read.",
         api_about()
@@ -968,9 +969,12 @@ const UNLISTED_SECRET_ROUTES: [(hippius::Method, &str); 8] = [
     (hippius::Method::Post, "/api/network/infra/enroll/"),
     (
         hippius::Method::Get,
-        "/api/support/chat/tickets/{id}/attachments/{id}/",
+        "/api/support/chat/tickets/{ticket_id}/attachments/{attachment_id}/",
     ),
-    (hippius::Method::Post, "/api/chat/workspaces/{id}/invites/"),
+    (
+        hippius::Method::Post,
+        "/api/chat/workspaces/{workspace_id}/invites/",
+    ),
     (hippius::Method::Post, "/api/chat/visitors/"),
     (hippius::Method::Post, "/api/chat/transfer/"),
     (hippius::Method::Post, "/api/chat/transfer/redeem/"),
@@ -1160,8 +1164,8 @@ mod tests {
         // `hipc --help` wraps the line at the width of the other commands'; a longer one
         // would take a third line where every other command takes one or two.
         assert!(about.chars().count() <= 140, "{about}");
-        for (_, route) in hippius::PROVISIONING_ROUTES {
-            assert!(route.starts_with("/api/"), "{route}");
+        for row in hippius::routes::all().filter(|row| row.provisions()) {
+            let route = row.template();
             assert!(
                 about.contains(&typed_route(route)),
                 "{route} missing from: {about}"
@@ -1228,11 +1232,19 @@ mod tests {
             reveal_long_help().starts_with(&format!("{short}\n\n")),
             "{short}"
         );
-        assert!(help.contains("  POST /databases/<n>/restore/\n"), "{help}");
-        for (method, route) in hippius::SECRET_ROUTES {
+        assert!(
+            help.contains("  POST /databases/<database_id>/restore/\n"),
+            "{help}"
+        );
+        assert!(
+            help.contains("  GET /databases/<n>/backup-token/\n"),
+            "{help}"
+        );
+        assert!(help.contains("A GET of a route no command sends"), "{help}");
+        for (method, route) in hippius::secret_routes() {
             assert!(route.starts_with("/api/"), "{route}");
             let line = format!("  {method} {}\n", typed_route(route));
-            if UNLISTED_SECRET_ROUTES.contains(&(*method, *route)) {
+            if UNLISTED_SECRET_ROUTES.contains(&(method, route)) {
                 assert!(!help.contains(&line), "{line:?} listed in:\n{help}");
             } else {
                 assert!(help.contains(&line), "{line:?} missing from:\n{help}");
@@ -1240,7 +1252,10 @@ mod tests {
         }
         // An unlisted route that left the secret table would hide nothing and go stale.
         for unlisted in UNLISTED_SECRET_ROUTES {
-            assert!(hippius::SECRET_ROUTES.contains(&unlisted), "{unlisted:?}");
+            assert!(
+                hippius::secret_routes().any(|route| route == unlisted),
+                "{unlisted:?}"
+            );
         }
         // The --remove-others help names customer routes only; the guard still covers the
         // operator storage route.
