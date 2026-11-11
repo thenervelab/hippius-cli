@@ -57,6 +57,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - The `hipc compute app-engine apps create` question says that the OS disk tier is fixed for the VM's life, as the `hipc compute vms create` question does: one clause serves both.
 - An App Engine launch wait that runs out of time while the app's boot is stalled (`boot_stalled`) says so in its `timeout` message, as a VM launch wait does: the two launches share one wait.
 - `hipc cdn cap update` and `hipc compute runners limit update` ask one question, built one way. A runner cap set over a limit with no amount says "where the cap in force is unknown", as the CDN cap did, and a CDN cap set over a cap `hipc` cannot compare says the zone may spend more if the cap in force is higher than it shows, as the runner cap did, rather than that it will.
+- The help of `hipc compute runners limit update` says that the read of the limit and the write are separate requests, since the route takes no version, so a change someone else makes between them is not seen; `hipc billing auto-reload update` says so in the same words.
 
 ### Removed
 

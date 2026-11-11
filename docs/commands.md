@@ -2098,7 +2098,7 @@ Examples:
 ```text
 Change the auto-reload setting; spends money when it leaves auto-reload on, and then needs --yes when it turns it on, finds it in a state other than armed, raises the threshold, the target, or the monthly cap, or cannot read the setting in force
 
-Auto-reload charges the saved card whenever the balance falls below the threshold, back up to the target. The route replaces the whole setting, so hipc reads it first and sends it back with only the flags given changed; a change saved by someone else in between is written over. Turning auto-reload off, or lowering an amount while it is armed, needs no --yes. A save while it is on checks the balance at once, which may charge the card now, so an update that leaves it on is confirmed in every state but armed. A field the setting does not hold, such as the threshold of a setting never saved, must be given. A member acts only in a billing account, from --billing, HIPPIUS_BILLING, or hipc account billing-accounts use.
+Auto-reload charges the saved card whenever the balance falls below the threshold, back up to the target. The route replaces the whole setting, so hipc reads it first and sends it back with only the flags given changed. The read and the write are separate requests, since the route takes no version, so a change saved by someone else in between is written over. Turning auto-reload off, or lowering an amount while it is armed, needs no --yes. A save while it is on checks the balance at once, which may charge the card now, so an update that leaves it on is confirmed in every state but armed. A field the setting does not hold, such as the threshold of a setting never saved, must be given. A member acts only in a billing account, from --billing, HIPPIUS_BILLING, or hipc account billing-accounts use.
 
 Usage: hipc billing auto-reload update <--enabled <BOOL>|--threshold <USD>|--target <USD>|--monthly-cap <USD>>
 
@@ -5963,7 +5963,7 @@ Examples:
 ```text
 Set or remove the monthly runner spend limit; needs --yes when it raises or removes the cap, or when the cap in force is unknown
 
-It reads the limit first and compares with its monthly_cap_credits: raising the cap, or removing it, lets runners spend more, so it is confirmed; so is any change while the limit has no amount there, and setting a cap while it shows null, which may be a server default. Lowering the cap, or keeping it, is not. The amount is sent in monthly_cap, without leading or trailing zeros and with at most 18 digits after the point, and an answer whose monthly_cap_credits is not that amount is an error. While the limit is not enabled on the server, the read answers 404 and nothing is written.
+It reads the limit first and compares with its monthly_cap_credits: raising the cap, or removing it, lets runners spend more, so it is confirmed; so is any change while the limit has no amount there, and setting a cap while it shows null, which may be a server default. Lowering the cap, or keeping it, is not. The amount is sent in monthly_cap, without leading or trailing zeros and with at most 18 digits after the point, and an answer whose monthly_cap_credits is not that amount is an error. While the limit is not enabled on the server, the read answers 404 and nothing is written. The read and the write are separate requests, since the route takes no version, so a change someone else makes between them is not seen.
 
 Usage: hipc compute runners limit update --monthly-cap <CREDITS>
 

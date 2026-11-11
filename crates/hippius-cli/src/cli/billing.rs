@@ -181,7 +181,8 @@ pub(crate) enum AutoReload {
     ///
     /// Auto-reload charges the saved card whenever the balance falls below the threshold, back
     /// up to the target. The route replaces the whole setting, so hipc reads it first and sends
-    /// it back with only the flags given changed; a change saved by someone else in between is
+    /// it back with only the flags given changed. The read and the write are separate requests,
+    /// since the route takes no version, so a change saved by someone else in between is
     /// written over. Turning auto-reload off, or lowering an amount while it is armed, needs no
     /// --yes. A save while it is on checks the balance at once, which may charge the card now,
     /// so an update that leaves it on is confirmed in every state but armed. A field the
