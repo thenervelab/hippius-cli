@@ -84,3 +84,23 @@ pub struct Ticket {
     #[serde(default, deserialize_with = "field")]
     pub subject: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `Debug` of a body that holds the user's text shows its size, not the text.
+    #[test]
+    fn a_text_body_debugs_as_its_sizes() {
+        let create = TicketCreateBody {
+            subject: "help",
+            description: "my words",
+            priority: None,
+        };
+        let reply = MessageCreateBody { body: "my words" };
+        for shown in [format!("{create:?}"), format!("{reply:?}")] {
+            assert!(!shown.contains("my words"), "{shown}");
+            assert!(shown.contains("_bytes: 8"), "{shown}");
+        }
+    }
+}

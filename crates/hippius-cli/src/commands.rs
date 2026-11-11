@@ -843,6 +843,16 @@ mod tests {
             error.message(),
             "nothing to change in the S3 plan was given"
         );
+        let card = PlanSetting {
+            pay_from: Some(Funding::Card),
+            storage_cap: None,
+        };
+        let (request, _) =
+            plan_setting(&routes::s3::SUBSCRIPTION_CHANGE, "S3", &card, body).unwrap();
+        assert_eq!(
+            request.action(),
+            "charge each renewal of the S3 plan to the card saved at Stripe"
+        );
     }
 
     #[test]
