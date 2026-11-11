@@ -4560,7 +4560,7 @@ Options:
       --backup-interval <SECONDS>
           Turn on scheduled backups once the VM runs, at this many seconds between backups: 900, 3600, 21600, or 86400
           
-          Stored backups are billed per GB-hour at the price hipc compute backups options shows. The server checks the interval before anything is bought; a failure to turn backups on later is the VM's backup_error. The server owns the intervals: these are its own when this hipc was built, and hipc compute backups options lists them.
+          Stored backups are billed per GB-hour at the price hipc compute backups options shows. The server owns the intervals: these are its own when this hipc was built, and hipc compute backups options lists them. After the question, the options are read, and an interval they do not list is refused before anything is launched; a failure to turn backups on later is the VM's backup_error.
 
       --failover <MODE>
           The failover of those backups: auto restarts the VM on another server from its latest backup if its server dies, losing what was written after it; manual, the server's default, leaves that to Hippius support
@@ -4934,7 +4934,7 @@ Options:
       --backup-interval <SECONDS>
           Turn on scheduled backups once the VM runs, at this many seconds between backups: 900, 3600, 21600, or 86400
           
-          Stored backups are billed per GB-hour at the price hipc compute backups options shows. The server checks the interval before anything is bought; a failure to turn backups on later is the VM's backup_error. The server owns the intervals: these are its own when this hipc was built, and hipc compute backups options lists them.
+          Stored backups are billed per GB-hour at the price hipc compute backups options shows. The server owns the intervals: these are its own when this hipc was built, and hipc compute backups options lists them. After the question, the options are read, and an interval they do not list is refused before anything is launched; a failure to turn backups on later is the VM's backup_error.
 
       --failover <MODE>
           The failover of those backups: auto restarts the VM on another server from its latest backup if its server dies, losing what was written after it; manual, the server's default, leaves that to Hippius support

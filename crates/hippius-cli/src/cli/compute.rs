@@ -513,9 +513,10 @@ pub(crate) struct LaunchFlags {
     /// 3600, 21600, or 86400
     ///
     /// Stored backups are billed per GB-hour at the price hipc compute backups options shows.
-    /// The server checks the interval before anything is bought; a failure to turn backups on
-    /// later is the VM's backup_error. The server owns the intervals: these are its own when this
-    /// hipc was built, and hipc compute backups options lists them.
+    /// The server owns the intervals: these are its own when this hipc was built, and hipc
+    /// compute backups options lists them. After the question, the options are read, and an
+    /// interval they do not list is refused before anything is launched; a failure to turn
+    /// backups on later is the VM's backup_error.
     #[arg(long, value_name = "SECONDS", value_parser = backup_interval)]
     pub(crate) backup_interval: Option<u32>,
     /// The failover of those backups: auto restarts the VM on another server from its latest
