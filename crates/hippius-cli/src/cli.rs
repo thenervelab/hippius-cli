@@ -357,7 +357,8 @@ pub(crate) enum Command {
     /// changes nothing else. A name that is not a command at its place is a usage error, exit 2,
     /// that lists the commands there, and whose hint runs the nearest one. Each command lists
     /// the routes it may send to in routes, each a method and a path template such as
-    /// GET /api/compute/vms/{vm_id}/; api lists none, since it sends to the route it is given.
+    /// GET /api/compute/vms/{vm_id}/. api sends to the route it is given, so it lists only the
+    /// guarded routes no other command sends to.
     #[command(after_help = examples(&[
         "hipc schema",
         "hipc schema compute app-engine",
