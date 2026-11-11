@@ -26,8 +26,10 @@
 use std::cmp::Ordering;
 
 use hippius::routes::runners;
-use hippius::{Client, Error, ISSUES_URL, Request, Response, Result, phrase};
-use serde_json::{Map, Value, json};
+use hippius::{
+    Client, Error, ISSUES_URL, Request, Response, Result, Slot, TextOrNumber, phrase, view_of,
+};
+use serde_json::{Value, json};
 
 use crate::cli::{
     MonthlyCap, RunnerInstallations, RunnerLimit, RunnerSettings, RunnerSettingsUpdate, RunnerSize,
@@ -105,21 +107,22 @@ fn not_enabled(error: Error) -> Error {
 fn update_limit(ctx: &Context<'_>, cap: &MonthlyCap) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
     let (sent, shown) = match cap {
-        MonthlyCap::Credits(credits) => (
-            Value::from(credits.as_str()),
-            format!("`{credits}` credits"),
-        ),
-        MonthlyCap::None => (Value::Null, "none".to_owned()),
+        MonthlyCap::Credits(credits) => (Some(credits.as_str()), format!("`{credits}` credits")),
+        MonthlyCap::None => (None, "none".to_owned()),
     };
     // Credits go in `monthly_cap`, as `cdn cap update` sends them, although the CDN cap reads
     // back base units there and credits in `monthly_cap_credits`. Both names are assumptions
     // for this route until a live run checks them (swagger types no body).
-    let put = || Request::to(&runners::LIMIT_UPDATE, []).json(&json!({ "monthly_cap": sent }));
+    let put = || {
+        Request::to(&runners::LIMIT_UPDATE, [])
+            .json(&runners::LimitUpdateBody { monthly_cap: sent })
+    };
     let draft = put().about(format!("set the monthly runner spend cap to {shown}"));
     let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(&client, &[&read_limit(), &draft])?;
-            return Ok(Printed::Document(doc));
+        Write::DryRun(_) => {
+            return ctx
+                .dry_run_of(&client, &[&read_limit(), &draft])
+                .map(Printed::Document);
         }
         Write::Checked(checked) => checked,
     };
@@ -269,17 +272,11 @@ enum Current {
 /// cap counts as unknown on purpose: a cap hipc cannot compare exactly is never judged a lower
 /// one.
 fn current_cap(limit: &Value) -> Current {
-    let credits = limit.get("monthly_cap_credits");
-    match credits {
-        Some(Value::String(text)) => return Current::Credits(text.clone()),
-        Some(Value::Number(number)) => return Current::Credits(number.to_string()),
-        _ => {}
-    }
-    let null = |field: &str| limit.get(field).is_some_and(Value::is_null);
-    if null("monthly_cap_credits") && null("monthly_cap") {
-        Current::Null
-    } else {
-        Current::Unknown
+    let limit: runners::Limit = view_of(limit);
+    match limit.monthly_cap_credits {
+        Slot::Value(TextOrNumber(text)) => Current::Credits(text),
+        Slot::Null if limit.monthly_cap == Slot::Null => Current::Null,
+        Slot::Missing | Slot::Null | Slot::Other => Current::Unknown,
     }
 }
 
@@ -288,33 +285,42 @@ fn current_cap(limit: &Value) -> Current {
 /// and the question is asked only when [`may_spend_more`]; the dry run lists the read, then
 /// the write.
 fn update(ctx: &Context<'_>, args: &RunnerSettingsUpdate) -> Result<Printed> {
-    let mut body = Map::new();
-    let mut changes = Vec::new();
-    let mut set = |key: &str, value: Value, shown: String| {
-        changes.push(format!("`{key}` to {shown}"));
-        body.insert(key.to_owned(), value);
+    let sizes = if args.allowed_sizes.is_empty() {
+        None
+    } else {
+        Some(allowed_sizes(&args.allowed_sizes)?)
     };
-    if let Some(enabled) = args.enabled {
-        set("enabled", enabled.into(), format!("`{enabled}`"));
+    let body = runners::SettingsUpdateBody {
+        enabled: args.enabled,
+        max_concurrent: args.max_concurrent,
+        allowed_sizes: sizes.as_deref(),
+        default_region: args.default_region.as_deref(),
+        allow_public_repos: args.allow_public_repos,
+    };
+    let mut changes = Vec::new();
+    if let Some(enabled) = body.enabled {
+        changes.push(format!("`enabled` to `{enabled}`"));
     }
-    if let Some(max) = args.max_concurrent {
-        set("max_concurrent", max.into(), format!("`{max}`"));
+    if let Some(max) = body.max_concurrent {
+        changes.push(format!("`max_concurrent` to `{max}`"));
     }
-    if !args.allowed_sizes.is_empty() {
-        let sizes = allowed_sizes(&args.allowed_sizes)?;
+    if let Some(sizes) = body.allowed_sizes {
         let shown: Vec<String> = sizes.iter().map(|size| format!("`{size}`")).collect();
-        set("allowed_sizes", sizes.into(), phrase::join(&shown, "and"));
+        changes.push(format!(
+            "`allowed_sizes` to {}",
+            phrase::join(&shown, "and")
+        ));
     }
-    if let Some(region) = &args.default_region {
+    if let Some(region) = body.default_region {
         let shown = if region.is_empty() {
             "anywhere (`\"\"`)".to_owned()
         } else {
             format!("`{region}`")
         };
-        set("default_region", region.as_str().into(), shown);
+        changes.push(format!("`default_region` to {shown}"));
     }
-    if let Some(public) = args.allow_public_repos {
-        set("allow_public_repos", public.into(), format!("`{public}`"));
+    if let Some(public) = body.allow_public_repos {
+        changes.push(format!("`allow_public_repos` to `{public}`"));
     }
     let mut action = format!("set the runner settings {}", phrase::join(&changes, "and"));
     // Who can spend the balance is part of the action, so an agent's refusal names it too.
@@ -330,18 +336,19 @@ fn update(ctx: &Context<'_>, args: &RunnerSettingsUpdate) -> Result<Printed> {
         "runners may then spend more of the balance"
     };
     let request = Request::to(&runners::SETTINGS_UPDATE, [])
-        .json(&Value::Object(body))
+        .json(&body)
         .about(action);
     let read = Request::to(&runners::SETTINGS, []).about("get the runner settings");
     let client = ctx.load_authed_client()?;
     let checked = match ctx.check_write(&client, &request)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(&client, &[&read, &request])?;
-            return Ok(Printed::Document(doc));
+        Write::DryRun(_) => {
+            return ctx
+                .dry_run_of(&client, &[&read, &request])
+                .map(Printed::Document);
         }
         Write::Checked(checked) => checked,
     };
-    let current = ctx.send(&client, &read)?.document()?;
+    let current = view_of(&ctx.send(&client, &read)?.document()?);
     if may_spend_more(args, &current) {
         ctx.confirm_write(checked, &request.action(), Some(consequence))?;
     }
@@ -359,28 +366,23 @@ fn update(ctx: &Context<'_>, args: &RunnerSettingsUpdate) -> Result<Printed> {
 /// off, a lower or equal non-zero `max_concurrent`, fewer sizes, closing public repositories),
 /// a repeat of the settings in force, and a new default region are sent unasked: the region
 /// moves where a job runs, not how many run or on what size.
-fn may_spend_more(args: &RunnerSettingsUpdate, current: &Value) -> bool {
-    let turns_on = |new: Option<bool>, key: &str| {
-        new == Some(true) && current.get(key) != Some(&Value::Bool(true))
-    };
+fn may_spend_more(args: &RunnerSettingsUpdate, current: &runners::Settings) -> bool {
+    let turns_on = |new: Option<bool>, old: Option<bool>| new == Some(true) && old != Some(true);
     let more_at_once = args.max_concurrent.is_some_and(|new| {
-        let old = current.get("max_concurrent").and_then(Value::as_u64);
+        let old = current.max_concurrent;
         match new {
             0 => old != Some(0),
             new => old.is_none_or(|old| u64::from(new) > old),
         }
     });
-    let allowed: Option<Vec<&str>> = current
-        .get("allowed_sizes")
-        .and_then(Value::as_array)
-        .and_then(|sizes| sizes.iter().map(Value::as_str).collect());
     let new_size = args.allowed_sizes.iter().any(|size| {
-        allowed
+        current
+            .allowed_sizes
             .as_ref()
-            .is_none_or(|old| !old.contains(&size.code()))
+            .is_none_or(|old| !old.iter().any(|old| old == size.code()))
     });
-    turns_on(args.enabled, "enabled")
-        || turns_on(args.allow_public_repos, "allow_public_repos")
+    turns_on(args.enabled, current.enabled)
+        || turns_on(args.allow_public_repos, current.allow_public_repos)
         || more_at_once
         || new_size
 }

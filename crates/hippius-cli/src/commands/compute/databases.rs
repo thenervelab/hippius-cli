@@ -17,8 +17,8 @@
 
 use std::path::Path;
 
-use hippius::routes::databases;
-use hippius::{Error, Request, Response, Result, phrase, without_field};
+use hippius::routes::databases::{self, CreatedDatabase};
+use hippius::{Error, Request, Response, Result, phrase, view_of, without_field};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
@@ -204,18 +204,13 @@ fn without_credentials(response: &Response) -> Result<Value> {
 /// would be worse: a run killed mid-wait would lose the one-time credentials.
 fn create(ctx: &Context<'_>, args: &DatabaseCreate) -> Result<Printed> {
     require_reveal_or_file(ctx, args.reveal, args.credentials_dir.is_some())?;
-    let mut body = Map::new();
-    body.insert("tier".to_owned(), args.tier.code().into());
-    body.insert("size".to_owned(), args.size.code().into());
-    body.insert(
-        "engine_version".to_owned(),
-        args.engine_version.code().into(),
-    );
-    if let Some(name) = &args.name {
-        body.insert("name".to_owned(), name.as_str().into());
-    }
     let request = Request::to(&databases::DATABASE_CREATE, [])
-        .json(&Value::Object(body))
+        .json(&databases::DatabaseCreateBody {
+            tier: args.tier.code(),
+            size: args.size.code(),
+            engine_version: args.engine_version.code(),
+            name: args.name.as_deref(),
+        })
         .about(format!(
             "create a `{}` PostgreSQL {} database of size `{}`",
             args.tier.code(),
@@ -253,7 +248,7 @@ fn credentials(ctx: &Context<'_>, dir: Option<&Path>, response: &Response) -> Re
         ),
         None => (created, "the answer holds no `credentials`".to_owned()),
     };
-    match created.get("id").and_then(Value::as_u64) {
+    match view_of::<CreatedDatabase>(&created).id {
         Some(id) => ctx.note(&format!(
             "{shown}; run `hipc compute databases get {id}` to follow the database to \
              `running`"
@@ -289,13 +284,15 @@ fn save_credentials(dir: &Path, created: Value) -> Result<(Value, Vec<String>)> 
             .with_hint(hint)
             .after_write(created))
     };
+    let view: CreatedDatabase = view_of(&created);
+    let tls = view
+        .credentials
+        .as_ref()
+        .and_then(|credentials| credentials.tls.as_ref());
     let mut files = Vec::new();
     for (file, field) in TLS_FILES {
         let path = dir.join(file);
-        let pem = created
-            .pointer(&format!("/{CREDENTIALS}/tls/{field}"))
-            .and_then(Value::as_str);
-        let Some(pem) = pem else {
+        let Some(pem) = tls.and_then(|tls| tls.pem(field)) else {
             let message = format!(
                 "the answer has no `credentials.tls.{field}` to write to {}, so no file was \
                  written; every credential is in the answer on stdout",
@@ -309,7 +306,7 @@ fn save_credentials(dir: &Path, created: Value) -> Result<(Value, Vec<String>)> 
     let mut json = serde_json::to_vec_pretty(object).expect("a JSON value serializes");
     json.push(b'\n');
     files.push((dir.join(CREDENTIALS_JSON), json));
-    let env = match env_file(dir, &created) {
+    let env = match env_file(dir, &view) {
         Ok(env) => env,
         Err(why) => {
             let message = format!(
@@ -393,35 +390,29 @@ fn withheld(object: &Value) -> Vec<String> {
 /// python-dotenv decodes inside single quotes), or a control character, such as a line break,
 /// cannot be written that way, so the file is refused, with the reason. The directory's own
 /// path was held to that rule at parse time.
-fn env_file(dir: &Path, created: &Value) -> std::result::Result<String, String> {
+fn env_file(dir: &Path, created: &CreatedDatabase) -> std::result::Result<String, String> {
     // `absolute` fails only when the current directory cannot be read, which the parse-time
     // check of a relative `dir` already needed: the path as given is then the best there is.
     let absolute = std::path::absolute(dir).ok();
     let dir = absolute.as_deref().unwrap_or(dir);
-    let text = |pointer: &str| created.pointer(pointer).and_then(Value::as_str);
-    let port = created
-        .pointer("/connection/port")
-        .and_then(Value::as_u64)
-        .map(|port| port.to_string());
+    let connection = created.connection.as_ref();
+    let credentials = created.credentials.as_ref();
     let path = |file: &str| dir.join(file).to_string_lossy().into_owned();
     let settings = [
-        ("PGHOST", text("/connection/host").map(str::to_owned)),
-        ("PGPORT", port),
-        ("PGUSER", text("/credentials/username").map(str::to_owned)),
+        ("PGHOST", connection.and_then(|c| c.host.clone())),
         (
-            "PGPASSWORD",
-            text("/credentials/password").map(str::to_owned),
+            "PGPORT",
+            connection.and_then(|c| c.port).map(|port| port.to_string()),
         ),
-        (
-            "PGDATABASE",
-            text("/credentials/database").map(str::to_owned),
-        ),
+        ("PGUSER", credentials.and_then(|c| c.username.clone())),
+        ("PGPASSWORD", credentials.and_then(|c| c.password.clone())),
+        ("PGDATABASE", credentials.and_then(|c| c.database.clone())),
         (
             "PGSSLMODE",
             Some(
-                text("/connection/sslmode")
-                    .unwrap_or("verify-ca")
-                    .to_owned(),
+                connection
+                    .and_then(|c| c.sslmode.clone())
+                    .unwrap_or_else(|| "verify-ca".to_owned()),
             ),
         ),
         ("PGSSLROOTCERT", Some(path(TLS_FILES[2].0))),
@@ -455,7 +446,7 @@ fn restore(ctx: &Context<'_>, args: &DatabaseRestore) -> Result<Printed> {
     let request = Request::to(&databases::DATABASE_RESTORE, [&id]).listed_by(DATABASES);
     let (request, point) = match &args.target_time {
         Some(time) => (
-            request.json(&json!({ "target_time": time })),
+            request.json(&databases::DatabaseRestoreBody { target_time: time }),
             format!("as it was at `{time}`"),
         ),
         None => (request, "up to the end of its backups".to_owned()),
