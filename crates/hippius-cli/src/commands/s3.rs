@@ -19,8 +19,8 @@ use crate::cli::{
 };
 use crate::commands::files::{save_secret, shown_once};
 use crate::commands::{
-    Input, Printed, SettingChange, list, local_dry_run, object, plan_setting, print_body,
-    print_body_or, print_envelope, print_keyed_list, print_with, require_public, require_reveal,
+    Input, Printed, list, local_dry_run, object, plan_setting, print_body, print_body_or,
+    print_envelope, print_keyed_list, print_with, require_public, require_reveal,
     require_reveal_or_file, subscribed,
 };
 use crate::context::{self, Context, Gate, Question};
@@ -82,7 +82,7 @@ fn subscription(ctx: &Context<'_>, client: &Client, command: &S3Subscription) ->
                         consequence: Some("a plan below the current usage pauses uploads"),
                     },
                 ),
-                None => plan_setting(&s3::SUBSCRIPTION_CHANGE, "S3", &args.setting, setting_body)?,
+                None => plan_setting(&s3::SUBSCRIPTION_CHANGE, "S3", &args.setting)?,
             };
             print_body(ctx, client, &request, gate)
         }
@@ -100,20 +100,6 @@ fn subscription(ctx: &Context<'_>, client: &Client, command: &S3Subscription) ->
                 Ok(cancelled)
             })
         }
-    }
-}
-
-/// The S3 plan PATCH that keeps the plan and changes `change`.
-fn setting_body(change: SettingChange) -> s3::SettingChangeBody<'static> {
-    match change {
-        SettingChange::Funding(funding) => s3::SettingChangeBody {
-            funding: Some(funding),
-            ..s3::SettingChangeBody::default()
-        },
-        SettingChange::StorageCap(cap) => s3::SettingChangeBody {
-            storage_cap_bytes: Some(cap),
-            ..s3::SettingChangeBody::default()
-        },
     }
 }
 

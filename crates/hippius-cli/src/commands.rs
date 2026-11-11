@@ -27,7 +27,7 @@ use std::io::Read;
 use std::os::fd::AsFd as _;
 use std::path::{Path, PathBuf};
 
-use hippius::routes::{self, Route};
+use hippius::routes::{self, Change, Route, SettingChangeBody};
 use hippius::{
     Client, ConfigFile, Error, Overrides, Page, Request, Response, Result, Source, phrase, view_of,
 };
@@ -617,25 +617,15 @@ pub(crate) fn print_envelope(
     })
 }
 
-/// One setting of a Drive or S3 plan that a `change` without `--plan` sends: how renewals are
-/// paid, or the cap on storage billed past the quota (`None` is the default cap). Each
-/// service writes it into its own route's body.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum SettingChange {
-    Funding(&'static str),
-    StorageCap(Option<u64>),
-}
-
 /// `route`, the PATCH of a Drive or S3 subscription, that keeps the plan: `--pay-from` or
-/// `--storage-cap`, sent as `body` writes it. The command's `change` group takes one of them
-/// when `--plan` is absent. `service` names the plan in the question, as `Drive` or `S3`. Both
-/// change what later renewals or storage cost, so both are confirmed, and the action an agent
-/// reads in the refusal names the money.
-pub(crate) fn plan_setting<B: serde::Serialize>(
+/// `--storage-cap`, sent as [`SettingChangeBody`] writes it. The command's `change` group takes
+/// one of them when `--plan` is absent. `service` names the plan in the question, as `Drive` or
+/// `S3`. Both change what later renewals or storage cost, so both are confirmed, and the action
+/// an agent reads in the refusal names the money.
+pub(crate) fn plan_setting(
     route: &Route<0>,
     service: &str,
     setting: &PlanSetting,
-    body: fn(SettingChange) -> B,
 ) -> Result<(Request, Gate<'static>)> {
     let (change, action, consequence) = if let Some(funding) = setting.pay_from {
         let action = match funding {
@@ -644,7 +634,10 @@ pub(crate) fn plan_setting<B: serde::Serialize>(
                 format!("charge each renewal of the {service} plan to the card saved at Stripe")
             }
         };
-        let change = SettingChange::Funding(funding.code());
+        let change = SettingChangeBody {
+            funding: Some(funding.code()),
+            ..SettingChangeBody::default()
+        };
         (change, action, "it changes how every later renewal is paid")
     } else {
         // The `change` group takes `--plan`, `--pay-from`, or `--storage-cap`, and the
@@ -656,18 +649,21 @@ pub(crate) fn plan_setting<B: serde::Serialize>(
             )
         })?;
         let (cap, up_to) = match cap {
-            StorageCap::Bytes(bytes) => (Some(bytes), format!("`{bytes}` bytes")),
+            StorageCap::Bytes(bytes) => (Change::Set(bytes), format!("`{bytes}` bytes")),
             StorageCap::Default => (
-                None,
+                Change::Clear,
                 "the default cap of twice the plan's storage".to_owned(),
             ),
         };
         let action =
             format!("bill the storage of the {service} plan past its quota, up to {up_to}");
-        let change = SettingChange::StorageCap(cap);
+        let change = SettingChangeBody {
+            storage_cap_bytes: cap,
+            ..SettingChangeBody::default()
+        };
         (change, action, "storage past the quota is billed")
     };
-    let request = Request::to(route, []).json(&body(change)).about(action);
+    let request = Request::to(route, []).json(&change).about(action);
     Ok((
         request,
         Gate::Confirm {
@@ -950,9 +946,7 @@ mod tests {
             pay_from: None,
             storage_cap: None,
         };
-        let body = |change| format!("{change:?}");
-        let error =
-            plan_setting(&routes::s3::SUBSCRIPTION_CHANGE, "S3", &setting, body).unwrap_err();
+        let error = plan_setting(&routes::s3::SUBSCRIPTION_CHANGE, "S3", &setting).unwrap_err();
         assert_eq!(error.code(), Code::Usage);
         assert_eq!(
             error.message(),
@@ -962,8 +956,7 @@ mod tests {
             pay_from: Some(Funding::Card),
             storage_cap: None,
         };
-        let (request, _) =
-            plan_setting(&routes::s3::SUBSCRIPTION_CHANGE, "S3", &card, body).unwrap();
+        let (request, _) = plan_setting(&routes::s3::SUBSCRIPTION_CHANGE, "S3", &card).unwrap();
         assert_eq!(
             request.action(),
             "charge each renewal of the S3 plan to the card saved at Stripe"

@@ -111,21 +111,6 @@ pub struct PlanChangeBody<'a> {
     pub plan: &'a str,
 }
 
-/// The body of [`SUBSCRIPTION_CHANGE`] that keeps the plan and changes one setting.
-#[derive(Debug, Default, Serialize)]
-#[expect(
-    clippy::option_option,
-    reason = "a cap left out keeps its value, and `null` is the default cap"
-)]
-pub struct SettingChangeBody<'a> {
-    /// How each later renewal is paid: `credits` or `card`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub funding: Option<&'a str>,
-    /// The cap on bytes stored past the quota; `null` is the default cap.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub storage_cap_bytes: Option<Option<u64>>,
-}
-
 /// The body of [`BUCKET_CREATE`].
 #[derive(Debug, Serialize)]
 pub struct BucketCreateBody<'a> {
@@ -188,14 +173,6 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&body).unwrap(),
             r#"{"name":"ci","bucket_names":["logs"]}"#
-        );
-        let cap = SettingChangeBody {
-            storage_cap_bytes: Some(None),
-            ..SettingChangeBody::default()
-        };
-        assert_eq!(
-            serde_json::to_string(&cap).unwrap(),
-            r#"{"storage_cap_bytes":null}"#
         );
     }
 }

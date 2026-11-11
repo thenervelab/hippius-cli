@@ -10,7 +10,7 @@
 //! The project transfers, `/api/accounts/project-transfers/`, are personal: they are the
 //! token's own account's whichever account is selected, so they never take the header.
 
-use hippius::routes::{self, account::NameBody};
+use hippius::routes::{self, Change, account::NameBody};
 use hippius::{
     BillingId, Client, ConfigFile, Error, Failure, ProjectId, Request, Response, Result, Selection,
     Source, phrase, view_of,
@@ -526,11 +526,10 @@ fn quota_update(ctx: &Context<'_>, args: &QuotaUpdate) -> Result<Printed> {
             QuotaLimit::None => format!("`{key}` to none of its own"),
         })
         .collect();
-    let sent = |limit: Option<QuotaLimit>| {
-        limit.map(|limit| match limit {
-            QuotaLimit::At(n) => Some(n),
-            QuotaLimit::None => None,
-        })
+    let sent = |limit: Option<QuotaLimit>| match limit {
+        Some(QuotaLimit::At(n)) => Change::Set(n),
+        Some(QuotaLimit::None) => Change::Clear,
+        None => Change::Keep,
     };
     let limits = routes::account::QuotaLimits {
         vms: sent(args.vms),
