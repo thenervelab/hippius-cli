@@ -843,24 +843,28 @@ mod tests {
         let written = ["new", "get"].map(|constructor| format!("Request::{constructor}("));
         let mut files = Vec::new();
         rust_files(&src, &mut files);
-        let mut found = Vec::new();
-        for file in files {
-            let text = std::fs::read_to_string(&file).expect("a source file is UTF-8");
-            let count: usize = written.iter().map(|call| text.matches(call).count()).sum();
-            let name = file
-                .strip_prefix(&src)
-                .expect("under src")
-                .to_string_lossy()
-                .replace('\\', "/");
-            let limit = allowed
-                .iter()
-                .find(|(allowed, _)| *allowed == name)
-                .map_or(Some(0), |&(_, limit)| limit);
-            if limit.is_some_and(|limit| count > limit) {
-                found.push(format!("{name}: {count}"));
-            }
-        }
-        assert!(found.is_empty(), "{found:?}");
+        let counted: Vec<(String, usize, Option<usize>)> = files
+            .iter()
+            .map(|file| {
+                let text = std::fs::read_to_string(file).expect("a source file is UTF-8");
+                let count = written.iter().map(|call| text.matches(call).count()).sum();
+                let name = file
+                    .strip_prefix(&src)
+                    .expect("under src")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let limit = allowed
+                    .iter()
+                    .find(|(allowed, _)| *allowed == name)
+                    .map_or(Some(0), |&(_, limit)| limit);
+                (name, count, limit)
+            })
+            .collect();
+        let over: Vec<&(String, usize, Option<usize>)> = counted
+            .iter()
+            .filter(|(_, count, limit)| limit.is_some_and(|limit| *count > limit))
+            .collect();
+        assert_eq!(over, Vec::<&(String, usize, Option<usize>)>::new());
     }
 
     /// `dry_run` comes first, then `action`, then every field of the real run's document, in

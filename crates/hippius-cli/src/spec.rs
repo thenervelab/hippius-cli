@@ -2612,11 +2612,11 @@ mod tests {
             })
             .map(|endpoint| (endpoint.method(), endpoint.template()))
             .collect();
-        let unlisted: Vec<String> = hippius::routes::all()
-            .filter(|row| !listed.contains(&(row.method(), row.template())))
-            .map(|row| format!("{} {}", row.method(), row.template()))
+        let unlisted: Vec<(hippius::Method, &str)> = hippius::routes::all()
+            .map(|row| (row.method(), row.template()))
+            .filter(|route| !listed.contains(route))
             .collect();
-        assert!(unlisted.is_empty(), "{unlisted:#?}");
+        assert_eq!(unlisted, []);
     }
 
     /// A path under a group that names none of its commands lists no route, in every group

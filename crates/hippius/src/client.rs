@@ -9,8 +9,8 @@
 //! redirect could carry the token to another host.
 
 use std::fmt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -493,19 +493,20 @@ impl Target {
     }
 }
 
-thread_local! {
-    /// The warnings of the routes the API marked deprecated in this run's answers, each once,
-    /// in the order they came ([`take_deprecation_warnings`]).
-    static DEPRECATIONS: std::cell::RefCell<Vec<String>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
+/// The warnings of the routes the API marked deprecated in this run's answers, each once, in
+/// the order they came ([`take_deprecation_warnings`]). A lock poisoned by a panic keeps no
+/// more: the panic ends the run, whose warnings then print nowhere.
+static DEPRECATIONS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Takes the warnings of the routes the API marked deprecated in this run's answers, with a
 /// `Deprecation` (RFC 9745) or a `Sunset` (RFC 8594) header, each once, in the order they
 /// came, so the caller prints them as `warning:` lines or a `warnings` array (tenet 15).
 /// `hipc` surfaces them and changes nothing about the request.
 pub fn take_deprecation_warnings() -> Vec<String> {
-    DEPRECATIONS.with(|warnings| std::mem::take(&mut *warnings.borrow_mut()))
+    DEPRECATIONS
+        .lock()
+        .map(|mut warnings| std::mem::take(&mut *warnings))
+        .unwrap_or_default()
 }
 
 /// Keeps the warning of an answer to `method` to `path` whose `header`s say the route is
@@ -518,12 +519,11 @@ fn note_deprecation(method: Method, path: &str, header: &dyn Fn(&str) -> Option<
     else {
         return;
     };
-    DEPRECATIONS.with(|warnings| {
-        let mut warnings = warnings.borrow_mut();
-        if !warnings.contains(&warning) {
-            warnings.push(warning);
-        }
-    });
+    if let Ok(mut warnings) = DEPRECATIONS.lock()
+        && !warnings.contains(&warning)
+    {
+        warnings.push(warning);
+    }
 }
 
 /// The warning for `method` to `path`, whose answer carried `deprecation` or `sunset`, or
@@ -854,7 +854,8 @@ impl Client {
         let mut needed = Vec::new();
         for Rule { guard, route } in account::route_rules(request.method, target.api_path()) {
             let flags = match guard {
-                Guard::None => &[],
+                // `route_rules` gives no `None`; a `Needs` with no flag needs nothing.
+                Guard::None | Guard::Needs(&[]) => &[],
                 Guard::Needs(flags) => flags,
                 Guard::NeedsWhenSet(flags, key) => {
                     if sets_key(body, key) {
