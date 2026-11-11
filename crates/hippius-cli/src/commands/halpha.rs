@@ -18,13 +18,14 @@ use hippius::{Client, Error, Failure, Request, Result, SideEffects, phrase, view
 use serde::Deserialize as _;
 use serde_json::{Value, json};
 
-use crate::cli::{CHAIN_MINIMUM, ONE, Planck};
+use crate::cli::CHAIN_MINIMUM;
 use crate::commands::Printed;
 use crate::commands::credits::to_credits;
 use crate::commands::poll::{Next, Schedule, Wait, poll_until};
 use crate::commands::print_with;
 use crate::context::{Context, Gate, Write};
 use crate::output::Mode;
+use crate::units::{ONE, Planck};
 
 /// How often a purchase is read again: every 3 seconds, as the console reads it.
 const POLL_INTERVAL: Duration = Duration::from_secs(3);

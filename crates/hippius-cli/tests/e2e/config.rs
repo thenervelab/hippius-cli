@@ -549,12 +549,12 @@ const REFUSED_BEFORE_THE_CONFIG: &[(&[&str], &str, &str)] = &[
     (
         &["s3", "buckets", "create", "AB"],
         "usage",
-        "is not a bucket name",
+        "a bucket name is",
     ),
     (
         &["s3", "buckets", "delete", "AB"],
         "usage",
-        "is not a bucket name",
+        "a bucket name is",
     ),
     (
         &[
@@ -571,12 +571,12 @@ const REFUSED_BEFORE_THE_CONFIG: &[(&[&str], &str, &str)] = &[
     (
         &["s3", "tokens", "revoke", "--kind", "sub", "x"],
         "usage",
-        "is not a token id",
+        "a token id is a UUID",
     ),
     (
         &["s3", "tokens", "rotate", "--kind", "sub", "x", "--reveal"],
         "usage",
-        "is not a token id",
+        "a token id is a UUID",
     ),
     (
         &["s3", "tokens", "rotate", "--kind", "sub", KEY],
@@ -586,12 +586,12 @@ const REFUSED_BEFORE_THE_CONFIG: &[(&[&str], &str, &str)] = &[
     (
         &["hub", "namespace", "availability", "A"],
         "usage",
-        "is not a namespace name",
+        "a namespace name is",
     ),
     (
         &["hub", "namespace", "create", "A", "--reveal"],
         "usage",
-        "is not a namespace name",
+        "a namespace name is",
     ),
     (&["hub", "namespace", "create", "ok"], "reveal_required", ""),
     (
@@ -736,7 +736,7 @@ const REFUSED_BEFORE_THE_CONFIG: &[(&[&str], &str, &str)] = &[
     ),
 ];
 
-/// An S3 key id, which `check_uuid` accepts, and a VM id.
+/// An S3 key id, which the token id parser accepts, and a VM id.
 const KEY: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
 /// A file that does not exist.

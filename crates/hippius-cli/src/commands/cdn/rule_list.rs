@@ -10,6 +10,7 @@ use hippius::routes::cdn;
 use hippius::{Client, Error, Request, Response, Result, SideEffects, phrase, view_of};
 use serde_json::{Map, Value, json};
 
+use crate::cli::ZoneId;
 use crate::commands::cdn::ZONES;
 use crate::commands::replace::{self, Entry, Found, Replace, replace_list};
 use crate::commands::{Input, Printed, print_body};
@@ -23,7 +24,7 @@ const MAX_RULES_BYTES: u64 = 1024 * 1024;
 /// which only the WAF lists take.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ListUpdate<'a> {
-    pub(super) zone_id: &'a str,
+    pub(super) zone_id: &'a ZoneId,
     pub(super) rules_file: &'a Path,
     pub(super) remove_others: bool,
     pub(super) check: bool,
@@ -159,13 +160,13 @@ impl RuleList {
 }
 
 /// `GET` of the list, printed as it came.
-pub(super) fn read_rules(ctx: &Context<'_>, zone_id: &str, list: &RuleList) -> Result<Printed> {
+pub(super) fn read_rules(ctx: &Context<'_>, zone_id: &ZoneId, list: &RuleList) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
     print_body(ctx, &client, &rules_get(zone_id, list), Gate::Open)
 }
 
-fn rules_get(zone_id: &str, list: &RuleList) -> Request {
-    Request::to(list.read, [&zone_id])
+fn rules_get(zone_id: &ZoneId, list: &RuleList) -> Request {
+    Request::to(list.read, [zone_id])
         .about(format!("get the {} of the CDN zone `{zone_id}`", list.what))
         .listed_by(ZONES)
 }
@@ -209,7 +210,7 @@ pub(super) fn update_rules(
     let read = rules_get(zone_id, list);
     let read_action = read.action();
     let replace = Replace {
-        write: Request::to(list.update, [&zone_id])
+        write: Request::to(list.update, [zone_id])
             .listed_by(ZONES)
             .raw_json(body)
             .about(format!(
@@ -325,7 +326,7 @@ fn check_rules(
 /// can trust the exit code. `internal` with `partial` side effects for an answer with no
 /// boolean `valid`, or with the `rules` or `version` of a published list: a server that
 /// ignored `dry_run` would have published the file, so the hint reads what is published.
-fn checked(response: &Response, zone_id: &str, list: &RuleList) -> Result<Value> {
+fn checked(response: &Response, zone_id: &ZoneId, list: &RuleList) -> Result<Value> {
     let answer = response.document()?;
     let check: cdn::WafCheck = view_of(&answer);
     match check.valid {

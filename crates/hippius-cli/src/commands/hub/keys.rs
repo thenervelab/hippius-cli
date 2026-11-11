@@ -11,7 +11,7 @@ use hippius::routes::hub;
 use hippius::{Error, Request, Result, phrase, view_of};
 use serde_json::{Value, json};
 
-use crate::cli::{HubKeys, KeyCreate};
+use crate::cli::{HubKeys, KeyCreate, OneTimeSecret};
 use crate::commands::files::shown_once;
 use crate::commands::hub::{
     Issued, docker_login_command, issued_robot, with_provision_hint, without_robot_secrets,
@@ -28,9 +28,8 @@ pub(crate) fn run(ctx: &Context<'_>, command: &HubKeys) -> Result<Printed> {
         HubKeys::Create(args) => create(ctx, args),
         HubKeys::Rotate {
             key_id,
-            reveal,
-            secret_file,
-        } => rotate(ctx, *key_id, *reveal, secret_file.path.as_deref()),
+            secret: OneTimeSecret { reveal, path },
+        } => rotate(ctx, *key_id, *reveal, path.as_deref()),
         HubKeys::Delete { key_id } => delete(ctx, *key_id),
     };
     printed.map_err(|error| with_provision_hint(ctx, error))
@@ -101,18 +100,18 @@ fn listed_key(row: Value, what: &str) -> Result<Value> {
 /// `POST /api/registry/keys/` (swagger `registry_keys_create`), body `{name, role,
 /// expires_days?}` as swagger's description gives it, `expires_days` only when the flag is.
 fn create(ctx: &Context<'_>, args: &KeyCreate) -> Result<Printed> {
-    require_reveal_or_file(ctx, args.reveal, args.secret_file.path.is_some())?;
+    require_reveal_or_file(ctx, args.secret.reveal, args.secret.path.is_some())?;
     let body = hub::KeyCreateBody {
         name: &args.name,
-        role: args.role.code(),
+        role: &args.role,
         expires_days: args.expires_in,
     };
     let request = Request::to(&hub::KEY_CREATE, []).json(&body).about(format!(
         "create the Hub key {} with the role `{}`",
         phrase::quote(&args.name),
-        args.role.code()
+        args.role
     ));
-    let secret_file = args.secret_file.path.as_deref();
+    let secret_file = args.secret.path.as_deref();
     let consequence = shown_once("its secret", secret_file);
     let gate = Gate::Confirm {
         consequence: Some(&consequence),

@@ -461,7 +461,11 @@ fn a_peer_name_outside_one_line_of_255_characters_is_usage() {
             error["message"]
                 .as_str()
                 .unwrap()
-                .contains("a peer name is one line of 1 to 255 characters"),
+                .contains(if name.contains(['\n', '\t']) {
+                    "a peer name holds no control character or line break"
+                } else {
+                    "a peer name is one line of 1 to 255 characters"
+                }),
             "{error}"
         );
     }

@@ -329,7 +329,7 @@ fn settings_update_refuses_bad_flags_before_any_request_or_token() {
         "`--allowed-size` names `small` more than once"
     );
     for flags in [
-        &["--allowed-size", "xlarge"][..],
+        &["--allowed-size", "x large"][..],
         &["--allowed-size", "Small"],
         &["--default-region", "FRA"],
         &["--default-region", ""],

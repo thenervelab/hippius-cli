@@ -7,7 +7,7 @@ use hippius::routes::compute::{self, Vm};
 use hippius::{Client, Request, Result, phrase, view_of};
 use serde_json::Value;
 
-use crate::cli::Vms;
+use crate::cli::{VmId, VmTarget, Vms};
 use crate::commands::compute::VMS;
 use crate::commands::compute::power_policy::power_policy_command;
 use crate::commands::{Printed, print_body, print_envelope, print_keyed_list, print_with};
@@ -16,7 +16,7 @@ use crate::output::Mode;
 
 /// `POST .../stop/`, confirmed: a stop takes down what the VM serves. Text mode warns that
 /// the stopped VM is still billed.
-fn stop(ctx: &Context<'_>, client: &Client, request: &Request, vm_id: &str) -> Result<Printed> {
+fn stop(ctx: &Context<'_>, client: &Client, request: &Request, vm_id: &VmId) -> Result<Printed> {
     let gate = Gate::Confirm {
         consequence: Some(
             "what it serves goes down, and it is still billed while stopped, until it is deleted",
@@ -32,8 +32,8 @@ fn stop(ctx: &Context<'_>, client: &Client, request: &Request, vm_id: &str) -> R
 }
 
 pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<Printed> {
-    let power = |route: &Route<1>, vm_id: &str, action: &str| {
-        Request::to(route, [&vm_id])
+    let power = |route: &Route<1>, vm_id: &VmId, action: &str| {
+        Request::to(route, [vm_id])
             .listed_by(VMS)
             .about(format!("{action} the VM `{vm_id}`"))
     };
@@ -45,13 +45,13 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
             client,
             &Request::to(&compute::VMS, []).about("list the VMs"),
         ),
-        Vms::Get { vm_id } => {
+        Vms::Get(VmTarget { vm_id }) => {
             let request = Request::to(&compute::VM, [vm_id])
                 .about(format!("get the VM `{vm_id}`"))
                 .listed_by(VMS);
             print_body(ctx, client, &request, Gate::Open)
         }
-        Vms::Attestation { vm_id } => {
+        Vms::Attestation(VmTarget { vm_id }) => {
             let request = Request::to(&compute::VM_ATTESTATION, [vm_id])
                 .about(format!("get the attestation of the VM `{vm_id}`"))
                 .listed_by(VMS);
@@ -64,7 +64,7 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
             })
         }
         // Swagger: `{failovers}`, at most 10, newest first.
-        Vms::Failovers { vm_id } => {
+        Vms::Failovers(VmTarget { vm_id }) => {
             let request = Request::to(&compute::VM_FAILOVERS, [vm_id])
                 .about(format!("list the failovers of the VM `{vm_id}`"))
                 .listed_by(VMS);
@@ -73,14 +73,16 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
         Vms::Create(args) => create::create(ctx, client, args),
         // A start spends nothing new and deletes nothing (tenet 5): the VM is billed until it
         // is deleted, stopped or not. A stop takes down what the VM serves, so it is confirmed.
-        Vms::Start { vm_id } => print_body(
+        Vms::Start(VmTarget { vm_id }) => print_body(
             ctx,
             client,
             &power(&compute::VM_START, vm_id, "start"),
             Gate::Open,
         ),
-        Vms::Stop { vm_id } => stop(ctx, client, &power(&compute::VM_STOP, vm_id, "stop"), vm_id),
-        Vms::Reboot { vm_id } => {
+        Vms::Stop(VmTarget { vm_id }) => {
+            stop(ctx, client, &power(&compute::VM_STOP, vm_id, "stop"), vm_id)
+        }
+        Vms::Reboot(VmTarget { vm_id }) => {
             let gate = Gate::Confirm { consequence: None };
             print_body(
                 ctx,
@@ -89,7 +91,7 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
                 gate,
             )
         }
-        Vms::ResizeOptions { vm_id } => {
+        Vms::ResizeOptions(VmTarget { vm_id }) => {
             let request = Request::to(&compute::VM_RESIZE_OPTIONS, [vm_id])
                 .about(format!("get the resize options of the VM `{vm_id}`"))
                 .listed_by(VMS);
@@ -97,7 +99,10 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
         }
         // The command does not wait for `done`; `resize-status` follows it. Operations that
         // finish later get a status command and no new wait.
-        Vms::Resize { vm_id, flavor } => {
+        Vms::Resize {
+            vm: VmTarget { vm_id },
+            flavor,
+        } => {
             let request = Request::to(&compute::VM_RESIZE, [vm_id])
                 .json(&compute::VmResizeBody { flavor })
                 .listed_by(VMS);
@@ -110,7 +115,7 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
                 let body = response.document()?;
                 // clap accepted the typed vm_id; one that starts with `-` came after `--`,
                 // and a printed command would read it as a flag, so it gets no note.
-                let vm = crate::cli::as_argument(vm_id, crate::cli::vm_id);
+                let vm = crate::cli::as_argument(vm_id.as_str(), crate::cli::VmId::parse);
                 let resize = view_of::<compute::VmResize>(&body).resize;
                 if let (Some(vm), Some(id)) = (vm, resize.and_then(|resize| resize.id))
                     && let Some(command) =
@@ -121,7 +126,10 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
                 Ok(body)
             })
         }
-        Vms::ResizeStatus { vm_id, resize_id } => print_body(
+        Vms::ResizeStatus {
+            vm: VmTarget { vm_id },
+            resize_id,
+        } => print_body(
             ctx,
             client,
             &Request::to(&compute::VM_RESIZE_STATUS, [vm_id, resize_id])
@@ -130,13 +138,13 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
             Gate::Open,
         ),
         Vms::PowerPolicy(command) => power_policy_command(ctx, client, command),
-        Vms::Delete { vm_id } => vm_delete(ctx, client, vm_id),
+        Vms::Delete(VmTarget { vm_id }) => vm_delete(ctx, client, vm_id),
     }
 }
 
 /// `DELETE .../<vm_id>/`, after a read of the VM whose `name` the question gives, so the
 /// person checks the name and not only the id. A dry run sends neither, and lists both.
-fn vm_delete(ctx: &Context<'_>, client: &Client, vm_id: &str) -> Result<Printed> {
+fn vm_delete(ctx: &Context<'_>, client: &Client, vm_id: &VmId) -> Result<Printed> {
     let delete = |named: &str| {
         Request::to(&compute::VM_DELETE, [&vm_id])
             .listed_by(VMS)

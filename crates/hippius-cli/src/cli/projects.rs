@@ -6,7 +6,10 @@
 
 use clap::{ArgAction, Args, Subcommand};
 
-use crate::cli::{Usd, examples, number, usd};
+use crate::cli::ids::account_id;
+use crate::cli::values::{Spaces, label};
+use crate::cli::{BillingAccount, ProjectTarget, examples, number};
+use crate::units::{Usd, usd, whole_number};
 
 /// `hipc account projects create`.
 #[derive(Debug, Args)]
@@ -19,9 +22,8 @@ pub(crate) struct ProjectCreate {
 /// `hipc account projects update`.
 #[derive(Debug, Args)]
 pub(crate) struct ProjectUpdate {
-    /// The project id, proj_ and 20 lowercase hex characters, from hipc account projects list
-    #[arg(value_parser = project_id)]
-    pub(crate) project_id: String,
+    #[command(flatten)]
+    pub(crate) project: ProjectTarget,
     /// The new name, 1 to 64 characters on one line, none invisible, sent trimmed
     #[arg(long, value_parser = principal_name)]
     pub(crate) name: String,
@@ -30,12 +32,11 @@ pub(crate) struct ProjectUpdate {
 /// `hipc account projects transfer`.
 #[derive(Debug, Args)]
 pub(crate) struct ProjectTransfer {
-    /// The project id, proj_ and 20 lowercase hex characters, from hipc account projects list
-    #[arg(value_parser = project_id)]
-    pub(crate) project_id: String,
+    #[command(flatten)]
+    pub(crate) project: ProjectTarget,
     /// The account the project is offered to: acct_ and 20 lowercase hex characters
     #[arg(long, value_name = "ACCOUNT_ID", value_parser = account_id)]
-    pub(crate) to_account: String,
+    pub(crate) to_account: hippius::AccountId,
 }
 
 #[derive(Debug, Subcommand)]
@@ -47,12 +48,7 @@ pub(crate) enum Budget {
     #[command(after_help = examples(&[
         "hipc account projects budget get proj_0a1b2c3d4e5f60718293",
     ]))]
-    Get {
-        /// The project id, proj_ and 20 lowercase hex characters, from hipc account projects
-        /// list
-        #[arg(value_parser = project_id)]
-        project_id: String,
-    },
+    Get(ProjectTarget),
     /// Set a project's monthly budget; needs --yes
     ///
     /// The PUT replaces the whole budget, so every field is given. The owner, the billing
@@ -72,20 +68,14 @@ pub(crate) enum Budget {
     #[command(after_help = examples(&[
         "hipc account projects budget delete proj_0a1b2c3d4e5f60718293 --yes",
     ]))]
-    Delete {
-        /// The project id, proj_ and 20 lowercase hex characters, from hipc account projects
-        /// list
-        #[arg(value_parser = project_id)]
-        project_id: String,
-    },
+    Delete(ProjectTarget),
 }
 
 /// `hipc account projects budget update`.
 #[derive(Debug, Args)]
 pub(crate) struct BudgetUpdate {
-    /// The project id, proj_ and 20 lowercase hex characters, from hipc account projects list
-    #[arg(value_parser = project_id)]
-    pub(crate) project_id: String,
+    #[command(flatten)]
+    pub(crate) project: ProjectTarget,
     /// The month's spend limit in US dollars to the cent, more than 0
     ///
     /// budget get reads amounts back in credits (1 credit = $1).
@@ -113,12 +103,7 @@ pub(crate) enum Quota {
     #[command(after_help = examples(&[
         "hipc account projects quota get proj_0a1b2c3d4e5f60718293",
     ]))]
-    Get {
-        /// The project id, proj_ and 20 lowercase hex characters, from hipc account projects
-        /// list
-        #[arg(value_parser = project_id)]
-        project_id: String,
-    },
+    Get(ProjectTarget),
     /// Change the project's own compute limits given; the others are kept; needs --yes
     ///
     /// Each limit is a whole number up to 2147483647, or none to leave only the account's
@@ -146,9 +131,8 @@ pub(crate) enum Quota {
     ])
 ))]
 pub(crate) struct QuotaUpdate {
-    /// The project id, proj_ and 20 lowercase hex characters, from hipc account projects list
-    #[arg(value_parser = project_id)]
-    pub(crate) project_id: String,
+    #[command(flatten)]
+    pub(crate) project: ProjectTarget,
     /// VMs, or none
     #[arg(long, value_name = "COUNT", value_parser = quota_limit)]
     pub(crate) vms: Option<QuotaLimit>,
@@ -233,8 +217,8 @@ pub(crate) enum ProjectTransfers {
         /// default, or bill_ and 20 lowercase hex characters
         ///
         /// Not --billing, which is the global flag that picks a billing account.
-        #[arg(long, value_name = "BILLING_ACCOUNT_ID", value_parser = bill_to)]
-        bill_to: Option<String>,
+        #[arg(long, value_name = "BILLING_ACCOUNT_ID", value_parser = BillingAccount::parse)]
+        bill_to: Option<BillingAccount>,
     },
     /// Decline a project offered to the token's own account; needs --yes
     ///
@@ -268,85 +252,10 @@ const TRANSFER_ID: &str =
 /// The most characters a project or billing account name may have: the console's limit.
 const MAX_NAME: usize = 64;
 
-/// A project or billing account name: 1 to 64 characters once trimmed, as the console
-/// checks it, sent trimmed as the console sends it. A control character, a tab or a newline
-/// included, is refused: the console shows a name on one line, where a tab or a newline
-/// would misalign or split it. So is a character that changes how text reads without being
-/// seen (a bidi override, a zero-width space), with which two names that look the same
-/// would be two projects, and a person would pick the wrong one.
+/// A project or billing account name: a [`label`] of 1 to 64 characters once trimmed, as the
+/// console checks it, sent trimmed as the console sends it.
 pub(crate) fn principal_name(value: &str) -> Result<String, String> {
-    let value = value.trim();
-    if value.is_empty() || value.chars().count() > MAX_NAME {
-        return Err(format!("a name is 1 to {MAX_NAME} characters"));
-    }
-    // The line and paragraph separators break a line as a newline does, so they get this
-    // message rather than the one about invisible characters.
-    if value
-        .chars()
-        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
-    {
-        return Err(
-            "a name holds no control character or line break, a tab or a newline \
-                    included, since it is shown on one line"
-                .to_owned(),
-        );
-    }
-    if value.chars().any(crate::output::changes_how_text_reads) {
-        return Err(
-            "a name holds no invisible character, such as a bidi override or a \
-                    zero-width space, since two names would look the same"
-                .to_owned(),
-        );
-    }
-    Ok(value.to_owned())
-}
-
-/// A project id, which goes into the path. `default` is refused: the Default project is
-/// the account itself and has no id these routes take.
-pub(crate) fn project_id(value: &str) -> Result<String, String> {
-    match hippius::ProjectId::parse(value, &hippius::Source::Argument) {
-        Ok(Some(_)) => Ok(value.to_owned()),
-        _ => Err(
-            "a project id is `proj_` and 20 lowercase hex characters, from \
-                  `hipc account projects list`; the Default project has none"
-                .to_owned(),
-        ),
-    }
-}
-
-/// A billing account id, which goes into the path; `default` is refused as for
-/// [`project_id`].
-pub(crate) fn billing_account_id(value: &str) -> Result<String, String> {
-    match hippius::BillingId::parse(value, &hippius::Source::Argument) {
-        Ok(Some(_)) => Ok(value.to_owned()),
-        _ => Err(
-            "a billing account id is `bill_` and 20 lowercase hex characters, from \
-                  `hipc account billing-accounts list`; the Default billing account has none"
-                .to_owned(),
-        ),
-    }
-}
-
-/// The billing account an accepted project goes to: `default` or an id, as the costs read
-/// takes it.
-fn bill_to(value: &str) -> Result<String, String> {
-    match hippius::BillingId::parse(value, &hippius::Source::Argument) {
-        Ok(_) => Ok(value.to_owned()),
-        Err(_) => Err(
-            "a billing account is `default`, or `bill_` and 20 lowercase hex \
-                       characters, from `hipc account billing-accounts list`"
-                .to_owned(),
-        ),
-    }
-}
-
-/// The account a project is offered to: an account id, never `self`, which names no
-/// account the server can find.
-fn account_id(value: &str) -> Result<String, String> {
-    match hippius::Selection::parse(value, &hippius::Source::Argument) {
-        Ok(hippius::Selection::Member(_)) => Ok(value.to_owned()),
-        _ => Err("an account id is `acct_` and 20 lowercase hex characters".to_owned()),
-    }
+    label(value, 1..=MAX_NAME, Spaces::Trimmed, "a name")
 }
 
 /// A budget's limit: US dollars to the cent, more than 0, as the console requires.
@@ -368,9 +277,8 @@ fn quota_limit(value: &str) -> Result<QuotaLimit, String> {
     if value == "none" {
         return Ok(QuotaLimit::None);
     }
-    let limit: u64 = value
-        .parse()
-        .map_err(|_| "a limit is a whole number, such as `5`, or `none`".to_owned())?;
+    let limit = whole_number(value)
+        .ok_or_else(|| "a limit is a whole number, such as `5`, or `none`".to_owned())?;
     if limit > MAX_QUOTA {
         return Err(format!("a limit is at most `{MAX_QUOTA}`"));
     }

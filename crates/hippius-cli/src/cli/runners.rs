@@ -1,10 +1,10 @@
 //! The grammar of `hipc compute runners`.
 
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
 
-use crate::cli::{
-    CursorArgs, INSTALLATION_ID, country_code, credits, examples, normal_credits, number,
-};
+use crate::cli::values::catalog;
+use crate::cli::{CursorArgs, INSTALLATION_ID, country_code, examples, number};
+use crate::units;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Runners {
@@ -103,25 +103,13 @@ fn monthly_cap(value: &str) -> Result<MonthlyCap, String> {
     if value == "none" {
         return Ok(MonthlyCap::None);
     }
-    let credits = normal_credits(&credits(value).map_err(|_| {
-        "a cap is a decimal number of credits, such as `50` or `20.5`, or `none`".to_owned()
-    })?);
-    // A credit is 10^18 base units, so a finer amount cannot be stored as sent, and the
-    // answer, which the update compares exactly with the amount sent, could never show it.
-    if credits
-        .split_once('.')
-        .is_some_and(|(_, fraction)| fraction.len() > MAX_CAP_FRACTION_DIGITS)
-    {
-        return Err(format!(
-            "a cap has at most {MAX_CAP_FRACTION_DIGITS} digits after the point, the smallest \
-             part of a credit"
-        ));
+    if units::Decimal::parse(value).is_none() {
+        return Err(
+            "a cap is a decimal number of credits, such as `50` or `20.5`, or `none`".to_owned(),
+        );
     }
-    Ok(MonthlyCap::Credits(credits))
+    units::credits(value, "a cap").map(MonthlyCap::Credits)
 }
-
-/// The decimals of a credit: 1 credit is 10^18 base units.
-const MAX_CAP_FRACTION_DIGITS: usize = 18;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum RunnerSettings {
@@ -178,8 +166,15 @@ pub(crate) struct RunnerSettingsUpdate {
     pub(crate) max_concurrent: Option<u32>,
     /// A size jobs may use: small, medium, or large; repeat it for several; the list given replaces
     /// the current one
-    #[arg(long = "allowed-size", value_name = "SIZE", value_enum)]
-    pub(crate) allowed_sizes: Vec<RunnerSize>,
+    ///
+    /// The server owns the list: these are its codes when this hipc was built, and any other
+    /// code is sent as given for the server to judge.
+    #[arg(
+        long = "allowed-size",
+        value_name = "SIZE",
+        value_parser = catalog("a runner size", &["small", "medium", "large"])
+    )]
+    pub(crate) allowed_sizes: Vec<String>,
     /// Where runners launch when a job's label names no region: a two-letter country code, such as
     /// FR, or anywhere
     #[arg(long, value_name = "CC", value_parser = runner_region)]
@@ -187,24 +182,6 @@ pub(crate) struct RunnerSettingsUpdate {
     /// Whether jobs from public repositories may run: true or false
     #[arg(long, value_name = "BOOL")]
     pub(crate) allow_public_repos: Option<bool>,
-}
-
-/// The runner sizes, the `hippius-<size>` labels the console offers.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum RunnerSize {
-    Small,
-    Medium,
-    Large,
-}
-
-impl RunnerSize {
-    pub(crate) fn code(self) -> &'static str {
-        match self {
-            Self::Small => "small",
-            Self::Medium => "medium",
-            Self::Large => "large",
-        }
-    }
 }
 
 /// A runner `default_region`: `anywhere`, sent as `""`, which the console reads as any

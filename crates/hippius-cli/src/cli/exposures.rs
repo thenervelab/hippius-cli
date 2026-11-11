@@ -2,7 +2,7 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 
-use crate::cli::{EXPOSURE_ID, examples, number, vm_id};
+use crate::cli::{EXPOSURE_ID, VmTarget, examples, number};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Exposures {
@@ -10,11 +10,7 @@ pub(crate) enum Exposures {
     #[command(after_help = examples(&[
         "hipc compute exposures list vm-1a2b",
     ]))]
-    List {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    List(VmTarget),
     /// Make one guest port of a VM reachable from the internet; needs --yes
     ///
     /// The VM is otherwise reachable only on the private overlay. --mode http, the server's
@@ -36,9 +32,8 @@ pub(crate) enum Exposures {
         "hipc compute exposures delete vm-1a2b 2 --yes",
     ]))]
     Delete {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
+        #[command(flatten)]
+        vm: VmTarget,
         /// The exposure id from hipc compute exposures list
         #[arg(value_parser = number(EXPOSURE_ID))]
         exposure_id: u64,
@@ -47,9 +42,8 @@ pub(crate) enum Exposures {
 
 #[derive(Debug, Args)]
 pub(crate) struct ExposureCreate {
-    /// The vm_id from hipc compute vms list
-    #[arg(value_parser = vm_id)]
-    pub(crate) vm_id: String,
+    #[command(flatten)]
+    pub(crate) vm: VmTarget,
     /// The guest port, 1 to 65535
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     pub(crate) port: u16,

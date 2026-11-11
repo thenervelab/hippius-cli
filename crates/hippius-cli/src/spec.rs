@@ -1452,11 +1452,8 @@ mod tests {
             (&flavor["required"], &flavor["repeats"]),
             (&json!(true), &json!(false))
         );
-        let tier = arg_of(&["compute", "databases", "create"], "--tier");
-        assert_eq!(
-            tier["possible_values"],
-            json!(["starter", "production", "ha"])
-        );
+        let tier = arg_of(&["compute", "vms", "create"], "--os-disk-tier");
+        assert_eq!(tier["possible_values"], json!(["nvme", "ssd", "hdd"]));
         assert_eq!(tier["default"], Value::Null);
         let profile = arg_of(&["s3", "configure"], "--aws-profile");
         assert_eq!(profile["default"], "hippius");

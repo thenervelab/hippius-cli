@@ -240,7 +240,7 @@ fn the_grammar_refuses_what_an_app_does_not_take() {
         &["--wait", "--no-wait"],
         &["--no-wait", "--wait-timeout", "5"],
         &["--wait-timeout", "0"],
-        &["--backup-interval", "60"],
+        &["--backup-interval", "0"],
         &["--region", "FRA"],
         &["--placement-group", "Web"],
     ] {

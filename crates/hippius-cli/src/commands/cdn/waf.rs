@@ -19,7 +19,7 @@ use hippius::routes::cdn::{self, BlockResponse, WafUpdateBody};
 use hippius::{Error, Request, Result, phrase};
 use serde_json::{Value, json};
 
-use crate::cli::{BlockContentType, BlockStatus, WafTier};
+use crate::cli::{BlockContentType, BlockStatus, WafTier, ZoneTarget};
 use crate::cli::{CdnLists, CdnWaf, GroupBy, ListItems, RuleAction, StatsStep, WafAnalytics};
 use crate::cli::{WafEvents, WafMode, WafRateLimits, WafRules, WafTest, WafUpdate, WafVersions};
 use crate::commands::cdn::rule_list::{
@@ -49,14 +49,14 @@ pub(crate) const LIST_REPUBLISHES: &str = "every zone whose WAF uses the list pu
 
 pub(super) fn waf(ctx: &Context<'_>, command: &CdnWaf) -> Result<Printed> {
     match command {
-        CdnWaf::Get { zone_id } => {
+        CdnWaf::Get(ZoneTarget { zone_id }) => {
             let request = Request::to(&cdn::WAF, [zone_id])
                 .about(format!("get the WAF settings of the CDN zone `{zone_id}`"))
                 .listed_by(ZONES);
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         CdnWaf::Update(args) => update(ctx, args),
-        CdnWaf::Status { zone_id } => {
+        CdnWaf::Status(ZoneTarget { zone_id }) => {
             let request = Request::to(&cdn::WAF_STATUS, [zone_id])
                 .about(format!(
                     "get where the WAF of the CDN zone `{zone_id}` is deployed"
@@ -67,12 +67,14 @@ pub(super) fn waf(ctx: &Context<'_>, command: &CdnWaf) -> Result<Printed> {
         CdnWaf::Analytics(args) => analytics(ctx, args),
         CdnWaf::Events(args) => events(ctx, args),
         CdnWaf::Test(args) => test(ctx, args),
-        CdnWaf::Rules(WafRules::Get { zone_id }) => read_rules(ctx, zone_id, &CUSTOM_RULES),
-        CdnWaf::RateLimits(WafRateLimits::Get { zone_id }) => {
+        CdnWaf::Rules(WafRules::Get(ZoneTarget { zone_id })) => {
+            read_rules(ctx, zone_id, &CUSTOM_RULES)
+        }
+        CdnWaf::RateLimits(WafRateLimits::Get(ZoneTarget { zone_id })) => {
             read_rules(ctx, zone_id, &RATE_LIMITS)
         }
         CdnWaf::Rules(WafRules::Update {
-            zone_id,
+            zone: ZoneTarget { zone_id },
             rules_file,
             remove_others,
             check,
@@ -86,7 +88,7 @@ pub(super) fn waf(ctx: &Context<'_>, command: &CdnWaf) -> Result<Printed> {
             update_rules(ctx, &update, &CUSTOM_RULES)
         }
         CdnWaf::RateLimits(WafRateLimits::Update {
-            zone_id,
+            zone: ZoneTarget { zone_id },
             rules_file,
             remove_others,
             check,
@@ -164,12 +166,12 @@ fn update(ctx: &Context<'_>, args: &WafUpdate) -> Result<Printed> {
     let billed = if names_billing { BILLED } else { "" };
     let consequence = (args.mode == Some(WafMode::Off))
         .then_some("the zone's WAF rules stop applying, and its WAF billing stops");
-    let request = Request::to(&cdn::WAF_UPDATE, [&args.zone_id])
+    let request = Request::to(&cdn::WAF_UPDATE, [&args.zone.zone_id])
         .listed_by(ZONES)
         .json(&body)
         .about(format!(
             "update the WAF of the CDN zone `{}`: set {}{billed}",
-            args.zone_id,
+            args.zone.zone_id,
             phrase::join(&set, "and")
         ));
     let client = ctx.load_authed_client()?;
@@ -178,10 +180,10 @@ fn update(ctx: &Context<'_>, args: &WafUpdate) -> Result<Printed> {
 
 /// `GET .../waf/analytics/` with the query parameters the docs name, each only when given.
 fn analytics(ctx: &Context<'_>, args: &WafAnalytics) -> Result<Printed> {
-    let request = Request::to(&cdn::WAF_ANALYTICS, [&args.zone_id])
+    let request = Request::to(&cdn::WAF_ANALYTICS, [&args.zone.zone_id])
         .about(format!(
             "get the WAF matches of the CDN zone `{}`",
-            args.zone_id
+            args.zone.zone_id
         ))
         .listed_by(ZONES);
     let query = [
@@ -198,10 +200,10 @@ fn analytics(ctx: &Context<'_>, args: &WafAnalytics) -> Result<Printed> {
 /// is printed as sent: the docs page it by a cursor whose shape no zone was on the account
 /// to check, so a later page is left to `hipc api`.
 fn events(ctx: &Context<'_>, args: &WafEvents) -> Result<Printed> {
-    let request = Request::to(&cdn::WAF_EVENTS, [&args.zone_id])
+    let request = Request::to(&cdn::WAF_EVENTS, [&args.zone.zone_id])
         .about(format!(
             "get the sampled WAF matches of the CDN zone `{}`",
-            args.zone_id
+            args.zone.zone_id
         ))
         .listed_by(ZONES);
     let query = [
@@ -250,14 +252,14 @@ fn test(ctx: &Context<'_>, args: &WafTest) -> Result<Printed> {
             format!("remove `{key}` from the request"),
         ));
     }
-    let request = Request::to(&cdn::WAF_TEST, [&args.zone_id])
+    let request = Request::to(&cdn::WAF_TEST, [&args.zone.zone_id])
         .json(&cdn::WafTestBody {
             expression: args.expression.as_deref(),
             request: &sample,
         })
         .about(format!(
             "test a request against the WAF of the CDN zone `{}`",
-            args.zone_id
+            args.zone.zone_id
         ))
         .listed_by(ZONES)
         .changes_nothing();
@@ -267,14 +269,14 @@ fn test(ctx: &Context<'_>, args: &WafTest) -> Result<Printed> {
 fn versions(ctx: &Context<'_>, command: &WafVersions) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
     match command {
-        WafVersions::List { zone_id } => {
+        WafVersions::List(ZoneTarget { zone_id }) => {
             let request = Request::to(&cdn::WAF_VERSIONS, [zone_id])
                 .about(format!("list the WAF versions of the CDN zone `{zone_id}`"))
                 .listed_by(ZONES);
             print_keyed_list(ctx, &client, &request, "versions")
         }
         WafVersions::Get {
-            zone_id,
+            zone: ZoneTarget { zone_id },
             version_number,
         } => {
             let request = Request::to(&cdn::WAF_VERSION, [zone_id, version_number])
@@ -287,7 +289,7 @@ fn versions(ctx: &Context<'_>, command: &WafVersions) -> Result<Printed> {
         // Swagger: "No input: the version is in the path"; the body is the empty object
         // its schema gives.
         WafVersions::Rollback {
-            zone_id,
+            zone: ZoneTarget { zone_id },
             version_number,
         } => {
             let request = Request::to(&cdn::WAF_ROLLBACK, [zone_id, version_number])

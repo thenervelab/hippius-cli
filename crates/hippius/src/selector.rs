@@ -2,6 +2,8 @@
 //! profile: each a checked id and where it came from, which every refusal names (tenet 15).
 //! Which routes take each one is decided in `account` and `project`.
 
+use std::fmt;
+
 use crate::error::{Error, Result};
 use crate::phrase::quote;
 use crate::source::Source;
@@ -20,6 +22,13 @@ impl AccountId {
     /// says what; the message goes on to name the account and where it came from.
     pub fn refusal(&self, what: &str) -> Error {
         self.0.refusal(what)
+    }
+}
+
+/// The id alone, as it goes into a path: `acct_...`.
+impl fmt::Display for AccountId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -89,6 +98,13 @@ impl PartialEq for ProjectId {
 
 impl Eq for ProjectId {}
 
+/// The id alone, as it goes into a path: `proj_...`.
+impl fmt::Display for ProjectId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A billing account id: `bill_` and 20 lowercase hex characters, and where it came from.
 #[derive(Debug, Clone)]
 pub struct BillingId(pub(crate) Selected);
@@ -119,6 +135,13 @@ impl PartialEq for BillingId {
 }
 
 impl Eq for BillingId {}
+
+/// The id alone, as it goes into a path: `bill_...`.
+impl fmt::Display for BillingId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 /// The text that selects the Default project or billing account: the console's own word
 /// for it in the costs path.

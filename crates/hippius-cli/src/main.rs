@@ -20,6 +20,7 @@ mod hidden;
 mod output;
 mod run;
 mod spec;
+mod units;
 
 use std::process::ExitCode;
 

@@ -5,29 +5,31 @@ use hippius::routes::compute::{self, Vm};
 use hippius::{Client, Error, Request, Result, phrase, view_of};
 use serde_json::{Value, json};
 
-use crate::cli::{BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, FailoverMode};
+use crate::cli::{
+    BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, FailoverMode, VmId, VmTarget,
+};
 use crate::commands::compute::launch::failover_clause;
 use crate::commands::compute::{VMS, refused_as};
-use crate::commands::{Printed, keyed_list, print_body, print_body_or, print_list_with};
-use crate::context::{Context, Gate, Write};
+use crate::commands::{
+    Catalog, Printed, keyed_list, print_body, print_body_or, print_list_with, send_from_catalog,
+};
+use crate::context::{Context, Gate, Step, Write};
 
 pub(super) fn backups(ctx: &Context<'_>, client: &Client, command: &Backups) -> Result<Printed> {
     let get = |request: Request| print_body(ctx, client, &request, Gate::Open);
-    let of_vm = |route: &Route<1>, what: &str, vm_id: &str| {
-        Request::to(route, [&vm_id])
+    let of_vm = |route: &Route<1>, what: &str, vm_id: &VmId| {
+        Request::to(route, [vm_id])
             .about(format!("get the {what} of the VM `{vm_id}`"))
             .listed_by(VMS)
     };
     match command {
-        Backups::Options => {
-            get(Request::to(&compute::BACKUP_OPTIONS, []).about("get the backup options"))
-        }
-        Backups::Policy(BackupPolicy::Get { vm_id }) => {
+        Backups::Options => get(options()),
+        Backups::Policy(BackupPolicy::Get(VmTarget { vm_id })) => {
             get(of_vm(&compute::BACKUP_POLICY, "backup policy", vm_id))
         }
         Backups::Policy(BackupPolicy::Update(args)) => policy_update(ctx, client, args),
         // Swagger: "Idempotent". The 204 has no body, so the document says what is now true.
-        Backups::Policy(BackupPolicy::Delete { vm_id }) => {
+        Backups::Policy(BackupPolicy::Delete(VmTarget { vm_id })) => {
             let request = Request::to(&compute::BACKUP_POLICY_DELETE, [vm_id])
                 .about(format!("turn off the backups of the VM `{vm_id}`"))
                 .listed_by(VMS);
@@ -41,7 +43,7 @@ pub(super) fn backups(ctx: &Context<'_>, client: &Client, command: &Backups) -> 
         // envelope holds `restore_points` as `items`, with the other fields beside it.
         // Swagger requires no field of the answer, so one without `restore_points`, or with
         // `null`, such as a VM whose backups are off, is an empty list.
-        Backups::List { vm_id } => {
+        Backups::List(VmTarget { vm_id }) => {
             let request = of_vm(&compute::BACKUPS, "backups", vm_id);
             print_list_with(ctx, client, &request, |response| {
                 let mut answer = response.json()?;
@@ -56,7 +58,7 @@ pub(super) fn backups(ctx: &Context<'_>, client: &Client, command: &Backups) -> 
         Backups::Restore(args) => restore(ctx, client, args),
         // A restore runs for minutes. Operations that finish later get a status command,
         // not a wait, so this reads once.
-        Backups::RestoreStatus { vm_id } => get(of_vm(
+        Backups::RestoreStatus(VmTarget { vm_id }) => get(of_vm(
             &compute::BACKUP_RESTORE_STATUS,
             "restore status",
             vm_id,
@@ -65,10 +67,11 @@ pub(super) fn backups(ctx: &Context<'_>, client: &Client, command: &Backups) -> 
 }
 
 /// `PUT .../backup/` with `interval_s`, and `failover_mode` only when passed: swagger says
-/// an omitted mode keeps the current one.
+/// an omitted mode keeps the current one. The interval is checked against the backup options
+/// after the question ([`send_from_catalog`]).
 fn policy_update(ctx: &Context<'_>, client: &Client, args: &BackupPolicyUpdate) -> Result<Printed> {
-    let vm_id = &args.vm_id;
-    let seconds = args.interval.seconds();
+    let vm_id = &args.vm.vm_id;
+    let seconds = args.interval;
     let failover = args.failover.map_or_else(String::new, |mode| {
         format!(", with {}", failover_clause(mode))
     });
@@ -82,13 +85,33 @@ fn policy_update(ctx: &Context<'_>, client: &Client, args: &BackupPolicyUpdate) 
             "back up the VM `{vm_id}` every {}{failover}",
             phrase::count(u64::from(seconds), "second")
         ));
-    let gate = Gate::Confirm {
-        consequence: Some(
-            "stored backups are billed per GB-hour from the balance, at the price `hipc \
-             compute backups options` shows",
-        ),
+    let consequence = "stored backups are billed per GB-hour from the balance, at the price \
+                       `hipc compute backups options` shows";
+    let wanted = seconds.to_string();
+    let catalog = Catalog {
+        read: options(),
+        codes: |answer| {
+            let options: compute::BackupOptions = view_of(answer);
+            options
+                .intervals
+                .into_iter()
+                .flatten()
+                .filter_map(|interval| interval.seconds.map(|seconds| seconds.to_string()))
+                .collect()
+        },
+        what: "a backup interval",
+        wanted: &wanted,
+        listed_by: "hipc compute backups options",
     };
-    print_body(ctx, client, &request, gate)
+    match send_from_catalog(ctx, client, &catalog, &request, Some(consequence))? {
+        Step::Sent(response) => response.document().map(Printed::Document),
+        Step::DryRun(doc) => Ok(Printed::Document(doc)),
+    }
+}
+
+/// The read of the backup options: the intervals, the retention, and the prices.
+fn options() -> Request {
+    Request::to(&compute::BACKUP_OPTIONS, []).about("get the backup options")
 }
 
 /// What a dry run shows for the server's `confirm` field. A real run fills it with the
@@ -106,7 +129,7 @@ const NAME_PLACEHOLDER: &str = "<the VM's name>";
 /// nothing is written. A dry run sends neither: its document is the POST with the name as a
 /// placeholder, and its `requests` lists the read, then the POST.
 fn restore(ctx: &Context<'_>, client: &Client, args: &BackupRestore) -> Result<Printed> {
-    let vm_id = &args.vm_id;
+    let vm_id = &args.vm.vm_id;
     let point = &args.run_id;
     let post = |name: &str| {
         Request::to(&compute::BACKUP_RESTORE, [vm_id]).json(&compute::BackupRestoreBody {

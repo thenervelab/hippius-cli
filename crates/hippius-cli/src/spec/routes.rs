@@ -177,8 +177,8 @@ fn s3(path: &[&str]) -> Vec<&'static Endpoint> {
     match path {
         ["plans"] => sends![s3::PLANS],
         ["subscription", "get"] => sends![s3::SUBSCRIPTION],
-        ["subscription", "subscribe"] => sends![s3::SUBSCRIBE],
-        ["subscription", "change"] => sends![s3::SUBSCRIPTION_CHANGE],
+        ["subscription", "subscribe"] => sends![s3::SUBSCRIBE, s3::PLANS],
+        ["subscription", "change"] => sends![s3::SUBSCRIPTION_CHANGE, s3::PLANS],
         ["subscription", "cancel"] => sends![s3::SUBSCRIPTION_CANCEL],
         ["subscription", "checkout"] => sends![s3::CHECKOUT],
         ["subscription", "history"] => sends![s3::HISTORY],
@@ -274,7 +274,9 @@ fn of_compute(path: &[&str]) -> Vec<&'static Endpoint> {
         ["exposures", "delete"] => sends![compute::EXPOSURE_DELETE],
         ["backups", "options"] => sends![compute::BACKUP_OPTIONS],
         ["backups", "policy", "get"] => sends![compute::BACKUP_POLICY],
-        ["backups", "policy", "update"] => sends![compute::BACKUP_POLICY_UPDATE],
+        ["backups", "policy", "update"] => {
+            sends![compute::BACKUP_POLICY_UPDATE, compute::BACKUP_OPTIONS]
+        }
         ["backups", "policy", "delete"] => sends![compute::BACKUP_POLICY_DELETE],
         ["backups", "list"] => sends![compute::BACKUPS],
         ["backups", "restore"] => sends![compute::BACKUP_RESTORE, compute::VM],

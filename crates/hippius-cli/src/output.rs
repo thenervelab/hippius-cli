@@ -1273,16 +1273,9 @@ mod tests {
                  [possible values: `bash`, `elvish`, `fish`, `powershell`, `zsh`]",
             ),
             (
-                &[
-                    "hipc",
-                    "compute",
-                    "runners",
-                    "settings",
-                    "update",
-                    "--allowed-size",
-                ],
-                "a value is required for `--allowed-size <SIZE>` but none was supplied \
-                 [possible values: `small`, `medium`, `large`]",
+                &["hipc", "compute", "vms", "create", "--os-disk-tier"],
+                "a value is required for `--os-disk-tier <TIER>` but none was supplied \
+                 [possible values: `nvme`, `ssd`, `hdd`]",
             ),
             (&["hipc", "--bogus"], "unexpected argument `--bogus` found"),
             (

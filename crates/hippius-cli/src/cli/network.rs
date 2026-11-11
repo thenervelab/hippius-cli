@@ -3,7 +3,7 @@
 use clap::Subcommand;
 
 use crate::cli::examples;
-use crate::cli::values::{Charset, Dash, word};
+use crate::cli::values::{Charset, Dash, Spaces, label, word};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Network {
@@ -175,20 +175,9 @@ fn vpc_id(value: &str) -> Result<String, String> {
 /// file out of the request.
 const MAX_PEER_NAME: usize = 255;
 
-/// A new peer name: one line that is not blank, so an empty `--name` or a newline inside
-/// it is refused here rather than by the server after the question. The server judges the
-/// rest. The value is sent trimmed: the rename compares the answer's name with what it
+/// A new peer name: a [`label`], so an empty `--name` or a newline inside it is refused here
+/// rather than by the server after the question. The server judges the rest. The value is sent trimmed: the rename compares the answer's name with what it
 /// sent, and a server that trims would otherwise answer a name hipc does not recognise.
 fn peer_name(value: &str) -> Result<String, String> {
-    let value = value.trim();
-    let valid = !value.is_empty()
-        && value.chars().count() <= MAX_PEER_NAME
-        && !value.chars().any(char::is_control);
-    if valid {
-        Ok(value.to_owned())
-    } else {
-        Err(format!(
-            "a peer name is one line of 1 to {MAX_PEER_NAME} characters"
-        ))
-    }
+    label(value, 1..=MAX_PEER_NAME, Spaces::Trimmed, "a peer name")
 }

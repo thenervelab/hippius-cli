@@ -36,7 +36,7 @@ use serde_json::{Map, Value};
 use zeroize::Zeroizing;
 
 use crate::cli::{Funding, PlanSetting, StorageCap};
-use crate::context::{self, Context, Gate, Step};
+use crate::context::{self, Context, Gate, Step, Write};
 
 /// Whether `error` is the API's refusal of a call made before `route` set the account's service up:
 /// a 403 whose `detail` is exactly `You must call <route> first.`, the sentence both setup routes
@@ -427,6 +427,61 @@ pub(crate) fn print_with(
         Step::Sent(response) => render(response).map(Printed::Document),
         Step::DryRun(doc) => Ok(Printed::Document(doc)),
     }
+}
+
+/// A catalog the server owns, and the code a write takes from it (owner decision D5).
+#[derive(Debug)]
+pub(crate) struct Catalog<'a> {
+    /// The read of the catalog.
+    pub(crate) read: Request,
+    /// The codes the catalog's answer lists.
+    pub(crate) codes: fn(&Value) -> Vec<String>,
+    /// What a code names, with its article: `an S3 plan`.
+    pub(crate) what: &'a str,
+    /// The code the write sends.
+    pub(crate) wanted: &'a str,
+    /// The command that lists the catalog, for the refusal's hint.
+    pub(crate) listed_by: &'a str,
+}
+
+/// Sends `write` once `catalog` lists the code it sends, as `hipc hub subscription subscribe`
+/// resolves its plan: the question first, then the catalog read, then the write. A code the
+/// catalog does not list is refused (`usage`) after the read, and nothing is written. A dry run
+/// reads nothing and lists the read and the write.
+pub(crate) fn send_from_catalog(
+    ctx: &Context<'_>,
+    client: &Client,
+    catalog: &Catalog<'_>,
+    write: &Request,
+    consequence: Option<&str>,
+) -> Result<Step> {
+    let checked = match ctx.check_write(client, write)? {
+        Write::DryRun(_) => {
+            return ctx
+                .dry_run_of(client, &[&catalog.read, write])
+                .map(Step::DryRun);
+        }
+        Write::Checked(checked) => checked,
+    };
+    let confirmed = ctx.confirm_write(checked, &write.action(), consequence)?;
+    let codes = (catalog.codes)(&ctx.send(client, &catalog.read)?.json()?);
+    if !codes.iter().any(|code| code == catalog.wanted) {
+        let offered = if codes.is_empty() {
+            "the server lists none".to_owned()
+        } else {
+            let quoted: Vec<String> = codes.iter().map(phrase::quote).collect();
+            format!("the server offers {}", phrase::join(&quoted, "and"))
+        };
+        return Err(Error::usage(
+            format!(
+                "{} `{}` is not one the server offers: {offered}",
+                catalog.what, catalog.wanted
+            ),
+            format!("run `{}` to see them", catalog.listed_by),
+        ));
+    }
+    ctx.send_confirmed(client, write, &confirmed)
+        .map(Step::Sent)
 }
 
 /// Sends `request`, a GET of a list, and prints what `render` makes of the answer, the list

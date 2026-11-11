@@ -303,7 +303,7 @@ fn create_checks_usage_then_reveal_then_the_token_then_confirmation_with_zero_re
         "databases",
         "create",
         "--tier",
-        "gold",
+        "Gold",
         "--size",
         "s",
         "--engine-version",
@@ -347,12 +347,13 @@ fn bad_tiers_sizes_versions_and_wait_flags_are_usage_with_zero_requests() {
         ]
     };
     for argv in [
+        // The codes are the server's (owner decision D5), so only a value that is not one
+        // lowercase code is refused here.
         base("Starter", "s", "18"),
-        base("enterprise", "s", "18"),
-        base("starter", "xxl", "18"),
+        base("a b", "s", "18"),
         base("starter", "S", "18"),
-        base("starter", "s", "15"),
-        base("starter", "s", "18.1"),
+        base("starter", "x_l", "18"),
+        base("starter", "s", "-18"),
         base("starter", "s", ""),
     ] {
         Hipc::against(&Home::new(), &server)

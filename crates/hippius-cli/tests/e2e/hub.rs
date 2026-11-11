@@ -617,8 +617,8 @@ fn bad_namespace_names_are_usage_without_a_request() {
             .fails(2, "usage");
         assert_eq!(
             error["message"],
-            "`-acme` is not a namespace name: a name is 1 to 63 lowercase letters, digits, and \
-             `-`, and does not start with `-`"
+            "invalid value `-acme` for `<NAMESPACE>`: a namespace name is 1 to 63 lowercase \
+             letters, digits, and `-`, and does not start with `-`, such as `my-team`"
         );
     }
     assert!(server.requests().is_empty());

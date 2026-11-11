@@ -30,8 +30,8 @@ const REVISION_PLACEHOLDER: &str = "<the revision the read returns>";
 /// file leaves out is refused unless `--remove-others` is passed ([`replace_list`]).
 pub(super) fn update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed> {
     let (rules, read) = firewall_rules(&args.rules_file)?;
-    let vm_id = &args.vm_id;
-    let (action, consequence) = firewall_question(vm_id, &args.rules_file, &read);
+    let vm_id = &args.vm.vm_id;
+    let (action, consequence) = firewall_question(vm_id.as_str(), &args.rules_file, &read);
     let put_body = |revision: Option<&str>| {
         let body = FirewallUpdateBody {
             rules: &rules,
@@ -40,7 +40,7 @@ pub(super) fn update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed
         serde_json::to_value(body).expect("a firewall body is plain JSON data")
     };
     let entries = read.iter().map(Rule::entry).collect();
-    let read = firewall_get(vm_id);
+    let read = firewall_get(vm_id.as_str());
     let read_action = read.action();
     let replace = Replace {
         write: Request::to(&compute::FIREWALL_UPDATE, [&vm_id])
@@ -103,7 +103,7 @@ pub(super) fn update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed
             (Some(409), false) => error.with_hint(format!(
                 "run `{}`, edit the rules it prints, and pass its `revision` as \
                  `--base-revision`",
-                crate::cli::with_id("compute firewall get", vm_id, "")
+                crate::cli::with_id("compute firewall get", vm_id.as_str(), "")
             )),
             (Some(409), true) => {
                 let again = phrase::command(ctx.args());

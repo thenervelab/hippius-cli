@@ -4,7 +4,11 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand, ValueEnum};
 
-use crate::cli::{ListArgs, PayFrom, SecretFile, examples, history_limit, intent_id};
+use crate::cli::values::catalog;
+use crate::cli::{
+    BucketName, ListArgs, OneTimeSecret, PayFrom, TokenId, examples, history_limit, intent_id,
+};
+use crate::units::whole_number;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum S3 {
@@ -121,8 +125,12 @@ pub(crate) enum S3Subscription {
 #[derive(Debug, Args)]
 pub(crate) struct S3Subscribe {
     /// The plan code: pro, business, or enterprise
-    #[arg(long, value_enum)]
-    pub(crate) plan: S3Plan,
+    ///
+    /// The server owns the plans: these are its codes when this hipc was built, and hipc s3 plans
+    /// lists them. After the question, the plans are read, and a code they do not list is refused
+    /// before anything is bought.
+    #[arg(long, value_parser = s3_plan())]
+    pub(crate) plan: String,
     /// Pay from the balance (credits), or start a card checkout (card)
     #[arg(long, value_enum, default_value_t = PayFrom::Credits)]
     pub(crate) pay_from: PayFrom,
@@ -137,9 +145,13 @@ pub(crate) struct S3Subscribe {
     clap::ArgGroup::new("change").required(true).args(["plan", "pay_from", "storage_cap"])
 ))]
 pub(crate) struct S3Change {
-    /// The plan code to switch to
-    #[arg(long, value_enum)]
-    pub(crate) plan: Option<S3Plan>,
+    /// The plan code to switch to: pro, business, or enterprise
+    ///
+    /// The server owns the plans: these are its codes when this hipc was built, and hipc s3 plans
+    /// lists them. After the question, the plans are read, and a code they do not list is refused
+    /// before anything is bought.
+    #[arg(long, value_parser = s3_plan())]
+    pub(crate) plan: Option<String>,
     #[command(flatten)]
     pub(crate) setting: PlanSetting,
 }
@@ -194,30 +206,17 @@ fn storage_cap(text: &str) -> Result<StorageCap, String> {
     if text == "default" {
         return Ok(StorageCap::Default);
     }
-    match text.parse::<u64>() {
-        Ok(bytes) if (1..=MAX_STORAGE_CAP).contains(&bytes) => Ok(StorageCap::Bytes(bytes)),
+    match whole_number(text) {
+        Some(bytes) if (1..=MAX_STORAGE_CAP).contains(&bytes) => Ok(StorageCap::Bytes(bytes)),
         _ => Err(format!(
             "a cap is a whole number of bytes from 1 to {MAX_STORAGE_CAP}, or default"
         )),
     }
 }
 
-/// The S3 plan codes. Pay as you go is the absence of a plan.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum S3Plan {
-    Pro,
-    Business,
-    Enterprise,
-}
-
-impl S3Plan {
-    pub(crate) fn code(self) -> &'static str {
-        match self {
-            Self::Pro => "pro",
-            Self::Business => "business",
-            Self::Enterprise => "enterprise",
-        }
-    }
+/// An S3 plan code, which the server's catalog judges. Pay as you go is the absence of a plan.
+fn s3_plan() -> impl Fn(&str) -> Result<String, String> + Clone {
+    catalog("an S3 plan", &["pro", "business", "enterprise"])
 }
 
 #[derive(Debug, Subcommand)]
@@ -247,7 +246,8 @@ pub(crate) enum Buckets {
     ]))]
     Create {
         /// The bucket name: 3 to 63 lowercase letters, digits, ., and -
-        bucket_name: String,
+        #[arg(value_parser = BucketName::parse)]
+        bucket_name: BucketName,
         /// The S3 region, sent as given; not a compute country code
         ///
         /// Without it the server chooses. The API documents no list of codes, only the default,
@@ -261,7 +261,8 @@ pub(crate) enum Buckets {
     ]))]
     Delete {
         /// The bucket name
-        bucket_name: String,
+        #[arg(value_parser = BucketName::parse)]
+        bucket_name: BucketName,
     },
 }
 
@@ -271,7 +272,8 @@ const MAX_PRESIGN_SECONDS: i64 = 7 * 24 * 60 * 60;
 #[derive(Debug, Args)]
 pub(crate) struct Presign {
     /// The bucket name
-    pub(crate) bucket_name: String,
+    #[arg(value_parser = BucketName::parse)]
+    pub(crate) bucket_name: BucketName,
     /// The object key, such as 2026/cat.jpg
     pub(crate) key: String,
     /// How long the URL works, in seconds, 1 to 604800 (7 days); the server's default is 3600
@@ -315,7 +317,8 @@ pub(crate) enum BucketObjects {
 #[derive(Debug, Args)]
 pub(crate) struct ObjectsList {
     /// The bucket name
-    pub(crate) bucket_name: String,
+    #[arg(value_parser = BucketName::parse)]
+    pub(crate) bucket_name: BucketName,
     /// Only the keys that start with this text, such as 2026/
     #[arg(long, value_name = "TEXT")]
     pub(crate) prefix: Option<String>,
@@ -365,7 +368,8 @@ pub(crate) enum BucketAcl {
     ]))]
     Get {
         /// The bucket name
-        bucket_name: String,
+        #[arg(value_parser = BucketName::parse)]
+        bucket_name: BucketName,
     },
     /// Replace a bucket's whole S3 bucket policy; needs --yes, --public, and --remove-others
     ///
@@ -382,7 +386,8 @@ pub(crate) enum BucketAcl {
 #[derive(Debug, Args)]
 pub(crate) struct AclUpdate {
     /// The bucket name
-    pub(crate) bucket_name: String,
+    #[arg(value_parser = BucketName::parse)]
+    pub(crate) bucket_name: BucketName,
     /// The file holding the new policy as a JSON object, or - for stdin
     ///
     /// The policy alone, as the policy field of hipc s3 buckets acl get prints it.
@@ -479,11 +484,8 @@ pub(crate) struct TokenCreate {
     /// A master token or a sub token
     #[arg(long, value_enum)]
     pub(crate) kind: TokenKind,
-    /// Print the one-time secret on stdout; without it or --secret-file nothing is sent
-    #[arg(long)]
-    pub(crate) reveal: bool,
     #[command(flatten)]
-    pub(crate) secret_file: SecretFile,
+    pub(crate) secret: OneTimeSecret,
     /// A label for the token
     #[arg(long)]
     pub(crate) name: Option<String>,
@@ -523,18 +525,16 @@ pub(crate) struct TokenTarget {
     #[arg(long, value_enum)]
     pub(crate) kind: TokenKind,
     /// The token's id (a UUID), from hipc s3 tokens list
-    pub(crate) token_id: String,
+    #[arg(value_parser = TokenId::parse)]
+    pub(crate) token_id: TokenId,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct TokenRotate {
     #[command(flatten)]
     pub(crate) target: TokenTarget,
-    /// Print the new one-time secret on stdout; without it or --secret-file nothing is sent
-    #[arg(long)]
-    pub(crate) reveal: bool,
     #[command(flatten)]
-    pub(crate) secret_file: SecretFile,
+    pub(crate) secret: OneTimeSecret,
 }
 
 // The key pair comes from one place: the token document, or the id and the secret file

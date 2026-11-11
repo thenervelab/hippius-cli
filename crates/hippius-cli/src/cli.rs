@@ -30,6 +30,7 @@ mod firewall;
 mod hub;
 mod hub_keys;
 mod hub_models;
+mod ids;
 mod kubernetes;
 mod network;
 mod projects;
@@ -44,6 +45,10 @@ pub(crate) use crate::cli::app_engine::{
 };
 pub(crate) use crate::cli::hub_keys::{HubKeys, KeyCreate};
 pub(crate) use crate::cli::hub_models::{HubEvents, HubModels};
+pub(crate) use crate::cli::ids::{
+    AppTarget, BillingAccount, BucketName, ClusterTarget, DatabaseTarget, Namespace, ProjectTarget,
+    TokenId, VmId, VmTarget, ZoneId, ZoneTarget,
+};
 pub(crate) use crate::cli::kubernetes::{
     ClusterKubeconfig, Clusters, Kubernetes, KubernetesBackups, NodePoolCreate, NodePoolScale,
     NodePools, NodeReplace, Nodes, OperationTarget, Operations,
@@ -68,20 +73,19 @@ pub(crate) use crate::cli::account::{
 pub(crate) use crate::cli::api::Api;
 pub(crate) use crate::cli::auth::Auth;
 pub(crate) use crate::cli::backups::{
-    BackupInterval, BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, FailoverMode,
+    BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, FailoverMode, backup_interval,
 };
 pub(crate) use crate::cli::billing::{
     AutoReload, AutoReloadUpdate, Billing, BillingProfile, CHAIN_MINIMUM, Gamma, GammaConversions,
-    GammaHotkeys, Invoices, ONE, Planck, ProfileUpdate, ReloadCap, TopUp, TopUpMethod, Usd,
-    conversion_id, usd,
+    GammaHotkeys, Invoices, ProfileUpdate, ReloadCap, TopUp, TopUpMethod, conversion_id,
 };
 pub(crate) use crate::cli::cdn::{
     Cdn, CdnCap, CdnEstimate, CdnHostnames, CdnPurge, CdnPurges, CdnRules, CdnStats, CdnZones,
     DnsSetup, StatsStep, ZoneCreate, ZoneSettings, ZoneUpdate,
 };
 pub(crate) use crate::cli::compute::{
-    Compute, DedicatedDisk, DiskTier, GuestPoweroff, PowerPolicy, PublicIp, SshKeys, VmCreate, Vms,
-    flavor, placement_group,
+    Compute, DedicatedDisk, DiskTier, GuestPoweroff, LaunchFlags, PowerPolicy, PublicIp, SshKeys,
+    VmCreate, Vms, flavor,
 };
 pub(crate) use crate::cli::databases::{
     CREDENTIALS_JSON, DatabaseCreate, DatabaseExposure, DatabaseRestore, Databases, ENV_FILE,
@@ -97,8 +101,7 @@ pub(crate) use crate::cli::hub::{
     Visibility,
 };
 pub(crate) use crate::cli::runners::{
-    MonthlyCap, RunnerInstallations, RunnerLimit, RunnerSettings, RunnerSettingsUpdate, RunnerSize,
-    Runners,
+    MonthlyCap, RunnerInstallations, RunnerLimit, RunnerSettings, RunnerSettingsUpdate, Runners,
 };
 pub(crate) use crate::cli::s3::{
     AclUpdate, BucketAcl, BucketObjects, Buckets, Configure, Funding, MAX_CONTINUATION_TOKEN_BYTES,
@@ -611,20 +614,6 @@ fn reference(value: &str) -> Result<String, String> {
     }
 }
 
-/// A `vm_id`: it goes into the URL path, so only the characters an id has are accepted.
-/// The swagger types it as a string; 1 to 64 letters, digits, `-`, and `_` is a guess
-/// wide enough for the UUIDs and slugs seen, and narrow enough that no `/` or `?` can
-/// change the route.
-pub(crate) fn vm_id(value: &str) -> Result<String, String> {
-    word(
-        value,
-        1..=64,
-        Charset::Slug,
-        Dash::Taken,
-        "a VM id is 1 to 64 letters, digits, `-`, and `_`",
-    )
-}
-
 // The refusal of each numeric id: what it is, and which command prints it.
 const SUBSCRIPTION_ID: &str =
     "a subscription id is a whole number, from `hipc hub subscription get`";
@@ -632,7 +621,6 @@ const RESIZE_ID: &str =
     "a resize id is a whole number, from the answer of `hipc compute vms resize`";
 const SSH_KEY_ID: &str = "an SSH key id is a whole number, from `hipc compute ssh-keys list`";
 const EXPOSURE_ID: &str = "an exposure id is a whole number, from `hipc compute exposures list`";
-const DATABASE_ID: &str = "a database id is a whole number, from `hipc compute databases list`";
 const INSTALLATION_ID: &str =
     "an installation id is a whole number, from `hipc compute runners installations list`";
 const PURGE_ID: &str = "a purge id is a whole number, from the answer of `hipc cdn purges create`";
@@ -659,50 +647,6 @@ pub(crate) fn region(value: &str) -> Result<String, String> {
 fn country_code(value: &str) -> Option<String> {
     (value.len() == 2 && value.bytes().all(|b| b.is_ascii_alphabetic()))
         .then(|| value.to_ascii_uppercase())
-}
-
-/// A zone id: `z` and 12 characters. It goes into the URL path. Any ASCII letter or digit
-/// is accepted for the 12, because the API does not document the alphabet or its case;
-/// the check exists so that no `/`, `?`, or `..` can change the route.
-fn zone_id(value: &str) -> Result<String, String> {
-    let valid = value.len() == 13
-        && value.starts_with('z')
-        && value.bytes().all(|b| b.is_ascii_alphanumeric());
-    if valid {
-        Ok(value.to_owned())
-    } else {
-        Err("a zone id is `z` and 12 letters or digits, such as `zab12cd34ef56`".to_owned())
-    }
-}
-
-/// A credit amount: a decimal number such as `20` or `20.5`, sent as the string the caller
-/// wrote.
-fn credits(value: &str) -> Result<String, String> {
-    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
-    let valid = match value.split_once('.') {
-        Some((whole, fraction)) => digits(whole) && digits(fraction),
-        None => digits(value),
-    };
-    if valid {
-        Ok(value.to_owned())
-    } else {
-        Err("a credit amount is a decimal number, such as `20` or `20.5`".to_owned())
-    }
-}
-
-/// A credit amount [`credits`] accepted, in its normal form: no leading zeros before the
-/// point and no trailing zeros after it, so the question and the body show `50` for
-/// `050.00`, and the decimals counted against a credit's 18 are the ones that hold value.
-fn normal_credits(credits: &str) -> String {
-    let (whole, fraction) = credits.split_once('.').unwrap_or((credits, ""));
-    let whole = match whole.trim_start_matches('0') {
-        "" => "0",
-        digits => digits,
-    };
-    match fraction.trim_end_matches('0') {
-        "" => whole.to_owned(),
-        fraction => format!("{whole}.{fraction}"),
-    }
 }
 
 /// `--limit`, `--page-token`, and `--all` on a paginated list (tenet 6).
@@ -743,7 +687,7 @@ pub(crate) struct CursorArgs {
 /// cannot read it as a flag. A hint or `next_step` built from server text names a value only
 /// through this, because an agent runs those commands as written (tenet 15) and a `;`, a
 /// `$(`, or a line break in the value would become part of the command.
-pub(crate) fn as_argument(value: &str, parse: fn(&str) -> Result<String, String>) -> Option<&str> {
+pub(crate) fn as_argument<T>(value: &str, parse: fn(&str) -> Result<T, String>) -> Option<&str> {
     (parse(value).is_ok() && !value.starts_with('-')).then_some(value)
 }
 
@@ -799,10 +743,7 @@ fn cursor_token(text: &str) -> Result<String, String> {
 
 /// `text` as a `u64` in plain digits, written back without leading zeros.
 fn decimal(text: &str) -> Option<String> {
-    if !text.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    text.parse::<u64>().ok().map(|number| number.to_string())
+    crate::units::whole_number(text).map(|number| number.to_string())
 }
 
 /// The file `what` goes to, such as an invoice PDF or a kubeconfig: a path, not `-`, at which
@@ -857,10 +798,14 @@ fn secret_file(text: &str) -> Result<PathBuf, String> {
     new_file(text, "the secret")
 }
 
-/// `--secret-file`, on every command that issues a one-time secret but a database's, whose
-/// several secrets go to `--credentials-dir`.
+/// `--reveal` and `--secret-file`, on every command that issues a one-time secret but a
+/// database's, whose several secrets go to `--credentials-dir`: one of them is required before
+/// anything is sent (tenet 9).
 #[derive(Debug, Args)]
-pub(crate) struct SecretFile {
+pub(crate) struct OneTimeSecret {
+    /// Print the one-time secret on stdout; without it or --secret-file nothing is sent
+    #[arg(long)]
+    pub(crate) reveal: bool,
     /// Write the one-time secret to a new file of mode 0600 at this path instead of stdout; in
     /// place of --reveal
     ///
@@ -987,6 +932,51 @@ mod tests {
     use clap::CommandFactory as _;
 
     use super::*;
+
+    /// Every value of every enum whose `code` the API receives goes on the wire as the word the
+    /// command line takes for it, so a renamed variant cannot send a word the help does not
+    /// show. A new enum with a `code` joins this list. `ScopeType` is the one whose wire word
+    /// differs (`single-bucket` is sent as `single_bucket`), which
+    /// `e2e::s3::every_scope_type_has_its_wire_name` checks.
+    #[test]
+    fn every_value_enum_is_sent_as_it_is_typed() {
+        fn typed<T: ValueEnum>(value: &T) -> String {
+            let possible = value.to_possible_value().expect("no value is skipped");
+            possible.get_name().to_owned()
+        }
+        macro_rules! sent_as_typed {
+            ($($enum:ty),+ $(,)?) => {$(
+                for value in <$enum>::value_variants() {
+                    assert_eq!(value.code().to_string(), typed(value), stringify!($enum));
+                }
+            )+};
+        }
+        sent_as_typed!(
+            account::CostGroup,
+            FailoverMode,
+            StatsStep,
+            GuestPoweroff,
+            DiskTier,
+            compute::UsageRange,
+            drive::DrivePlan,
+            drive::Period,
+            PayFrom,
+            ExposeMode,
+            ExposeProtocol,
+            Funding,
+            TokenKind,
+            TicketUpdateStatus,
+            support::TicketStatus,
+            TicketPriority,
+            WafMode,
+            WafTier,
+            BlockStatus,
+            BlockContentType,
+            GroupBy,
+            RuleAction,
+            waf::ListKind,
+        );
+    }
 
     /// An id that reads as a flag goes last, after `--`, and the printed command parses with
     /// the id as the positional; any other id stays in place.

@@ -51,7 +51,7 @@ use hippius::routes::Route;
 use hippius::routes::compute;
 use hippius::{Error, Request, Result, view_of};
 
-use crate::cli::{Compute, Firewall};
+use crate::cli::{Compute, Firewall, VmTarget};
 use crate::commands::{Printed, print_body, print_envelope};
 use crate::context::{self, Context, Gate};
 
@@ -126,10 +126,10 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Compute) -> Result<Printed> {
         Compute::PublicIp(command) => {
             public_ip::public_ip(ctx, &ctx.load_authed_client()?, command)
         }
-        Compute::Firewall(Firewall::Get { vm_id }) => print_body(
+        Compute::Firewall(Firewall::Get(VmTarget { vm_id })) => print_body(
             ctx,
             &ctx.load_authed_client()?,
-            &firewall::firewall_get(vm_id),
+            &firewall::firewall_get(vm_id.as_str()),
             Gate::Open,
         ),
         Compute::Firewall(Firewall::Update(args)) => firewall::update(ctx, args),

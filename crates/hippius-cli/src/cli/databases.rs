@@ -2,10 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
 use hippius::phrase;
 
-use crate::cli::{DATABASE_ID, examples, number};
+use crate::cli::values::catalog;
+use crate::cli::{DatabaseTarget, examples};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Databases {
@@ -18,11 +19,7 @@ pub(crate) enum Databases {
     #[command(after_help = examples(&[
         "hipc compute databases get 7",
     ]))]
-    Get {
-        /// The database id from hipc compute databases list
-        #[arg(value_parser = number(DATABASE_ID))]
-        database_id: u64,
-    },
+    Get(DatabaseTarget),
     /// Create a database; spends money: needs --yes, and --reveal or --credentials-dir, because
     /// the answer holds credentials shown only once
     ///
@@ -53,11 +50,7 @@ pub(crate) enum Databases {
     #[command(after_help = examples(&[
         "hipc compute databases delete 7 --yes",
     ]))]
-    Delete {
-        /// The database id from hipc compute databases list
-        #[arg(value_parser = number(DATABASE_ID))]
-        database_id: u64,
-    },
+    Delete(DatabaseTarget),
     /// A drained restart of PostgreSQL, not a power cycle; needs --yes
     ///
     /// The restart is queued until the guest's next heartbeat, so the answer does not prove that
@@ -65,11 +58,7 @@ pub(crate) enum Databases {
     #[command(after_help = examples(&[
         "hipc compute databases restart 7 --yes",
     ]))]
-    Restart {
-        /// The database id from hipc compute databases list
-        #[arg(value_parser = number(DATABASE_ID))]
-        database_id: u64,
-    },
+    Restart(DatabaseTarget),
     /// Create a new database from this one's backups, at a point in time; spends money: needs
     /// --yes, and --reveal or --credentials-dir
     ///
@@ -94,11 +83,7 @@ pub(crate) enum Databases {
     #[command(after_help = examples(&[
         "hipc compute databases events 7",
     ]))]
-    Events {
-        /// The database id from hipc compute databases list
-        #[arg(value_parser = number(DATABASE_ID))]
-        database_id: u64,
-    },
+    Events(DatabaseTarget),
     /// The samples behind the console's charts, oldest first, the latest one, and when the guest
     /// agent last reported
     ///
@@ -106,11 +91,7 @@ pub(crate) enum Databases {
     #[command(after_help = examples(&[
         "hipc compute databases metrics 7",
     ]))]
-    Metrics {
-        /// The database id from hipc compute databases list
-        #[arg(value_parser = number(DATABASE_ID))]
-        database_id: u64,
-    },
+    Metrics(DatabaseTarget),
     /// The launches the platform refused in the last 7 days
     ///
     /// A refused create leaves no database, only an entry here.
@@ -123,14 +104,23 @@ pub(crate) enum Databases {
 #[derive(Debug, Args)]
 pub(crate) struct DatabaseCreate {
     /// The tier: starter and production are one instance; ha is three, with failover
-    #[arg(long, value_enum)]
-    pub(crate) tier: DatabaseTier,
-    /// The instance size
-    #[arg(long, value_enum)]
-    pub(crate) size: DatabaseSize,
-    /// The PostgreSQL major version
-    #[arg(long, value_enum)]
-    pub(crate) engine_version: EngineVersion,
+    ///
+    /// The server owns the list: these are its codes when this hipc was built, and any other
+    /// code is sent as given for the server to judge.
+    #[arg(long, value_parser = catalog("a database tier", &["starter", "production", "ha"]))]
+    pub(crate) tier: String,
+    /// The instance size: s, m, l, or xl
+    ///
+    /// The server owns the list: these are its codes when this hipc was built, and any other
+    /// code is sent as given for the server to judge.
+    #[arg(long, value_parser = catalog("a database size", &["s", "m", "l", "xl"]))]
+    pub(crate) size: String,
+    /// The PostgreSQL major version: 16, 17, or 18
+    ///
+    /// The server owns the list: these are its codes when this hipc was built, and any other
+    /// code is sent as given for the server to judge.
+    #[arg(long, value_parser = catalog("an engine version", &["16", "17", "18"]))]
+    pub(crate) engine_version: String,
     /// A label
     ///
     /// The server defaults it to db-<id>.
@@ -233,70 +223,10 @@ fn credentials_dir(text: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// The `tier` values `POST /api/databases/` accepts (swagger enum).
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum DatabaseTier {
-    Starter,
-    Production,
-    Ha,
-}
-
-impl DatabaseTier {
-    pub(crate) fn code(self) -> &'static str {
-        match self {
-            Self::Starter => "starter",
-            Self::Production => "production",
-            Self::Ha => "ha",
-        }
-    }
-}
-
-/// The `size` values `POST /api/databases/` accepts (swagger enum).
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum DatabaseSize {
-    S,
-    M,
-    L,
-    Xl,
-}
-
-impl DatabaseSize {
-    pub(crate) fn code(self) -> &'static str {
-        match self {
-            Self::S => "s",
-            Self::M => "m",
-            Self::L => "l",
-            Self::Xl => "xl",
-        }
-    }
-}
-
-/// The PostgreSQL majors `POST /api/databases/` accepts (swagger: "16, 17 or 18").
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum EngineVersion {
-    #[value(name = "16")]
-    V16,
-    #[value(name = "17")]
-    V17,
-    #[value(name = "18")]
-    V18,
-}
-
-impl EngineVersion {
-    pub(crate) fn code(self) -> &'static str {
-        match self {
-            Self::V16 => "16",
-            Self::V17 => "17",
-            Self::V18 => "18",
-        }
-    }
-}
-
 #[derive(Debug, Args)]
 pub(crate) struct DatabaseRestore {
-    /// The database id from hipc compute databases list
-    #[arg(value_parser = number(DATABASE_ID))]
-    pub(crate) database_id: u64,
+    #[command(flatten)]
+    pub(crate) database: DatabaseTarget,
     /// The point in time to restore to, in RFC 3339 such as 2026-10-27T09:30:00Z
     ///
     /// Without it the backups are replayed to the end of the archive.
@@ -367,20 +297,12 @@ pub(crate) enum DatabaseExposure {
     #[command(after_help = examples(&[
         "hipc compute databases exposure create 7 --yes",
     ]))]
-    Create {
-        /// The database id from hipc compute databases list
-        #[arg(value_parser = number(DATABASE_ID))]
-        database_id: u64,
-    },
+    Create(DatabaseTarget),
     /// Take the primary off the public edge; needs --yes
     #[command(after_help = examples(&[
         "hipc compute databases exposure delete 7 --yes",
     ]))]
-    Delete {
-        /// The database id from hipc compute databases list
-        #[arg(value_parser = number(DATABASE_ID))]
-        database_id: u64,
-    },
+    Delete(DatabaseTarget),
 }
 
 #[cfg(test)]

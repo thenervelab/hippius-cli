@@ -171,11 +171,11 @@ fn a_name_outside_the_console_rule_is_refused() {
     let server = Server::start(vec![]);
     let long = "x".repeat(65);
     let fits = "é".repeat(64);
-    let too_short_or_long = "a name is 1 to 64 characters";
+    let too_short_or_long = "a name is one line of 1 to 64 characters";
     let control = "a name holds no control character or line break, a tab or a newline \
                    included, since it is shown on one line";
     let invisible = "a name holds no invisible character, such as a bidi override or a \
-                     zero-width space, since two names would look the same";
+                     zero-width space, since two that look the same would differ";
     for (name, why) in [
         ("", too_short_or_long),
         ("   ", too_short_or_long),

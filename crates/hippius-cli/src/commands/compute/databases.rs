@@ -22,8 +22,8 @@ use hippius::{Error, Request, Response, Result, phrase, view_of, without_field};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
-    CREDENTIALS_JSON, DatabaseCreate, DatabaseExposure, DatabaseRestore, Databases, ENV_FILE,
-    TLS_FILES,
+    CREDENTIALS_JSON, DatabaseCreate, DatabaseExposure, DatabaseRestore, DatabaseTarget, Databases,
+    ENV_FILE, TLS_FILES,
 };
 use crate::commands::compute::launch::balance_hint;
 use crate::commands::files::{NewFileError, write_new};
@@ -88,15 +88,15 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
                 Ok(without_field(list, CREDENTIALS))
             })
         }
-        Databases::Get { database_id } => print(
+        Databases::Get(DatabaseTarget { database_id }) => print(
             &Request::to(&databases::DATABASE, [database_id])
                 .about(format!("get the database `{database_id}`"))
                 .listed_by(DATABASES),
             Gate::Open,
         ),
         Databases::Create(args) => create(ctx, args),
-        Databases::Delete { database_id } => delete(ctx, *database_id),
-        Databases::Restart { database_id } => {
+        Databases::Delete(DatabaseTarget { database_id }) => delete(ctx, *database_id),
+        Databases::Restart(DatabaseTarget { database_id }) => {
             let request = Request::to(&databases::DATABASE_RESTART, [database_id])
                 .about(format!(
                     "restart PostgreSQL on the database `{database_id}`"
@@ -118,7 +118,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
             })
         }
         Databases::Restore(args) => restore(ctx, args),
-        Databases::Exposure(DatabaseExposure::Create { database_id }) => {
+        Databases::Exposure(DatabaseExposure::Create(DatabaseTarget { database_id })) => {
             // Who can reach it is part of the action, so an agent's refusal names it too.
             let request = Request::to(&databases::DATABASE_EXPOSE, [database_id])
                 .about(format!(
@@ -131,7 +131,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
             };
             print(&request, gate)
         }
-        Databases::Exposure(DatabaseExposure::Delete { database_id }) => {
+        Databases::Exposure(DatabaseExposure::Delete(DatabaseTarget { database_id })) => {
             let request = Request::to(&databases::DATABASE_EXPOSURE_DELETE, [database_id])
                 .about(format!(
                     "take the primary of the database `{database_id}` off the public edge"
@@ -151,14 +151,14 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
         }
         // The console reads the journal as `{events: [...]}`; a bare array or a page is read
         // too, and either way it is printed as the list envelope, a `next` link refused.
-        Databases::Events { database_id } => {
+        Databases::Events(DatabaseTarget { database_id }) => {
             let request = Request::to(&databases::DATABASE_EVENTS, [database_id])
                 .about(format!("list the events of the database `{database_id}`"))
                 .listed_by(DATABASES);
             print_list(ctx, &request, "events")
         }
         // The metrics answer is an object: `samples`, `latest`, and `agent_last_seen`.
-        Databases::Metrics { database_id } => {
+        Databases::Metrics(DatabaseTarget { database_id }) => {
             let request = Request::to(&databases::DATABASE_METRICS, [database_id])
                 .about(format!("get the metrics of the database `{database_id}`"))
                 .listed_by(DATABASES);
@@ -206,16 +206,14 @@ fn create(ctx: &Context<'_>, args: &DatabaseCreate) -> Result<Printed> {
     require_reveal_or_file(ctx, args.reveal, args.credentials_dir.is_some())?;
     let request = Request::to(&databases::DATABASE_CREATE, [])
         .json(&databases::DatabaseCreateBody {
-            tier: args.tier.code(),
-            size: args.size.code(),
-            engine_version: args.engine_version.code(),
+            tier: &args.tier,
+            size: &args.size,
+            engine_version: &args.engine_version,
             name: args.name.as_deref(),
         })
         .about(format!(
             "create a `{}` PostgreSQL {} database of size `{}`",
-            args.tier.code(),
-            args.engine_version.code(),
-            args.size.code()
+            args.tier, args.engine_version, args.size
         ));
     let gate = Gate::Confirm {
         consequence: Some("it is billed until it is deleted"),
@@ -443,7 +441,7 @@ fn env_file(dir: &Path, created: &CreatedDatabase) -> std::result::Result<String
 /// wait: operations that finish later get a status read, here `get` of the new id.
 fn restore(ctx: &Context<'_>, args: &DatabaseRestore) -> Result<Printed> {
     require_reveal_or_file(ctx, args.reveal, args.credentials_dir.is_some())?;
-    let id = args.database_id;
+    let id = args.database.database_id;
     let request = Request::to(&databases::DATABASE_RESTORE, [&id]).listed_by(DATABASES);
     let (request, point) = match &args.target_time {
         Some(time) => (

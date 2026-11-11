@@ -11,17 +11,12 @@
 //! `charge_cap` object is left as sent, because neither documents its fields, and a ratio
 //! read as an amount would print a wrong number.
 
-use std::cmp::Ordering;
-
 use hippius::phrase;
 use serde_json::Value;
 
 use crate::context::Context;
 use crate::output::Mode;
-
-/// Base units per credit, as a power of ten: swagger's "10^18 = 1 credit", and the
-/// `decimals` the console reads from the same answers.
-pub(crate) const DECIMALS: u32 = 18;
+use crate::units::DECIMALS;
 
 /// Where an amount sits in a document: object keys, with `*` for every element of an
 /// array.
@@ -110,34 +105,6 @@ pub(crate) fn to_credits(base_units: &str) -> Option<String> {
         format!("{sign}{whole}")
     } else {
         format!("{sign}{whole}.{fraction}")
-    })
-}
-
-/// Compares two credit amounts exactly, as decimal digits, so `50`, `50.0`, and `050` are the
-/// same cap and no float rounding decides whether a change is a raise. `None` when `old`, the
-/// server's cap, is not a decimal amount; `new` passed a credits flag's parser.
-pub(crate) fn compare(new: &str, old: &str) -> Option<Ordering> {
-    let (new, old) = (amount(new)?, amount(old)?);
-    Some(
-        new.0
-            .len()
-            .cmp(&old.0.len())
-            .then_with(|| new.0.cmp(old.0))
-            .then_with(|| new.1.cmp(old.1)),
-    )
-}
-
-/// A decimal amount as its whole digits without leading zeros and its fraction digits without
-/// trailing zeros, or `None` for anything else.
-pub(crate) fn amount(text: &str) -> Option<(&str, &str)> {
-    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
-    let digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
-    let point_without_fraction = text.contains('.') && fraction.is_empty();
-    (!whole.is_empty() && !point_without_fraction && digits(whole) && digits(fraction)).then(|| {
-        (
-            whole.trim_start_matches('0'),
-            fraction.trim_end_matches('0'),
-        )
     })
 }
 

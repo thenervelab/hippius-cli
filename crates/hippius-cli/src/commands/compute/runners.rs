@@ -32,13 +32,12 @@ use hippius::{
 use serde_json::{Value, json};
 
 use crate::cli::{
-    MonthlyCap, RunnerInstallations, RunnerLimit, RunnerSettings, RunnerSettingsUpdate, RunnerSize,
-    Runners,
+    MonthlyCap, RunnerInstallations, RunnerLimit, RunnerSettings, RunnerSettingsUpdate, Runners,
 };
-use crate::commands::credits::compare;
 use crate::commands::spend_cap::{self, InForce, NewCap};
 use crate::commands::{Printed, list, print_body, print_body_or, print_envelope, print_with};
 use crate::context::{Context, Gate, Write};
+use crate::units::compare;
 
 pub(super) fn run(ctx: &Context<'_>, command: &Runners) -> Result<Printed> {
     match command {
@@ -316,7 +315,7 @@ fn may_spend_more(args: &RunnerSettingsUpdate, current: &runners::Settings) -> b
         current
             .allowed_sizes
             .as_ref()
-            .is_none_or(|old| !old.iter().any(|old| old == size.code()))
+            .is_none_or(|old| !old.iter().any(|old| old == size))
     });
     turns_on(args.enabled, current.enabled)
         || turns_on(args.allow_public_repos, current.allow_public_repos)
@@ -330,10 +329,9 @@ fn may_spend_more(args: &RunnerSettingsUpdate, current: &runners::Settings) -> b
 ///
 /// `usage` for a size given twice, which would send a list with a repeat for the server to
 /// judge.
-fn allowed_sizes(given: &[RunnerSize]) -> Result<Vec<&'static str>> {
+fn allowed_sizes(given: &[String]) -> Result<Vec<&str>> {
     let mut sizes = Vec::new();
-    for size in given {
-        let code = size.code();
+    for code in given.iter().map(String::as_str) {
         if sizes.contains(&code) {
             return Err(Error::usage(
                 format!("`--allowed-size` names `{code}` more than once"),

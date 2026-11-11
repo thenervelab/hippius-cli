@@ -27,7 +27,7 @@ use hippius::routes::{Route, compute};
 use hippius::{Error, Request, Response, Result, Slot, phrase, view_of};
 use serde_json::Value;
 
-use crate::cli::{AppEngine, AppEngineApps, GuestComponents, MAX_COMPOSE_BYTES};
+use crate::cli::{AppEngine, AppEngineApps, AppTarget, GuestComponents, MAX_COMPOSE_BYTES};
 use crate::commands::files::write_output_file;
 use crate::commands::{Input, Printed, print_list_with, print_with};
 use crate::context::{Context, Gate};
@@ -70,7 +70,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
             .map_err(unavailable_hint)
         }
         AppEngine::Apps(AppEngineApps::Create(args)) => create::create(ctx, args),
-        AppEngine::Apps(AppEngineApps::Get { vm_id }) => {
+        AppEngine::Apps(AppEngineApps::Get(AppTarget { vm_id })) => {
             let request = Request::to(&compute::APP_ENGINE_APP, [vm_id])
                 .about(format!("get the app `{vm_id}`"))
                 .listed_by(APPS);
@@ -88,7 +88,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
                 Ok(app)
             })
         }
-        AppEngine::Apps(AppEngineApps::Runtime { vm_id }) => {
+        AppEngine::Apps(AppEngineApps::Runtime(AppTarget { vm_id })) => {
             let request = Request::to(&compute::APP_ENGINE_RUNTIME, [vm_id])
                 .about(format!("get the runtime of the app `{vm_id}`"))
                 .listed_by(APPS);
@@ -103,7 +103,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
                 Ok(runtime)
             })
         }
-        AppEngine::GuestComponents(GuestComponents::Get { vm_id }) => {
+        AppEngine::GuestComponents(GuestComponents::Get(AppTarget { vm_id })) => {
             let request = Request::to(&compute::APP_ENGINE_GUEST_COMPONENTS, [vm_id])
                 .about(format!("get the guest components of the app `{vm_id}`"))
                 .listed_by(APPS);
@@ -117,7 +117,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
                 Ok(components)
             })
         }
-        AppEngine::GuestComponents(GuestComponents::UpdateStatus { vm_id }) => {
+        AppEngine::GuestComponents(GuestComponents::UpdateStatus(AppTarget { vm_id })) => {
             let request = Request::to(&compute::APP_ENGINE_GUEST_UPGRADE, [vm_id])
                 .about(format!("get the guest upgrade of the app `{vm_id}`"))
                 .listed_by(APPS);

@@ -653,7 +653,11 @@ fn a_subject_outside_one_line_of_255_characters_is_usage() {
             error["message"]
                 .as_str()
                 .unwrap()
-                .contains("a subject is one line of 1 to 255 characters"),
+                .contains(if subject.contains('\n') {
+                    "a subject holds no control character or line break"
+                } else {
+                    "a subject is one line of 1 to 255 characters"
+                }),
             "{error}"
         );
     }

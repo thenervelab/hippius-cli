@@ -21,6 +21,13 @@ const OPTIONS: &str = concat!(
     r#""failover_auto_available":true}"#
 );
 
+/// The backup offer with every interval the server offered when this was written, which a
+/// policy update reads after its question.
+const EVERY_INTERVAL: &str = concat!(
+    r#"{"intervals":[{"seconds":900},{"seconds":3600},{"seconds":21600},"#,
+    r#"{"seconds":86400}]}"#
+);
+
 /// The policy document, shaped as swagger documents it.
 const POLICY: &str = concat!(
     r#"{"enabled":true,"interval_s":900,"retention_days":7,"state":"pending","#,
@@ -223,23 +230,48 @@ fn policy_update_needs_yes_and_says_stored_backups_are_billed() {
 fn policy_update_sends_the_interval_and_the_failover_only_when_passed() {
     // Swagger: 201 when the PUT turns backups on, 200 when it changes them.
     for status in [200, 201] {
-        let server = Server::start(vec![route_of(
-            &compute::BACKUP_POLICY_UPDATE,
-            [&VM],
-            Reply::json(status, POLICY),
-        )]);
+        let server = Server::start(vec![
+            route_of(
+                &compute::BACKUP_OPTIONS,
+                [],
+                Reply::json(200, EVERY_INTERVAL),
+            ),
+            route_of(
+                &compute::BACKUP_POLICY_UPDATE,
+                [&VM],
+                Reply::json(status, POLICY),
+            ),
+        ]);
         let args = ["policy", "update", VM, "--interval", "86400", "--yes"];
         assert_eq!(hipc(&server, &args).ok(), parsed(POLICY));
-        let request = server.only_request();
+        let requests = server.requests();
+        assert_eq!(requests[0].path(), "/api/compute/backup-options/");
+        let request = &requests[1];
+        assert_eq!(requests.len(), 2);
         assert_eq!(request.method, "PUT");
         assert_eq!(request.path(), format!("/api/compute/vms/{VM}/backup/"));
         assert_eq!(request.json(), json!({ "interval_s": 86400 }));
     }
-    let server = Server::start(vec![route_of(
-        &compute::BACKUP_POLICY_UPDATE,
-        [&VM],
-        Reply::json(200, POLICY),
-    )]);
+    let server = Server::start(vec![
+        route_of(
+            &compute::BACKUP_OPTIONS,
+            [],
+            Reply::json(200, EVERY_INTERVAL),
+        ),
+        route_of(
+            &compute::BACKUP_POLICY_UPDATE,
+            [&VM],
+            Reply::json(200, POLICY),
+        ),
+    ]);
+    let puts = || -> Vec<Value> {
+        server
+            .requests()
+            .iter()
+            .filter(|request| request.method == "PUT")
+            .map(Recorded::json)
+            .collect()
+    };
     for (interval, mode) in [("900", "manual"), ("21600", "auto")] {
         let args = [
             "policy",
@@ -253,9 +285,8 @@ fn policy_update_sends_the_interval_and_the_failover_only_when_passed() {
         ];
         hipc(&server, &args).ok();
     }
-    let bodies: Vec<Value> = server.requests().iter().map(Recorded::json).collect();
     assert_eq!(
-        bodies,
+        puts(),
         [
             json!({ "interval_s": 900, "failover_mode": "manual" }),
             json!({ "interval_s": 21600, "failover_mode": "auto" }),
@@ -267,11 +298,11 @@ fn policy_update_sends_the_interval_and_the_failover_only_when_passed() {
     );
     assert_text(&run, "failover_mode");
     assert_eq!(run.stderr(), "");
-    assert_eq!(server.requests()[2].json(), json!({ "interval_s": 3600 }));
+    assert_eq!(puts()[2], json!({ "interval_s": 3600 }));
 }
 
 #[test]
-fn policy_update_refuses_values_off_the_swagger_enum_with_zero_requests() {
+fn policy_update_refuses_an_interval_that_is_not_seconds_with_zero_requests() {
     let server = Server::start(vec![]);
     let update = |extra: &[&'static str]| {
         let mut argv = vec!["policy", "update", VM];
@@ -279,13 +310,86 @@ fn policy_update_refuses_values_off_the_swagger_enum_with_zero_requests() {
         argv.push("--yes");
         hipc(&server, &argv).fails(2, "usage");
     };
-    for interval in ["600", "0", "15m", "", "-900", "900.0"] {
+    for interval in ["0", "15m", "", "-900", "+900", "900.0", "4294967296"] {
         update(&["--interval", interval]);
     }
     update(&[]);
     update(&["--interval", "900", "--failover", "always"]);
     update(&["--interval", "900", "--failover"]);
     assert!(server.requests().is_empty());
+}
+
+/// The intervals are the server's (owner decision D5): one its options list is sent even when
+/// this hipc does not know it, and one they do not list is refused after the question and the
+/// read, before the PUT. A dry run lists the read and reads nothing.
+#[test]
+fn policy_update_checks_the_interval_against_the_server_options() {
+    let server = Server::start(vec![
+        route_of(
+            &compute::BACKUP_OPTIONS,
+            [],
+            Reply::json(200, r#"{"intervals":[{"seconds":900},{"seconds":600}]}"#),
+        ),
+        route_of(
+            &compute::BACKUP_POLICY_UPDATE,
+            [&VM],
+            Reply::json(200, POLICY),
+        ),
+    ]);
+    hipc(
+        &server,
+        &["policy", "update", VM, "--interval", "600", "--yes"],
+    )
+    .ok();
+    assert_eq!(server.requests()[1].json(), json!({ "interval_s": 600 }));
+    let error = hipc(
+        &server,
+        &["policy", "update", VM, "--interval", "3600", "--yes"],
+    )
+    .fails(2, "usage");
+    assert_eq!(
+        error["message"],
+        "a backup interval `3600` is not one the server offers: the server offers `900` and `600`"
+    );
+    assert_eq!(
+        error["hint"],
+        "run `hipc compute backups options` to see them"
+    );
+    assert_eq!(server.requests().len(), 3, "the read, and no PUT");
+    let doc = hipc(
+        &server,
+        &["policy", "update", VM, "--interval", "3600", "--dry-run"],
+    )
+    .ok();
+    assert_eq!(doc["requests"][0]["method"], "GET");
+    assert_eq!(draft(&doc)["method"], "PUT");
+    assert_eq!(server.requests().len(), 3);
+    let error = Hipc::against(
+        &Home::new(),
+        &Server::start(vec![route_of(
+            &compute::BACKUP_OPTIONS,
+            [],
+            Reply::json(200, r#"{"enabled":false}"#),
+        )]),
+    )
+    .run(&[
+        "compute",
+        "backups",
+        "policy",
+        "update",
+        VM,
+        "--interval",
+        "900",
+        "--yes",
+    ])
+    .fails(2, "usage");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("is not one the server offers: the server lists none"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -302,11 +406,14 @@ fn policy_update_maps_the_documented_refusals() {
     ];
     for (status, slug, code) in cases {
         let body = json!({ "error": slug }).to_string();
-        let server = Server::start(vec![route_of(
-            &compute::BACKUP_POLICY_UPDATE,
-            [&VM],
-            Reply::json(status, &body),
-        )]);
+        let server = Server::start(vec![
+            route_of(&compute::BACKUP_OPTIONS, [], Reply::json(200, OPTIONS)),
+            route_of(
+                &compute::BACKUP_POLICY_UPDATE,
+                [&VM],
+                Reply::json(status, &body),
+            ),
+        ]);
         let args = ["policy", "update", VM, "--interval", "900", "--yes"];
         let error = hipc(&server, &args).fails(1, code);
         assert_eq!(error["http_status"], status, "{slug}");
@@ -639,7 +746,11 @@ fn a_membership_sends_the_header_on_every_route() {
     member(&["restore", VM, "--run-id", POINT, "--yes"]).ok();
     member(&["restore-status", VM]).ok();
     let requests = server.requests();
-    assert_eq!(requests.len(), 8, "the restore reads the VM, then posts");
+    assert_eq!(
+        requests.len(),
+        9,
+        "the policy update reads the options, then puts; the restore reads the VM, then posts"
+    );
     for request in requests {
         assert_eq!(
             request.header("x-hippius-account"),
@@ -664,8 +775,8 @@ fn a_membership_sends_the_header_on_every_route() {
         "{message}"
     );
     // The refused restore read the VM to name it, and wrote nothing.
-    assert_eq!(server.requests().len(), 9);
-    assert_eq!(server.requests()[8].method, "GET");
+    assert_eq!(server.requests().len(), 10);
+    assert_eq!(server.requests()[9].method, "GET");
 }
 
 #[test]

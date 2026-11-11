@@ -20,12 +20,13 @@ use serde_json::{Map, Value, json};
 
 use crate::cli::{
     AutoReload, AutoReloadUpdate, Billing, BillingProfile, Invoices, ProfileUpdate, ReloadCap,
-    TopUp, TopUpMethod, Usd, usd,
+    TopUp, TopUpMethod,
 };
 use crate::commands::credits::{AmountPath, shown_in_credits};
 use crate::commands::files::write_output_file;
 use crate::commands::{Printed, failed_part, gamma, halpha, list, print_body, print_with};
 use crate::context::{Context, Gate, Write};
+use crate::units::{Usd, usd};
 
 pub(crate) fn run(ctx: &Context<'_>, command: &Billing) -> Result<Printed> {
     // The config file is read only once a command needs a client, after its argv checks, such
