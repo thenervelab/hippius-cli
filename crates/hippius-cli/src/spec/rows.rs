@@ -9,11 +9,10 @@
 use hippius::Code;
 
 use super::{
-    API_CONFIRMATION, API_GUARDS, API_REFUSED_WHEN, API_REVEAL_WHEN, CDN_CAP_RAISED, Confirmation,
-    Effect, Guard, HUB_REPLACE_WHEN, NO_CREDENTIALS_DIR, NO_SECRET_FILE, NOT_DEFAULT_ORIGIN,
+    API_CONFIRMATION, API_GUARDS, API_REFUSED_WHEN, API_REVEAL_WHEN, Asks, CDN_CAP_RAISED, Effect,
+    Guard, HUB_REPLACE_WHEN, NO_CREDENTIALS_DIR, NO_SECRET_FILE, NOT_DEFAULT_ORIGIN,
     NOTIFICATION_ALERT_OFF, READ_ONLY, RELOAD_CHARGES_MORE, RUNNER_CAP_RAISED,
-    RUNNER_SETTINGS_SPEND_MORE, Reveal, SPEND, Spec, TICKET_HOLDS_A_TOKEN, UNDO, UNGATED_WRITE,
-    WAF_CHECK,
+    RUNNER_SETTINGS_SPEND_MORE, SPEND, Spec, TICKET_HOLDS_A_TOKEN, UNDO, UNGATED_WRITE, WAF_CHECK,
 };
 
 /// A write that spends nothing and is not gated, whose repeat does the work again.
@@ -24,7 +23,7 @@ const REPEATS: Spec = Spec {
 
 /// A write the contract does not gate whose repeat is safe, confirmed all the same.
 const CONFIRMED_UNGATED: Spec = Spec {
-    confirmation: Confirmation::Always,
+    confirmation: Asks::Always,
     ..UNGATED_WRITE
 };
 
@@ -32,7 +31,7 @@ const CONFIRMED_UNGATED: Spec = Spec {
 /// for it asks for as plainly as `--reveal`, and keeps off stdout, so either flag lets the
 /// request go.
 const SPEND_TO_SECRET_FILE: Spec = Spec {
-    reveal: Reveal::When(NO_SECRET_FILE),
+    reveal: Asks::When(NO_SECRET_FILE),
     ..SPEND
 };
 
@@ -63,7 +62,7 @@ pub(super) fn of_auth(path: &[&str]) -> Option<Spec> {
         // Replacing a different stored token is confirmed because later commands act as its
         // owner (tenet 8).
         ["login"] => Some(Spec {
-            confirmation: Confirmation::When(
+            confirmation: Asks::When(
                 "the API origin is not `https://api.hippius.com`, or the profile stores a \
                  different token",
             ),
@@ -89,13 +88,13 @@ pub(super) fn of_account(path: &[&str]) -> Option<Spec> {
         // An invite preview is a POST that changes nothing. It sends the invite token, a
         // secret, so an origin but the default one is confirmed, as for a login (tenet 8).
         ["invites", "preview"] => Some(Spec {
-            confirmation: Confirmation::When(NOT_DEFAULT_ORIGIN),
+            confirmation: Asks::When(NOT_DEFAULT_ORIGIN),
             ..READ_ONLY
         }),
         // The notification settings set the values given, so a repeat leaves them the same;
         // they spend nothing, but an alert turned off hides a low or empty balance.
         ["notifications", "update"] => Some(Spec {
-            confirmation: Confirmation::When(NOTIFICATION_ALERT_OFF),
+            confirmation: Asks::When(NOTIFICATION_ALERT_OFF),
             ..UNGATED_WRITE
         }),
         ["use"]
@@ -159,7 +158,7 @@ pub(super) fn of_billing(path: &[&str]) -> Option<Spec> {
         // A profile update sends the fields given, so a repeat leaves the profile the same; it
         // spends nothing, but a new billing email sends the invoices elsewhere.
         ["profile", "update"] => Some(Spec {
-            confirmation: Confirmation::When(
+            confirmation: Asks::When(
                 "`--billing-email` is given and differs from the `billing_email` of the billing \
                  profile it reads first; a profile that is not found, or holds no email, \
                  differs from every email but an empty one",
@@ -178,7 +177,7 @@ pub(super) fn of_billing(path: &[&str]) -> Option<Spec> {
         ["gamma", "hotkeys", "delete"] => Some(UNDO),
         // Auto-reload charges the card by itself, so a change that may charge more asks.
         ["auto-reload", "update"] => Some(Spec {
-            confirmation: Confirmation::When(RELOAD_CHARGES_MORE),
+            confirmation: Asks::When(RELOAD_CHARGES_MORE),
             ..UNDO
         }),
         _ => None,
@@ -205,7 +204,7 @@ pub(super) fn of_s3(path: &[&str]) -> Option<Spec> {
         | ["buckets", "objects", "list"] => Some(READ_ONLY),
         // A presigned URL reads the object with no other credential until it expires.
         ["buckets", "objects", "presign"] => Some(Spec {
-            reveal: Reveal::Always,
+            reveal: Asks::Always,
             ..READ_ONLY
         }),
         // Whether the bucket is private is known only from the answer, after the write.
@@ -220,7 +219,7 @@ pub(super) fn of_s3(path: &[&str]) -> Option<Spec> {
         }),
         // Writing a new profile replaces nothing, so only an existing one is confirmed.
         ["configure"] => Some(Spec {
-            confirmation: Confirmation::When("the AWS profile already exists"),
+            confirmation: Asks::When("the AWS profile already exists"),
             ..UNDO
         }),
         _ => None,
@@ -359,13 +358,13 @@ pub(super) fn of_compute_runners(path: &[&str]) -> Option<Spec> {
         ["installations", "delete"] => Some(UNDO),
         // A lower cap, or a first one, allows less spend, so only a raise or a removal asks.
         ["limit", "update"] => Some(Spec {
-            confirmation: Confirmation::When(RUNNER_CAP_RAISED),
+            confirmation: Asks::When(RUNNER_CAP_RAISED),
             ..UNDO
         }),
         // A settings update sets the keys given, so a repeat leaves the same settings; only a
         // change that may let jobs spend more of the balance asks.
         ["settings", "update"] => Some(Spec {
-            confirmation: Confirmation::When(RUNNER_SETTINGS_SPEND_MORE),
+            confirmation: Asks::When(RUNNER_SETTINGS_SPEND_MORE),
             ..UNDO
         }),
         _ => None,
@@ -386,7 +385,7 @@ pub(super) fn of_compute_databases(path: &[&str]) -> Option<Spec> {
         // A create and a restore, which makes a new database, answer with its credentials,
         // which the server shows once.
         ["create" | "restore"] => Some(Spec {
-            reveal: Reveal::When(NO_CREDENTIALS_DIR),
+            reveal: Asks::When(NO_CREDENTIALS_DIR),
             ..SPEND
         }),
         _ => None,
@@ -401,7 +400,7 @@ pub(super) fn of_compute_kubernetes(path: &[&str]) -> Option<Spec> {
         // The backups answer holds presigned download links and sealed keys; the read
         // changes nothing.
         ["backups", "list"] => Some(Spec {
-            reveal: Reveal::Always,
+            reveal: Asks::Always,
             ..READ_ONLY
         }),
         // A kubeconfig goes only to a new file and never to stdout, so it needs no
@@ -474,7 +473,7 @@ pub(super) fn of_cdn(path: &[&str]) -> Option<Spec> {
         | ["lists", "items", "delete"] => Some(UNDO),
         // Every spend cap asks the same way: a raise, not a cut. A repeat is safe.
         ["cap", "update"] => Some(Spec {
-            confirmation: Confirmation::When(CDN_CAP_RAISED),
+            confirmation: Asks::When(CDN_CAP_RAISED),
             ..UNDO
         }),
         ["rules", "update"] => Some(Spec {
@@ -492,7 +491,7 @@ pub(super) fn of_cdn(path: &[&str]) -> Option<Spec> {
                      expression, action, or enabled flag; a missing enabled counts as true",
                 ),
             }],
-            confirmation: Confirmation::When(WAF_CHECK),
+            confirmation: Asks::When(WAF_CHECK),
             ..UNDO
         }),
         ["waf", "rate-limits", "update"] => Some(Spec {
@@ -504,7 +503,7 @@ pub(super) fn of_cdn(path: &[&str]) -> Option<Spec> {
                      missing enabled counts as true",
                 ),
             }],
-            confirmation: Confirmation::When(WAF_CHECK),
+            confirmation: Asks::When(WAF_CHECK),
             ..UNDO
         }),
         ["lists", "items", "update"] => Some(Spec {
@@ -572,8 +571,8 @@ pub(super) fn of_network(path: &[&str]) -> Option<Spec> {
 /// and a route a curated command or the console is the one path to is refused.
 pub(super) fn of_api() -> Spec {
     Spec {
-        confirmation: Confirmation::When(&API_CONFIRMATION),
-        reveal: Reveal::When(API_REVEAL_WHEN),
+        confirmation: Asks::When(&API_CONFIRMATION),
+        reveal: Asks::When(API_REVEAL_WHEN),
         refused_when: Some(&API_REFUSED_WHEN),
         guards: &API_GUARDS,
         ..SPEND

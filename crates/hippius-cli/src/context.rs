@@ -21,7 +21,7 @@ use serde_json::{Map, Value};
 
 use crate::cli::Global;
 use crate::output::{self, Mode, Terminal};
-use crate::spec::Confirmation;
+use crate::spec::Asks as Confirmation;
 
 /// The outcome of [`Context::call`].
 #[derive(Debug)]

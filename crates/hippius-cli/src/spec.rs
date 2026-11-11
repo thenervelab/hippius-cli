@@ -98,55 +98,34 @@ impl Effect {
     }
 }
 
-/// When a command refuses with `confirmation_required` unless `--yes` is passed.
+/// When a command needs a flag that says the caller means it: `--yes`, or it refuses with
+/// `confirmation_required` (tenet 5), and `--reveal`, or it refuses with `reveal_required`
+/// (tenet 9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Confirmation {
+pub(crate) enum Asks {
     Never,
     Always,
-    /// Only when this holds, as the end of a sentence that starts "it is confirmed when".
+    /// Only when this holds, as the end of a sentence that starts "it is confirmed when" or
+    /// "it needs `--reveal` when".
     When(&'static str),
 }
 
 impl Spec {
     /// When the command asks before a write, which decides how its writes are sent
     /// ([`crate::context::Confirmed`]).
-    pub(crate) fn confirmation(&self) -> Confirmation {
+    pub(crate) fn confirmation(&self) -> Asks {
         self.confirmation
     }
 }
 
-impl Confirmation {
-    /// Whether the command can ask at all: `confirmation` in `hipc schema`.
+impl Asks {
+    /// Whether the command can ask at all: `confirmation` or `reveal` in `hipc schema`.
     fn asks(self) -> bool {
         self != Self::Never
     }
 
-    /// When it asks, if only sometimes: `confirmation_when` in `hipc schema`.
-    fn when(self) -> Option<&'static str> {
-        match self {
-            Self::When(when) => Some(when),
-            Self::Never | Self::Always => None,
-        }
-    }
-}
-
-/// When a command refuses with `reveal_required` unless `--reveal` is passed (tenet 9).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Reveal {
-    Never,
-    Always,
-    /// Only when this holds, as the end of a sentence that starts "it needs `--reveal`
-    /// when".
-    When(&'static str),
-}
-
-impl Reveal {
-    /// Whether the command can need `--reveal` at all: `reveal` in `hipc schema`.
-    fn asks(self) -> bool {
-        self != Self::Never
-    }
-
-    /// When it needs it, if only sometimes: `reveal_when` in `hipc schema`.
+    /// When it asks, if only sometimes: `confirmation_when` or `reveal_when` in `hipc
+    /// schema`.
     fn when(self) -> Option<&'static str> {
         match self {
             Self::When(when) => Some(when),
@@ -170,8 +149,8 @@ struct Guard {
 #[derive(Debug)]
 pub(crate) struct Spec {
     effect: Effect,
-    confirmation: Confirmation,
-    reveal: Reveal,
+    confirmation: Asks,
+    reveal: Asks,
     /// When the command refuses with `usage` whatever the flags, as the end of a sentence that
     /// starts "it refuses when".
     refused_when: Option<&'static str>,
@@ -181,8 +160,8 @@ pub(crate) struct Spec {
 
 const READ_ONLY: Spec = Spec {
     effect: Effect::ReadOnly,
-    confirmation: Confirmation::Never,
-    reveal: Reveal::Never,
+    confirmation: Asks::Never,
+    reveal: Asks::Never,
     refused_when: None,
     guards: &[],
 };
@@ -197,7 +176,7 @@ const UNGATED_WRITE: Spec = Spec {
 /// A write that spends or creates, and so runs only when confirmed.
 const SPEND: Spec = Spec {
     effect: Effect::NonIdempotent,
-    confirmation: Confirmation::Always,
+    confirmation: Asks::Always,
     ..READ_ONLY
 };
 
@@ -208,7 +187,7 @@ const WAF_CHECK: &str = "`--check` is not passed: a check publishes nothing";
 /// only when confirmed. A repeat is safe.
 const UNDO: Spec = Spec {
     effect: Effect::Idempotent,
-    confirmation: Confirmation::Always,
+    confirmation: Asks::Always,
     ..READ_ONLY
 };
 
@@ -1003,8 +982,8 @@ mod tests {
             .filter_map(|path| {
                 let parts: Vec<&str> = path.iter().map(String::as_str).collect();
                 match spec(&parts)?.confirmation {
-                    Confirmation::When(when) => Some((path.join(" "), when)),
-                    Confirmation::Never | Confirmation::Always => None,
+                    Asks::When(when) => Some((path.join(" "), when)),
+                    Asks::Never | Asks::Always => None,
                 }
             })
             .collect();
@@ -1228,8 +1207,8 @@ mod tests {
             .filter_map(|path| {
                 let parts: Vec<&str> = path.iter().map(String::as_str).collect();
                 match spec(&parts)?.reveal {
-                    Reveal::When(when) => Some((path.join(" "), when)),
-                    Reveal::Never | Reveal::Always => None,
+                    Asks::When(when) => Some((path.join(" "), when)),
+                    Asks::Never | Asks::Always => None,
                 }
             })
             .collect();

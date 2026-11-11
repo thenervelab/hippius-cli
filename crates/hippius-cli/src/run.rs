@@ -49,7 +49,7 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         .collect();
     let asks = row
         .as_ref()
-        .map_or(spec::Confirmation::Always, spec::Spec::confirmation);
+        .map_or(spec::Asks::Always, spec::Spec::confirmation);
     let ctx = Context::new(&cli.global, &terminal, mode, &words, asks);
     // A wait for another run's lock of the config or an AWS file is a note, so a run that
     // waits for another one's question does not seem to hang.
@@ -325,7 +325,7 @@ mod tests {
         let cli = Cli::try_parse_from(["hipc", "version"]).unwrap();
         let terminal = Terminal::detect();
         let mode = terminal.resolve(&cli.global);
-        let ctx = Context::new(&cli.global, &terminal, mode, &[], spec::Confirmation::Never);
+        let ctx = Context::new(&cli.global, &terminal, mode, &[], spec::Asks::Never);
         let error = guarded(&ctx, || panic!("a bug")).unwrap_err();
         assert_eq!(error.code(), Code::Internal);
         assert_eq!(error.message(), "the command stopped on a bug in `hipc`");
