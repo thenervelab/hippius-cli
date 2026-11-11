@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crypto_box::aead::OsRng;
 
 use super::*;
+use crate::error::Code;
 
 const BOX_PUBLIC: &str = "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw=";
 const SIGN_PUBLIC: &str = "VCgh6VKd0a0kO/3/XGQKZRlLSBaYemUN6GHXzp5BemM=";

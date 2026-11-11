@@ -9,7 +9,7 @@
 //! upload) and the chat handoff stay on `hipc api`.
 
 use hippius::routes::support;
-use hippius::{Code, Error, Request, Result, phrase, view_of};
+use hippius::{Error, Failure, Request, Result, phrase, view_of};
 use zeroize::Zeroizing;
 
 use crate::cli::{
@@ -92,7 +92,7 @@ fn close(ctx: &Context<'_>, ticket_id: u64, status: TicketUpdateStatus) -> Resul
     let ticket: support::Ticket = view_of(&ctx.send(&client, &read)?.document()?);
     if ticket.status.as_deref() == Some(status.code()) {
         return Err(Error::new(
-            Code::Conflict,
+            Failure::Conflict,
             format!("the ticket `{ticket_id}` is already closed"),
         ));
     }

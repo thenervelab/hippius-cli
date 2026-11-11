@@ -20,6 +20,7 @@ pub(crate) mod projects;
 pub(crate) mod referrals;
 pub(crate) mod replace;
 pub(crate) mod s3;
+pub(crate) mod spend_cap;
 pub(crate) mod support;
 
 use std::collections::HashSet;

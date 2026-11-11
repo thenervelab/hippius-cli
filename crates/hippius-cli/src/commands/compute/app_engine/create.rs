@@ -18,19 +18,16 @@
 //! built from those alone ([`sanitized`]). The server says it never repeats a value, so this
 //! is a second line of defence.
 
-use std::time::{Duration, Instant};
-
-use hippius::routes::compute::{self, BootPhase, Vm, VmStatus};
-use hippius::{AppSecrets, Code, Error, Request, Result, SecretValue, Slot, phrase, view_of};
+use hippius::routes::compute::{self, Vm};
+use hippius::{AppSecrets, Error, Request, Result, SecretValue, Slot, phrase, view_of};
 use serde_json::{Map, Value};
 
 use super::{APPS, Compose, Hashed, check_hash, read_compose, unavailable_hint};
 use crate::cli::{AppCreate, BackupInterval, DiskTier, FailoverMode, GuestPoweroff};
 use crate::commands::Printed;
-use crate::commands::compute::{
-    POLL_INTERVAL, STAYS_STOPPED, backups_clause, balance_hint, launch_wait,
+use crate::commands::compute::launch::{
+    Kind, STAYS_STOPPED, backups_clause, balance_hint, launch_wait, os_disk_clause, wait,
 };
-use crate::commands::poll::{Next, Schedule, Wait, poll_until};
 use crate::context::{Context, Write};
 
 /// The flag that names the secrets file, in its placeholders and hints.
@@ -120,7 +117,7 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
             .after_write(printable(&launched, redactions)));
     }
     match timeout {
-        Some(timeout) => wait(ctx, &client, launched, timeout, redactions),
+        Some(timeout) => wait(ctx, &client, launched, Kind::App { redactions }, timeout),
         None => Ok(Printed::Document(printable(&launched, redactions))),
     }
 }
@@ -137,11 +134,7 @@ fn launch_action(args: &AppCreate) -> String {
     }
     let mut more = Vec::new();
     if let Some(tier) = args.os_disk_tier {
-        let tier = tier.code();
-        more.push(format!(
-            "an OS disk on tier `{tier}` or faster, billed at the `{tier}` price that `hipc \
-             compute prices` shows (`vm_by_os_disk_tier`)"
-        ));
+        more.push(os_disk_clause(tier));
     }
     if let Some(interval) = args.backup_interval {
         more.push(backups_clause(interval, args.failover));
@@ -265,7 +258,7 @@ fn checked_text(text: String, redactions: &[String]) -> Value {
 /// the top-level `secret_names`, is printed as it came unless it may be a value sent
 /// ([`checked_text`]). Everything else is redacted as [`hippius::redact_value_all`] redacts
 /// it. With no secrets sent the answer is printed as it came.
-fn printable(value: &Value, redactions: &[String]) -> Value {
+pub(in crate::commands::compute) fn printable(value: &Value, redactions: &[String]) -> Value {
     if redactions.is_empty() {
         return value.clone();
     }
@@ -345,7 +338,11 @@ fn is_token(text: &str) -> bool {
 /// built from those fields alone, never from the server's own text, so a field that was
 /// dropped cannot reach it. A failure with no status, or a 2xx hipc could not use, keeps a
 /// message of hipc's own, with every value redacted from it all the same.
-fn sanitized(error: Error, action: &str, redactions: &[String]) -> Error {
+pub(in crate::commands::compute) fn sanitized(
+    error: Error,
+    action: &str,
+    redactions: &[String],
+) -> Error {
     if redactions.is_empty() {
         return error;
     }
@@ -460,189 +457,6 @@ fn is_kebab(text: &str) -> bool {
                     .bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
         })
-}
-
-/// Where a launch stands, from the app's `status`, `boot_phase`, and `boot_stalled`.
-#[derive(Debug, PartialEq, Eq)]
-enum Launch {
-    /// Both are `running`.
-    Done,
-    /// A status the app does not come back from: `failed` (unless `boot_stalled`),
-    /// `decommissioning`, or `decommissioned` (the VM's terminal statuses), or a `boot_phase`
-    /// of `failed`. Swagger documents neither field's values, so these are the VM's,
-    /// unverified on an app.
-    Ended(&'static str),
-    /// Anything else, a missing field or a value this version does not know included. A VM
-    /// `failed` with `boot_stalled` true returns to `running` by itself once the guest signals
-    /// (swagger, on the VM), and an app is a VM, so it is waited on as `vms create` waits.
-    Waiting,
-}
-
-fn launch_state(app: &Value) -> Launch {
-    let app: Vm = view_of(app);
-    let stalled = app.boot_stalled == Some(true);
-    match (app.status, app.boot_phase) {
-        (Some(VmStatus::Running), Some(BootPhase::Running)) => Launch::Done,
-        (Some(VmStatus::Failed), _) if stalled => Launch::Waiting,
-        (Some(VmStatus::Decommissioning), _) => Launch::Ended("decommissioning"),
-        (Some(VmStatus::Decommissioned), _) => Launch::Ended("decommissioned"),
-        (Some(VmStatus::Failed), _) | (_, Some(BootPhase::Failed)) => Launch::Ended("failed"),
-        _ => Launch::Waiting,
-    }
-}
-
-/// Polls the launched app until its status and boot phase are both `running`, it ends, or
-/// `timeout` has passed. Every decision reads the documents as they came; every document
-/// printed, on success or on a failure, is the [`printable`] copy. Every failure prints the
-/// last app document seen, so `vm_id` is not lost, and is never retryable: a retry of the
-/// launch would launch, and bill, a second app. It shares the VM launch's loop
-/// ([`poll_until`]), with its poll interval, its tolerance of passing outages, and its
-/// respect for `Retry-After`.
-fn wait(
-    ctx: &Context<'_>,
-    client: &hippius::Client,
-    launched: Value,
-    timeout: Duration,
-    redactions: &[String],
-) -> Result<Printed> {
-    let print = |app: &Value| printable(app, redactions);
-    // `create` refused an answer without one before the wait.
-    let vm_id = view_of::<Vm>(&launched).vm_id.unwrap_or_default();
-    // The id is quoted only once it passes the rule of the argument, as the poll URL needs,
-    // and holds no value sent: the printable copy redacts such an id, and the note, the poll's
-    // `--debug` line, the error, and the hint would otherwise print it raw on stderr.
-    let pollable = if hippius::holds_secret(&vm_id, redactions) {
-        Err("it may be a secret value sent".to_owned())
-    } else {
-        crate::cli::vm_id(&vm_id)
-    };
-    let app_named = match &pollable {
-        Ok(_) => format!("the app {}", phrase::quote(&vm_id)),
-        Err(_) => "the app".to_owned(),
-    };
-    let hint = match pollable
-        .as_ref()
-        .ok()
-        .and_then(|id| crate::cli::as_argument(id, crate::cli::vm_id))
-    {
-        Some(id) => format!(
-            "run {} to see where the launch stands",
-            phrase::quote(format!("hipc compute app-engine apps get {id}"))
-        ),
-        None => format!("run `{APPS}` to find the new app"),
-    };
-    if launch_state(&launched) == Launch::Waiting {
-        if let Err(rule) = pollable {
-            let message =
-                format!("the launch answer names the app by an id `hipc` cannot poll: {rule}");
-            return Err(Error::internal(message)
-                .with_hint(hint)
-                .after_write(print(&launched)));
-        }
-        ctx.note(&format!(
-            "launched {app_named}; waiting until it is running"
-        ));
-    }
-    let request =
-        Request::to(&compute::APP_ENGINE_APP, [&vm_id]).about(format!("poll {app_named}"));
-    let schedule = Schedule {
-        first: POLL_INTERVAL,
-        interval: POLL_INTERVAL,
-        deadline: Instant::now() + timeout,
-    };
-    let launch = AppLaunch {
-        app: launched,
-        vm_id: &vm_id,
-        app_named: &app_named,
-        hint: &hint,
-        action: request.action(),
-        redactions,
-        timeout,
-    };
-    poll_until(ctx, client, &request, schedule, launch)
-}
-
-/// The wait of an App Engine launch: the last app document seen, and how its messages name
-/// it. Every document it prints is the [`printable`] copy.
-struct AppLaunch<'a> {
-    app: Value,
-    vm_id: &'a str,
-    app_named: &'a str,
-    hint: &'a str,
-    /// The poll's action, for an error the poll answered ([`sanitized`]).
-    action: String,
-    redactions: &'a [String],
-    timeout: Duration,
-}
-
-impl AppLaunch<'_> {
-    fn print(&self) -> Value {
-        printable(&self.app, self.redactions)
-    }
-}
-
-impl Wait for AppLaunch<'_> {
-    type Output = Printed;
-
-    fn next(&mut self) -> Next<Printed> {
-        match launch_state(&self.app) {
-            Launch::Done => Next::Stop(Ok(Printed::Document(self.print()))),
-            Launch::Ended(state) => {
-                let message = format!("{} reached `{state}` instead of `running`", self.app_named);
-                Next::Stop(Err(Error::new(Code::PartialFailure, message)
-                    .with_hint(self.hint)
-                    .after_write(self.print())))
-            }
-            Launch::Waiting => Next::Poll,
-        }
-    }
-
-    fn take(&mut self, answer: Value) -> Result<()> {
-        // A document for another app, or for none, is not this launch.
-        match view_of::<Vm>(&answer).vm_id {
-            Some(id) if id == self.vm_id => {
-                self.app = answer;
-                Ok(())
-            }
-            other => {
-                let named = match other {
-                    Some(other)
-                        if crate::cli::vm_id(&other).is_ok()
-                            && !hippius::holds_secret(&other, self.redactions) =>
-                    {
-                        format!("the app {}", phrase::quote(other))
-                    }
-                    Some(_) => "another app".to_owned(),
-                    None => "no app".to_owned(),
-                };
-                let message = format!(
-                    "the poll of {} answered with the document of {named}",
-                    self.app_named
-                );
-                Err(Error::internal(message)
-                    .with_hint(self.hint)
-                    .after_write(self.print()))
-            }
-        }
-    }
-
-    fn timed_out(self) -> Result<Printed> {
-        let message = format!(
-            "{} was not running after {}",
-            self.app_named,
-            phrase::count(self.timeout.as_secs(), "second")
-        );
-        Err(Error::new(Code::Timeout, message)
-            .with_hint(self.hint)
-            .after_write(self.print()))
-    }
-
-    // A poll is a read, so polling on after a passing outage cannot launch twice.
-    fn failed(self, error: Error) -> Error {
-        sanitized(error, &self.action, self.redactions)
-            .with_hint(self.hint)
-            .after_write(self.print())
-    }
 }
 
 #[cfg(test)]
@@ -826,38 +640,5 @@ mod tests {
             "cannot launch it: the API answered with status `400`; its words are not shown, \
              since they may repeat a secret"
         );
-    }
-
-    #[test]
-    fn a_launch_is_done_only_when_status_and_boot_phase_are_running() {
-        let state = |app: Value| format!("{:?}", launch_state(&app));
-        assert_eq!(
-            state(json!({"status": "running", "boot_phase": "running"})),
-            "Done"
-        );
-        for app in [
-            json!({"status": "running", "boot_phase": "pulling"}),
-            json!({"status": "running"}),
-            json!({"status": "provisioning", "boot_phase": "running"}),
-            json!({}),
-            json!({"status": 1, "boot_phase": null}),
-            json!({"status": "failed", "boot_stalled": true}),
-        ] {
-            assert_eq!(state(app.clone()), "Waiting", "{app}");
-        }
-        for (app, ended) in [
-            (
-                json!({"status": "failed", "boot_phase": "running"}),
-                "failed",
-            ),
-            (json!({"status": "decommissioning"}), "decommissioning"),
-            (json!({"status": "decommissioned"}), "decommissioned"),
-            (
-                json!({"status": "running", "boot_phase": "failed"}),
-                "failed",
-            ),
-        ] {
-            assert_eq!(state(app.clone()), format!("Ended({ended:?})"), "{app}");
-        }
     }
 }

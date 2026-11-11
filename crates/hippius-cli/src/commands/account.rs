@@ -16,19 +16,20 @@ use std::path::Path;
 
 use hippius::routes::account;
 use hippius::{
-    BillingId, Client, Code, ConfigFile, Error, Given, Overrides, ProjectId, Request, Result,
+    BillingId, Client, ConfigFile, Error, Failure, Given, Overrides, ProjectId, Request, Result,
     Selection, Settings, Source, phrase, redact_value, view_of,
 };
 use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
 
 use crate::cli::{
-    Access, Grant, GrantArg, GrantTarget, InviteCreate, Invites, MarketingConsent, MemberUpdate,
-    Members, Notifications,
+    Access, Account, Grant, GrantArg, GrantTarget, InviteCreate, Invites, MarketingConsent,
+    MemberUpdate, Members, Notifications,
 };
 use crate::commands::replace::{Entry, Found, Replace, replace_list};
 use crate::commands::{
-    Input, Printed, keyed_page, print_body, print_body_or, print_keyed_list, store_selection,
+    Input, Printed, keyed_page, print_body, print_body_or, print_keyed_list, projects, referrals,
+    store_selection,
 };
 use crate::context::{self, Context, Gate, Step, Write};
 
@@ -95,8 +96,24 @@ fn unexpected() -> Error {
     Error::internal("the API answered `GET /api/accounts/` without an `accounts` list")
 }
 
+pub(crate) fn run(ctx: &Context<'_>, command: &Account) -> Result<Printed> {
+    match command {
+        Account::List => list(ctx),
+        Account::Get => get(ctx),
+        Account::Notifications(command) => notifications(ctx, command),
+        Account::MarketingConsent(command) => marketing_consent(ctx, command),
+        Account::Use { account_id } => select(ctx, account_id),
+        Account::Members(command) => members(ctx, command),
+        Account::Invites(command) => invites(ctx, command),
+        Account::Projects(command) => projects::projects(ctx, command),
+        Account::ProjectTransfers(command) => projects::project_transfers(ctx, command),
+        Account::BillingAccounts(command) => projects::billing_accounts(ctx, command),
+        Account::Referrals(command) => referrals::run(ctx, command),
+    }
+}
+
 /// `hipc account list`.
-pub(crate) fn list(ctx: &Context<'_>) -> Result<Printed> {
+fn list(ctx: &Context<'_>) -> Result<Printed> {
     Ok(
         match accounts(ctx, &ctx.authed_client(&context::config()?)?)? {
             Fetched::Accounts(page) => {
@@ -108,7 +125,7 @@ pub(crate) fn list(ctx: &Context<'_>) -> Result<Printed> {
 }
 
 /// `hipc account get`: the selected account, or the caller's own for `self`.
-pub(crate) fn get(ctx: &Context<'_>) -> Result<Printed> {
+fn get(ctx: &Context<'_>) -> Result<Printed> {
     let (settings, client) = ctx.authed(&context::config()?)?;
     let selected = selected_scope(&ctx.overrides()?, &settings);
     let selection = settings.account;
@@ -138,7 +155,7 @@ pub(crate) fn get(ctx: &Context<'_>) -> Result<Printed> {
         return Err(no_own_account());
     }
     Err(Error::new(
-        Code::NotAMember,
+        Failure::NotAMember,
         format!(
             "the token cannot act in the account `{}`",
             selection.as_str()
@@ -191,7 +208,7 @@ const CONSENT_SETTINGS: &str = "https://console.hippius.com/dashboard/settings";
 /// keeps its value and nothing is read first. It spends nothing; a repeat sets the same values.
 /// Turning off an email that warns of a problem ([`ALERTS`]) hides that problem from the
 /// user, so that update is confirmed; any other is not.
-pub(crate) fn notifications(ctx: &Context<'_>, command: &Notifications) -> Result<Printed> {
+fn notifications(ctx: &Context<'_>, command: &Notifications) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
     let mut off = Vec::new();
     let request = match command {
@@ -267,7 +284,7 @@ const ALERTS: [&str; 4] = [
 /// form (its default), so a later default cannot file it as something else. A withdrawal
 /// spends nothing, so nothing is asked; the server appends each `POST` to the consent history,
 /// so a repeat is not a no-op.
-pub(crate) fn marketing_consent(ctx: &Context<'_>, command: &MarketingConsent) -> Result<Printed> {
+fn marketing_consent(ctx: &Context<'_>, command: &MarketingConsent) -> Result<Printed> {
     if let MarketingConsent::Update { granted: true } = command {
         return Err(Error::usage(
             "`--granted true` cannot give the marketing consent from `hipc`: it never shows the \
@@ -291,7 +308,7 @@ pub(crate) fn marketing_consent(ctx: &Context<'_>, command: &MarketingConsent) -
 }
 
 /// `hipc account use <account_id>`: stores the selection in the profile. No request is sent.
-pub(crate) fn select(ctx: &Context<'_>, id: &str) -> Result<Printed> {
+fn select(ctx: &Context<'_>, id: &str) -> Result<Printed> {
     let selection = Selection::parse(id, &Source::Argument)?;
     store_selection(
         ctx,
@@ -311,7 +328,7 @@ fn members_list() -> Request {
 }
 
 /// `hipc account members`.
-pub(crate) fn members(ctx: &Context<'_>, command: &Members) -> Result<Printed> {
+fn members(ctx: &Context<'_>, command: &Members) -> Result<Printed> {
     match command {
         // The API answers `{members, owner}`; `owner` is kept.
         Members::List => {
@@ -336,7 +353,7 @@ pub(crate) fn members(ctx: &Context<'_>, command: &Members) -> Result<Printed> {
 }
 
 /// `hipc account invites`.
-pub(crate) fn invites(ctx: &Context<'_>, command: &Invites) -> Result<Printed> {
+fn invites(ctx: &Context<'_>, command: &Invites) -> Result<Printed> {
     match command {
         // The API answers `{invites}`.
         Invites::List => print_keyed_list(
@@ -517,7 +534,7 @@ fn accept(
             None => "the API says it is not valid".to_owned(),
         };
         return Err(Error::new(
-            Code::Conflict,
+            Failure::Conflict,
             format!("cannot accept the invite: {why}"),
         ));
     }
@@ -712,7 +729,7 @@ fn member_grants(answer: &Value, id: u64) -> Option<Result<Vec<Entry>>> {
         if let Err(error) = links.and_then(|links| links.into_complete(members_list().target())) {
             return Some(Err(error));
         }
-        let missing = Error::new(Code::NotFound, format!("no member with id `{id}`"));
+        let missing = Error::new(Failure::NotFound, format!("no member with id `{id}`"));
         return Some(Err(
             missing.with_hint(format!("run `{MEMBERS}` to see what exists"))
         ));

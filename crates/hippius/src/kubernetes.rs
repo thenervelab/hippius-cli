@@ -61,7 +61,7 @@ use zeroize::Zeroizing;
 
 use crate::client::Response;
 use crate::encode::hex;
-use crate::error::{Code, Error, Result};
+use crate::error::{Error, Failure, Result};
 use crate::ids::random_uuid;
 use crate::phrase::{named, quote, quote_path};
 use crate::private_file::{Guarded, NamedBy};
@@ -284,7 +284,7 @@ impl MatchedKey<'_> {
         let named = &self.named;
         let not_yet = |what: &str| {
             Error::new(
-                Code::NotFound,
+                Failure::NotFound,
                 format!("the Kubernetes cluster {named} has not {what} yet"),
             )
             .with_hint(

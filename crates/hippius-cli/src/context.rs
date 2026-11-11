@@ -745,7 +745,7 @@ pub(crate) fn env_os(name: &str) -> Option<OsString> {
 
 #[cfg(test)]
 mod tests {
-    use hippius::Code;
+    use hippius::{Code, Failure};
 
     use super::*;
 
@@ -784,8 +784,8 @@ mod tests {
     #[test]
     fn a_write_that_may_have_been_sent_counts_as_written() {
         let partial =
-            || Err(Error::new(Code::Timeout, "x").with_side_effects(SideEffects::Partial));
-        let refused = || Err(Error::new(Code::Validation, "x"));
+            || Err(Error::new(Failure::Timeout, "x").with_side_effects(SideEffects::Partial));
+        let refused = || Err(Error::new(Failure::Validation, "x"));
         assert!(may_have_written(false, &partial()));
         assert!(!may_have_written(true, &partial()));
         assert!(!may_have_written(false, &refused()));

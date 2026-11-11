@@ -12,7 +12,7 @@
 
 use hippius::routes::{self, account::NameBody};
 use hippius::{
-    BillingId, Client, Code, ConfigFile, Error, ProjectId, Request, Result, Selection, Source,
+    BillingId, Client, ConfigFile, Error, Failure, ProjectId, Request, Result, Selection, Source,
     phrase, view_of,
 };
 use serde_json::{Value, json};
@@ -295,7 +295,7 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
         );
         // Decided by what the server listed, not by the command line (tenet 4).
         let missing = Error::new(
-            Code::NotFound,
+            Failure::NotFound,
             format!(
                 "the project `{}` is not one of the projects of {account}",
                 args.project_id
@@ -313,7 +313,7 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
         let id = own_account_id(ctx.send(&client, &accounts)?.json()?)?;
         // A state `hipc` read that rules the write out (tenet 4): `conflict`.
         if id == args.to_account {
-            let same = Error::new(Code::Conflict, same_account(&args.to_account));
+            let same = Error::new(Failure::Conflict, same_account(&args.to_account));
             return Err(same.with_hint(SAME_ACCOUNT_HINT));
         }
         format!("{own} {}", phrase::quote(&id))
@@ -685,7 +685,7 @@ fn decide(
         // Missing from a page that is not the last says nothing about a later page.
         lists.links.into_complete(transfers_read().target())?;
         // Decided by what the server listed, not by the command line (tenet 4).
-        let missing = Error::new(Code::NotFound, missing);
+        let missing = Error::new(Failure::NotFound, missing);
         return Err(missing.with_hint(format!("run `{TRANSFERS}` to see the transfer ids")));
     };
     let (by, other) = match side {

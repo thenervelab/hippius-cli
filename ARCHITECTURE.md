@@ -299,7 +299,10 @@ There is one error type, `hippius::Error`, in both crates; neither uses `anyhow`
 An `Error` carries a `Code` from the closed table of tenet 4 (which fixes its name and exit
 code), a message, an optional hint, optional details, and what was already done
 (`SideEffects`). `Code::ALL` lists every code for `hipc schema`. A new code is a contract
-change, not a refactor. Messages follow tenet 15: lowercase, no final period, literals in
+change, not a refactor. An exit-1 failure is built with `Error::new`, which takes a `Failure`
+(the exit-1 codes alone); every exit-2 code has its own constructor that takes the hint it must
+carry (`Error::usage`, `Error::confirmation_required`, ...), so an exit-2 error without one
+cannot be written, and no constructor can panic. Messages follow tenet 15: lowercase, no final period, literals in
 backticks, a hint that is one imperative; `phrase.rs` builds the pieces that recur. A
 message never quotes a secret or server text that could hold one, which is why errors drop
 their causes on purpose instead of chaining them.
@@ -315,8 +318,9 @@ and `--debug` lines go to stderr through `context`.
 
 ## Tests
 
-- **Library unit tests**: `#[cfg(test)] mod tests` at the bottom of each file, or a
-  `tests.rs` beside it (`kubernetes/tests.rs`).
+- **Library unit tests**: `#[cfg(test)] mod tests` at the bottom of each file, or, for a large
+  file, a `tests.rs` beside it (`client/tests.rs`, `config/tests.rs`, `account/tests.rs`,
+  `kubernetes/tests.rs`).
 - **CLI unit tests**: in `cli.rs` (help shape, examples parse), `spec.rs` (every command has a
   row), `output.rs`, `run.rs`.
 - **End to end**: `crates/hippius-cli/tests/e2e/`, one test binary (`main.rs` declares a

@@ -25,7 +25,7 @@ use crate::cli::{
     CREDENTIALS_JSON, DatabaseCreate, DatabaseExposure, DatabaseRestore, Databases, ENV_FILE,
     TLS_FILES,
 };
-use crate::commands::compute::balance_hint;
+use crate::commands::compute::launch::balance_hint;
 use crate::commands::files::{NewFileError, write_new};
 use crate::commands::{Printed, keyed_list, print_list_with, print_with, require_reveal_or_file};
 use crate::context::{Context, Gate};

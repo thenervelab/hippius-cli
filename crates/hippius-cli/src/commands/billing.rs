@@ -15,7 +15,7 @@ use std::path::Path;
 
 use hippius::routes::billing::{self, AutoReloadState, AutoReloadUpdateBody};
 use hippius::routes::{self, Route};
-use hippius::{Code, Error, Request, Result, Selection, SideEffects, phrase, view_of};
+use hippius::{Code, Error, Failure, Request, Result, Selection, SideEffects, phrase, view_of};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
@@ -480,7 +480,7 @@ fn update_auto_reload(ctx: &Context<'_>, args: &AutoReloadUpdate) -> Result<Prin
     // No flag can fix that, so it is said before any field is checked.
     if current.available == Some(false) {
         return Err(Error::new(
-            Code::Conflict,
+            Failure::Conflict,
             "auto-reload is not available on this server: the setting reads `available` \
              `false`",
         ));

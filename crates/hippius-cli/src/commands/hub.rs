@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 use hippius::routes::{API_BASE, Route, hub};
 use hippius::{
-    CHECK_FIRST_HINT, Client, Code, ConfigFile, Error, HubMarker, Request, Result, SideEffects,
-    Source, phrase, view_of,
+    CHECK_FIRST_HINT, Client, Code, ConfigFile, Error, Failure, HubMarker, Request, Result,
+    SideEffects, Source, phrase, view_of,
 };
 use serde_json::{Map, Value, json};
 
@@ -116,7 +116,7 @@ fn repository_named(rows: Vec<Value>, wanted: &str) -> Result<Value> {
         .find(|row| view_of::<hub::Repository>(row).name.as_deref() == Some(wanted))
         .ok_or_else(|| {
             Error::new(
-                Code::NotFound,
+                Failure::NotFound,
                 format!("the Hub registry has no repository `{wanted}`"),
             )
             .with_hint("run `hipc hub repositories list` to see each repository's name")

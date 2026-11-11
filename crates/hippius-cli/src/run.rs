@@ -8,8 +8,8 @@ use hippius::Result;
 use serde_json::{Value, json};
 
 use crate::cli::{
-    Account, Auth, AutoReload, Billing, Cdn, CdnHostnames, Cli, Command, Drive, DriveSubscription,
-    S3, S3Subscription,
+    AutoReload, Billing, Cdn, CdnHostnames, Cli, Command, Drive, DriveSubscription, S3,
+    S3Subscription,
 };
 use crate::commands::{self, Printed};
 use crate::context::Context;
@@ -39,17 +39,8 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         Ok(row) => row,
         Err(error) => return output::failure(mode, &error),
     };
-    if let Some(name) = crate::cli::repeated_global(args) {
-        let flag = if name == "output" {
-            "`--output` or `--json`".to_owned()
-        } else {
-            format!("`--{name}`")
-        };
-        let error = hippius::Error::usage(
-            format!("{flag} is given more than once"),
-            format!("pass {flag} once"),
-        );
-        return output::failure(mode, &error);
+    if let Some(refusal) = repeated_global(args) {
+        return output::failure(mode, &refusal);
     }
     let words: Vec<String> = args
         .iter()
@@ -63,21 +54,7 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         hippius::on_lock_wait(|waiting| output::note(&format!("note: {waiting}\n")));
     }
     let ran = guarded(&ctx, || execute(&ctx, &cli.command));
-    // Also after a failure: a command can write the config and then fail at a later step, and
-    // an answer that failed can say its route is deprecated. Text mode warns on stderr; JSON
-    // mode, which writes no warning lines, adds the text to a `warnings` array beside the
-    // document or the error, so an agent sees it too. The command's own run warnings were
-    // printed as they came.
-    let mut warnings = ctx.take_warnings();
-    let split_link = hippius::take_split_link().map(|path| split_link_warning(&path));
-    for warning in split_link
-        .into_iter()
-        .chain(hippius::take_unknown_keys_warning())
-        .chain(hippius::take_deprecation_warnings())
-    {
-        ctx.warning(&warning);
-        warnings.push(warning);
-    }
+    let warnings = run_warnings(&ctx);
     let print = |mut document: Value, layout: Layout| {
         if !sets_next_step(&cli.command) {
             commands::drop_next_step(&mut document);
@@ -109,6 +86,41 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         }
         Err(error) => output::failure_warned(mode, &error, &warnings),
     }
+}
+
+/// The refusal of a global flag given more than once, which would leave unsaid which value
+/// counts.
+fn repeated_global(args: &[OsString]) -> Option<hippius::Error> {
+    let name = crate::cli::repeated_global(args)?;
+    let flag = if name == "output" {
+        "`--output` or `--json`".to_owned()
+    } else {
+        format!("`--{name}`")
+    };
+    Some(hippius::Error::usage(
+        format!("{flag} is given more than once"),
+        format!("pass {flag} once"),
+    ))
+}
+
+/// The warnings of the whole run, for JSON's `warnings`: the command's own run warnings, which
+/// were printed as they came, then those of the config file and the answers, printed here in
+/// text mode. Also after a failure: a command can write the config and then fail at a later
+/// step, and an answer that failed can say its route is deprecated. JSON mode writes no
+/// warning lines, so the `warnings` array beside the document or the error is where an agent
+/// sees them.
+fn run_warnings(ctx: &Context<'_>) -> Vec<String> {
+    let mut warnings = ctx.take_warnings();
+    let split_link = hippius::take_split_link().map(|path| split_link_warning(&path));
+    for warning in split_link
+        .into_iter()
+        .chain(hippius::take_unknown_keys_warning())
+        .chain(hippius::take_deprecation_warnings())
+    {
+        ctx.warning(&warning);
+        warnings.push(warning);
+    }
+    warnings
 }
 
 /// The refusal of a command line that holds a seed phrase or an API token the run knows, which
@@ -192,6 +204,11 @@ fn split_link_warning(path: &std::path::Path) -> String {
     )
 }
 
+// `guarded` catches a command's panic to print one error object; with `panic = "abort"` the
+// process would end with no output at all, against tenet 4.
+#[cfg(not(panic = "unwind"))]
+compile_error!("hipc must be built with `panic = \"unwind\"`: `run::guarded` catches a panic");
+
 /// Runs `command`, turning a panic into an `internal` error with what the run has done to
 /// the server so far, so a bug after a write still says `side_effects: partial` (tenet 4)
 /// and the output stays one error object, without the default panic message beside it. The panic's own text is not shown:
@@ -246,30 +263,8 @@ fn execute(ctx: &Context<'_>, command: &Command) -> Result<Printed> {
             clap_complete::generate(*shell, &mut Cli::command(), "hipc", &mut script);
             Ok(Printed::Raw(script))
         }
-        Command::Auth(Auth::Login { token_file }) => {
-            commands::auth::login(ctx, token_file.as_deref())
-        }
-        Command::Auth(Auth::Status) => commands::auth::status(ctx),
-        Command::Auth(Auth::Logout) => commands::auth::logout(ctx),
-        Command::Account(Account::List) => commands::account::list(ctx),
-        Command::Account(Account::Get) => commands::account::get(ctx),
-        Command::Account(Account::Notifications(command)) => {
-            commands::account::notifications(ctx, command)
-        }
-        Command::Account(Account::MarketingConsent(command)) => {
-            commands::account::marketing_consent(ctx, command)
-        }
-        Command::Account(Account::Use { account_id }) => commands::account::select(ctx, account_id),
-        Command::Account(Account::Members(command)) => commands::account::members(ctx, command),
-        Command::Account(Account::Invites(command)) => commands::account::invites(ctx, command),
-        Command::Account(Account::Projects(command)) => commands::projects::projects(ctx, command),
-        Command::Account(Account::ProjectTransfers(command)) => {
-            commands::projects::project_transfers(ctx, command)
-        }
-        Command::Account(Account::BillingAccounts(command)) => {
-            commands::projects::billing_accounts(ctx, command)
-        }
-        Command::Account(Account::Referrals(command)) => commands::referrals::run(ctx, command),
+        Command::Auth(auth) => commands::auth::run(ctx, auth),
+        Command::Account(account) => commands::account::run(ctx, account),
         Command::Billing(billing) => commands::billing::run(ctx, billing),
         Command::Drive(drive) => commands::drive::run(ctx, drive),
         Command::S3(s3) => commands::s3::run(ctx, s3),

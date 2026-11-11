@@ -743,8 +743,8 @@ const NOT_ENABLED: &str = "the runner spend limit is not enabled on this server;
                            runners settings get`, then lower `--max-concurrent` or \
                            `--allowed-size` with `hipc compute runners settings update`";
 
-const SET_UNKNOWN: &str = "set the monthly runner spend cap to `50` credits, where the current \
-                           cap is unknown: the limit has no amount in `monthly_cap_credits`";
+const SET_UNKNOWN: &str = "set the monthly runner spend cap to `50` credits, where the cap in \
+                           force is unknown: the limit has no amount in `monthly_cap_credits`";
 
 const REMOVE_UNKNOWN: &str = "remove the monthly runner spend cap, whose current value is \
                               unknown: the limit has no amount in `monthly_cap_credits`";

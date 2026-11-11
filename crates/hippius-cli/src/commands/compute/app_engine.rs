@@ -19,7 +19,7 @@
 //! of every output. validate's optional `secrets` map is never sent, and no answer holds a
 //! secret value (only `secret_names`).
 
-mod create;
+pub(super) mod create;
 
 use std::path::Path;
 
@@ -33,7 +33,7 @@ use crate::commands::{Input, Printed, print_list_with, print_with};
 use crate::context::{Context, Gate};
 
 /// The command that lists the `vm_id`s, for the hint of a 404 on an app route.
-const APPS: &str = "hipc compute app-engine apps list";
+pub(super) const APPS: &str = "hipc compute app-engine apps list";
 
 pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
     match command {

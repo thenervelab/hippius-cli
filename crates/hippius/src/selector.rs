@@ -178,7 +178,7 @@ impl Selector {
     }
 
     /// The refusal of a route that cannot use the selector, with `message`.
-    fn refusal(self, message: String) -> Error {
+    pub(crate) fn refusal(self, message: String) -> Error {
         match self {
             Self::Account => Error::account_scope_unsupported(message),
             Self::Project => Error::project_scope_unsupported(message),

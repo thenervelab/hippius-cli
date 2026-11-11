@@ -35,7 +35,7 @@ mod keyed;
 
 use hippius::routes::kubernetes::{self, Operation, OperationKind, OperationState};
 use hippius::routes::{EmptyBody, Route};
-use hippius::{Client, Code, Error, Request, Result, phrase, view_of};
+use hippius::{Client, Error, Failure, Request, Result, phrase, view_of};
 use serde_json::{Map, Value};
 
 use crate::cli::{
@@ -267,7 +267,7 @@ fn operation(ctx: &Context<'_>, target: &OperationTarget, verb: Verb) -> Result<
         .find(|op| op.id == Some(op_id));
     let Some(op) = found else {
         return Err(Error::new(
-            Code::NotFound,
+            Failure::NotFound,
             format!("the Kubernetes cluster `{id}` has no operation `{op_id}`"),
         )
         .with_hint(format!("run `{operations}` to see what exists")));
@@ -277,7 +277,7 @@ fn operation(ctx: &Context<'_>, target: &OperationTarget, verb: Verb) -> Result<
     // No hint: nothing the caller runs changes a state the server reached (tenet 15).
     if !verb.allows(state) {
         return Err(Error::new(
-            Code::Conflict,
+            Failure::Conflict,
             format!(
                 "cannot {} the operation `{op_id}` of the Kubernetes cluster `{id}`: {}",
                 verb.segment(),
@@ -298,7 +298,7 @@ fn operation(ctx: &Context<'_>, target: &OperationTarget, verb: Verb) -> Result<
         && blocked_on_local_data(&op)
     {
         return Err(Error::new(
-            Code::Conflict,
+            Failure::Conflict,
             format!(
                 "the operation `{op_id}` of the Kubernetes cluster `{id}` is blocked because \
                  data on the node would be lost, and only the console can sign the acceptance \
