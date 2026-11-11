@@ -324,23 +324,6 @@ pub(crate) struct ProfileUpdate {
     pub(crate) billing_email: Option<String>,
 }
 
-impl ProfileUpdate {
-    /// Each field of the profile, as the route names it, and the value given for it.
-    pub(crate) fn fields(&self) -> [(&'static str, Option<&str>); 9] {
-        [
-            ("company_name", self.company_name.as_deref()),
-            ("address_line1", self.address_line1.as_deref()),
-            ("address_line2", self.address_line2.as_deref()),
-            ("city", self.city.as_deref()),
-            ("postal_code", self.postal_code.as_deref()),
-            ("region", self.region.as_deref()),
-            ("country", self.country.as_deref()),
-            ("tax_id", self.tax_id.as_deref()),
-            ("billing_email", self.billing_email.as_deref()),
-        ]
-    }
-}
-
 /// `--country`: two ASCII letters, sent in upper case as the console sends them, or empty to
 /// clear the field.
 fn country(value: &str) -> Result<String, String> {
@@ -715,6 +698,8 @@ mod tests {
             ("1.5", 1_500_000_000_000_000_000),
             ("01.50", 1_500_000_000_000_000_000),
             ("0.010000000000000001", 10_000_000_000_000_001),
+            // Trailing zeros hold no value, as in a credit amount.
+            ("1.0000000000000000000", ONE),
             (
                 "123456789.123456789123456789",
                 123_456_789_123_456_789_123_456_789,
@@ -742,7 +727,7 @@ mod tests {
             ("0.0", minimum),
             ("0.009999999999999999", minimum),
             ("0.0000000000000000001", decimals),
-            ("1.0000000000000000000", decimals),
+            ("1.0000000000000000001", decimals),
             ("340282366920938463464", large),
             ("9999999999999999999999999999999999999999", large),
         ] {

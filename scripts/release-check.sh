@@ -298,7 +298,8 @@ local_write() {
 
 # dry_run_methods <hipc args...>: the methods the argv's dry run lists, each once, joined by
 # commas, with any --output-file pointed at a path that does not exist; nothing when the dry
-# run fails or prints no request.
+# run fails or prints no request. It runs as `offline` does, with the fake token against the
+# dead origin: a dry run needs neither, so a `hipc` that ignored --dry-run sends nothing real.
 dry_run_methods() {
   local arg next=0 dry=()
   for arg in "$@"; do
@@ -310,7 +311,8 @@ dry_run_methods() {
     [[ "$arg" == --output-file ]] && next=1
     dry+=("$arg")
   done
-  "$HIPC" --output json --dry-run "${dry[@]}" 2>/dev/null |
+  HIPPIUS_TOKEN="$FAKE_TOKEN" HIPPIUS_TOKEN_ORIGIN="$DEAD_ORIGIN" "$HIPC" --api-url "$DEAD_ORIGIN" \
+    --output json --dry-run "${dry[@]}" 2>/dev/null </dev/null |
     jq -r '[.requests[]?.method] | unique | join(",")' 2>/dev/null || true
 }
 
@@ -365,6 +367,24 @@ stderr_has() {
     result PASS "$1" "stderr has '$2'"
   else
     result FAIL "$1" "stderr lacks '$2': $(redacted "$OUT/$n.err")"
+  fi
+}
+
+# debug_line <name> <method> <route> [query]: the last stderr holds, as a whole line, the
+# `--debug` line of the request to <route> on the live origin, with [query] after it. <route>
+# is a `route` or `route_ending` lookup, which must give exactly one path: an empty lookup
+# would leave a pattern every `--debug` GET line holds, and two paths would let either pass.
+debug_line() {
+  local name="$1" line
+  if [[ -z "$3" || "$3" == *$'\n'* ]]; then
+    result FAIL "$name" "the schema gives no one route for it, but '${3//$'\n'/ and }'"
+    return
+  fi
+  line="debug: $2 $ORIGIN$3${4-}"
+  if grep -qxF -- "$line" "$OUT/$n.err"; then
+    result PASS "$name" "stderr has the line '$line'"
+  else
+    result FAIL "$name" "stderr lacks the line '$line': $(redacted "$OUT/$n.err")"
   fi
 }
 
@@ -488,9 +508,8 @@ auth_checks() {
   expect "status names the user" '(.user.username | type) == "string" and
     (has("user_error") | not)'
   online "auth status --debug" 0 auth status --debug
-  stderr_has "debug shows the URL" \
-    "debug: GET $ORIGIN$(route_ending "auth status" GET /accounts/)"
-  stderr_has "debug shows the user read" "debug: GET $ORIGIN$(route_ending "auth status" GET /me/)"
+  debug_line "debug shows the URL" GET "$(route_ending "auth status" GET /accounts/)"
+  debug_line "debug shows the user read" GET "$(route_ending "auth status" GET /me/)"
 }
 
 account_checks() {
@@ -572,8 +591,7 @@ account_checks() {
   online "billing usage" 0 billing usage
   expect "usage month" 'has("month") and (.hours | type) == "array"'
   online "billing usage --month --debug" 0 billing usage --month 2026-09 --debug
-  stderr_has "usage URL" \
-    "debug: GET $ORIGIN$(route "billing usage" GET)?month=<redacted>"
+  debug_line "usage URL" GET "$(route "billing usage" GET)" "?month=<redacted>"
   online "billing auto-reload get" 0 billing auto-reload get
   expect "auto-reload document" 'has("available")'
   online "billing auto-reload history --limit 5" 0 billing auto-reload history --limit 5
@@ -671,7 +689,7 @@ storage_checks() {
   online "hub plans" 0 hub plans
   expect "hub catalog" '(.items | length) > 0 and all(.items[]; has("id") and has("name"))'
   online "hub plans --debug" 0 hub plans --debug
-  stderr_has "hub plans URL" "debug: GET $ORIGIN$(route "hub plans" GET)"
+  debug_line "hub plans URL" GET "$(route "hub plans" GET)"
   online "hub subscription get" 0 hub subscription get
   expect "hub subscriptions envelope" 'has("items") and .next_page_token == null'
   online "hub namespace availability" 0 hub namespace availability hipc-release-check-zz
@@ -905,7 +923,7 @@ vm_checks() {
     "compute backups restore-status"
   )
   online "compute vms list --debug" 0 compute vms list --debug
-  stderr_has "vms URL" "debug: GET $ORIGIN$(route "compute vms list" GET)"
+  debug_line "vms URL" GET "$(route "compute vms list" GET)"
   expect "vms envelope" 'has("items") and .next_page_token == null'
   local vm read
   vm="$(field '.items[0].vm_id')"
@@ -1280,8 +1298,7 @@ membership_checks() {
     return
   fi
   online "membership on compute vms list" 0 --account "$MEMBER" compute vms list --debug
-  stderr_has "membership vms URL" \
-    "debug: GET $ORIGIN$(route "compute vms list" GET)"
+  debug_line "membership vms URL" GET "$(route "compute vms list" GET)"
   online "membership on personal ssh-keys" 0 --account "$MEMBER" api GET /ssh-keys/
   online "membership on personal notifications" 0 --account "$MEMBER" account notifications get
   online "membership on personal marketing consent" 0 --account "$MEMBER" \

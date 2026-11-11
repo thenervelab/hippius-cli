@@ -45,8 +45,10 @@ the `.snap` files and commit it with the change, so a reviewer sees every change
 
 `cargo deny` comes from `cargo install --locked cargo-deny`. A change to a shell script also
 passes `shellcheck` and `shfmt -d -i 2`, and a change to a workflow passes `actionlint` and
-`zizmor`; so does a change to the release action in `.github/actions`. CI runs all four as the lint job, with shellcheck 0.11.0, shfmt 3.14.1, actionlint
-1.7.12 and zizmor 1.31.1, so a local run with those versions matches it:
+`zizmor`. actionlint reads only `.github/workflows`, so the `run:` blocks of the release
+action in `.github/actions` are shellchecked by a test of the scripts suite instead, and
+`zizmor` audits the action. CI runs all four as the lint job, with shellcheck 0.11.0, shfmt
+3.14.1, actionlint 1.7.12 and zizmor 1.31.1, so a local run with those versions matches it:
 
 ```sh
 shellcheck -s sh scripts/install.sh && shellcheck scripts/*.sh
@@ -139,9 +141,9 @@ next, are listed in [docs/README.md](docs/README.md): the README, `docs/getting-
   error code) updates, in the same pull request: `CHANGELOG.md`; the README and
   `docs/getting-started.md` or `docs/agents.md` where they show the command; and, when an
   agent's first steps change, the `llms.txt` and the CLI section of docs.hippius.com (once
-  it is published), whose source is the public `hippius-doc` repository. The contract tests run every `hipc` command
-  the README, `docs/getting-started.md`, and `docs/agents.md` show, so a renamed command or
-  flag fails until the pages follow.
+  it is published), whose source is the public `hippius-doc` repository. The contract tests
+  run every `hipc` command the README, `docs/getting-started.md`, and `docs/agents.md` show,
+  so a renamed command or flag fails until the pages follow.
 - Prose follows tenet 15: plain sentences, literals in backticks, no exclamation marks, no
   "please", and nothing private: no internal repository, file, or person's name.
 

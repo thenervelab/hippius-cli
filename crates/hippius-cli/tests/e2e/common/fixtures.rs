@@ -64,12 +64,21 @@ impl Run {
 /// a mode such as 0500 does not stop. A test that makes a file or directory unreadable or
 /// unwritable on purpose starts with `if !permission_bits_apply() { return; }`, and so is
 /// skipped, with a note, in a root container instead of failing there.
+///
+/// # Panics
+///
+/// As root under `CI`: a CI job must run these tests, and a skip would pass green unseen.
 #[expect(
     clippy::print_stderr,
     reason = "a skipped test says so where the test runner shows a test's output"
 )]
 pub(crate) fn permission_bits_apply() -> bool {
     let normal_user = !rustix::process::geteuid().is_root();
+    assert!(
+        normal_user || std::env::var_os("CI").is_none(),
+        "CI runs the suite as root, where the permission tests would be skipped; run it as a \
+         normal user"
+    );
     if !normal_user {
         eprintln!(
             "note: {} skipped: root is not stopped by permission bits",

@@ -5,7 +5,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::routes::{Guard, Route, RouteFlag};
+use crate::routes::{Change, Guard, Route, RouteFlag};
 use crate::view::field;
 
 routes! {
@@ -300,35 +300,31 @@ pub struct ProjectQuotaUpdateBody {
 /// A project's own compute limits: only those given are sent, and `null` is no limit of its
 /// own.
 #[derive(Debug, Default, Serialize)]
-#[expect(
-    clippy::option_option,
-    reason = "a limit left out keeps its value, and `null` removes it"
-)]
 pub struct QuotaLimits {
     /// Virtual machines.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vms: Option<Option<u64>>,
+    #[serde(skip_serializing_if = "Change::is_keep")]
+    pub vms: Change<u64>,
     /// Databases.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub databases: Option<Option<u64>>,
+    #[serde(skip_serializing_if = "Change::is_keep")]
+    pub databases: Change<u64>,
     /// Kubernetes clusters.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clusters: Option<Option<u64>>,
+    #[serde(skip_serializing_if = "Change::is_keep")]
+    pub clusters: Change<u64>,
     /// Virtual CPUs.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vcpus: Option<Option<u64>>,
+    #[serde(skip_serializing_if = "Change::is_keep")]
+    pub vcpus: Change<u64>,
     /// Memory, in GB.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub memory_gb: Option<Option<u64>>,
+    #[serde(skip_serializing_if = "Change::is_keep")]
+    pub memory_gb: Change<u64>,
     /// Disk, in GB.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub disk_gb: Option<Option<u64>>,
+    #[serde(skip_serializing_if = "Change::is_keep")]
+    pub disk_gb: Change<u64>,
     /// Public IP addresses.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub public_ips: Option<Option<u64>>,
+    #[serde(skip_serializing_if = "Change::is_keep")]
+    pub public_ips: Change<u64>,
     /// CI runners.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub runners: Option<Option<u64>>,
+    #[serde(skip_serializing_if = "Change::is_keep")]
+    pub runners: Change<u64>,
 }
 
 /// The body of [`PROJECT_TRANSFER`].
@@ -462,8 +458,8 @@ mod tests {
         );
         let quota = ProjectQuotaUpdateBody {
             limits: QuotaLimits {
-                vms: Some(Some(3)),
-                runners: Some(None),
+                vms: Change::Set(3),
+                runners: Change::Clear,
                 ..QuotaLimits::default()
             },
         };

@@ -431,6 +431,36 @@ fn a_create_that_issues_no_secret_writes_no_file() {
     );
 }
 
+/// A namespace create whose secret comes under another of its names (`secret`, `password`,
+/// `token`) and goes to `--secret-file` is followed by the note that names the file, never by
+/// one that says no secret was issued and suggests the rotate that would void the saved one.
+#[test]
+fn a_create_whose_secret_has_another_name_notes_the_file() {
+    let create = issuers().remove(5);
+    for key in ["secret", "Password", "token"] {
+        let answer = format!(r#"{{"robot_name":"robot$team","{key}":"s3cr3t"}}"#);
+        let server = server_for(&create, Reply::json(201, &answer));
+        let home = Home::new();
+        let file = home.path().join("secret.txt");
+        let run = run_into(
+            &home,
+            &server,
+            &create,
+            &file,
+            &["--reveal", "--yes", "--output", "text"],
+        );
+        assert_eq!(run.code(), Some(0), "{}", run.stderr());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "s3cr3t");
+        assert!(
+            run.stderr().starts_with("note: the secret is in ")
+                && !run.stderr().contains("issued")
+                && !run.stderr().contains("rotate"),
+            "{key}: {}",
+            run.stderr()
+        );
+    }
+}
+
 /// An answer that is not an object holds no top-level secret: a secret inside it cannot be
 /// moved whole, so the answer is printed, and one with none writes no file.
 #[test]

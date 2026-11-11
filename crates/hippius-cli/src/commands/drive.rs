@@ -9,9 +9,7 @@ use hippius::{Request, Result};
 use serde_json::Value;
 
 use crate::cli::{Drive, DriveChange, DriveSubscribe, DriveSubscription};
-use crate::commands::{
-    Printed, SettingChange, list, plan_setting, print_envelope, print_with, subscribed,
-};
+use crate::commands::{Printed, list, plan_setting, print_envelope, print_with, subscribed};
 use crate::context::{self, Context, Gate};
 
 pub(crate) fn run(ctx: &Context<'_>, command: &Drive) -> Result<Printed> {
@@ -96,12 +94,7 @@ fn subscribe_request(args: &DriveSubscribe) -> Request {
 /// balance.
 fn change_request(args: &DriveChange) -> Result<(Request, Gate<'static>)> {
     let Some(plan) = args.plan else {
-        return plan_setting(
-            &drive::SUBSCRIPTION_CHANGE,
-            "Drive",
-            &args.setting,
-            setting_body,
-        );
+        return plan_setting(&drive::SUBSCRIPTION_CHANGE, "Drive", &args.setting);
     };
     let body = drive::PlanChangeBody {
         plan: plan.code(),
@@ -114,20 +107,6 @@ fn change_request(args: &DriveChange) -> Result<(Request, Gate<'static>)> {
         consequence: Some("it is paid from the balance"),
     };
     Ok((request, gate))
-}
-
-/// The Drive plan PATCH that keeps the plan and changes `change`.
-fn setting_body(change: SettingChange) -> drive::SettingChangeBody<'static> {
-    match change {
-        SettingChange::Funding(funding) => drive::SettingChangeBody {
-            funding: Some(funding),
-            ..drive::SettingChangeBody::default()
-        },
-        SettingChange::StorageCap(cap) => drive::SettingChangeBody {
-            storage_cap_bytes: Some(cap),
-            ..drive::SettingChangeBody::default()
-        },
-    }
 }
 
 /// What a Drive plan cancel leaves, for its question and `hipc api`'s.

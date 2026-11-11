@@ -142,6 +142,15 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Compute) -> Result<Printed> {
 
 pub(super) const VMS_LIST_COMMAND: &str = "hipc compute vms list";
 
+/// A request to `route` of the VM `vm_id`, whose action is `verb` and the VM, such as
+/// `get the backups of` and then "the VM `vm_1`"; a VM that is not there is found with
+/// [`VMS_LIST_COMMAND`].
+fn of_vm(route: &Route<1>, verb: &str, vm_id: &dyn std::fmt::Display) -> Request {
+    Request::to(route, [vm_id])
+        .about(format!("{verb} the VM `{vm_id}`"))
+        .listed_by(VMS_LIST_COMMAND)
+}
+
 /// Whether the server answered `status` with the compute error slug `slug`
 /// ([`compute::Refusal`]).
 pub(super) fn refused_as(error: &Error, status: u16, slug: &str) -> bool {

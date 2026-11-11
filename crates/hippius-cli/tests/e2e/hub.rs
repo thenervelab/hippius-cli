@@ -838,6 +838,13 @@ fn namespace_create_prints_the_one_time_secret_on_stdout() {
         "note: log in to the registry with `docker login registry.hippius.com --username \
          <robot_name> --password-stdin`, giving it `robot_secret` on stdin\n"
     );
+    // A secret under another of its names is the one the note says to give.
+    let run = provision(r#"{"robot_name":"robot$acme+push","secret":"s3cr3t-robot"}"#);
+    assert_eq!(
+        run.stderr(),
+        "note: log in to the registry with `docker login registry.hippius.com --username \
+         <robot_name> --password-stdin`, giving it `secret` on stdin\n"
+    );
     // The server's login command, which passes the secret, is replaced by the one `hipc`
     // builds, which reads it from stdin.
     let run = provision(concat!(

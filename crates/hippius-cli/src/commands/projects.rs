@@ -10,7 +10,7 @@
 //! The project transfers, `/api/accounts/project-transfers/`, are personal: they are the
 //! token's own account's whichever account is selected, so they never take the header.
 
-use hippius::routes::{self, account::NameBody};
+use hippius::routes::{self, Change, account::NameBody};
 use hippius::{
     BillingId, Client, ConfigFile, Error, Failure, ProjectId, Request, Response, Result, Selection,
     Source, phrase, view_of,
@@ -25,7 +25,7 @@ use crate::commands::account;
 use crate::commands::credits::{AmountPath, shown_in_credits};
 use crate::commands::{
     Decided, Printed, keyed_list, print_body, print_body_or, print_keyed_list, print_list_with,
-    print_with, read_then_write, store_selection,
+    print_with, read_then_write, sent_fields, store_selection,
 };
 use crate::context::{Context, Gate, WritePlan};
 use crate::output::Mode;
@@ -518,19 +518,10 @@ fn quota(ctx: &Context<'_>, command: &Quota) -> Result<Printed> {
 }
 
 fn quota_update(ctx: &Context<'_>, args: &QuotaUpdate) -> Result<Printed> {
-    let shown: Vec<String> = args
-        .limits()
-        .into_iter()
-        .map(|(key, limit)| match limit {
-            QuotaLimit::At(n) => format!("`{key}` to `{n}`"),
-            QuotaLimit::None => format!("`{key}` to none of its own"),
-        })
-        .collect();
-    let sent = |limit: Option<QuotaLimit>| {
-        limit.map(|limit| match limit {
-            QuotaLimit::At(n) => Some(n),
-            QuotaLimit::None => None,
-        })
+    let sent = |limit: Option<QuotaLimit>| match limit {
+        Some(QuotaLimit::At(n)) => Change::Set(n),
+        Some(QuotaLimit::None) => Change::Clear,
+        None => Change::Keep,
     };
     let limits = routes::account::QuotaLimits {
         vms: sent(args.vms),
@@ -542,6 +533,13 @@ fn quota_update(ctx: &Context<'_>, args: &QuotaUpdate) -> Result<Printed> {
         public_ips: sent(args.public_ips),
         runners: sent(args.runners),
     };
+    let shown: Vec<String> = sent_fields(&limits)
+        .into_iter()
+        .map(|(key, limit)| match limit {
+            Value::Null => format!("`{key}` to none of its own"),
+            n => format!("`{key}` to `{n}`"),
+        })
+        .collect();
     let request = Request::to(
         &routes::account::PROJECT_QUOTA_UPDATE,
         [&args.project.project_id],

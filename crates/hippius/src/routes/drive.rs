@@ -49,18 +49,3 @@ pub struct PlanChangeBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub period: Option<&'a str>,
 }
-
-/// The body of [`SUBSCRIPTION_CHANGE`] that keeps the plan and changes one setting.
-#[derive(Debug, Default, Serialize)]
-#[expect(
-    clippy::option_option,
-    reason = "a cap left out keeps its value, and `null` is the default cap"
-)]
-pub struct SettingChangeBody<'a> {
-    /// How each later renewal is paid: `credits` or `card`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub funding: Option<&'a str>,
-    /// The cap on bytes stored past the quota; `null` is the default cap.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub storage_cap_bytes: Option<Option<u64>>,
-}

@@ -449,15 +449,13 @@ fn every_confirmed_command_refuses_without_yes_and_sends_no_write() {
 /// The commands whose real run always sends more than one request, which a dry run lists
 /// (`TENETS.md` tenet 5). A list replace is told by its `reads_first`, and Hub
 /// `--replace` by its `may_cancel_first`.
-const MORE_THAN_ONE_REQUEST: [&str; 26] = [
+const MORE_THAN_ONE_REQUEST: [&str; 25] = [
     "auth status",
     "billing subscriptions",
     "billing auto-reload update",
     // The challenge, then the link with its signature.
     "billing gamma hotkeys create",
     "s3 tokens list",
-    // The plan catalog, then the purchase.
-    "s3 subscription subscribe",
     "compute vms delete",
     "compute backups restore",
     // The backup options, then the policy.
@@ -507,10 +505,13 @@ fn assert_one_dry_run_shape(doc: &Value, example: &str, path: &str, confirmation
     // A zone update of the prefix alone reads the zone, for the rest of its origin.
     let reads_the_zone =
         path == "cdn zones update" && example.contains("--prefix") && !example.contains("--bucket");
-    // A plan change reads the plan catalog, for the code it sends.
-    let reads_the_plans = path == "s3 subscription change" && example.contains("--plan");
+    // A launch with backups reads the backup options, for the interval it sends.
+    let reads_the_intervals = matches!(
+        path,
+        "compute vms create" | "compute app-engine apps create"
+    ) && example.contains("--backup-interval");
     let several = MORE_THAN_ONE_REQUEST.contains(&path)
-        || reads_the_plans
+        || reads_the_intervals
         || reads_the_profile
         || opens_ports
         || reads_the_zone

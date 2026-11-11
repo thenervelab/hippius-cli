@@ -13,7 +13,7 @@ use crate::commands::Printed;
 use crate::commands::compute::VMS_LIST_COMMAND;
 use crate::commands::compute::app_engine::APPS_LIST_COMMAND;
 use crate::commands::compute::app_engine::create::{printable, sanitized};
-use crate::commands::poll::{Next, Schedule, Wait, poll_until};
+use crate::commands::poll::{Schedule, Turn, Wait, poll_until};
 use crate::context::Context;
 
 /// How often a launch is polled, 2 seconds: a launch takes on the order of a
@@ -376,22 +376,22 @@ impl LaunchWait<'_> {
 impl Wait for LaunchWait<'_> {
     type Output = Printed;
 
-    fn next(&mut self) -> Next<Printed> {
+    fn next(&mut self) -> Turn<Printed> {
         match self.kind.state(&self.doc) {
-            Launch::Done => Next::Stop(Ok(Printed::Document(self.printed()))),
+            Launch::Done => Turn::Stop(Ok(Printed::Document(self.printed()))),
             Launch::Ended(status) => {
                 let message = format!(
                     "{} reached {} instead of `running`",
                     self.named,
                     phrase::quote(status)
                 );
-                Next::Stop(Err(Error::new(Failure::PartialFailure, message)
+                Turn::Stop(Err(Error::new(Failure::PartialFailure, message)
                     .with_hint(self.hint)
                     .after_write(self.printed())))
             }
             Launch::Waiting(pending) => {
                 self.pending = pending;
-                Next::Poll
+                Turn::Poll
             }
         }
     }

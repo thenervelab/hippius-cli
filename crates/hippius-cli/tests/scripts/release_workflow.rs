@@ -605,3 +605,37 @@ fn the_action_refuses_a_release_binary_that_reads_the_test_poll_interval() {
         "the release profile turns debug assertions on: {release}"
     );
 }
+
+/// Every `run:` block of the release-build action passes shellcheck, as a script under
+/// `scripts/` and a workflow's `run:` block do: actionlint reads only `.github/workflows`, so
+/// the action's shell would otherwise merge unlinted. Each block runs under `bash`, the shell
+/// every step names. Linux only: the coverage job and the lint job run there, and the Ubuntu
+/// runner image ships shellcheck, which the macOS one need not.
+#[cfg(target_os = "linux")]
+#[test]
+fn every_run_block_of_the_release_action_passes_shellcheck() {
+    let action = workflow::release_build_action();
+    let blocks: Vec<&str> = workflow::steps(&action["runs"])
+        .iter()
+        .filter(|step| !step["run"].is_badvalue())
+        .map(workflow::run)
+        .collect();
+    assert!(
+        blocks.len() >= 5,
+        "the action's steps were read: {blocks:?}"
+    );
+    let dir = TempDir::new();
+    for (at, block) in blocks.iter().enumerate() {
+        let file = dir.path().join(format!("step-{at}.sh"));
+        std::fs::write(&file, format!("#!/usr/bin/env bash\n{block}\n")).expect("write a step");
+        let out = Command::new(crate::support::tool("shellcheck"))
+            .arg(&file)
+            .output()
+            .expect("run shellcheck");
+        assert!(
+            out.status.success(),
+            "step {at}:\n{block}\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+}

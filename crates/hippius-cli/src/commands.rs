@@ -25,9 +25,10 @@ pub(crate) mod support;
 
 use std::io::Read;
 use std::os::fd::AsFd as _;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
-use hippius::routes::{self, Route};
+use hippius::routes::{self, Change, Route, SettingChangeBody};
 use hippius::{
     Client, ConfigFile, Error, Overrides, Page, Request, Response, Result, Source, phrase, view_of,
 };
@@ -35,7 +36,7 @@ use serde_json::{Map, Value};
 use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::cli::{Funding, PlanSetting, StorageCap};
-use crate::context::{self, Context, DryRun, Gate, Step, Write, WritePlan};
+use crate::context::{self, ConfirmedStep, Context, DryRun, Gate, Step, Write, WritePlan};
 
 /// Whether `error` is the API's refusal of a call made before `route` set the account's service up:
 /// a 403 whose `detail` is exactly `You must call <route> first.`, the sentence both setup routes
@@ -109,6 +110,7 @@ pub(crate) struct Input<'a> {
 }
 
 /// What [`Input::open`] opened: stdin, or a regular file that passed the checks.
+#[derive(Debug)]
 enum Opened {
     Stdin,
     File(std::fs::File),
@@ -203,7 +205,6 @@ impl Input<'_> {
     /// secret. A file that cannot be inspected (`None`) is not refused: the read then fails, or
     /// reads a file that is not one of them.
     fn refuse_secret_store(&self, opened: Option<&std::fs::Metadata>) -> Result<()> {
-        use std::os::unix::fs::MetadataExt as _;
         let home = context::env_os("HOME").map(PathBuf::from);
         let config = [
             context::config_path().ok(),
@@ -345,13 +346,6 @@ impl Input<'_> {
         Ok(bytes)
     }
 
-    /// [`Input::read_secret`] of stdin, for a secret that must not outlive its use, such as
-    /// a hotkey phrase piped in.
-    pub(crate) fn read_cleared_stdin(&self) -> Result<Zeroizing<String>> {
-        debug_assert_eq!(self.path, Path::new("-"), "only stdin");
-        self.read_secret()
-    }
-
     /// Reads at most `limit` bytes of UTF-8 text.
     pub(crate) fn read_text(&self, limit: u64) -> Result<String> {
         let bytes = self.read(limit)?;
@@ -474,6 +468,10 @@ pub(crate) fn read_then_write(
         Write::Checked(checked) => checked,
     };
     let Decided { write, question } = decide()?;
+    debug_assert!(
+        plan.drafts(client, &write),
+        "the write `decide` returns reaches the draft's route, which scoped the question"
+    );
     let confirmed = match question {
         Some((action, consequence)) => {
             ctx.confirm_write(checked, &action, consequence.as_deref())?
@@ -512,41 +510,58 @@ pub(crate) struct Catalog<'a> {
     pub(crate) listed_by: &'a str,
 }
 
-/// Sends `write` once `catalog` lists the code it sends, as `hipc hub subscription subscribe`
-/// resolves its plan: the question first, then the catalog read, then the write. A code the
-/// catalog does not list is refused (`usage`) after the read, and nothing is written. A dry run
-/// reads nothing and lists the read and the write.
-pub(crate) fn send_from_catalog(
-    ctx: &Context<'_>,
-    client: &Client,
-    catalog: &Catalog<'_>,
-    write: &Request,
-    consequence: Option<&str>,
-) -> Result<Step> {
-    let plan = WritePlan::new(&[&catalog.read], write);
-    let checked = match ctx.check_write(client, &plan)? {
-        Write::DryRun(doc) => return Ok(Step::DryRun(doc)),
-        Write::Checked(checked) => checked,
-    };
-    let confirmed = ctx.confirm_write(checked, &write.action(), consequence)?;
-    let codes = (catalog.codes)(&ctx.send(client, &catalog.read)?.json()?);
-    if !codes.iter().any(|code| code == catalog.wanted) {
+impl Catalog<'_> {
+    /// Sends the catalog read and refuses (`usage`) a [`Catalog::wanted`] it does not list,
+    /// naming what it does list.
+    ///
+    /// # Errors
+    ///
+    /// The read's error, an answer that is not JSON, and the refusal.
+    pub(crate) fn check(&self, ctx: &Context<'_>, client: &Client) -> Result<()> {
+        let codes = (self.codes)(&ctx.send(client, &self.read)?.json()?);
+        if codes.iter().any(|code| code == self.wanted) {
+            return Ok(());
+        }
         let offered = if codes.is_empty() {
             "the server lists none".to_owned()
         } else {
             let quoted: Vec<String> = codes.iter().map(phrase::quote).collect();
             format!("the server offers {}", phrase::join(&quoted, "and"))
         };
-        return Err(Error::usage(
+        Err(Error::usage(
             format!(
                 "{} `{}` is not one the server offers: {offered}",
-                catalog.what, catalog.wanted
+                self.what, self.wanted
             ),
-            format!("run `{}` to see them", catalog.listed_by),
-        ));
+            format!("run `{}` to see them", self.listed_by),
+        ))
     }
-    ctx.send_confirmed(client, write, &confirmed)
-        .map(Step::Sent)
+}
+
+/// Sends `write`, confirmed with `consequence`, once `catalog`, when given, lists the code it
+/// sends, as `hipc hub subscription subscribe` resolves its plan: the question first, then the
+/// catalog read, then the write. A code the catalog does not list is refused (`usage`) after
+/// the read, and nothing is written ([`Catalog::check`]). A dry run reads nothing and lists
+/// the read and the write. Without a catalog this is [`Context::call_confirmed`].
+pub(crate) fn send_from_catalog(
+    ctx: &Context<'_>,
+    client: &Client,
+    catalog: Option<&Catalog<'_>>,
+    write: &Request,
+    consequence: Option<&str>,
+) -> Result<ConfirmedStep> {
+    let Some(catalog) = catalog else {
+        return ctx.call_confirmed(client, write, consequence);
+    };
+    let plan = WritePlan::new(&[&catalog.read], write);
+    let checked = match ctx.check_write(client, &plan)? {
+        Write::DryRun(doc) => return Ok(ConfirmedStep::DryRun(doc)),
+        Write::Checked(checked) => checked,
+    };
+    let confirmed = ctx.confirm_write(checked, &write.action(), consequence)?;
+    catalog.check(ctx, client)?;
+    let response = ctx.send_confirmed(client, write, &confirmed)?;
+    Ok(ConfirmedStep::Sent(response, confirmed))
 }
 
 /// Sends `request`, a GET of a list, and prints what `render` makes of the answer, the list
@@ -600,25 +615,24 @@ pub(crate) fn print_envelope(
     })
 }
 
-/// One setting of a Drive or S3 plan that a `change` without `--plan` sends: how renewals are
-/// paid, or the cap on storage billed past the quota (`None` is the default cap). Each
-/// service writes it into its own route's body.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum SettingChange {
-    Funding(&'static str),
-    StorageCap(Option<u64>),
+/// Each top-level field `body` sends, with its value, in the order it sends them: what a
+/// question names is read from the body, so no field is named and not sent, or sent and not
+/// named.
+pub(crate) fn sent_fields(body: &impl serde::Serialize) -> Map<String, Value> {
+    serde_json::to_value(body)
+        .and_then(serde_json::from_value)
+        .expect("a request body that names fields is a JSON object")
 }
 
 /// `route`, the PATCH of a Drive or S3 subscription, that keeps the plan: `--pay-from` or
-/// `--storage-cap`, sent as `body` writes it. The command's `change` group takes one of them
-/// when `--plan` is absent. `service` names the plan in the question, as `Drive` or `S3`. Both
-/// change what later renewals or storage cost, so both are confirmed, and the action an agent
-/// reads in the refusal names the money.
-pub(crate) fn plan_setting<B: serde::Serialize>(
+/// `--storage-cap`, sent as [`SettingChangeBody`] writes it. The command's `change` group takes
+/// one of them when `--plan` is absent. `service` names the plan in the question, as `Drive` or
+/// `S3`. Both change what later renewals or storage cost, so both are confirmed, and the action
+/// an agent reads in the refusal names the money.
+pub(crate) fn plan_setting(
     route: &Route<0>,
     service: &str,
     setting: &PlanSetting,
-    body: fn(SettingChange) -> B,
 ) -> Result<(Request, Gate<'static>)> {
     let (change, action, consequence) = if let Some(funding) = setting.pay_from {
         let action = match funding {
@@ -627,7 +641,10 @@ pub(crate) fn plan_setting<B: serde::Serialize>(
                 format!("charge each renewal of the {service} plan to the card saved at Stripe")
             }
         };
-        let change = SettingChange::Funding(funding.code());
+        let change = SettingChangeBody {
+            funding: Some(funding.code()),
+            ..SettingChangeBody::default()
+        };
         (change, action, "it changes how every later renewal is paid")
     } else {
         // The `change` group takes `--plan`, `--pay-from`, or `--storage-cap`, and the
@@ -639,18 +656,21 @@ pub(crate) fn plan_setting<B: serde::Serialize>(
             )
         })?;
         let (cap, up_to) = match cap {
-            StorageCap::Bytes(bytes) => (Some(bytes), format!("`{bytes}` bytes")),
+            StorageCap::Bytes(bytes) => (Change::Set(bytes), format!("`{bytes}` bytes")),
             StorageCap::Default => (
-                None,
+                Change::Clear,
                 "the default cap of twice the plan's storage".to_owned(),
             ),
         };
         let action =
             format!("bill the storage of the {service} plan past its quota, up to {up_to}");
-        let change = SettingChange::StorageCap(cap);
+        let change = SettingChangeBody {
+            storage_cap_bytes: cap,
+            ..SettingChangeBody::default()
+        };
         (change, action, "storage past the quota is billed")
     };
-    let request = Request::to(route, []).json(&body(change)).about(action);
+    let request = Request::to(route, []).json(&change).about(action);
     Ok((
         request,
         Gate::Confirm {
@@ -933,9 +953,7 @@ mod tests {
             pay_from: None,
             storage_cap: None,
         };
-        let body = |change| format!("{change:?}");
-        let error =
-            plan_setting(&routes::s3::SUBSCRIPTION_CHANGE, "S3", &setting, body).unwrap_err();
+        let error = plan_setting(&routes::s3::SUBSCRIPTION_CHANGE, "S3", &setting).unwrap_err();
         assert_eq!(error.code(), Code::Usage);
         assert_eq!(
             error.message(),
@@ -945,8 +963,7 @@ mod tests {
             pay_from: Some(Funding::Card),
             storage_cap: None,
         };
-        let (request, _) =
-            plan_setting(&routes::s3::SUBSCRIPTION_CHANGE, "S3", &card, body).unwrap();
+        let (request, _) = plan_setting(&routes::s3::SUBSCRIPTION_CHANGE, "S3", &card).unwrap();
         assert_eq!(
             request.action(),
             "charge each renewal of the S3 plan to the card saved at Stripe"

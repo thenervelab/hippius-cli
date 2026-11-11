@@ -288,12 +288,18 @@ pub(crate) fn failure_warned(mode: Mode, error: &Error, warnings: &[String]) -> 
 
 /// Adds the run's `warnings` to a JSON-mode document as a top-level `warnings` array of their
 /// texts, the `warning:` lines text mode writes on stderr. A document only gains fields
-/// (tenet 15), and the array is there only when there is a warning. A document that is not
-/// an object, such as the array `--all` prints, has no place for a field and keeps its shape
-/// (tenet 3), so its warnings go to stderr ([`warnings_aside`]).
+/// (tenet 15), and the array is there only when there is a warning. A document with no place
+/// for the field keeps its shape (tenet 3), and its warnings go to stderr
+/// ([`warnings_aside`]): one that is not an object, such as the array `--all` prints, and one
+/// that holds a `warnings` field of its own, such as a server answer's, which is never
+/// overwritten.
 pub(crate) fn add_warnings(mode: Mode, document: &mut Value, warnings: &[String]) {
     match document {
-        Value::Object(fields) if matches!(mode, Mode::Json) && !warnings.is_empty() => {
+        Value::Object(fields)
+            if matches!(mode, Mode::Json)
+                && !warnings.is_empty()
+                && !fields.contains_key("warnings") =>
+        {
             fields.insert("warnings".to_owned(), warnings.into());
         }
         _ => warnings_aside(mode, warnings),
@@ -326,6 +332,12 @@ fn done_on_failure(error: &Error) -> Option<Value> {
 /// a console token is 40 characters and no command name is 20, so the cut sits between them.
 const TOKEN_SHAPED_CHARS: usize = 20;
 
+/// Whether `word`, the caller's, is long enough to be a token pasted in the wrong place
+/// ([`TOKEN_SHAPED_CHARS`]); clap's own name for an argument starts with `-` or `<`.
+fn token_shaped(word: &str) -> bool {
+    !word.starts_with(['-', '<']) && word.chars().count() >= TOKEN_SHAPED_CHARS
+}
+
 /// Prints a clap parse result that is not a successful parse: help and version go to
 /// stdout with exit 0, a real argv error is a `usage` failure, printed like every other
 /// failure (`error:` and `hint:` in text mode, one object in JSON mode), with a hint that
@@ -346,14 +358,12 @@ pub(crate) fn clap_error(mode: Mode, error: &clap::Error, args: &[OsString]) -> 
     // repeats it: clap's message, and `usage_message`, would quote it (tenet 9). A shorter
     // word, such as a mistyped command name, still gets the usual message and its nearest
     // command. clap's own name for an argument (`--name <NAME>`, `<VM_ID>`) is not the
-    // caller's word. A validator's refusal is not one of these kinds: it says what was wrong
-    // without the value where the value may be a secret.
+    // caller's word. A validator's refusal keeps its reason and drops such a value
+    // ([`usage_message`]).
     let refuses_a_word = matches!(
         error.kind(),
         ErrorKind::UnknownArgument | ErrorKind::InvalidValue | ErrorKind::InvalidSubcommand
     );
-    let token_shaped =
-        |word: &str| !word.starts_with(['-', '<']) && word.chars().count() >= TOKEN_SHAPED_CHARS;
     let quotes_a_token = [
         ContextKind::InvalidArg,
         ContextKind::InvalidValue,
@@ -460,7 +470,9 @@ fn is_missing_subcommand(error: &clap::Error) -> bool {
 /// breaks as `\n`, the form `render_failure` gives every other control character, so they
 /// cannot forge a line of their own. Elsewhere an apostrophe inside a word stays, and a
 /// numeric range clap names bare outside a literal (`0 is not in 1..=500`) is a literal too,
-/// so it gains backticks.
+/// so it gains backticks. A value a validator refused that is [`token_shaped`] is left out,
+/// and the validator's reason kept (``invalid value for `--name <NAME>`: ...``): it may be a
+/// secret given to the wrong flag (tenet 9).
 fn usage_message(error: &clap::Error) -> String {
     let quoted: Vec<&str> = [
         ContextKind::InvalidValue,
@@ -476,6 +488,12 @@ fn usage_message(error: &clap::Error) -> String {
     // Each quoted word becomes a marker of NUL, its index, and NUL. A NUL cannot occur in
     // argv on Unix, nor in clap's own text, so a marker cannot collide with either.
     let mut rendered = error.render().to_string();
+    if error.kind() == ErrorKind::ValueValidation
+        && let Some(ContextValue::String(value)) = error.get(ContextKind::InvalidValue)
+        && token_shaped(value)
+    {
+        rendered = rendered.replacen(&format!("'{value}' "), "", 1);
+    }
     for (i, text) in quoted.iter().enumerate() {
         rendered = rendered.replace(&format!("'{text}'"), &format!("\0{i}\0"));
     }

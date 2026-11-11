@@ -117,7 +117,7 @@ fn hotkey_words(path: &Path) -> Result<(Zeroizing<String>, Source)> {
             flag: FLAG,
             what: "hotkey phrase",
         }
-        .read_cleared_stdin()?
+        .read_secret()?
     } else {
         hippius::read_hotkey_file(path, FLAG)?
     };

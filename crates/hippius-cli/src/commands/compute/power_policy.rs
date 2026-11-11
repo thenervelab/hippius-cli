@@ -5,7 +5,7 @@ use hippius::{Client, Request, Response, Result, phrase, view_of};
 use serde_json::{Map, Value};
 
 use crate::cli::{GuestPoweroff, PowerPolicy, VmId, VmTarget};
-use crate::commands::compute::VMS_LIST_COMMAND;
+use crate::commands::compute::{VMS_LIST_COMMAND, of_vm};
 use crate::commands::{Printed, print_with};
 use crate::context::{Context, Gate};
 
@@ -60,9 +60,7 @@ pub(super) fn power_policy_command(
 ) -> Result<Printed> {
     match command {
         PowerPolicy::Get(VmTarget { vm_id }) => {
-            let request = Request::to(&compute::VM, [vm_id])
-                .about(format!("get the power policy of the VM `{vm_id}`"))
-                .listed_by(VMS_LIST_COMMAND);
+            let request = of_vm(&compute::VM, "get the power policy of", vm_id);
             print_with(ctx, client, &request, Gate::Open, |response| {
                 let answer = power_policy(&response, vm_id, None)?;
                 note_pending(ctx, &answer);

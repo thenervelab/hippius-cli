@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use crate::cli::CHAIN_MINIMUM;
 use crate::commands::Printed;
 use crate::commands::credits::to_credits;
-use crate::commands::poll::{Next, Schedule, Wait, poll_until};
+use crate::commands::poll::{Schedule, Turn, Wait, poll_until};
 use crate::commands::print_with;
 use crate::context::{Context, Gate, Write, WritePlan};
 use crate::output::Mode;
@@ -487,11 +487,11 @@ impl Purchase<'_> {
 impl Wait for Purchase<'_> {
     type Output = Followed;
 
-    fn next(&mut self) -> Next<Followed> {
+    fn next(&mut self) -> Turn<Followed> {
         if view_of::<billing::Purchase>(&self.row).status.in_flight() {
-            Next::Poll
+            Turn::Poll
         } else {
-            Next::Stop(Ok(Followed::Final(std::mem::take(&mut self.row))))
+            Turn::Stop(Ok(Followed::Final(std::mem::take(&mut self.row))))
         }
     }
 
@@ -610,7 +610,7 @@ fn follow(
         }
         // A status `hipc` does not know may be a refusal: not reported as a success. One in
         // flight never gets here: the follow stops only on a status out of flight.
-        PurchaseStatus::Pending
+        PurchaseStatus::Unset
         | PurchaseStatus::Queued
         | PurchaseStatus::Submitted
         | PurchaseStatus::Included

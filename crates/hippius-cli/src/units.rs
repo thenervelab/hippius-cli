@@ -122,7 +122,9 @@ impl Planck {
         let Some(amount) = Decimal::parse(text) else {
             return Err(format!("an amount is {unit} in digits, such as {examples}"));
         };
-        if amount.fraction().len() > DECIMALS as usize {
+        // Trailing zeros hold no value, so they count no more here than in [`credits`].
+        let fraction = amount.significant().1;
+        if fraction.len() > DECIMALS as usize {
             return Err(format!(
                 "{unit} has {DECIMALS} decimals, so an amount has at most {DECIMALS} digits after \
                  the point"
@@ -130,9 +132,9 @@ impl Planck {
         }
         let too_large = || format!("the amount is larger than any {unit} balance");
         let whole: u128 = amount.whole().parse().map_err(|_| too_large())?;
-        let fraction: u128 = format!("{:0<18}", amount.fraction())
+        let fraction: u128 = format!("{fraction:0<width$}", width = DECIMALS as usize)
             .parse()
-            .expect("checked: 18 ASCII digits");
+            .expect("checked: at most DECIMALS ASCII digits");
         whole
             .checked_mul(ONE)
             .and_then(|w| w.checked_add(fraction))
@@ -144,7 +146,7 @@ impl Planck {
 impl fmt::Display for Planck {
     /// The amount as a decimal, exactly: `1.5`, `0.01`, `2`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let fraction = format!("{:018}", self.0 % ONE);
+        let fraction = format!("{:0width$}", self.0 % ONE, width = DECIMALS as usize);
         let fraction = fraction.trim_end_matches('0');
         if fraction.is_empty() {
             write!(f, "{}", self.0 / ONE)
@@ -265,6 +267,8 @@ mod tests {
         let parse = |text| Planck::parse(text, "hAlpha", "`1.5`");
         assert_eq!(parse("1.5"), Ok(Planck(ONE + ONE / 2)));
         assert_eq!(parse("0.000000000000000001"), Ok(Planck(1)));
+        // Trailing zeros hold no value, as for a credit amount.
+        assert_eq!(parse("1.0000000000000000000"), Ok(Planck(ONE)));
         assert_eq!(
             parse("0.0000000000000000001"),
             Err(

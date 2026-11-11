@@ -6,13 +6,14 @@ use hippius::{Client, Error, Request, Result, Slot, phrase, view_of};
 use serde_json::{Value, json};
 
 use crate::cli::{DedicatedDisk, DiskTier, FailoverMode, GuestPoweroff, VmCreate};
+use crate::commands::compute::backups;
 use crate::commands::compute::launch::{
     Goal, Kind, STAYS_STOPPED, backups_clause, balance_hint, launch_wait, os_disk_clause, wait,
 };
 use crate::commands::compute::public_ip::inbound_blocked;
 use crate::commands::compute::ssh_keys::read_public_key;
 use crate::commands::compute::{VMS_LIST_COMMAND, refused_as};
-use crate::commands::{Printed, failed_part};
+use crate::commands::{Printed, failed_part, send_from_catalog};
 use crate::context::{Confirmed, ConfirmedStep, Context};
 
 /// `POST /api/compute/vms/`, then a wait for `running` (and `network_ready` with
@@ -51,15 +52,22 @@ pub(super) fn create(ctx: &Context<'_>, client: &Client, args: &VmCreate) -> Res
     } else {
         "it is billed until it is deleted"
     };
+    let ports = open_ports(args);
     let request = Request::to(&compute::VM_CREATE, [])
         .json(&create_body(args, public_key.as_deref(), dedicated))
-        .about(launch_action(args, dedicated));
+        .about(launch_action(args, dedicated, &ports));
+    // A backup interval the server does not offer is refused after the question and before
+    // the launch, as `backups policy update` refuses it (owner decision D19).
+    let interval = args
+        .launch
+        .backup_interval
+        .map(|seconds| seconds.to_string());
+    let intervals = interval.as_deref().map(backups::intervals);
     // The launch's 503 `placement-groups-unavailable` (swagger, the `placement_group` field
     // of `POST /api/compute/vms/`) stays `partial` and not retryable, as every 5xx to a
     // write: whether the backend can record the VM before it refuses is not documented, and
     // a second launch is billed. Its hint names the list to check first.
-    let step = ctx
-        .call_confirmed(client, &request, Some(consequence))
+    let step = send_from_catalog(ctx, client, intervals.as_ref(), &request, Some(consequence))
         .map_err(|error| {
             if refused_as(&error, 503, "placement-groups-unavailable") {
                 error.with_hint(format!(
@@ -70,13 +78,17 @@ pub(super) fn create(ctx: &Context<'_>, client: &Client, args: &VmCreate) -> Res
                 balance_hint(error)
             }
         })?;
-    let ports = open_ports(args);
     let (launched, confirmed) = match step {
         ConfirmedStep::Sent(response, confirmed) => (response.document()?, confirmed),
         ConfirmedStep::DryRun(doc) if ports.is_empty() => return Ok(doc.into()),
         ConfirmedStep::DryRun(_) => {
             let rules = open_ports_request(VM_ID_STAND_IN, &ports);
-            let doc = ctx.dry_run_of(client, &[&request, &rules])?;
+            let sent: Vec<&Request> = intervals
+                .iter()
+                .map(|catalog| &catalog.read)
+                .chain([&request, &rules])
+                .collect();
+            let doc = ctx.dry_run_of(client, &sent)?;
             return Ok(doc
                 .with_placeholder_in_urls(VM_ID_STAND_IN, VM_ID_PLACEHOLDER)
                 .into());
@@ -375,7 +387,7 @@ fn dedicated_disks(disks: &[DedicatedDisk]) -> Result<Option<Dedicated>> {
 /// What the launch does, for the question and the refusal: the flavor, then one clause per
 /// option that bills more, each naming where its price is shown. `hipc` holds no price and
 /// reads none before the question: a dry run and a refusal send nothing.
-fn launch_action(args: &VmCreate, dedicated: Option<Dedicated>) -> String {
+fn launch_action(args: &VmCreate, dedicated: Option<Dedicated>, ports: &[u16]) -> String {
     let mut clauses = Vec::new();
     if args.public_ip {
         clauses.push(
@@ -405,12 +417,8 @@ fn launch_action(args: &VmCreate, dedicated: Option<Dedicated>) -> String {
     if args.launch.on_guest_poweroff == Some(GuestPoweroff::Stop) {
         clauses.push(STAYS_STOPPED.to_owned());
     }
-    let ports = open_ports(args);
     if !ports.is_empty() {
-        clauses.push(format!(
-            "{} open to every IPv4 address",
-            ports_named(&ports)
-        ));
+        clauses.push(format!("{} open to every IPv4 address", ports_named(ports)));
     }
     let launch = format!("launch a VM of flavor {}", phrase::quote(&args.flavor));
     if clauses.is_empty() {

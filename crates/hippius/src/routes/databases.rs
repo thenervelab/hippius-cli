@@ -1,6 +1,7 @@
 //! Managed databases.
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 use crate::routes::Route;
 use crate::view::{field, nested};
@@ -95,7 +96,8 @@ impl std::fmt::Debug for CreatedDatabase {
 }
 
 /// The `credentials` of a [`CreatedDatabase`], which no route shows again. Its `Debug` says
-/// which fields it holds, never their values.
+/// which fields it holds, never their values, and the password is cleared from memory when it
+/// is dropped.
 #[derive(Default, Deserialize)]
 pub struct Credentials {
     /// The role to connect as.
@@ -113,7 +115,8 @@ pub struct Credentials {
 }
 
 /// The `credentials.tls` of a [`CreatedDatabase`], each a PEM text. Its `Debug` says which
-/// fields it holds, never their values.
+/// fields it holds, never their values, and the private key is cleared from memory when it is
+/// dropped.
 #[derive(Default, Deserialize)]
 pub struct Tls {
     /// The client certificate.
@@ -137,6 +140,32 @@ impl Tls {
             "ca_cert" => self.ca_cert.as_deref(),
             _ => None,
         }
+    }
+}
+
+impl Drop for Credentials {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl Zeroize for Credentials {
+    /// Clears the password; the TLS key clears itself ([`Tls`]).
+    fn zeroize(&mut self) {
+        self.password.zeroize();
+    }
+}
+
+impl Drop for Tls {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl Zeroize for Tls {
+    /// Clears the private key; the certificates are not secret.
+    fn zeroize(&mut self) {
+        self.client_key.zeroize();
     }
 }
 
@@ -190,13 +219,33 @@ mod tests {
         }));
         let tls = created
             .credentials
-            .and_then(|credentials| credentials.tls)
+            .as_ref()
+            .and_then(|credentials| credentials.tls.as_ref())
             .unwrap();
         let read: Vec<Option<&str>> = ["client_cert", "client_key", "ca_cert", "ca"]
             .into_iter()
             .map(|field| tls.pem(field))
             .collect();
         assert_eq!(read, [Some("c"), Some("k"), Some("a"), None]);
+    }
+
+    /// The password and the TLS key are cleared, as a drop clears them; what is not secret
+    /// stays.
+    #[test]
+    fn the_password_and_the_key_are_cleared() {
+        let created: CreatedDatabase = view_of(&json!({
+            "credentials": {"username": "u", "password": "hunter2", "tls": {"client_key": "k", "ca_cert": "a"}},
+        }));
+        let mut credentials = created.credentials.unwrap_or_default();
+        credentials.zeroize();
+        assert_eq!(credentials.password, None);
+        assert_eq!(credentials.username.as_deref(), Some("u"));
+        let mut tls = credentials.tls.take().unwrap_or_default();
+        tls.zeroize();
+        assert_eq!(
+            (tls.client_key.as_deref(), tls.ca_cert.as_deref()),
+            (None, Some("a"))
+        );
     }
 
     /// The `Debug` of a new database names what it holds and never a secret.

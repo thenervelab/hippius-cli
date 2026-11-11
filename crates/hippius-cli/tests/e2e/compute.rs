@@ -35,6 +35,19 @@ fn create(server: &Server, extra: &[&str]) -> Run {
     hipc(server, &args)
 }
 
+/// The backup options, listing the intervals a launch with `--backup-interval` may send
+/// (owner decision D19).
+fn backup_options() -> crate::common::Route {
+    route_of(
+        &compute::BACKUP_OPTIONS,
+        [],
+        Reply::json(
+            200,
+            r#"{"intervals":[{"seconds":900},{"seconds":3600},{"seconds":21600},{"seconds":86400}]}"#,
+        ),
+    )
+}
+
 /// The tenet 4 failure with the documented stdout exception: stdout is the last VM.
 fn fails_with_vm(run: &Run, code: &str) -> Value {
     let error = run.fails_keeping_stdout(1, code);
@@ -1553,11 +1566,10 @@ fn create_sends_a_public_ip_and_a_public_key_only_when_given() {
 /// `vms create --flavor small --ssh-key-id 7 <extra>` in text mode against a server that
 /// answers the launch with `answer`.
 fn launch_in_text(answer: &str, extra: &[&str]) -> Run {
-    let server = Server::start(vec![route_of(
-        &compute::VM_CREATE,
-        [],
-        Reply::json(202, answer),
-    )]);
+    let server = Server::start(vec![
+        backup_options(),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, answer)),
+    ]);
     let mut args = vec!["--output", "text"];
     args.extend(extra);
     create(&server, &args)
@@ -2813,7 +2825,13 @@ fn launch_options_add_exactly_their_fields_to_the_body() {
     let body = |extra: &[&str]| {
         let mut args = extra.to_vec();
         args.push("--dry-run");
-        create(&server, &args).ok()["requests"][0]["body"].clone()
+        let doc = create(&server, &args).ok();
+        let requests = doc["requests"]
+            .as_array()
+            .expect("a dry run lists its requests");
+        let launch = requests.iter().find(|request| request["method"] == "POST");
+        assert!(launch.is_some(), "{doc}");
+        launch.expect("asserted above")["body"].clone()
     };
     assert_eq!(
         body(&["--os-disk-tier", "hdd"]),
@@ -2866,11 +2884,10 @@ fn launch_options_add_exactly_their_fields_to_the_body() {
     );
     assert!(server.requests().is_empty());
 
-    let sent = Server::start(vec![route_of(
-        &compute::VM_CREATE,
-        [],
-        Reply::json(202, &vm("pending")),
-    )]);
+    let sent = Server::start(vec![
+        backup_options(),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+    ]);
     let args = [
         "--os-disk-tier",
         "hdd",
@@ -2880,8 +2897,9 @@ fn launch_options_add_exactly_their_fields_to_the_body() {
         "--yes",
     ];
     create(&sent, &args).ok();
+    assert_eq!(sent.requests().len(), 2);
     assert_eq!(
-        sent.only_request().json(),
+        sent.requests()[1].json(),
         json!({
             "flavor": "small",
             "ssh_key_ids": [7],
@@ -2889,6 +2907,66 @@ fn launch_options_add_exactly_their_fields_to_the_body() {
             "backup_interval_s": 86400
         })
     );
+}
+
+/// A launch with `--backup-interval` reads the backup options after the question and is
+/// refused (`usage`) when they do not list the interval, before anything is launched, as
+/// `backups policy update` is (owner decision D19). The dry run lists the read, then the
+/// launch, and a launch without the flag reads nothing.
+#[test]
+fn a_launch_backup_interval_the_server_does_not_offer_is_refused_before_the_launch() {
+    let server = Server::start(vec![
+        backup_options(),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+    ]);
+    let error = create(
+        &server,
+        &["--backup-interval", "7200", "--no-wait", "--yes"],
+    )
+    .fails(2, "usage");
+    assert_eq!(
+        error["message"],
+        "a backup interval `7200` is not one the server offers: the server offers `900`, \
+         `3600`, `21600`, and `86400`"
+    );
+    assert_eq!(
+        error["hint"],
+        "run `hipc compute backups options` to see them"
+    );
+    assert_eq!(server.only_request().method, "GET");
+    create(&server, &["--backup-interval", "7200", "--no-wait"]).fails(2, "confirmation_required");
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "the read comes after the question"
+    );
+    let doc = create(&server, &["--backup-interval", "900", "--dry-run"]).ok();
+    let sent: Vec<(&str, &str)> = doc["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["method"].as_str().unwrap(), r["url"].as_str().unwrap()))
+        .collect();
+    assert_eq!(sent.len(), 2, "{doc}");
+    assert_eq!(sent[0].0, "GET");
+    assert!(sent[0].1.ends_with("/api/compute/backup-options/"), "{doc}");
+    assert_eq!(sent[1].0, "POST");
+    // With `--open-port`, the read comes first, then the launch and the rules.
+    let doc = create(
+        &server,
+        &["--backup-interval", "900", "--open-port", "22", "--dry-run"],
+    )
+    .ok();
+    let methods: Vec<&str> = doc["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(methods, ["GET", "POST", "PUT"]);
+    create(&server, &["--no-wait", "--yes"]).ok();
+    assert_eq!(server.requests()[1].method, "POST");
+    assert_eq!(server.requests().len(), 2);
 }
 
 /// Every launch option is checked against swagger before anything is sent, a dry run
@@ -3090,11 +3168,10 @@ fn a_launch_whose_backups_failed_says_so_and_quotes_the_server() {
     );
     assert!(run.stdout().contains("not `golden`"), "{}", run.stdout());
 
-    let server = Server::start(vec![route_of(
-        &compute::VM_CREATE,
-        [],
-        Reply::json(202, &answer),
-    )]);
+    let server = Server::start(vec![
+        backup_options(),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &answer)),
+    ]);
     let run = create(&server, &args);
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert_eq!(run.stderr(), "", "JSON mode says nothing on stderr");
@@ -3134,6 +3211,7 @@ fn a_launch_that_waits_reports_failed_backups_from_the_polled_vm() {
         ),
     ] {
         let server = Server::start(vec![
+            backup_options(),
             route_of(&compute::VM_CREATE, [], Reply::json(202, &answer)),
             route_of(&compute::VM, [&VM], Reply::json(200, &polled)),
         ]);
@@ -3157,7 +3235,7 @@ fn a_launch_that_waits_reports_failed_backups_from_the_polled_vm() {
             stderr.trim_end(),
             "{answer} then {polled}"
         );
-        assert_eq!(server.requests().len(), 2, "{answer}");
+        assert_eq!(server.requests().len(), 3, "{answer}");
     }
 }
 

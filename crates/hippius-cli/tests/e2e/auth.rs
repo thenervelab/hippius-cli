@@ -244,7 +244,17 @@ fn a_seed_phrase_on_the_command_line_is_refused_without_being_repeated() {
     let mut as_one = vec!["--output", "text", "auth", "login", "--access-key"];
     as_one.push(phrase);
     let upper = phrase.to_uppercase();
+    // Joined to its flag with `=`, or numbered as a paste from a list would be.
+    let joined = format!("--name={phrase}");
+    let numbered = words
+        .iter()
+        .enumerate()
+        .map(|(at, word)| format!("{}. {word}", at + 1))
+        .collect::<Vec<String>>()
+        .join(" ");
     for args in [
+        vec!["cdn", "zones", "create", &joined, "--yes"],
+        vec!["cdn", "zones", "create", "--name", &numbered, "--yes"],
         stray,
         as_one,
         vec!["auth", "login", "--access-key-file", phrase, "--yes"],
@@ -1213,6 +1223,30 @@ fn a_token_shaped_word_is_never_repeated_by_any_usage_error() {
         );
         assert!(
             error["hint"].as_str().unwrap().ends_with(" --help`"),
+            "{args:?}: {error}"
+        );
+    }
+    // A value its check refuses keeps the check's reason, without the value.
+    let line = format!("{pasted}\n");
+    for (args, message) in [
+        (
+            &["support", "tickets", "get", pasted][..],
+            "invalid value for `<TICKET_ID>`: ",
+        ),
+        (
+            &["cdn", "zones", "create", "--name", &line],
+            "invalid value for `--name <NAME>`: ",
+        ),
+    ] {
+        let run = Hipc::new(&Home::new()).run(args);
+        let error = run.fails(2, "usage");
+        assert!(
+            !run.stderr().contains("pasted"),
+            "{args:?}: {}",
+            run.stderr()
+        );
+        assert!(
+            error["message"].as_str().unwrap().starts_with(message),
             "{args:?}: {error}"
         );
     }

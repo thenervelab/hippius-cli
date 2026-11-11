@@ -884,12 +884,22 @@ fn is_issued_secret(key: &str, value: &Value) -> bool {
     ROBOT_SECRET_KEYS.contains(&key.to_ascii_lowercase().as_str()) && value.is_string()
 }
 
-/// Whether `body`, an issuing answer as printed, holds the secret under any of its names.
-fn holds_a_robot_secret(body: &Value) -> bool {
+/// The key under which `body`, an issuing answer as printed, holds the secret, whichever of
+/// its names that is.
+fn issued_secret_key(body: &Value) -> Option<&str> {
+    body.as_object()?
+        .iter()
+        .find(|(key, value)| is_issued_secret(key, value))
+        .map(|(key, _)| key.as_str())
+}
+
+/// Whether `body`, an issuing answer as printed, names the file `--secret-file` moved the
+/// secret to: [`save_secret`] leaves `<key>_file` for each key it moved.
+fn holds_a_saved_secret(body: &Value) -> bool {
     body.as_object().is_some_and(|fields| {
-        fields
-            .iter()
-            .any(|(key, value)| is_issued_secret(key, value))
+        fields.iter().any(|(key, value)| {
+            key.strip_suffix("_file").is_some_and(is_robot_secret) && value.is_string()
+        })
     })
 }
 
@@ -1035,7 +1045,7 @@ fn docker_login_command(login: &str) -> Result<String> {
 /// ([`set_up_first`]: `You must call /api/registry/provision/ first.`). The hint carries this run's
 /// profile and origin, so the namespace it creates is on the server this run read.
 fn with_provision_hint(ctx: &Context<'_>, error: Error) -> Error {
-    if set_up_first(&error, "/api/registry/provision/") {
+    if set_up_first(&error, hub::NAMESPACE_CREATE.endpoint().template()) {
         let hint = run_hint(
             ctx,
             "hub namespace create <namespace> --reveal --yes",
@@ -1081,26 +1091,25 @@ fn provision(
                 secret_file,
             },
         )?;
-        if body
-            .get("robot_secret_file")
-            .and_then(Value::as_str)
-            .is_some()
-        {
+        let secret = issued_secret_key(&body);
+        if holds_a_saved_secret(&body) {
             // `issued_robot` named the file in its note.
-        } else if !holds_a_robot_secret(&body) {
+        } else if secret.is_none() {
             let why = "no `robot_secret` was issued, because the namespace already \
                        exists or is pending";
             match ctx.next_command(ROTATE_ROBOT) {
                 Some(rotate) => ctx.note(&format!("{why}; `{rotate}` issues one")),
                 None => ctx.note(why),
             }
-        } else if body.get("robot_name").and_then(Value::as_str).is_some() {
+        } else if let (Some(secret), Some(_)) =
+            (secret, body.get("robot_name").and_then(Value::as_str))
+        {
             // The robot name is not repeated: Harbor names a robot `robot$...`, and a shell
             // expands the `$`, so the person copies it from the output. `hipc` never runs the
             // login itself.
             ctx.note(&format!(
                 "log in to the registry with `docker login {REGISTRY_HOST} --username \
-                 <robot_name> --password-stdin`, giving it `robot_secret` on stdin"
+                 <robot_name> --password-stdin`, giving it `{secret}` on stdin"
             ));
         }
         Ok(body)

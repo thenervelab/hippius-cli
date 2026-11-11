@@ -1,33 +1,29 @@
 //! `hipc compute backups`: a VM's backup policy, its backups, and a restore.
 
-use hippius::routes::Route;
 use hippius::routes::compute::{self, Vm};
 use hippius::{Client, Error, Request, Response, Result, phrase, view_of};
 use serde_json::{Value, json};
 
 use crate::cli::{
-    BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, FailoverMode, VmId, VmTarget,
+    BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, FailoverMode, VmTarget,
 };
 use crate::commands::compute::launch::failover_clause;
-use crate::commands::compute::{VMS_LIST_COMMAND, refused_as};
+use crate::commands::compute::{VMS_LIST_COMMAND, of_vm, refused_as};
 use crate::commands::{
     Catalog, Decided, Printed, keyed_list, print_body, print_body_or, print_list_with,
     read_then_write, send_from_catalog,
 };
-use crate::context::{Context, Gate, Step, WritePlan};
+use crate::context::{ConfirmedStep, Context, Gate, WritePlan};
 
 pub(super) fn backups(ctx: &Context<'_>, client: &Client, command: &Backups) -> Result<Printed> {
     let get = |request: Request| print_body(ctx, client, &request, Gate::Open);
-    let of_vm = |route: &Route<1>, what: &str, vm_id: &VmId| {
-        Request::to(route, [vm_id])
-            .about(format!("get the {what} of the VM `{vm_id}`"))
-            .listed_by(VMS_LIST_COMMAND)
-    };
     match command {
         Backups::Options => get(options()),
-        Backups::Policy(BackupPolicy::Get(VmTarget { vm_id })) => {
-            get(of_vm(&compute::BACKUP_POLICY, "backup policy", vm_id))
-        }
+        Backups::Policy(BackupPolicy::Get(VmTarget { vm_id })) => get(of_vm(
+            &compute::BACKUP_POLICY,
+            "get the backup policy of",
+            vm_id,
+        )),
         Backups::Policy(BackupPolicy::Update(args)) => policy_update(ctx, client, args),
         // Swagger: "Idempotent". The 204 has no body, so the document says what is now true.
         Backups::Policy(BackupPolicy::Delete(VmTarget { vm_id })) => {
@@ -45,7 +41,7 @@ pub(super) fn backups(ctx: &Context<'_>, client: &Client, command: &Backups) -> 
         // Swagger requires no field of the answer, so one without `restore_points`, or with
         // `null`, such as a VM whose backups are off, is an empty list.
         Backups::List(VmTarget { vm_id }) => {
-            let request = of_vm(&compute::BACKUPS, "backups", vm_id);
+            let request = of_vm(&compute::BACKUPS, "get the backups of", vm_id);
             print_list_with(ctx, client, &request, |response| {
                 let mut answer = response.json()?;
                 if let Value::Object(fields) = &mut answer
@@ -61,7 +57,7 @@ pub(super) fn backups(ctx: &Context<'_>, client: &Client, command: &Backups) -> 
         // not a wait, so this reads once.
         Backups::RestoreStatus(VmTarget { vm_id }) => get(of_vm(
             &compute::BACKUP_RESTORE_STATUS,
-            "restore status",
+            "get the restore status of",
             vm_id,
         )),
     }
@@ -89,7 +85,20 @@ fn policy_update(ctx: &Context<'_>, client: &Client, args: &BackupPolicyUpdate) 
     let consequence = "stored backups are billed per GB-hour from the balance, at the price \
                        `hipc compute backups options` shows";
     let wanted = seconds.to_string();
-    let catalog = Catalog {
+    let catalog = intervals(&wanted);
+    match send_from_catalog(ctx, client, Some(&catalog), &request, Some(consequence))? {
+        ConfirmedStep::Sent(response, _covers_nothing_more) => {
+            response.document().map(Printed::Document)
+        }
+        ConfirmedStep::DryRun(doc) => Ok(doc.into()),
+    }
+}
+
+/// The backup intervals the server offers, which `wanted`, a whole number of seconds, is
+/// checked against before a policy update or a launch with `--backup-interval` sends it
+/// (owner decisions D5 and D19): `intervals[].seconds` of the backup options.
+pub(super) fn intervals(wanted: &str) -> Catalog<'_> {
+    Catalog {
         read: options(),
         codes: |answer| {
             let options: compute::BackupOptions = view_of(answer);
@@ -101,12 +110,8 @@ fn policy_update(ctx: &Context<'_>, client: &Client, args: &BackupPolicyUpdate) 
                 .collect()
         },
         what: "a backup interval",
-        wanted: &wanted,
+        wanted,
         listed_by: "hipc compute backups options",
-    };
-    match send_from_catalog(ctx, client, &catalog, &request, Some(consequence))? {
-        Step::Sent(response) => response.document().map(Printed::Document),
-        Step::DryRun(doc) => Ok(doc.into()),
     }
 }
 
@@ -139,9 +144,7 @@ fn restore(ctx: &Context<'_>, client: &Client, args: &BackupRestore) -> Result<P
             accept_rollback: args.accept_rollback,
         })
     };
-    let read = Request::to(&compute::VM, [vm_id])
-        .about(format!("get the VM `{vm_id}`"))
-        .listed_by(VMS_LIST_COMMAND);
+    let read = of_vm(&compute::VM, "get", vm_id);
     let draft = post(NAME_PLACEHOLDER);
     let decide = || {
         let vm: Vm = view_of(&ctx.send(client, &read)?.document()?);

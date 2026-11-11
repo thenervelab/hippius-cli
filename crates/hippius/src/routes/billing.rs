@@ -343,7 +343,7 @@ pub struct Purchase {
 pub enum PurchaseStatus {
     /// No status yet: missing or `null`.
     #[default]
-    Pending,
+    Unset,
     /// Waiting to be sent to the chain.
     Queued,
     /// Sent to the chain.
@@ -365,7 +365,7 @@ impl PurchaseStatus {
     /// `included`.
     pub fn in_flight(&self) -> bool {
         match self {
-            Self::Pending | Self::Queued | Self::Submitted | Self::Included => true,
+            Self::Unset | Self::Queued | Self::Submitted | Self::Included => true,
             Self::Completed | Self::Failed | Self::Other(_) | Self::NotText => false,
         }
     }
@@ -373,7 +373,7 @@ impl PurchaseStatus {
     /// The status as the API spells it, or `None` without one in text.
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            Self::Pending | Self::NotText => None,
+            Self::Unset | Self::NotText => None,
             Self::Queued => Some("queued"),
             Self::Submitted => Some("submitted"),
             Self::Included => Some("included"),
@@ -387,7 +387,7 @@ impl PurchaseStatus {
 impl<'de> Deserialize<'de> for PurchaseStatus {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(match Value::deserialize(deserializer)? {
-            Value::Null => Self::Pending,
+            Value::Null => Self::Unset,
             Value::String(text) => match text.as_str() {
                 "queued" => Self::Queued,
                 "submitted" => Self::Submitted,

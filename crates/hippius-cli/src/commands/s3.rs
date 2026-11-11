@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use hippius::routes::{Paging, Route, s3};
 use hippius::{
     AccessKeyId, AwsFiles, AwsProfile, Client, Error, Request, Response, Result, SecretKey,
-    SecretValue, phrase, view_of, without_fields,
+    SecretValue, phrase, without_fields,
 };
 use serde_json::{Map, Value, json};
 
@@ -19,11 +19,11 @@ use crate::cli::{
 };
 use crate::commands::files::{save_secret, shown_once};
 use crate::commands::{
-    Catalog, Input, Printed, SettingChange, list, local_dry_run, object, plan_setting, print_body,
-    print_body_or, print_envelope, print_keyed_list, print_with, require_public, require_reveal,
-    require_reveal_or_file, send_from_catalog, subscribed,
+    Input, Printed, list, local_dry_run, object, plan_setting, print_body, print_body_or,
+    print_envelope, print_keyed_list, print_with, require_public, require_reveal,
+    require_reveal_or_file, subscribed,
 };
-use crate::context::{self, Context, Gate, Question, Step};
+use crate::context::{self, Context, Gate, Question};
 
 pub(crate) fn run(ctx: &Context<'_>, command: &S3) -> Result<Printed> {
     match command {
@@ -61,29 +61,30 @@ fn subscription(ctx: &Context<'_>, client: &Client, command: &S3Subscription) ->
                 plan: &args.plan,
                 rail: args.pay_from.code(),
             };
+            // The server judges the plan code (owner decision D22): the help lists today's.
             let request = Request::to(&s3::SUBSCRIBE, [])
                 .json(&body)
                 .about(format!("buy the S3 plan `{}`", args.plan));
-            let catalog = plans(&args.plan);
-            match send_from_catalog(ctx, client, &catalog, &request, Some(args.pay_from.how()))? {
-                Step::Sent(response) => subscribed(ctx, &response, "s3").map(Printed::Document),
-                Step::DryRun(doc) => Ok(doc.into()),
-            }
+            let gate = Gate::Confirm {
+                consequence: Some(args.pay_from.how()),
+            };
+            print_with(ctx, client, &request, gate, |response| {
+                subscribed(ctx, &response, "s3")
+            })
         }
         S3Subscription::Change(args) => {
-            let Some(plan) = &args.plan else {
-                let (request, gate) =
-                    plan_setting(&s3::SUBSCRIPTION_CHANGE, "S3", &args.setting, setting_body)?;
-                return print_body(ctx, client, &request, gate);
+            let (request, gate) = match &args.plan {
+                Some(plan) => (
+                    Request::to(&s3::SUBSCRIPTION_CHANGE, [])
+                        .json(&s3::PlanChangeBody { plan })
+                        .about(format!("switch the S3 plan to `{plan}`")),
+                    Gate::Confirm {
+                        consequence: Some("a plan below the current usage pauses uploads"),
+                    },
+                ),
+                None => plan_setting(&s3::SUBSCRIPTION_CHANGE, "S3", &args.setting)?,
             };
-            let request = Request::to(&s3::SUBSCRIPTION_CHANGE, [])
-                .json(&s3::PlanChangeBody { plan })
-                .about(format!("switch the S3 plan to `{plan}`"));
-            let consequence = Some("a plan below the current usage pauses uploads");
-            match send_from_catalog(ctx, client, &plans(plan), &request, consequence)? {
-                Step::Sent(response) => response.document().map(Printed::Document),
-                Step::DryRun(doc) => Ok(doc.into()),
-            }
+            print_body(ctx, client, &request, gate)
         }
         S3Subscription::Cancel => {
             let request = Request::to(&s3::SUBSCRIPTION_CANCEL, []).about("cancel the S3 plan");
@@ -99,40 +100,6 @@ fn subscription(ctx: &Context<'_>, client: &Client, command: &S3Subscription) ->
                 Ok(cancelled)
             })
         }
-    }
-}
-
-/// The S3 plan catalog, which a plan code is checked against before it is bought (owner
-/// decision D5): `plans[].code` of `GET /api/s3/plans/`.
-fn plans(wanted: &str) -> Catalog<'_> {
-    Catalog {
-        read: Request::to(&s3::PLANS, []).about("list the S3 plans"),
-        codes: |answer| {
-            let plans: s3::Plans = view_of(answer);
-            plans
-                .plans
-                .into_iter()
-                .flatten()
-                .filter_map(|plan| plan.code)
-                .collect()
-        },
-        what: "an S3 plan",
-        wanted,
-        listed_by: "hipc s3 plans",
-    }
-}
-
-/// The S3 plan PATCH that keeps the plan and changes `change`.
-fn setting_body(change: SettingChange) -> s3::SettingChangeBody<'static> {
-    match change {
-        SettingChange::Funding(funding) => s3::SettingChangeBody {
-            funding: Some(funding),
-            ..s3::SettingChangeBody::default()
-        },
-        SettingChange::StorageCap(cap) => s3::SettingChangeBody {
-            storage_cap_bytes: Some(cap),
-            ..s3::SettingChangeBody::default()
-        },
     }
 }
 

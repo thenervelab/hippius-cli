@@ -177,8 +177,8 @@ fn s3(path: &[&str]) -> Vec<&'static Endpoint> {
     match path {
         ["plans"] => sends![s3::PLANS],
         ["subscription", "get"] => sends![s3::SUBSCRIPTION],
-        ["subscription", "subscribe"] => sends![s3::SUBSCRIBE, s3::PLANS],
-        ["subscription", "change"] => sends![s3::SUBSCRIPTION_CHANGE, s3::PLANS],
+        ["subscription", "subscribe"] => sends![s3::SUBSCRIBE],
+        ["subscription", "change"] => sends![s3::SUBSCRIPTION_CHANGE],
         ["subscription", "cancel"] => sends![s3::SUBSCRIPTION_CANCEL],
         ["subscription", "checkout"] => sends![s3::CHECKOUT],
         ["subscription", "history"] => sends![s3::HISTORY],
@@ -253,7 +253,12 @@ fn of_compute(path: &[&str]) -> Vec<&'static Endpoint> {
         ["vms", "get"] | ["vms", "power-policy", "get"] => sends![compute::VM],
         ["vms", "attestation"] => sends![compute::VM_ATTESTATION],
         ["vms", "failovers"] => sends![compute::VM_FAILOVERS],
-        ["vms", "create"] => sends![compute::VM_CREATE, compute::VM, compute::FIREWALL_UPDATE],
+        ["vms", "create"] => sends![
+            compute::VM_CREATE,
+            compute::VM,
+            compute::FIREWALL_UPDATE,
+            compute::BACKUP_OPTIONS
+        ],
         ["vms", "start"] => sends![compute::VM_START],
         ["vms", "stop"] => sends![compute::VM_STOP],
         ["vms", "reboot"] => sends![compute::VM_REBOOT],
@@ -301,7 +306,8 @@ fn of_compute_app_engine(path: &[&str]) -> Vec<&'static Endpoint> {
         ["apps", "create"] => sends![
             compute::APP_ENGINE_APP_CREATE,
             compute::APP_ENGINE_VALIDATE,
-            compute::APP_ENGINE_APP
+            compute::APP_ENGINE_APP,
+            compute::BACKUP_OPTIONS
         ],
         ["apps", "runtime"] => sends![compute::APP_ENGINE_RUNTIME],
         ["guest-components", "get"] => sends![compute::APP_ENGINE_GUEST_COMPONENTS],

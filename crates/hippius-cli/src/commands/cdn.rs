@@ -495,11 +495,17 @@ fn zone_patch(
                     args.zone.zone_id
                 ),
             )?;
-            // The kind a read adds is the zone's own, not a change.
-            let to: Vec<String> = [("bucket", origin.bucket), ("prefix", origin.prefix)]
+            // The kind a read adds is the zone's own, not a change, and so is a bucket read
+            // for a prefix given alone: the question names it as the zone's own.
+            let bucket = if args.bucket.is_some() {
+                "the bucket"
+            } else {
+                "its bucket"
+            };
+            let to: Vec<String> = [(bucket, origin.bucket), ("the prefix", origin.prefix)]
                 .into_iter()
                 .filter_map(|(key, value)| {
-                    value.map(|value| format!("the {key} {}", shown(&Value::from(value))))
+                    value.map(|value| format!("{key} {}", shown(&Value::from(value))))
                 })
                 .collect();
             let and_set = if set.is_empty() {

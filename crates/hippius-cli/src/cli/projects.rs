@@ -159,25 +159,6 @@ pub(crate) struct QuotaUpdate {
     pub(crate) runners: Option<QuotaLimit>,
 }
 
-impl QuotaUpdate {
-    /// The limits given, each with the key the API names it by, in the console's order.
-    pub(crate) fn limits(&self) -> Vec<(&'static str, QuotaLimit)> {
-        [
-            ("vms", self.vms),
-            ("databases", self.databases),
-            ("clusters", self.clusters),
-            ("vcpus", self.vcpus),
-            ("memory_gb", self.memory),
-            ("disk_gb", self.disk),
-            ("public_ips", self.public_ips),
-            ("runners", self.runners),
-        ]
-        .into_iter()
-        .filter_map(|(key, limit)| limit.map(|limit| (key, limit)))
-        .collect()
-    }
-}
-
 /// One of a project's own compute limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuotaLimit {

@@ -28,6 +28,7 @@ use crate::commands::credits::{AmountPath, shown_in_credits};
 use crate::commands::files::write_output_file;
 use crate::commands::{
     Decided, Printed, failed_part, gamma, halpha, list, print_body, print_with, read_then_write,
+    sent_fields,
 };
 use crate::context::{Context, Gate, WritePlan};
 use crate::units::{Usd, usd};
@@ -371,11 +372,6 @@ fn card_setup(ctx: &Context<'_>, client: &hippius::Client) -> Result<Printed> {
 /// the read and the `PUT` is not seen; the question names the email the read found.
 fn update_profile(ctx: &Context<'_>, args: &ProfileUpdate) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
-    let given = args
-        .fields()
-        .into_iter()
-        .filter_map(|(key, given)| given.map(|_| key));
-    let named = phrase::ticked(given, "and");
     let body = billing::ProfileUpdateBody {
         company_name: args.company_name.as_deref(),
         address_line1: args.address_line1.as_deref(),
@@ -387,6 +383,7 @@ fn update_profile(ctx: &Context<'_>, args: &ProfileUpdate) -> Result<Printed> {
         tax_id: args.tax_id.as_deref(),
         billing_email: args.billing_email.as_deref(),
     };
+    let named = phrase::ticked(sent_fields(&body).keys(), "and");
     let request = Request::to(&billing::PROFILE_UPDATE, [])
         .json(&body)
         .about(format!("update the billing profile's {named}"));

@@ -23,7 +23,8 @@ use crate::context::Context;
 pub(crate) const MAX_POLL_FAILURES: u32 = 3;
 
 /// What a wait does next, from what it holds.
-pub(crate) enum Next<T> {
+#[derive(Debug)]
+pub(crate) enum Turn<T> {
     /// The wait is over, with this result.
     Stop(Result<T>),
     /// The wait goes on: read again.
@@ -37,7 +38,7 @@ pub(crate) trait Wait {
 
     /// Whether the wait is over, from what it holds: first what it starts from, then after
     /// each read.
-    fn next(&mut self) -> Next<Self::Output>;
+    fn next(&mut self) -> Turn<Self::Output>;
 
     /// Takes the document one read answered. An error ends the wait with it.
     ///
@@ -91,7 +92,7 @@ pub(crate) fn poll_until<W: Wait>(
     let mut pause = paced(schedule.first);
     let mut pause_from_retry_after = false;
     loop {
-        if let Next::Stop(done) = wait.next() {
+        if let Turn::Stop(done) = wait.next() {
             return done;
         }
         if !pause.is_zero() {

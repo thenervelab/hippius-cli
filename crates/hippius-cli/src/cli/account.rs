@@ -229,20 +229,6 @@ pub(crate) struct NotificationsUpdate {
     pub(crate) provider_advice_emails: Option<bool>,
 }
 
-impl NotificationsUpdate {
-    /// Each setting with its value when given, in the order swagger lists them.
-    pub(crate) fn fields(&self) -> [(&'static str, Option<bool>); 6] {
-        [
-            ("email_enabled", self.email_enabled),
-            ("low_credit_alerts", self.low_credit_alerts),
-            ("zero_balance_alerts", self.zero_balance_alerts),
-            ("file_status_updates", self.file_status_updates),
-            ("marketing_emails", self.marketing_emails),
-            ("provider_advice_emails", self.provider_advice_emails),
-        ]
-    }
-}
-
 #[derive(Debug, Subcommand)]
 pub(crate) enum MarketingConsent {
     /// The signed-in user's marketing consent: state is yes, no, or never_asked, and

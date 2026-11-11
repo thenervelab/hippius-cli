@@ -510,6 +510,50 @@ impl Placeholder {
 )]
 pub struct EmptyBody {}
 
+/// A field of a write body that is left out, cleared, or set. A field left out keeps the
+/// server's value, so it is not sent (`#[serde(skip_serializing_if = "Change::is_keep")]`), and
+/// a cleared one is sent as `null`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Change<T> {
+    /// Not sent: the server keeps what it holds.
+    #[default]
+    Keep,
+    /// Sent as `null`, which the route reads as none, or as its default.
+    Clear,
+    /// Sent as the value.
+    Set(T),
+}
+
+impl<T> Change<T> {
+    /// Whether the field is left out of the body.
+    pub fn is_keep(&self) -> bool {
+        matches!(self, Self::Keep)
+    }
+}
+
+impl<T: Serialize> Serialize for Change<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            // A body skips a field it keeps, so `Keep` reaches here only in a body that sends
+            // every field, where `null` is what keeping nothing means.
+            Self::Keep | Self::Clear => serializer.serialize_none(),
+            Self::Set(value) => value.serialize(serializer),
+        }
+    }
+}
+
+/// The body of the Drive and the S3 subscription `PATCH` that keeps the plan and changes one
+/// setting: how renewals are paid, or the cap on storage billed past the quota.
+#[derive(Debug, Default, Serialize)]
+pub struct SettingChangeBody<'a> {
+    /// How each later renewal is paid: `credits` or `card`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub funding: Option<&'a str>,
+    /// The cap on bytes stored past the quota; cleared, it is the default cap.
+    #[serde(skip_serializing_if = "Change::is_keep")]
+    pub storage_cap_bytes: Change<u64>,
+}
+
 /// Whether `value`, the path segments a placeholder named `name` takes (one for `{name}`),
 /// fits it: each segment non-empty, and the shape the name holds the value to, where the
 /// server's router or the API's ids hold it to one. This is the one place a name decides a
