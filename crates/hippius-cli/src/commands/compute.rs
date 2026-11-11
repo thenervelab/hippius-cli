@@ -1,21 +1,21 @@
-//! `hipc compute`: the VM catalog, VMs, and stored SSH keys.
+//! `hipc compute`: the VM catalog, and one module per compute resource.
 //!
-//! The compute routes are account-scoped, so a membership sends `X-Hippius-Account`.
-//! `/api/ssh-keys/` is personal: the header is never sent there, and a membership still
+//! The compute routes are account-scoped, so a membership sends `X-Hippius-Account` (tenet
+//! 12). `/api/ssh-keys/` is personal: the header is never sent there, and a membership still
 //! sends the request. The owner's keys, `/api/compute/account-ssh-keys/`, are under compute
-//! and scoped like the rest of it. `hipc` opens no SSH session, and a launch exposes no port:
-//! `exposures create` does, as its own confirmed command. A launch attaches a public IPv4
-//! only with `--public-ip`; `public-ip create` attaches one to a VM that exists.
+//! and scoped like the rest of it. `hipc` opens no SSH session. A launch exposes no port at
+//! the edge (`exposures create` does, as its own confirmed command), though `--open-port`
+//! sets the new VM's firewall rules. A launch attaches a public IPv4 only with
+//! `--public-ip`; `public-ip create` attaches one to a VM that exists.
 //!
-//! Managed databases live in `compute/databases.rs`: the console and the grants group them
-//! with compute, though their routes are under `/api/databases/`.
+//! Managed databases are in [`databases`]: the console and the grants group them with
+//! compute, though their routes are under `/api/databases/`.
 //!
 //! Placement groups are read here and named at launch. There is no route to create or
 //! delete one: a group exists while a live VM names it.
 //!
-//! GitHub Actions runners are in [`runners`], managed Kubernetes in [`kubernetes`], and App
-//! Engine in [`app_engine`]. A VM launch is in [`vms`], and what it shares with an App Engine
-//! launch, the wait included, in [`launch`].
+//! A VM launch is in [`vms`], and what it shares with an App Engine launch ([`app_engine`]),
+//! the wait included, in [`launch`].
 
 mod app_engine;
 
@@ -62,8 +62,6 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Compute) -> Result<Printed> {
         print_body(ctx, &client, &request, Gate::Open)
     };
     match command {
-        // Prices, quota, the charge cap, images, and placement groups are objects, printed as
-        // the server sent them.
         Compute::Prices => get(&compute::PRICES, "get the compute prices"),
         // Swagger documents the public list with no security, so it sends a token only when
         // one is configured, as `cdn prices` does. It is a command of its own, not what
@@ -142,9 +140,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Compute) -> Result<Printed> {
     }
 }
 
-/// The command that lists the VM ids, for the hints that send the caller to the list: a
-/// 404 on a VM route, and a launch that may or may not have gone through.
-pub(super) const VMS: &str = "hipc compute vms list";
+pub(super) const VMS_LIST_COMMAND: &str = "hipc compute vms list";
 
 /// Whether the server answered `status` with the compute error slug `slug`
 /// ([`compute::Refusal`]).

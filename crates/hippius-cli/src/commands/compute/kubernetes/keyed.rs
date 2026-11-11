@@ -48,7 +48,9 @@ use serde_json::{Map, Value, json};
 
 use crate::cli::{ClusterKubeconfig, NodePoolScale, NodeReplace};
 use crate::commands::Printed;
-use crate::commands::compute::kubernetes::{CLUSTERS, cluster_get, list_request, read_list};
+use crate::commands::compute::kubernetes::{
+    CLUSTERS_LIST_COMMAND, cluster_get, list_request, read_list,
+};
 use crate::commands::files::write_output_file;
 use crate::context::{Context, Gate, Step, Write, WritePlan};
 
@@ -67,7 +69,7 @@ pub(super) fn kubeconfig(ctx: &Context<'_>, args: &ClusterKubeconfig) -> Result<
         .about(format!(
             "get the sealed secrets of the Kubernetes cluster `{id}`"
         ))
-        .listed_by(CLUSTERS);
+        .listed_by(CLUSTERS_LIST_COMMAND);
     let cluster = match ctx.call(&client, &read, Gate::Open)? {
         Step::DryRun(_) => {
             return ctx
@@ -123,19 +125,28 @@ pub(super) fn scale(ctx: &Context<'_>, args: &NodePoolScale) -> Result<Printed> 
     });
     // The reads before the question, the two after it, and the write (tenet 5). Not
     // `read_then_write`: the pool is read again after the question.
-    let [cluster, pools, operations] = &reads;
-    let plan = WritePlan::new(&[cluster, pools, operations, pools, operations], &draft);
+    let [cluster_read, pools_read, operations_read] = &reads;
+    let plan = WritePlan::new(
+        &[
+            cluster_read,
+            pools_read,
+            operations_read,
+            pools_read,
+            operations_read,
+        ],
+        &draft,
+    );
     let checked = match ctx.check_write(&client, &plan)? {
         Write::DryRun(doc) => return Ok(doc.into()),
         Write::Checked(checked) => checked,
     };
-    let cluster = ctx.send(&client, &reads[0])?.document()?;
+    let cluster = ctx.send(&client, cluster_read)?.document()?;
     let matched = key
         .as_ref()
         .map(|key| key.matched(id, &cluster))
         .transpose()?;
-    let pools = read_list(ctx, &client, &reads[1])?;
-    let operations = operations_of(&read_list(ctx, &client, &reads[2])?);
+    let pools = read_list(ctx, &client, pools_read)?;
+    let operations = operations_of(&read_list(ctx, &client, operations_read)?);
     let Some(pool) = pools
         .iter()
         .find(|pool| view_of::<Pool>(pool).id == Some(pool_id))
@@ -159,20 +170,14 @@ pub(super) fn scale(ctx: &Context<'_>, args: &NodePoolScale) -> Result<Printed> 
     let current = pool_size(&view_of(pool), &operations);
     let (action, adds) = target.scale(current, count, matched)?;
     let confirmed = ctx.confirm_write(checked, &action, None)?;
-    // Read again after the question, both ways: the question named `count` as a change from
-    // `current`, and the server applies `count` to the pool as it is then. A scale down signs
-    // nothing, but a pool that grew since the question would lose more nodes than it named,
-    // and one that shrank below `count` would be grown by a POST that signs nothing. Only a
-    // scale up cares what a node of the pool signs. A queued add that finished during the
-    // question passes: the pool is the same size, so a node is drained where the question
-    // said an add is cancelled, and the pool still ends at `count`. The window from here to
-    // the POST stays open (module docs). Signed after the question, so a declined one uses no
-    // key, and each signature's window starts as late as it can.
-    let (pools, operations, answered) = read_again(ctx, &client, &reads[1], &reads[2])?;
+    // Read again after the question, for a scale up and a scale down alike (module docs). A
+    // queued add that finished during the question passes: the pool is the same size, so a
+    // node is drained where the question said an add is cancelled, and the pool still ends at
+    // `count`.
+    let (pools, operations, answered) = read_again(ctx, &client, pools_read, operations_read)?;
     let live = pools
         .iter()
         .find(|live| view_of::<Pool>(live).id == Some(pool_id));
-    // The question named `count` as a change from `current`, up or down.
     let same_size = live.is_some_and(|live| pool_size(&view_of(live), &operations) == current);
     // Only the nodes a scale up adds are signed, so only a scale up cares what they sign.
     let signs_the_same = adds.is_none() || live.is_some_and(|live| same_signing(live, pool));
@@ -228,16 +233,25 @@ pub(super) fn replace(ctx: &Context<'_>, args: &NodeReplace) -> Result<Printed> 
     });
     // The reads before the question, the two after it, and the write (tenet 5). Not
     // `read_then_write`: the pool is read again after the question.
-    let [cluster, pools, operations] = &reads;
-    let plan = WritePlan::new(&[cluster, pools, operations, pools, operations], &draft);
+    let [cluster_read, pools_read, operations_read] = &reads;
+    let plan = WritePlan::new(
+        &[
+            cluster_read,
+            pools_read,
+            operations_read,
+            pools_read,
+            operations_read,
+        ],
+        &draft,
+    );
     let checked = match ctx.check_write(&client, &plan)? {
         Write::DryRun(doc) => return Ok(doc.into()),
         Write::Checked(checked) => checked,
     };
-    let cluster = ctx.send(&client, &reads[0])?.document()?;
+    let cluster = ctx.send(&client, cluster_read)?.document()?;
     let matched = key.matched(id, &cluster)?;
-    let pools = read_list(ctx, &client, &reads[1])?;
-    let operations = operations_of(&read_list(ctx, &client, &reads[2])?);
+    let pools = read_list(ctx, &client, pools_read)?;
+    let operations = operations_of(&read_list(ctx, &client, operations_read)?);
     let Some(pool) = pools.iter().find(|pool| holds_node(&view_of(pool), node)) else {
         return Err(Error::new(
             Failure::NotFound,
@@ -265,7 +279,7 @@ pub(super) fn replace(ctx: &Context<'_>, args: &NodeReplace) -> Result<Printed> 
         signed_vm(signing, "VM")
     );
     let confirmed = ctx.confirm_write(checked, &action, None)?;
-    let (pools, operations, answered) = read_again(ctx, &client, &reads[1], &reads[2])?;
+    let (pools, operations, answered) = read_again(ctx, &client, pools_read, operations_read)?;
     let unchanged = pools
         .iter()
         .find(|now| holds_node(&view_of(now), node))

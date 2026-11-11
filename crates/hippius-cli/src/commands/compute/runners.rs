@@ -112,9 +112,6 @@ fn update_limit(ctx: &Context<'_>, cap: &MonthlyCap) -> Result<Printed> {
         MonthlyCap::Credits(credits) => (Some(credits.as_str()), format!("`{credits}` credits")),
         MonthlyCap::None => (None, "none".to_owned()),
     };
-    // Credits go in `monthly_cap`, as `cdn cap update` sends them, although the CDN cap reads
-    // back base units there and credits in `monthly_cap_credits`. Both names are assumptions
-    // for this route until a live run checks them (swagger types no body).
     let put = || {
         Request::to(&runners::LIMIT_UPDATE, [])
             .json(&runners::LimitUpdateBody { monthly_cap: sent })
@@ -166,8 +163,8 @@ fn update_limit(ctx: &Context<'_>, cap: &MonthlyCap) -> Result<Printed> {
 /// `monthly_cap_credits` is the amount sent, compared as [`compare`] does, or that reads
 /// [`InForce::Null`] after a removal, is the change made. Any other 2xx is `internal` with
 /// `partial` side effects, and nothing goes to stdout, as for a peer rename: the `PUT` was
-/// sent, and may or may not have changed the cap. The hint reads the limit rather than
-/// sending the `PUT` again, whose effect is unknown.
+/// sent, and may or may not have changed the cap. The hint reads the limit, not the default
+/// `internal` hint to run the command again, which would send a `PUT` whose effect is unknown.
 fn applied(response: &Response, cap: &MonthlyCap) -> Result<Value> {
     let answer = response.document()?;
     let current = current_cap(&answer);
@@ -191,22 +188,19 @@ fn applied(response: &Response, cap: &MonthlyCap) -> Result<Value> {
             phrase::quote(&now)
         ),
     };
-    // Not the default `internal` hint, which says to run the command again: that would send
-    // a `PUT` whose effect is unknown, so the hint reads the limit instead (tenet 15).
     Err(response.refused(&why).with_hint(format!(
         "run `hipc compute runners limit get` to see the cap in force, and report what it \
          prints at `{ISSUES_URL}`"
     )))
 }
 
-/// The cap in force, from `monthly_cap_credits` only: `null` only when `monthly_cap` is
-/// `null` too, and unknown when a field is missing, since a server that leaves the field out
-/// says nothing of the cap. If this route follows the CDN cap,
-/// `monthly_cap` holds base units (`20000000000000000000` for 20 credits), and comparing
-/// credits against that would make every raise look like a cut. A JSON number is read as
-/// serde writes it, so one in exponent form, such as `1e+300`, is not a decimal amount and the
-/// cap counts as unknown on purpose: a cap hipc cannot compare exactly is never judged a lower
-/// one.
+/// The cap in force, from `monthly_cap_credits` only: `null` only when `monthly_cap` is `null` too,
+/// and unknown when a field is missing, since a server that leaves the field out says nothing of
+/// the cap. If this route follows the CDN cap, `monthly_cap` holds base units
+/// (`20000000000000000000` for 20 credits), and comparing credits against that would make every
+/// raise look like a cut. A JSON number is read as serde writes it, so one in exponent form, such
+/// as `1e+300`, is not a decimal amount and the cap counts as unknown on purpose: a cap hipc cannot
+/// compare exactly is never judged a lower one.
 fn current_cap(limit: &Value) -> InForce {
     let limit: runners::Limit = view_of(limit);
     match limit.monthly_cap_credits {

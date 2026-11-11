@@ -10,7 +10,7 @@ use hippius::routes::compute::{self, FirewallUpdateBody};
 use hippius::{Error, Request, Result, phrase};
 use serde_json::{Map, Value, json};
 
-use super::VMS;
+use super::VMS_LIST_COMMAND;
 use crate::cli::FirewallUpdate;
 use crate::commands::replace::{self, Entry, Found, Replace, replace_list};
 use crate::commands::{Input, Printed};
@@ -21,13 +21,14 @@ use crate::context::Context;
 /// run sends nothing.
 const REVISION_PLACEHOLDER: &str = "<the revision the read returns>";
 
-/// `PUT .../firewall/`: the file's `rules` array, unchanged, plus `base_revision`: the one
-/// given, or else the `revision` the guard's read returned. With `--remove-others` that read
-/// compares nothing and comes after the question, for the revision alone, so a rule another
-/// client adds meanwhile is refused with 409 rather than deleted unseen. The PUT replaces the whole list, so a file that does not parse,
-/// or any rule that is malformed, refuses the whole update before anything is sent: a list
-/// cut short would close every port it no longer names. A rule the VM has now that the
-/// file leaves out is refused unless `--remove-others` is passed ([`replace_list`]).
+/// `PUT .../firewall/`: the file's `rules` array, unchanged, plus `base_revision`: the one given,
+/// or else the `revision` the guard's read returned, so the server refuses the PUT with 409 if
+/// another client changed the rules after that read, rather than a new rule being deleted unseen.
+/// With `--remove-others` that read compares nothing and comes after the question, for the revision
+/// alone. The PUT replaces the whole list, so a file that does not parse, or any rule that is
+/// malformed, refuses the whole update before anything is sent: a list cut short would close every
+/// port it no longer names. A rule the VM has now that the file leaves out is refused unless
+/// `--remove-others` is passed ([`replace_list`]).
 pub(super) fn update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed> {
     let (rules, read) = firewall_rules(&args.rules_file)?;
     let vm_id = &args.vm.vm_id;
@@ -44,7 +45,7 @@ pub(super) fn update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed
     let read_action = read.action();
     let replace = Replace {
         write: Request::to(&compute::FIREWALL_UPDATE, [&vm_id])
-            .listed_by(VMS)
+            .listed_by(VMS_LIST_COMMAND)
             .json(&put_body(args.base_revision.as_deref()))
             .about(action.as_str()),
         consequence: Some(consequence),
@@ -59,11 +60,6 @@ pub(super) fn update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed
         noun: "inbound rule",
         owner: format!("the VM `{vm_id}`"),
     };
-    // The guard compared the file with the rules it read, so the PUT is made conditional on
-    // them: without `--base-revision`, it carries the `revision` that read returned, and the
-    // server refuses it with 409 if another client changed the rules in between. Without
-    // that, a rule added after the read would be deleted unseen. A `--base-revision` given
-    // is sent as it is.
     let current = |answer: Value| {
         let unreadable = || crate::commands::unreadable(&read_action);
         let rules = answer.get("rules").and_then(Value::as_array);
@@ -93,11 +89,8 @@ pub(super) fn update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed
         // Swagger: a stale `base_revision` is refused with 409 `firewall-changed`. It
         // documents no other 409 on this PUT and no shape for the body, so the status alone
         // decides: matching a body field could drop the hint if the field is not the one
-        // guessed. The GET before it documents no 409.
-        // Without `--base-revision`, the revision came from the command's own read, so
-        // running it again reads the rules again (and, without `--remove-others`, checks the
-        // file against them). A `--base-revision` given would be sent again and refused
-        // again, so it gets the get-and-edit hint.
+        // guessed. The GET before it documents no 409. A rerun reads a revision the command
+        // read itself afresh, but would send a `--base-revision` given, and be refused, again.
         let read_revision = args.base_revision.is_none();
         match (error.http_status(), read_revision) {
             (Some(409), false) => error.with_hint(format!(
@@ -378,8 +371,7 @@ fn firewall_rules(path: &Path) -> Result<(Vec<Value>, Vec<Rule>)> {
         },
         _ => return Err(not_rules()),
     };
-    // Swagger: "At most 50 rules". Refused here, so a list the server would reject is not
-    // sent after the confirmation.
+    // Refused before the question, so no one confirms a list the server would reject.
     if rules.len() > MAX_FIREWALL_RULES {
         return Err(Error::usage(
             format!(
@@ -475,7 +467,7 @@ fn is_ipv4_cidr(text: &str) -> bool {
 pub(super) fn firewall_get(vm_id: &str) -> Request {
     Request::to(&compute::FIREWALL, [&vm_id])
         .about(format!("get the firewall of the VM `{vm_id}`"))
-        .listed_by(VMS)
+        .listed_by(VMS_LIST_COMMAND)
 }
 
 #[cfg(test)]

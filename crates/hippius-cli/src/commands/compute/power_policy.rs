@@ -5,7 +5,7 @@ use hippius::{Client, Request, Response, Result, phrase, view_of};
 use serde_json::{Map, Value};
 
 use crate::cli::{GuestPoweroff, PowerPolicy, VmId, VmTarget};
-use crate::commands::compute::VMS;
+use crate::commands::compute::VMS_LIST_COMMAND;
 use crate::commands::{Printed, print_with};
 use crate::context::{Context, Gate};
 
@@ -62,7 +62,7 @@ pub(super) fn power_policy_command(
         PowerPolicy::Get(VmTarget { vm_id }) => {
             let request = Request::to(&compute::VM, [vm_id])
                 .about(format!("get the power policy of the VM `{vm_id}`"))
-                .listed_by(VMS);
+                .listed_by(VMS_LIST_COMMAND);
             print_with(ctx, client, &request, Gate::Open, |response| {
                 let answer = power_policy(&response, vm_id, None)?;
                 note_pending(ctx, &answer);
@@ -78,13 +78,13 @@ pub(super) fn power_policy_command(
 
 /// `PUT /api/compute/vms/{vm_id}/power-policy/`, then the policy the answer holds.
 ///
-/// Not confirmed: it spends nothing, setting the other value undoes it, and it only decides
-/// what happens when the guest powers itself off; `hipc compute vms start` changes more
-/// unasked (tenet 5). Swagger says `stop` is "exactly like a
-/// stop", so a VM shut down from inside is still billed as a stopped VM; only a delete ends the
-/// bill, which a text-mode note says, as the `stop` command's help does. Swagger: the server
-/// applies it without a reboot and reads `on_guest_poweroff_pending` until it acknowledges, so
-/// a pending answer gets a note ([`note_pending`]).
+/// Not confirmed: it spends nothing, setting the other value undoes it, and it only decides what
+/// happens when the guest powers itself off; `hipc compute vms start` changes more unasked (tenet
+/// 5). Swagger says `stop` is "exactly like a stop", so a VM shut down from inside is still billed
+/// as a stopped VM; only a delete ends the bill, which a text-mode note says, as the `stop`
+/// command's help does. Swagger: the server applies it without a reboot and reads
+/// `on_guest_poweroff_pending` until it acknowledges, so a pending answer gets a note
+/// ([`note_pending`]).
 fn update_power_policy(
     ctx: &Context<'_>,
     client: &Client,
@@ -99,7 +99,7 @@ fn update_power_policy(
         .json(&compute::PowerPolicyBody {
             on_guest_poweroff: policy.code(),
         })
-        .listed_by(VMS)
+        .listed_by(VMS_LIST_COMMAND)
         .about(format!(
             "set the VM `{vm_id}` to {does} when its own operating system powers it off"
         ));

@@ -10,8 +10,8 @@ use serde_json::Value;
 
 use crate::cli::{DiskTier, FailoverMode, LaunchFlags};
 use crate::commands::Printed;
-use crate::commands::compute::VMS;
-use crate::commands::compute::app_engine::APPS;
+use crate::commands::compute::VMS_LIST_COMMAND;
+use crate::commands::compute::app_engine::APPS_LIST_COMMAND;
 use crate::commands::compute::app_engine::create::{printable, sanitized};
 use crate::commands::poll::{Next, Schedule, Wait, poll_until};
 use crate::context::Context;
@@ -75,9 +75,8 @@ pub(crate) fn balance_hint(error: Error) -> Error {
 const LAUNCH_BALANCE_HINT: &str = "run `hipc billing summary` and `hipc compute quota`, then \
      top up until the balance covers the runway hours at the hourly burn, this launch included";
 
-/// How long the launch waits for `running` when `--wait-timeout` is not given: 300
-/// seconds. Arbitrary. The `--wait-timeout` help in
-/// `cli/compute.rs` and `cli/app_engine.rs` repeats this value.
+/// How long the launch waits for `running` when `--wait-timeout` is not given: 300 seconds,
+/// arbitrary. The `--wait-timeout` help of [`LaunchFlags`] repeats this value.
 const WAIT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// How long the launch waits for `running`, or `None` when it does not wait. `--wait`,
@@ -136,16 +135,15 @@ impl Kind<'_> {
         }
     }
 
-    /// The command that lists them, for a hint that cannot name the one launched.
-    fn list(self) -> &'static str {
+    fn list_command(self) -> &'static str {
         match self {
-            Self::Vm(_) => VMS,
-            Self::App { .. } => APPS,
+            Self::Vm(_) => VMS_LIST_COMMAND,
+            Self::App { .. } => APPS_LIST_COMMAND,
         }
     }
 
-    /// The command that reads one, without its id.
-    fn get(self) -> &'static str {
+    /// The caller appends the id.
+    fn get_command(self) -> &'static str {
         match self {
             Self::Vm(_) => "hipc compute vms get",
             Self::App { .. } => "hipc compute app-engine apps get",
@@ -297,7 +295,10 @@ pub(super) fn wait(
     let Some(id) = view_of::<Vm>(&launched).vm_id else {
         return Err(
             Error::internal("the launch answer has no `vm_id`, so it cannot be waited on")
-                .with_hint(format!("run `{}` to find the new {noun}", kind.list()))
+                .with_hint(format!(
+                    "run `{}` to find the new {noun}",
+                    kind.list_command()
+                ))
                 .after_write(kind.printed(launched)),
         );
     };
@@ -313,9 +314,9 @@ pub(super) fn wait(
     let hint = match argument {
         Some(id) => format!(
             "run {} to see where the launch stands",
-            phrase::quote(format!("{} {id}", kind.get()))
+            phrase::quote(format!("{} {id}", kind.get_command()))
         ),
-        None => format!("run `{}` to find the new {noun}", kind.list()),
+        None => format!("run `{}` to find the new {noun}", kind.list_command()),
     };
     // A launch answer that already ends the wait needs no poll, so its id is not refused.
     if let Launch::Waiting(_) = kind.state(&launched) {

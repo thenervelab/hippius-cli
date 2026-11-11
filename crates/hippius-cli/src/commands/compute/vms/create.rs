@@ -11,7 +11,7 @@ use crate::commands::compute::launch::{
 };
 use crate::commands::compute::public_ip::inbound_blocked;
 use crate::commands::compute::ssh_keys::read_public_key;
-use crate::commands::compute::{VMS, refused_as};
+use crate::commands::compute::{VMS_LIST_COMMAND, refused_as};
 use crate::commands::{Printed, failed_part};
 use crate::context::{Confirmed, ConfirmedStep, Context};
 
@@ -24,8 +24,7 @@ use crate::context::{Confirmed, ConfirmedStep, Context};
 /// public-ip availability` already shows the price. So a dry run and a refusal send
 /// nothing, and `--yes`, where nobody reads the question, costs no extra request.
 pub(super) fn create(ctx: &Context<'_>, client: &Client, args: &VmCreate) -> Result<Printed> {
-    // Swagger, `ssh_key_ids` of `POST /api/compute/vms/`: "at most 20". Refused here, so a
-    // launch the server would reject is not sent after the confirmation.
+    // Refused before the question, so no one confirms a launch the server would reject.
     if args.ssh_key_ids.len() > MAX_SSH_KEY_IDS {
         return Err(Error::usage(
             format!(
@@ -64,7 +63,8 @@ pub(super) fn create(ctx: &Context<'_>, client: &Client, args: &VmCreate) -> Res
         .map_err(|error| {
             if refused_as(&error, 503, "placement-groups-unavailable") {
                 error.with_hint(format!(
-                    "run `{VMS}` to check that no VM was launched before running the command again"
+                    "run `{VMS_LIST_COMMAND}` to check that no VM was launched before running the \
+                     command again"
                 ))
             } else {
                 balance_hint(error)
@@ -120,15 +120,14 @@ pub(super) fn create(ctx: &Context<'_>, client: &Client, args: &VmCreate) -> Res
     Ok(printed)
 }
 
-/// The text-mode warning a launch with `--backup-interval` ends with when its backups are
-/// not on; the document is printed unchanged. Swagger's
-/// `backup_error`, on the 202 and on the VM detail, is "Why the backups asked for at launch
-/// were not turned on (yet)". The printed VM decides: the 202's value (`launched`) counts
-/// only when the printed VM omits the field, unlike `public_ip_error`. A null there means
-/// no failure is reported yet, which does not prove the backups are on: they turn on after
-/// `running`, and a later failure shows only in `hipc compute vms get`. Unverified: whether a
-/// pending 202 carries a "not yet" reason, which would make every `--no-wait` launch with
-/// `--backup-interval` warn.
+/// The text-mode warning a launch with `--backup-interval` ends with when its backups are not on;
+/// the document is printed unchanged. Swagger's `backup_error`, on the 202 and on the VM detail, is
+/// "Why the backups asked for at launch were not turned on (yet)". The printed VM decides: the
+/// 202's value (`launched`) counts only when the printed VM omits the field, unlike
+/// `public_ip_error`. A null there means no failure is reported yet, which does not prove the
+/// backups are on: they turn on after `running`, and a later failure shows only in `hipc compute
+/// vms get`. Unverified: whether a pending 202 carries a "not yet" reason, which would make every
+/// `--no-wait` launch with `--backup-interval` warn.
 fn backup_warning(ctx: &Context<'_>, vm: &Value, launched: &Slot<String>) {
     let printed = view_of::<Vm>(vm).backup_error;
     let error = match &printed {
@@ -143,12 +142,12 @@ fn backup_warning(ctx: &Context<'_>, vm: &Value, launched: &Slot<String>) {
     }
 }
 
-/// The text-mode warning a launch with `--public-ip` ends with; the document is printed
-/// unchanged, so JSON callers see the server's answer as sent. When the printed VM, or else the 202
-/// launch answer (`launch_error`), carries `public_ip_error` (swagger, on both: why the address
-/// could not be attached, and nothing is billed for it), the VM runs without the address the caller
-/// asked for, so that is the warning. Otherwise the address blocks inbound traffic, as after
-/// `public-ip create`.
+/// The text-mode warning a launch with `--public-ip` ends with; the document is printed unchanged,
+/// so JSON callers see the server's answer as sent. When the printed VM, or else the 202 launch
+/// answer (`launch_error`), carries `public_ip_error` (swagger, on both: why the address could not
+/// be attached, and nothing is billed for it), the VM runs without the address the caller asked
+/// for, so that is the warning. Otherwise the address blocks inbound traffic, as after `public-ip
+/// create`.
 fn address_warning(ctx: &Context<'_>, vm: &Value, launch_error: Option<&str>, ports: &[u16]) {
     let vm: Vm = view_of(vm);
     let error = vm.public_ip_error.as_deref().or(launch_error);
@@ -159,7 +158,7 @@ fn address_warning(ctx: &Context<'_>, vm: &Value, launch_error: Option<&str>, po
         ));
         return;
     }
-    // `--open-port` set a rule, which [`open_launched_ports`] noted; the rest stays closed.
+    // `--open-port` set a rule, which `open_launched_ports` noted; the rest stays closed.
     if !ports.is_empty() {
         return;
     }
@@ -217,7 +216,7 @@ fn open_ports_rules(ports: &[u16]) -> Value {
 /// `PUT .../firewall/` of the VM `vm_id` with [`open_ports_rules`].
 fn open_ports_request(vm_id: &str, ports: &[u16]) -> Request {
     Request::to(&compute::FIREWALL_UPDATE, [&vm_id])
-        .listed_by(VMS)
+        .listed_by(VMS_LIST_COMMAND)
         .json(&open_ports_rules(ports))
         .about(format!(
             "open {} to every IPv4 address on the VM `{vm_id}`",
@@ -283,15 +282,14 @@ fn open_launched_ports(
             "the launch answer has no usable `vm_id`, so the firewall rule was not set",
         )
         .with_hint(format!(
-            "run `{VMS}` to find the new VM, then open its ports with `hipc compute firewall \
-             update`"
+            "run `{VMS_LIST_COMMAND}` to find the new VM, then open its ports with `hipc \
+             compute firewall update`"
         ))
         .after_write(launched.clone()));
     };
     let request = open_ports_request(vm_id, ports);
     match ctx.send_confirmed(client, &request, confirmed) {
         Ok(_) => {
-            // Without `--public-ip` the rule waits for an address attached later.
             let later = if public_ip {
                 ""
             } else {

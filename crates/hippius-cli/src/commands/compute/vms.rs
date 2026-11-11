@@ -8,7 +8,7 @@ use hippius::{Client, Request, Result, phrase, view_of};
 use serde_json::Value;
 
 use crate::cli::{VmId, VmTarget, Vms};
-use crate::commands::compute::VMS;
+use crate::commands::compute::VMS_LIST_COMMAND;
 use crate::commands::compute::power_policy::power_policy_command;
 use crate::commands::{
     Decided, Printed, print_body, print_envelope, print_keyed_list, print_with, read_then_write,
@@ -36,7 +36,7 @@ fn stop(ctx: &Context<'_>, client: &Client, request: &Request, vm_id: &VmId) -> 
 pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<Printed> {
     let power = |route: &Route<1>, vm_id: &VmId, action: &str| {
         Request::to(route, [vm_id])
-            .listed_by(VMS)
+            .listed_by(VMS_LIST_COMMAND)
             .about(format!("{action} the VM `{vm_id}`"))
     };
     match command {
@@ -50,13 +50,13 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
         Vms::Get(VmTarget { vm_id }) => {
             let request = Request::to(&compute::VM, [vm_id])
                 .about(format!("get the VM `{vm_id}`"))
-                .listed_by(VMS);
+                .listed_by(VMS_LIST_COMMAND);
             print_body(ctx, client, &request, Gate::Open)
         }
         Vms::Attestation(VmTarget { vm_id }) => {
             let request = Request::to(&compute::VM_ATTESTATION, [vm_id])
                 .about(format!("get the attestation of the VM `{vm_id}`"))
-                .listed_by(VMS);
+                .listed_by(VMS_LIST_COMMAND);
             print_with(ctx, client, &request, Gate::Open, |response| {
                 let attestation = response.json()?;
                 Ok(match ctx.mode() {
@@ -69,12 +69,12 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
         Vms::Failovers(VmTarget { vm_id }) => {
             let request = Request::to(&compute::VM_FAILOVERS, [vm_id])
                 .about(format!("list the failovers of the VM `{vm_id}`"))
-                .listed_by(VMS);
+                .listed_by(VMS_LIST_COMMAND);
             print_keyed_list(ctx, client, &request, "failovers")
         }
         Vms::Create(args) => create::create(ctx, client, args),
-        // A start spends nothing new and deletes nothing (tenet 5): the VM is billed until it
-        // is deleted, stopped or not. A stop takes down what the VM serves, so it is confirmed.
+        // Not confirmed: a start spends nothing new and deletes nothing (tenet 5), since the VM
+        // is billed until it is deleted, stopped or not.
         Vms::Start(VmTarget { vm_id }) => print_body(
             ctx,
             client,
@@ -96,7 +96,7 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
         Vms::ResizeOptions(VmTarget { vm_id }) => {
             let request = Request::to(&compute::VM_RESIZE_OPTIONS, [vm_id])
                 .about(format!("get the resize options of the VM `{vm_id}`"))
-                .listed_by(VMS);
+                .listed_by(VMS_LIST_COMMAND);
             print_body(ctx, client, &request, Gate::Open)
         }
         // The command does not wait for `done`; `resize-status` follows it. Operations that
@@ -107,7 +107,7 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
         } => {
             let request = Request::to(&compute::VM_RESIZE, [vm_id])
                 .json(&compute::VmResizeBody { flavor })
-                .listed_by(VMS);
+                .listed_by(VMS_LIST_COMMAND);
             let request = request.about(format!("resize the VM `{vm_id}` to `{flavor}`"));
             let consequence = "a running VM reboots, and the bill changes to the new size";
             let gate = Gate::Confirm {
@@ -136,7 +136,7 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
             client,
             &Request::to(&compute::VM_RESIZE_STATUS, [vm_id, resize_id])
                 .about(format!("get the resize `{resize_id}` of the VM `{vm_id}`"))
-                .listed_by(VMS),
+                .listed_by(VMS_LIST_COMMAND),
             Gate::Open,
         ),
         Vms::PowerPolicy(command) => power_policy_command(ctx, client, command),
@@ -149,12 +149,12 @@ pub(super) fn vms(ctx: &Context<'_>, client: &Client, command: &Vms) -> Result<P
 fn vm_delete(ctx: &Context<'_>, client: &Client, vm_id: &VmId) -> Result<Printed> {
     let delete = |named: &str| {
         Request::to(&compute::VM_DELETE, [&vm_id])
-            .listed_by(VMS)
+            .listed_by(VMS_LIST_COMMAND)
             .about(format!("delete the VM {named} and its disks"))
     };
     let read = Request::to(&compute::VM, [&vm_id])
         .about(format!("get the VM `{vm_id}`"))
-        .listed_by(VMS);
+        .listed_by(VMS_LIST_COMMAND);
     let draft = delete(&format!("`{vm_id}`"));
     let decide = || {
         let vm: Vm = view_of(&ctx.send(client, &read)?.document()?);
