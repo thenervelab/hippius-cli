@@ -38,15 +38,17 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
-use hippius::routes::kubernetes;
-use hippius::{Client, ClusterKey, Code, Error, MatchedKey, Request, Response, Result, phrase};
+use hippius::routes::kubernetes::{
+    self, NodePoolScaleBody, NodeReplaceBody, Operation, OperationKind, Pool,
+};
+use hippius::{
+    Client, ClusterKey, Code, Error, MatchedKey, Request, Response, Result, phrase, view_of,
+};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{ClusterKubeconfig, NodePoolScale, NodeReplace};
 use crate::commands::Printed;
-use crate::commands::compute::kubernetes::{
-    ACTIVE, CLUSTERS, cluster_get, list_request, read_list,
-};
+use crate::commands::compute::kubernetes::{CLUSTERS, cluster_get, list_request, read_list};
 use crate::commands::files::write_output_file;
 use crate::context::{Context, Gate, Step, Write};
 
@@ -67,9 +69,10 @@ pub(super) fn kubeconfig(ctx: &Context<'_>, args: &ClusterKubeconfig) -> Result<
         ))
         .listed_by(CLUSTERS);
     let cluster = match ctx.call(&client, &read, Gate::Open)? {
-        Step::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(&client, &[&read, &secrets])?;
-            return Ok(Printed::Document(doc));
+        Step::DryRun(_) => {
+            return ctx
+                .dry_run_of(&client, &[&read, &secrets])
+                .map(Printed::Document);
         }
         Step::Sent(response) => response.document()?,
     };
@@ -98,9 +101,8 @@ pub(super) fn scale(ctx: &Context<'_>, args: &NodePoolScale) -> Result<Printed> 
         .transpose()?;
     let (id, pool_id, count) = (args.cluster_id, args.pool_id, args.count);
     let client = ctx.load_authed_client()?;
-    let post = |action: String, body: &Value| {
+    let post = |action: String| {
         Request::to(&kubernetes::NODE_POOL_SCALE, [&id, &pool_id])
-            .json(body)
             .about(action)
             .listed_by(format!("hipc compute kubernetes node-pools list {id}"))
     };
@@ -109,21 +111,22 @@ pub(super) fn scale(ctx: &Context<'_>, args: &NodePoolScale) -> Result<Printed> 
         list_request(id, &kubernetes::NODE_POOLS, "node pools"),
         list_request(id, &kubernetes::OPERATIONS, "operations"),
     ];
-    let draft = post(
-        format!("scale the pool `{pool_id}` of the Kubernetes cluster `{id}` to {count} nodes"),
-        &json!({
-            "count": count,
-            "operations": "<one add_node signed with the cluster key file per node added; left \
-                           out when the pool shrinks>",
-        }),
-    );
+    let draft = post(format!(
+        "scale the pool `{pool_id}` of the Kubernetes cluster `{id}` to {count} nodes"
+    ))
+    .json(&NodePoolScaleBody {
+        count,
+        operations: Some(
+            "<one add_node signed with the cluster key file per node added; left out when the \
+             pool shrinks>",
+        ),
+    });
     let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(mut doc) => {
+        Write::DryRun(_) => {
             // The reads before the question, the two after it, and the write (tenet 5).
             let [cluster, pools, operations] = &reads;
             let sends = [cluster, pools, operations, pools, operations, &draft];
-            doc["requests"] = ctx.describe_each(&client, &sends)?;
-            return Ok(Printed::Document(doc));
+            return ctx.dry_run_of(&client, &sends).map(Printed::Document);
         }
         Write::Checked(checked) => checked,
     };
@@ -133,10 +136,10 @@ pub(super) fn scale(ctx: &Context<'_>, args: &NodePoolScale) -> Result<Printed> 
         .map(|key| key.matched(id, &cluster))
         .transpose()?;
     let pools = read_list(ctx, &client, &reads[1])?;
-    let operations = read_list(ctx, &client, &reads[2])?;
+    let operations = operations_of(&read_list(ctx, &client, &reads[2])?);
     let Some(pool) = pools
         .iter()
-        .find(|pool| pool.get("id").and_then(Value::as_u64) == Some(pool_id))
+        .find(|pool| view_of::<Pool>(pool).id == Some(pool_id))
     else {
         return Err(Error::new(
             Code::NotFound,
@@ -154,7 +157,7 @@ pub(super) fn scale(ctx: &Context<'_>, args: &NodePoolScale) -> Result<Printed> 
         cluster: &cluster,
         pool,
     };
-    let current = pool_size(pool, &operations);
+    let current = pool_size(&view_of(pool), &operations);
     let (action, adds) = target.scale(current, count, matched)?;
     ctx.confirm_write(checked, &action, None)?;
     // Read again after the question, both ways: the question named `count` as a change from
@@ -169,24 +172,24 @@ pub(super) fn scale(ctx: &Context<'_>, args: &NodePoolScale) -> Result<Printed> 
     let (pools, operations, answered) = read_again(ctx, &client, &reads[1], &reads[2])?;
     let live = pools
         .iter()
-        .find(|live| live.get("id").and_then(Value::as_u64) == Some(pool_id));
+        .find(|live| view_of::<Pool>(live).id == Some(pool_id));
     // The question named `count` as a change from `current`, up or down.
-    let same_size = live.is_some_and(|live| pool_size(live, &operations) == current);
+    let same_size = live.is_some_and(|live| pool_size(&view_of(live), &operations) == current);
     // Only the nodes a scale up adds are signed, so only a scale up cares what they sign.
     let signs_the_same = adds.is_none() || live.is_some_and(|live| same_signing(live, pool));
     if !(same_size && signs_the_same) {
         return Err(changed(ctx, &target));
     }
-    let body = match adds {
-        None => json!({ "count": count }),
-        Some(Adds { key, params, added }) => {
-            let signed = (0..added)
+    let operations = match adds {
+        None => None,
+        Some(Adds { key, params, added }) => Some(
+            (0..added)
                 .map(|_| key.sign_add_node(params, &answered))
-                .collect::<Result<Vec<_>>>()?;
-            json!({ "count": count, "operations": signed })
-        }
+                .collect::<Result<Vec<_>>>()?,
+        ),
     };
-    ctx.send(&client, &post(action, &body))?
+    let request = post(action).json(&NodePoolScaleBody { count, operations });
+    ctx.send(&client, &request)?
         .document()
         .map(Printed::Document)
 }
@@ -207,9 +210,8 @@ pub(super) fn replace(ctx: &Context<'_>, args: &NodeReplace) -> Result<Printed> 
     let key = ClusterKey::load(&args.cluster_key_file, KEY_FILE)?;
     let (id, node) = (args.cluster_id, args.node_name.as_str());
     let client = ctx.load_authed_client()?;
-    let post = |action: String, body: &Value| {
+    let post = |action: String| {
         Request::to(&kubernetes::NODE_REPLACE, [&id, &node])
-            .json(body)
             .about(action)
             .listed_by(format!("hipc compute kubernetes node-pools list {id}"))
     };
@@ -218,28 +220,27 @@ pub(super) fn replace(ctx: &Context<'_>, args: &NodeReplace) -> Result<Printed> 
         list_request(id, &kubernetes::NODE_POOLS, "node pools"),
         list_request(id, &kubernetes::OPERATIONS, "operations"),
     ];
-    let draft = post(
-        format!("replace the node `{node}` of the Kubernetes cluster `{id}`"),
-        &json!({
-            "operation": "<an add_node signed with the cluster key file over the pool's \
-                          signing_params, with `replaces`>",
-        }),
-    );
+    let draft = post(format!(
+        "replace the node `{node}` of the Kubernetes cluster `{id}`"
+    ))
+    .json(&NodeReplaceBody {
+        operation: "<an add_node signed with the cluster key file over the pool's \
+                    signing_params, with `replaces`>",
+    });
     let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(mut doc) => {
+        Write::DryRun(_) => {
             // The reads before the question, the two after it, and the write (tenet 5).
             let [cluster, pools, operations] = &reads;
             let sends = [cluster, pools, operations, pools, operations, &draft];
-            doc["requests"] = ctx.describe_each(&client, &sends)?;
-            return Ok(Printed::Document(doc));
+            return ctx.dry_run_of(&client, &sends).map(Printed::Document);
         }
         Write::Checked(checked) => checked,
     };
     let cluster = ctx.send(&client, &reads[0])?.document()?;
     let matched = key.matched(id, &cluster)?;
     let pools = read_list(ctx, &client, &reads[1])?;
-    let operations = read_list(ctx, &client, &reads[2])?;
-    let Some(pool) = pools.iter().find(|pool| holds_node(pool, node)) else {
+    let operations = operations_of(&read_list(ctx, &client, &reads[2])?);
+    let Some(pool) = pools.iter().find(|pool| holds_node(&view_of(pool), node)) else {
         return Err(Error::new(
             Code::NotFound,
             format!(
@@ -269,7 +270,7 @@ pub(super) fn replace(ctx: &Context<'_>, args: &NodeReplace) -> Result<Printed> 
     let (pools, operations, answered) = read_again(ctx, &client, &reads[1], &reads[2])?;
     let unchanged = pools
         .iter()
-        .find(|now| holds_node(now, node))
+        .find(|now| holds_node(&view_of(now), node))
         .is_some_and(|now| same_signing(now, pool));
     if !unchanged {
         return Err(changed(ctx, &target));
@@ -280,7 +281,8 @@ pub(super) fn replace(ctx: &Context<'_>, args: &NodeReplace) -> Result<Printed> 
     let mut params = signing.clone();
     params.insert("replaces".to_owned(), node.into());
     let operation = matched.sign_add_node(&params, &answered)?;
-    ctx.send(&client, &post(action, &json!({ "operation": operation })))?
+    let request = post(action).json(&NodeReplaceBody { operation });
+    ctx.send(&client, &request)?
         .document()
         .map(Printed::Document)
 }
@@ -356,10 +358,8 @@ impl<'a> Target<'a> {
     /// `` the pool `workers` (`3`) of the Kubernetes cluster `prod` (`7`) ``, with what the
     /// answer gives of the pool's name and id: no id is made up for a pool that has none.
     fn pool_named(&self) -> String {
-        let label = match (
-            self.pool.get("id").and_then(Value::as_u64),
-            text(self.pool, "name"),
-        ) {
+        let pool: Pool = view_of(self.pool);
+        let label = match (pool.id, pool.name) {
             (Some(pool_id), _) => format!(" {}", phrase::named(pool_id, self.pool)),
             (None, Some(name)) => format!(" {}", phrase::quote(name)),
             (None, None) => String::new(),
@@ -546,11 +546,16 @@ fn read_again(
     client: &Client,
     pools: &Request,
     operations: &Request,
-) -> Result<(Vec<Value>, Vec<Value>, Response)> {
+) -> Result<(Vec<Value>, Vec<Operation>, Response)> {
     let pools = read_list(ctx, client, pools)?;
     let answered = ctx.send(client, operations)?;
     let operations = hippius::page(answered.json()?)?.into_complete(operations.target())?;
-    Ok((pools, operations, answered))
+    Ok((pools, operations_of(&operations), answered))
+}
+
+/// The operations of a list read, each as its view.
+fn operations_of(list: &[Value]) -> Vec<Operation> {
+    list.iter().map(view_of).collect()
 }
 
 /// Whether `now`, a pool read again, signs a node as `before` did: the same `signing_params`,
@@ -581,14 +586,22 @@ fn changed(ctx: &Context<'_>, target: &Target<'_>) -> Error {
 /// Refuses a replacement of `node` while an operation in flight already acts on it: a removal
 /// of it, or an add that replaces it. A second replacement would
 /// sign a second new node, added and billed.
-fn refuse_busy(target: &Target<'_>, node: &str, operations: &[Value]) -> Result<()> {
+fn refuse_busy(target: &Target<'_>, node: &str, operations: &[Operation]) -> Result<()> {
     let busy = operations
         .iter()
-        .filter(|op| text(op, "state").is_some_and(|state| ACTIVE.contains(&state)))
-        .find_map(|op| match text(op, "kind") {
-            Some("remove_node") if text(op, "node") == Some(node) => Some("removed"),
-            Some("add_node")
-                if op.pointer("/params/replaces").and_then(Value::as_str) == Some(node) =>
+        .filter(|op| op.is_active())
+        .find_map(|op| match op.kind {
+            Some(OperationKind::RemoveNode)
+                if op.node.value().map(String::as_str) == Some(node) =>
+            {
+                Some("removed")
+            }
+            Some(OperationKind::AddNode)
+                if op
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.replaces.as_deref())
+                    == Some(node) =>
             {
                 Some("replaced")
             }
@@ -612,19 +625,12 @@ fn refuse_busy(target: &Target<'_>, node: &str, operations: &[Value]) -> Result<
 
 /// Whether `pool` lists a node named `node` that is not removed: a node whose removal is done
 /// stays in the list with the state `removed`, and has no VM left to replace.
-fn holds_node(pool: &Value, node: &str) -> bool {
-    pool.get("nodes")
-        .and_then(Value::as_array)
-        .is_some_and(|nodes| {
-            nodes
-                .iter()
-                .any(|n| text(n, "name") == Some(node) && text(n, "state") != Some("removed"))
-        })
-}
-
-/// The text of `field` of `value`, when it is a string.
-fn text<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
-    value.get(field).and_then(Value::as_str)
+fn holds_node(pool: &Pool, node: &str) -> bool {
+    pool.nodes.as_ref().is_some_and(|nodes| {
+        nodes
+            .iter()
+            .any(|n| n.name.as_deref() == Some(node) && !n.is_removed())
+    })
 }
 
 /// The pool's size the way the console projects it for a scale, so the POST carries as many
@@ -635,35 +641,30 @@ fn text<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
 /// counting until it is removed, so a replacement is size-neutral), plus the in-flight
 /// `add_node`s of this pool that have no node yet and replace nothing. Scaling to N sends N
 /// minus this many signed adds.
-fn pool_size(pool: &Value, operations: &[Value]) -> u64 {
-    let replaces = |op: &Value| {
-        op.pointer("/params/replaces")
-            .and_then(Value::as_str)
-            .is_some_and(|node| !node.is_empty())
-    };
-    let active: Vec<&Value> = operations
-        .iter()
-        .filter(|op| text(op, "state").is_some_and(|state| ACTIVE.contains(&state)))
-        .collect();
+fn pool_size(pool: &Pool, operations: &[Operation]) -> u64 {
+    let active: Vec<&Operation> = operations.iter().filter(|op| op.is_active()).collect();
     let leaving: HashSet<&str> = active
         .iter()
-        .filter(|op| {
-            text(op, "kind") == Some("remove_node")
-                || text(op, "kind") == Some("add_node") && replaces(op)
+        .filter(|op| match op.kind {
+            Some(OperationKind::RemoveNode) => true,
+            Some(OperationKind::AddNode) => op.replaces().is_some(),
+            Some(OperationKind::Other(_)) | None => false,
         })
-        .filter_map(|op| text(op, "node"))
+        .filter_map(|op| op.node.value().map(String::as_str))
         .collect();
-    let nodes = pool.get("nodes").and_then(Value::as_array);
-    let live = nodes.into_iter().flatten().filter(|node| {
-        text(node, "state") != Some("removed")
-            && !text(node, "name").is_some_and(|name| leaving.contains(name))
+    let live = pool.nodes.iter().flatten().filter(|node| {
+        !node.is_removed()
+            && !node
+                .name
+                .as_deref()
+                .is_some_and(|name| leaving.contains(name))
     });
     let pending = active.iter().filter(|op| {
-        text(op, "kind") == Some("add_node")
-            && op.get("node").is_none_or(Value::is_null)
-            && !replaces(op)
-            && text(pool, "name").is_some_and(|name| {
-                op.pointer("/params/pool").and_then(Value::as_str) == Some(name)
+        op.kind == Some(OperationKind::AddNode)
+            && !op.node.is_set()
+            && op.replaces().is_none()
+            && pool.name.as_deref().is_some_and(|name| {
+                op.params.as_ref().and_then(|params| params.pool.as_deref()) == Some(name)
             })
     });
     (live.count() + pending.count()) as u64
@@ -672,6 +673,11 @@ fn pool_size(pool: &Value, operations: &[Value]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`pool_size`] of a pool and operations as the API answers them.
+    fn size(pool: &Value, operations: &[Value]) -> u64 {
+        pool_size(&view_of(pool), &operations_of(operations))
+    }
 
     #[test]
     fn the_pool_size_counts_as_the_console_projects_it() {
@@ -708,12 +714,12 @@ mod tests {
             json!({}),
         ];
         // w-2 and w-5 live, plus two adds, plus the add whose `replaces` is empty.
-        assert_eq!(pool_size(&pool, &operations), 5);
-        assert_eq!(pool_size(&json!({ "name": "w" }), &[]), 0);
+        assert_eq!(size(&pool, &operations), 5);
+        assert_eq!(size(&json!({ "name": "w" }), &[]), 0);
         // A pool the answer gives without a name has no adds: an add names its pool.
         let unnamed = json!({ "nodes": [{ "name": "w-1", "state": "ready" }] });
         let add = json!({ "kind": "add_node", "state": "queued", "node": null, "params": {} });
-        assert_eq!(pool_size(&unnamed, &[add]), 1);
+        assert_eq!(size(&unnamed, &[add]), 1);
     }
 
     /// Two known-answer cases for the projected pool size: a pool with adds in flight, and
@@ -735,7 +741,7 @@ mod tests {
             add(4, "done", json!("workers-aaaaaaaa"), workers.clone()),
             add(5, "cancelled", Value::Null, workers),
         ];
-        assert_eq!(pool_size(&pool, &operations), 3);
+        assert_eq!(size(&pool, &operations), 3);
 
         let nodes = ["aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd"]
             .map(|suffix| node(&format!("workers-{suffix}")));
@@ -758,7 +764,7 @@ mod tests {
                 json!({ "pool": "workers", "replaces": "workers-dddddddd" }),
             ),
         ];
-        assert_eq!(pool_size(&pool, &operations), 2);
+        assert_eq!(size(&pool, &operations), 2);
     }
 
     /// Only an operation in flight counts, each state on its own.
@@ -776,7 +782,7 @@ mod tests {
         ] {
             let add = json!({ "kind": "add_node", "state": state, "node": null,
                               "params": { "pool": "w" } });
-            assert_eq!(pool_size(&pool, &[add]), counted, "{state}");
+            assert_eq!(size(&pool, &[add]), counted, "{state}");
         }
     }
 }

@@ -58,7 +58,7 @@ pub use crate::ids::new_idempotency_key;
 pub use crate::json::{
     CursorPage, Page, cursor_page, envelope, envelope_beside, page, page_beside,
 };
-pub use crate::kubernetes::{ClusterKey, MatchedKey};
+pub use crate::kubernetes::{ClusterKey, MatchedKey, SignedOperation};
 pub use crate::method::Method;
 pub use crate::private_file::on_lock_wait;
 pub use crate::redact::{

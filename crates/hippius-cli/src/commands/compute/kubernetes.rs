@@ -33,9 +33,10 @@
 
 mod keyed;
 
-use hippius::routes::{Route, kubernetes};
-use hippius::{Client, Code, Error, Request, Result, phrase};
-use serde_json::{Map, Value, json};
+use hippius::routes::kubernetes::{self, Operation, OperationKind, OperationState};
+use hippius::routes::{EmptyBody, Route};
+use hippius::{Client, Code, Error, Request, Result, phrase, view_of};
+use serde_json::{Map, Value};
 
 use crate::cli::{
     Clusters, Kubernetes, KubernetesBackups, NodePoolCreate, NodePools, Nodes, OperationTarget,
@@ -75,7 +76,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Kubernetes) -> Result<Printed> {
             node_name,
         }) => {
             let request = Request::to(&kubernetes::NODE_REMOVE, [cluster_id, node_name])
-                .json(&json!({}))
+                .json(&EmptyBody {})
                 .about(format!(
                     "remove the node `{node_name}` from the Kubernetes cluster `{cluster_id}`, \
                      draining its pods to other nodes and decommissioning its VM; if data on the \
@@ -158,19 +159,17 @@ fn cluster_delete(ctx: &Context<'_>, client: &Client, id: u64) -> Result<Printed
             .listed_by(CLUSTERS)
     };
     let read = cluster_get(id);
-    let checked = match ctx.check_write(client, &delete(&format!("`{id}`")))? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(client, &[&read, &delete(&format!("`{id}`"))])?;
-            return Ok(Printed::Document(doc));
+    let draft = delete(&format!("`{id}`"));
+    let checked = match ctx.check_write(client, &draft)? {
+        Write::DryRun(_) => {
+            return ctx
+                .dry_run_of(client, &[&read, &draft])
+                .map(Printed::Document);
         }
         Write::Checked(checked) => checked,
     };
     let cluster = ctx.send(client, &read)?.document()?;
-    let named = match cluster.get("name").and_then(Value::as_str) {
-        Some(name) => format!("{} (`{id}`)", phrase::quote(name)),
-        None => format!("`{id}`"),
-    };
-    let request = delete(&named);
+    let request = delete(&phrase::named(id, &cluster));
     ctx.confirm_write(checked, &request.action(), None)?;
     ctx.send(client, &request)?
         .document()
@@ -205,21 +204,22 @@ impl Verb {
     /// operation can be resumed, so `hipc` sends no `{}` to one in any other state, an
     /// unknown one, or none. A cancel stops one that is not over: a `done`, `failed`, or
     /// `cancelled` operation is refused, and an unknown state, or none, is left to the
-    /// server, which refuses what it cannot cancel. A state is matched as the API emits it,
-    /// lowercase and untrimmed: `Queued` or `blocked ` counts as an unknown state, not as a
-    /// misspelling to fix.
-    fn allows(self, state: Option<&str>) -> bool {
+    /// server, which refuses what it cannot cancel.
+    fn allows(self, state: Option<&OperationState>) -> bool {
         match self {
-            Self::Resume => matches!(state, Some("blocked" | "queued")),
-            Self::Cancel => !matches!(state, Some("done" | "failed" | "cancelled")),
+            Self::Resume => matches!(
+                state,
+                Some(OperationState::Blocked | OperationState::Queued)
+            ),
+            Self::Cancel => !state.is_some_and(OperationState::is_over),
         }
     }
 
     /// Why the verb cannot act on an operation in `state`, for the refusal: the message
     /// names the state the server reached, so the caller knows it is not the invocation.
-    fn refused_because(self, state: Option<&str>) -> String {
+    fn refused_because(self, state: Option<&OperationState>) -> String {
         let is = match state {
-            Some(state) => format!("its state is {}", phrase::quote(state)),
+            Some(state) => format!("its state is {}", phrase::quote(state.as_str())),
             // Only a resume gets here without a state: a cancel of such an operation goes
             // to the server, which can tell what `hipc` cannot.
             None => "the API gives it no state".to_owned(),
@@ -233,11 +233,6 @@ impl Verb {
     }
 }
 
-/// The states of an operation in flight, as the API spells them. One list serves both the
-/// question of a cancel or resume, which names one of them, and the count [`keyed`] makes of
-/// the operations a scale or a replacement must wait on, so the two cannot drift apart.
-pub(super) const ACTIVE: [&str; 3] = ["queued", "running", "blocked"];
-
 /// `POST .../operations/<op_id>/<verb>/` with `{}`, answered with the operation, after a read
 /// of the cluster's operations that names the operation's state and kind and what going on
 /// with it does (module docs). There is no route that reads one operation, so the list is
@@ -248,7 +243,7 @@ fn operation(ctx: &Context<'_>, target: &OperationTarget, verb: Verb) -> Result<
     let operations = format!("hipc compute kubernetes operations list {id}");
     let post = |action: String| {
         Request::to(verb.route(), [&id, &op_id])
-            .json(&json!({}))
+            .json(&EmptyBody {})
             .about(action)
             .listed_by(operations.clone())
     };
@@ -259,15 +254,17 @@ fn operation(ctx: &Context<'_>, target: &OperationTarget, verb: Verb) -> Result<
         verb.segment()
     ));
     let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(&client, &[&read, &draft])?;
-            return Ok(Printed::Document(doc));
+        Write::DryRun(_) => {
+            return ctx
+                .dry_run_of(&client, &[&read, &draft])
+                .map(Printed::Document);
         }
         Write::Checked(checked) => checked,
     };
     let found = read_list(ctx, &client, &read)?
-        .into_iter()
-        .find(|op| op.get("id").and_then(Value::as_u64) == Some(op_id));
+        .iter()
+        .map(view_of::<Operation>)
+        .find(|op| op.id == Some(op_id));
     let Some(op) = found else {
         return Err(Error::new(
             Code::NotFound,
@@ -276,10 +273,7 @@ fn operation(ctx: &Context<'_>, target: &OperationTarget, verb: Verb) -> Result<
         .with_hint(format!("run `{operations}` to see what exists")));
     };
     // An empty state would print as an empty literal, so it reads as no state at all.
-    let state = op
-        .get("state")
-        .and_then(Value::as_str)
-        .filter(|state| !state.is_empty());
+    let state = op.state.as_ref().filter(|state| !state.as_str().is_empty());
     // No hint: nothing the caller runs changes a state the server reached (tenet 15).
     if !verb.allows(state) {
         return Err(Error::new(
@@ -299,7 +293,10 @@ fn operation(ctx: &Context<'_>, target: &OperationTarget, verb: Verb) -> Result<
     // Mirroring this read in `hipc api` would mean a second copy of this parser over a raw
     // route, so it is left to the server. Whether the server enforces the signed acceptance
     // is unverified; if it does not, this read belongs in `hipc api` too.
-    if matches!(verb, Verb::Resume) && state == Some("blocked") && blocked_on_local_data(&op) {
+    if matches!(verb, Verb::Resume)
+        && state == Some(&OperationState::Blocked)
+        && blocked_on_local_data(&op)
+    {
         return Err(Error::new(
             Code::Conflict,
             format!(
@@ -325,49 +322,57 @@ fn operation(ctx: &Context<'_>, target: &OperationTarget, verb: Verb) -> Result<
 /// the step and the reason: the step `check_local_data`, or a drain whose reason says data
 /// "would be lost". The reason is matched at any step, so a block reported another way is refused
 /// here rather than resumed with `{}`.
-fn blocked_on_local_data(op: &Value) -> bool {
-    let field = |key: &str| op.get(key).and_then(Value::as_str);
-    field("step") == Some("check_local_data")
-        || field("reason").is_some_and(|reason| reason.contains("would be lost"))
+fn blocked_on_local_data(op: &Operation) -> bool {
+    op.step.as_deref() == Some("check_local_data")
+        || op
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("would be lost"))
 }
 
 /// The question of a cancel or resume of `op`: its state, kind, and node, and what going on
 /// with it does, in the action itself, since an agent's refusal keeps only the action. The
-/// state is named only when it is one of the states in flight ([`ACTIVE`]): a cancel of an
+/// state is named only when it is in flight ([`OperationState::is_active`]): a cancel of an
 /// unknown state goes to the server, and the question does not pass on a word `hipc` cannot
 /// explain.
-fn operation_action(verb: Verb, op: &Value, id: u64, op_id: u64) -> String {
-    let field = |key: &str| {
-        op.get(key)
-            .and_then(Value::as_str)
-            .filter(|v| !v.is_empty())
-    };
-    let kind = field("kind").unwrap_or("unknown");
-    let node = field("node").map(phrase::quote);
-    let replaces = op
-        .pointer("/params/replaces")
-        .and_then(Value::as_str)
-        .filter(|v| !v.is_empty())
+fn operation_action(verb: Verb, op: &Operation, id: u64, op_id: u64) -> String {
+    let kind = op.kind.as_ref().filter(|kind| !kind.as_str().is_empty());
+    let node = op
+        .node
+        .value()
+        .filter(|node| !node.is_empty())
         .map(phrase::quote);
+    let replaces = op.replaces().map(phrase::quote);
     let effect = match (verb, kind, replaces, node) {
-        (Verb::Resume, "add_node", Some(old), _) => format!(
+        (Verb::Resume, Some(OperationKind::AddNode), Some(old), _) => format!(
             ", which launches a new VM billed to the balance to replace the node {old}, then \
              decommissions {old}"
         ),
-        (Verb::Cancel, "add_node", Some(old), _) => format!(", so the node {old} is not replaced"),
-        (Verb::Resume, "add_node", None, _) => {
+        (Verb::Cancel, Some(OperationKind::AddNode), Some(old), _) => {
+            format!(", so the node {old} is not replaced")
+        }
+        (Verb::Resume, Some(OperationKind::AddNode), None, _) => {
             ", which launches a new node's VM, billed to the balance".to_owned()
         }
-        (Verb::Cancel, "add_node", None, _) => ", so its node is not added".to_owned(),
-        (Verb::Resume, "remove_node", _, Some(node)) => {
+        (Verb::Cancel, Some(OperationKind::AddNode), None, _) => {
+            ", so its node is not added".to_owned()
+        }
+        (Verb::Resume, Some(OperationKind::RemoveNode), _, Some(node)) => {
             format!(", which drains the node {node} and decommissions its VM")
         }
-        (Verb::Cancel, "remove_node", _, Some(node)) => format!(", so the node {node} stays"),
+        (Verb::Cancel, Some(OperationKind::RemoveNode), _, Some(node)) => {
+            format!(", so the node {node} stays")
+        }
         _ => String::new(),
     };
-    let state = field("state")
-        .filter(|state| ACTIVE.contains(state))
-        .map_or(String::new(), |state| format!("{} ", phrase::quote(state)));
+    let kind = kind.map_or("unknown", OperationKind::as_str);
+    let state = op
+        .state
+        .as_ref()
+        .filter(|state| state.is_active())
+        .map_or(String::new(), |state| {
+            format!("{} ", phrase::quote(state.as_str()))
+        });
     format!(
         "{} the {state}{} operation `{op_id}` of the Kubernetes cluster `{id}`{effect}",
         verb.segment(),
@@ -393,14 +398,13 @@ fn pool_create(ctx: &Context<'_>, args: &NodePoolCreate) -> Result<Printed> {
         }
     }
     let id = args.cluster_id;
-    let body = json!({
-        "name": args.name,
-        "flavor": args.flavor,
-        "labels": Value::Object(labels),
-        "taints": args.taints,
-    });
     let request = Request::to(&kubernetes::NODE_POOL_CREATE, [&id])
-        .json(&body)
+        .json(&kubernetes::NodePoolCreateBody {
+            name: &args.name,
+            flavor: &args.flavor,
+            labels,
+            taints: &args.taints,
+        })
         .about(format!(
             "create the empty worker pool `{}` of flavor {} in the Kubernetes cluster `{id}`, \
              which costs nothing until it is scaled",
@@ -415,6 +419,8 @@ fn pool_create(ctx: &Context<'_>, args: &NodePoolCreate) -> Result<Printed> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     #[test]
@@ -501,7 +507,11 @@ mod tests {
             ),
         ];
         for (verb, op, expected) in cases {
-            assert_eq!(operation_action(verb, op, 7, 12), expected, "{op}");
+            assert_eq!(
+                operation_action(verb, &view_of(op), 7, 12),
+                expected,
+                "{op}"
+            );
         }
     }
 
@@ -517,22 +527,23 @@ mod tests {
             "paused",
             "",
         ];
+        let state = |text: &str| OperationState::from(text.to_owned());
         let resumes: Vec<&str> = states
             .iter()
             .copied()
-            .filter(|state| Verb::Resume.allows(Some(state)))
+            .filter(|text| Verb::Resume.allows(Some(&state(text))))
             .collect();
         assert_eq!(resumes, ["queued", "blocked"]);
         let cancels: Vec<&str> = states
             .iter()
             .copied()
-            .filter(|state| Verb::Cancel.allows(Some(state)))
+            .filter(|text| Verb::Cancel.allows(Some(&state(text))))
             .collect();
         assert_eq!(cancels, ["queued", "running", "blocked", "paused", ""]);
         assert!(!Verb::Resume.allows(None));
         assert!(Verb::Cancel.allows(None));
         assert_eq!(
-            Verb::Resume.refused_because(Some("run`ning")),
+            Verb::Resume.refused_because(Some(&state("run`ning"))),
             "its state is `run\\u{60}ning`, and only a `blocked` or `queued` operation can be \
              resumed"
         );
@@ -543,11 +554,11 @@ mod tests {
         );
         // The caller reads an empty state as none; the wording never shows an empty literal.
         assert_eq!(
-            Verb::Resume.refused_because(Some("")),
+            Verb::Resume.refused_because(Some(&state(""))),
             "its state is ``, and only a `blocked` or `queued` operation can be resumed"
         );
         assert_eq!(
-            Verb::Cancel.refused_because(Some("done")),
+            Verb::Cancel.refused_because(Some(&state("done"))),
             "its state is `done`, so there is nothing left to cancel"
         );
     }
@@ -558,14 +569,14 @@ mod tests {
             json!({ "step": "check_local_data", "reason": null }),
             json!({ "step": "cordon_drain", "reason": "2 volumes would be lost" }),
         ] {
-            assert!(blocked_on_local_data(&op), "{op}");
+            assert!(blocked_on_local_data(&view_of(&op)), "{op}");
         }
         for op in [
             json!({ "step": "cordon_drain", "reason": "a disruption budget blocks the drain" }),
             json!({ "step": "cordon_drain" }),
             json!({}),
         ] {
-            assert!(!blocked_on_local_data(&op), "{op}");
+            assert!(!blocked_on_local_data(&view_of(&op)), "{op}");
         }
     }
 }
