@@ -1449,6 +1449,63 @@ fn an_error_body_never_carries_a_one_time_secret_into_details() {
     );
 }
 
+/// Every value a request sends under a secret field is redacted from a field error that
+/// repeats it, a number and the strings and numbers nested under the field included; a
+/// boolean is not, and a field error of another field is kept as the server wrote it.
+#[test]
+fn a_field_error_loses_every_value_a_secret_field_sent() {
+    let sent = sent_secret_spellings(Some(
+        br#"{"password":123456,"api_key":{"id":"key-one-77","parts":["nested-s3cr3t",7.25]},"secret":true,"name":"n"}"#,
+    ));
+    let error = status_error(&StatusAnswer {
+        attempt: &attempt(),
+        write: true,
+        not_done_on_503: false,
+        status: 400,
+        body: concat!(
+            r#"{"password":["123456 is too common."],"#,
+            r#""api_key":["key-one-77 and nested-s3cr3t are taken, 7.25 too; true"],"#,
+            r#""name":["123456 is not n"]}"#
+        )
+        .as_bytes(),
+        retry_after: None,
+        request_id: None,
+        location: None,
+        body_unread: None,
+        token_spellings: &[],
+        sent_secrets: &sent,
+    });
+    let json = error.to_json();
+    assert_eq!(
+        json["error"]["details"],
+        serde_json::json!({
+            "password": ["<redacted> is too common."],
+            "api_key": ["<redacted> and <redacted> are taken, <redacted> too; true"],
+            "name": ["123456 is not n"]
+        })
+    );
+    let message = json["error"]["message"].as_str().expect("a message");
+    for value in ["key-one-77", "nested-s3cr3t", "7.25", "123456 is too"] {
+        assert!(!message.contains(value), "{message}");
+    }
+}
+
+/// A JSON body is written into a buffer of its exact size, measured first, so no smaller
+/// copy of it was freed on the way.
+#[test]
+fn a_json_body_is_written_into_a_buffer_of_its_exact_size() {
+    use std::io::Write as _;
+    let body = json!({"secrets": {"A": "x".repeat(1000)}, "n": [1, 2.5, "é"]});
+    let request = Request::new(Method::Post, "/x/").json(&body);
+    let bytes = request.body.as_ref().expect("a body");
+    assert_eq!(bytes.as_slice(), serde_json::to_vec(&body).unwrap());
+    assert_eq!(bytes.capacity(), bytes.len());
+    let mut count = ByteCount(0);
+    count.write_all(b"abc").unwrap();
+    count.flush().unwrap();
+    assert_eq!(count.0, 3);
+}
+
 /// A `Deprecation` or `Sunset` header becomes one warning per route, which names the
 /// route and the dates the headers hold in their standard forms, and never the server's
 /// other text.

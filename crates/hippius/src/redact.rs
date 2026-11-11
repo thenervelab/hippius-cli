@@ -341,8 +341,10 @@ pub fn redactions<'a>(secrets: impl IntoIterator<Item = &'a str>) -> Zeroizing<V
 /// percent-encoded in either hex case), percent-encoded with `/` kept, in either hex case, as
 /// the body of a JSON string, once and twice escaped and with every non-ASCII character as
 /// `\uXXXX` (Python's `json.dumps`), and as `phrase::quote`, Rust's `{:?}`, and Python's
-/// `repr` write it. An empty spelling is left out, since it cannot be redacted. The
-/// temporaries built on the way are cleared when dropped.
+/// `repr` write it. An empty spelling is left out, since it cannot be redacted. Clearing the
+/// copies is best effort: the spellings returned are cleared by the caller's `Zeroizing`, but
+/// a `String` that grows while one is built (the escapes, `phrase::quote`) frees each smaller
+/// buffer as it is.
 pub(crate) fn secret_spellings(text: &str) -> Vec<String> {
     let mut spellings = token_spellings(text);
     let escaped = json_body(text);

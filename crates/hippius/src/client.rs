@@ -238,8 +238,13 @@ impl Request {
     /// structs of them, so it always can.
     #[must_use]
     pub fn json(mut self, body: &impl Serialize) -> Self {
-        let bytes = serde_json::to_vec(body).expect("a request body is plain JSON data");
-        self.body = Some(Zeroizing::new(bytes));
+        // Measured first and written into a buffer of that size, so the buffer never grows:
+        // a growing `Vec` frees each smaller copy uncleared, and the body may hold a secret.
+        let mut size = ByteCount(0);
+        serde_json::to_writer(&mut size, body).expect("a request body is plain JSON data");
+        let mut bytes = Zeroizing::new(Vec::with_capacity(size.0));
+        serde_json::to_writer(&mut *bytes, body).expect("a request body is plain JSON data");
+        self.body = Some(bytes);
         self
     }
 
@@ -285,6 +290,21 @@ impl Request {
 
     pub(crate) fn access(&self) -> Access {
         self.access
+    }
+}
+
+/// A writer that keeps nothing and counts the bytes written to it.
+#[derive(Debug)]
+struct ByteCount(usize);
+
+impl std::io::Write for ByteCount {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -1731,7 +1751,8 @@ fn unread_body(error: &ureq::Error) -> String {
 }
 
 /// The spellings of each value `body`, a request's JSON body, sends in a secret field
-/// ([`sent_secrets`]), for [`without_secret_fields`]; the parsed copy is cleared.
+/// ([`sent_secrets`]), for [`without_secret_fields`]; the parsed copy and the values are
+/// cleared.
 fn sent_secret_spellings(body: Option<&[u8]>) -> zeroize::Zeroizing<Vec<String>> {
     let Some(sent) = body
         .and_then(parse_json)
@@ -1739,22 +1760,32 @@ fn sent_secret_spellings(body: Option<&[u8]>) -> zeroize::Zeroizing<Vec<String>>
     else {
         return zeroize::Zeroizing::new(Vec::new());
     };
-    crate::redact::redactions(sent_secrets(sent.as_value()))
+    let mut values = zeroize::Zeroizing::new(Vec::new());
+    sent_secrets(sent.as_value(), false, &mut values);
+    crate::redact::redactions(values.iter().map(String::as_str))
 }
 
-/// The values `body`, a request's JSON, holds as strings in a field named as a secret
-/// ([`is_secret_field`]), at any depth.
-fn sent_secrets(body: &Value) -> Vec<&str> {
+/// Pushes onto `values` the text of each value `body`, a request's JSON, sends under a field
+/// named as a secret ([`is_secret_field`]), at any depth (`under_secret` says `body` is
+/// under one already): a string as it is, a number as its JSON text, and each string and
+/// number inside an object or a list there, so a field error that repeats `123456` of
+/// `{"password": 123456}` loses it too. A boolean or a null is no secret value, and its text
+/// would redact every `true` of the answer.
+fn sent_secrets(body: &Value, under_secret: bool, values: &mut Vec<String>) {
     match body {
-        Value::Object(fields) => fields
-            .iter()
-            .flat_map(|(key, value)| match value {
-                Value::String(text) if is_secret_field(key) => vec![text.as_str()],
-                other => sent_secrets(other),
-            })
-            .collect(),
-        Value::Array(items) => items.iter().flat_map(sent_secrets).collect(),
-        _ => Vec::new(),
+        Value::String(text) if under_secret => values.push(text.clone()),
+        Value::Number(number) if under_secret => values.push(number.to_string()),
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                sent_secrets(value, under_secret || is_secret_field(key), values);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                sent_secrets(item, under_secret, values);
+            }
+        }
+        _ => {}
     }
 }
 
