@@ -89,6 +89,7 @@ use serde::Serialize;
 use crate::encode::percent_encode_keeping;
 use crate::error::Code;
 use crate::method::Method;
+use crate::selector::{Selector, names_one_of};
 use crate::url::with_trailing_slash;
 
 /// The path every route of the console API sits under, before its version or service. A
@@ -107,8 +108,9 @@ pub(crate) enum RouteClass {
     Personal,
     /// Acts in the account the header names.
     Scoped,
-    /// Refuses the header with `account_scope_unsupported`.
-    Unsupported,
+    /// Acts only in the caller's own account ([`Route::own_account`]): it refuses the
+    /// header with `account_scope_unsupported`.
+    OwnAccount,
 }
 
 /// What a route does with a selector header: `X-Hippius-Project` or `X-Hippius-Billing`.
@@ -199,9 +201,11 @@ pub enum Guard {
         /// The one path to the route's effect, as [`Guard::Refused`] says it.
         hint: &'static str,
     },
-    /// Sent only with each of these flags. With none, the route lists a write method the
-    /// API documents as doing something other than its siblings, so it lends no guard to
-    /// them.
+    /// A write method the API documents as doing something other than the other write
+    /// methods of its route: it needs nothing beyond `--yes`, and lends no guard to a method
+    /// that has no row of its own, as [`Guard::None`] lends none.
+    Distinct,
+    /// Sent only with each of these flags, at least one.
     Needs(&'static [RouteFlag]),
     /// Sent only with each of these flags when the body sets this top-level key. A body
     /// that is not a JSON object counts as setting it, so a shape `hipc` does not read fails
@@ -214,11 +218,28 @@ pub enum Guard {
 }
 
 impl Guard {
-    /// Whether a write method of the same route that has no guard of its own takes this
-    /// one: every guard but none, and `Needs` with no flag, which says the method does
-    /// something else.
+    /// Whether a write method of the same route that has no row of its own takes this guard:
+    /// every guard but [`Guard::None`] and [`Guard::Distinct`].
     pub fn lends(self) -> bool {
-        !matches!(self, Self::None | Self::Needs([]))
+        !matches!(self, Self::None | Self::Distinct)
+    }
+
+    /// The guard a write method `to` with no row of its own takes from this guard on the
+    /// write row of method `from` of the same route, or `None` when it takes none: a read
+    /// neither lends nor borrows, and a guard that does not [`lend`](Guard::lends) lends
+    /// nothing. A `PUT` replaces the whole resource, so a field its body leaves out may be
+    /// reset rather than kept: a flag a guard needs when the body sets a key, for what that
+    /// change does, a borrowing `PUT` needs whatever its body sets. A refusal on a key stays on
+    /// the key: it is about what the body carries, such as an app's secret values, which a body
+    /// without the key does not.
+    pub fn lent_to(self, from: Method, to: Method) -> Option<Self> {
+        if from.is_read() || to.is_read() || !self.lends() {
+            return None;
+        }
+        Some(match (self, to) {
+            (Self::NeedsWhenSet(flags, _), Method::Put) => Self::Needs(flags),
+            (guard, _) => guard,
+        })
     }
 }
 
@@ -314,7 +335,7 @@ impl Endpoint {
     }
 
     /// The path with its placeholders, such as `/api/accounts/members/{member_id}/`.
-    pub fn template(&self) -> &'static str {
+    pub const fn template(&self) -> &'static str {
         self.template
     }
 
@@ -411,14 +432,16 @@ impl Endpoint {
                     else {
                         return false;
                     };
-                    if segments[at..end].iter().any(|segment| segment.is_empty()) {
+                    if !fits(Placeholder::name(part), &segments[at..end]) {
                         return false;
                     }
                     at = end;
                 }
                 Some(Placeholder::Segment) => {
-                    let name = Placeholder::name(part);
-                    if !segments.get(at).is_some_and(|value| fits(name, value)) {
+                    let Some(value) = segments.get(at) else {
+                        return false;
+                    };
+                    if !fits(Placeholder::name(part), &[value]) {
                         return false;
                     }
                     at += 1;
@@ -487,14 +510,32 @@ impl Placeholder {
 )]
 pub struct EmptyBody {}
 
-/// Whether `value`, one path segment, fits the `{name}` placeholder: a non-empty segment, and
-/// for the names whose value the server's router takes as a number, digits. A database and
-/// an invoice are numbered, so `/api/databases/metrics/` is not one database's route but a
-/// personal one the tables decide.
-fn fits(name: &str, value: &str) -> bool {
-    !value.is_empty()
-        && (!matches!(name, "database_id" | "invoice_id")
-            || value.bytes().all(|b| b.is_ascii_digit()))
+/// Whether `value`, the path segments a placeholder named `name` takes (one for `{name}`),
+/// fits it: each segment non-empty, and the shape the name holds the value to, where the
+/// server's router or the API's ids hold it to one. This is the one place a name decides a
+/// shape, so a template that names its placeholder anything else takes any value.
+///
+/// - `database_id` and `invoice_id`: digits, as the server's router takes them, so
+///   `/api/databases/metrics/` is not one database's route but a personal one the tables
+///   decide.
+/// - `project_id` and `billing_account_id`: a project or billing account id, or `default`,
+///   so a row that names one in its path (which takes no selector header) is not reached by
+///   another word, such as `/api/accounts/projects/bulk/`, which the tables then decide and
+///   refuse with a selection, as they decide every path no row matches.
+/// - `model`: two segments, `namespace/repository`, as `hipc hub models list` prints a model
+///   and `hipc hub models get` takes it, so `/api/models/acme/llama/v1/` is a version of the
+///   model `acme/llama`, not a model of three segments.
+fn fits(name: &str, value: &[&str]) -> bool {
+    let one = |shape: fn(&str) -> bool| matches!(value, [segment] if shape(segment));
+    let digits = |text: &str| text.bytes().all(|b| b.is_ascii_digit());
+    !value.iter().any(|segment| segment.is_empty())
+        && match name {
+            "database_id" | "invoice_id" => one(digits),
+            "project_id" => one(|text| names_one_of(Selector::Project, text)),
+            "billing_account_id" => one(|text| names_one_of(Selector::Billing, text)),
+            "model" => value.len() == 2,
+            _ => true,
+        }
 }
 
 /// An endpoint whose template has `N` placeholders, so a request built from it fills each.
@@ -564,7 +605,7 @@ impl<const N: usize> Route<N> {
 
     /// Refuses a membership: it acts only in the caller's own account.
     pub(crate) const fn own_account(mut self) -> Self {
-        self.endpoint.account = Some(RouteClass::Unsupported);
+        self.endpoint.account = Some(RouteClass::OwnAccount);
         self
     }
 
@@ -633,7 +674,16 @@ impl<const N: usize> Route<N> {
     }
 
     /// What `hipc api` holds it back for.
+    ///
+    /// # Panics
+    ///
+    /// When a [`Guard::Needs`] names no flag: a write that needs nothing is
+    /// [`Guard::Distinct`] or [`Guard::None`]. A route is a constant, so the panic stops the
+    /// build.
     pub(crate) const fn guard(mut self, guard: Guard) -> Self {
+        if let Guard::Needs(flags) = guard {
+            assert!(!flags.is_empty(), "a `Guard::Needs` names a flag");
+        }
         self.endpoint.guard = guard;
         self
     }
@@ -729,21 +779,30 @@ const fn starts_with_base(template: &str) -> bool {
 /// The row `method` to `form` reaches: one form of a request path (its query removed, a
 /// format suffix kept or removed, in one letter case), matched with its trailing `/` added,
 /// since a server or a proxy that adds the slash delivers the slashless path to the same
-/// route. As the server's router does, the path alone picks the route, the template with the
-/// most literal segments among those that match (`/api/databases/refusals/` before
-/// `/api/databases/{database_id}/`), and then the method picks its row there; a method the
-/// route has no row for reaches none, not a row of a less literal template. A `HEAD` reaches
-/// the `GET` row: Django REST framework runs a `HEAD` through the `GET` handler.
+/// route. The path picks the route ([`route_at`]), and then the method picks its row there; a
+/// method the route has no row for reaches none, not a row of another template. A `HEAD`
+/// reaches the `GET` row: Django REST framework runs a `HEAD` through the `GET` handler.
 pub(crate) fn row(method: Method, form: &str) -> Option<&'static Endpoint> {
     let method = if method == Method::Head {
         Method::Get
     } else {
         method
     };
-    let form = with_trailing_slash(form);
-    let most_literal = matching(&form).map(Endpoint::literal_segments).max()?;
-    matching(&form)
-        .find(|endpoint| endpoint.literal_segments() == most_literal && endpoint.method == method)
+    route_at(&with_trailing_slash(form)).find(|endpoint| endpoint.method == method)
+}
+
+/// The rows of the route `form`, a path with its trailing `/`, reaches, whatever their
+/// method. As the server's router does, the path alone picks the route: the template with
+/// the most literal segments among those that match (`/api/databases/refusals/` before
+/// `/api/databases/{database_id}/`), the first in table order where two tie. No two
+/// templates of the table tie on a path today: `routes::tests` checks that every row is the
+/// row its own path reaches. A write method with no row there borrows a guard only from these
+/// rows ([`Guard::lent_to`]).
+pub(crate) fn route_at(form: &str) -> impl Iterator<Item = &'static Endpoint> {
+    let template = matching(form)
+        .min_by_key(|endpoint| std::cmp::Reverse(endpoint.literal_segments()))
+        .map(Endpoint::template);
+    all().filter(move |endpoint| Some(endpoint.template) == template)
 }
 
 /// Every row whose template matches `form`, a path with its trailing `/`, whatever its

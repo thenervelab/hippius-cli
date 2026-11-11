@@ -663,18 +663,29 @@ mod tests {
         }
     }
 
-    /// A route whose row names the project in its path names it whatever the path's value,
-    /// `default` included, as the budget row does; a method the route has no row for falls
-    /// to the tables, which name a project only by its id.
+    /// A route whose row names the project in its path names it only by its id or `default`:
+    /// a path with another word there, such as `bulk`, reaches no row, and the tables, which
+    /// name a project by its id alone, refuse a selection on it, writes included.
     #[test]
-    fn a_row_that_names_its_project_names_any_value() {
-        let path = "/api/accounts/projects/default/budget/";
-        for method in [Method::Get, Method::Put, Method::Delete] {
-            assert_eq!(project_take(method, path), Take::Named, "{method}");
-            assert_eq!(billing_take(method, path), Take::Named, "{method}");
+    fn a_row_names_its_project_only_by_its_id() {
+        let named = "/api/accounts/projects/proj_0a1b2c3d4e5f60718293/budget/";
+        for method in [Method::Get, Method::Post, Method::Put, Method::Delete] {
+            assert_eq!(project_take(method, named), Take::Named, "{method}");
+            assert_eq!(billing_take(method, named), Take::Named, "{method}");
         }
-        assert_eq!(project_take(Method::Post, path), Take::Refuse);
-        assert_eq!(billing_take(Method::Post, path), Take::Refuse);
+        let default = "/api/accounts/projects/default/budget/";
+        assert_eq!(project_take(Method::Get, default), Take::Named);
+        for path in [
+            "/api/accounts/projects/Default/budget/",
+            "/api/accounts/projects/bulk/",
+            "/api/accounts/projects/proj_x/",
+            "/api/accounts/billing-accounts/bill_x/",
+        ] {
+            for method in [Method::Get, Method::Put, Method::Patch, Method::Delete] {
+                assert_eq!(project_take(method, path), Take::Refuse, "{method} {path}");
+                assert_eq!(billing_take(method, path), Take::Refuse, "{method} {path}");
+            }
+        }
     }
 
     /// `classify` keeps the greater take, so failing closed rests on this order.

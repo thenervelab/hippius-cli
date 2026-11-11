@@ -10,6 +10,7 @@ fn sample(endpoint: &Endpoint) -> String {
         match name {
             "project_id" => "proj_0a1b2c3d4e5f60718293",
             "billing_account_id" => "bill_9f8e7d6c5b4a39281706",
+            "model" => "acme/llama",
             _ => "7",
         }
         .to_owned()
@@ -95,26 +96,15 @@ fn the_header_tables_never_contradict_a_row() {
     assert!(disagreements.is_empty(), "{disagreements:#?}");
 }
 
-/// The policy of a row, without its method, template, and paging, which no request decision
-/// reads.
-fn policy(endpoint: &Endpoint) -> Endpoint {
-    Endpoint {
-        method: Method::Get,
-        template: "",
-        paging: None,
-        ..*endpoint
-    }
-}
-
-/// Each row is the row its own path reaches, or one with the same policy where two templates
-/// match one path (a Hub model and a model with a reference, both under `{model..}`).
+/// Each row is the row its own path reaches, so no two templates tie on a path and every
+/// row's policy and paging apply to the requests it describes.
 #[test]
 fn every_row_is_reached_by_its_own_path() {
     for endpoint in all() {
         let path = sample(endpoint);
         let found = row(endpoint.method, &path).expect("a row matches its own path");
         assert!(
-            found == endpoint || policy(found) == policy(endpoint),
+            found == endpoint,
             "{} {path} reaches {} instead of {}",
             endpoint.method,
             found.template,
@@ -134,6 +124,27 @@ fn the_most_literal_row_wins_and_a_head_reaches_the_get() {
     assert_eq!(refusals, databases::DATABASE_REFUSALS.endpoint());
     let one = row(Method::Get, "/api/databases/7/").expect("a row");
     assert_eq!(one, databases::DATABASE.endpoint());
+    // A placeholder holds the shape its name gives: a project or billing account id, and a
+    // model of two segments, so a version path is the version's.
+    assert_eq!(row(Method::Patch, "/api/accounts/projects/bulk/"), None);
+    assert_eq!(
+        row(Method::Patch, "/api/accounts/projects/default/"),
+        Some(account::PROJECT_UPDATE.endpoint())
+    );
+    assert_eq!(
+        row(Method::Patch, "/api/accounts/billing-accounts/bill_x/"),
+        None
+    );
+    assert_eq!(
+        row(Method::Get, "/api/models/acme/llama/"),
+        Some(hub::MODEL.endpoint())
+    );
+    assert_eq!(
+        row(Method::Get, "/api/models/acme/llama/v1/"),
+        Some(hub::MODEL_VERSION.endpoint())
+    );
+    assert_eq!(row(Method::Get, "/api/models/acme/"), None);
+    assert_eq!(row(Method::Get, "/api/models/a/b/c/d/"), None);
     assert_eq!(
         row(Method::Head, "/api/network/me/"),
         Some(network::ME.endpoint())
@@ -217,7 +228,7 @@ fn a_template_counts_only_whole_segment_placeholders() {
 fn each_builder_method_sets_its_part_of_the_policy() {
     let plain = Route::<0>::get("/api/a/").own_account().declared();
     let endpoint = plain.endpoint();
-    assert_eq!(endpoint.account, Some(RouteClass::Unsupported));
+    assert_eq!(endpoint.account, Some(RouteClass::OwnAccount));
     assert_eq!(
         (endpoint.project, endpoint.billing),
         (Take::Refuse, Take::Refuse)
@@ -273,7 +284,7 @@ fn each_builder_method_sets_its_part_of_the_policy() {
     );
     assert!(endpoint.reveals() && endpoint.provisions());
     assert!(endpoint.permanent() && endpoint.undone_on_503());
-    assert!(!Guard::None.lends() && !Guard::Needs(&[]).lends());
+    assert!(!Guard::None.lends() && !Guard::Distinct.lends());
     assert!(Guard::Needs(&[RouteFlag::Public]).lends());
     assert_eq!(Route::<0>::delete("/api/a/").method(), Method::Delete);
 }

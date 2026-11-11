@@ -24,8 +24,15 @@ pub enum Method {
 }
 
 impl Method {
-    /// The names [`Method::parse`] accepts, in upper case.
-    const NAMES: [&'static str; 6] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
+    /// Every method `hipc` sends, reads first, in the order a rule lists them.
+    pub const ALL: [Self; 6] = [
+        Self::Get,
+        Self::Head,
+        Self::Post,
+        Self::Put,
+        Self::Patch,
+        Self::Delete,
+    ];
 
     /// Parses a method name, in any case.
     ///
@@ -33,21 +40,20 @@ impl Method {
     ///
     /// `usage` for any other name.
     pub fn parse(text: &str) -> Result<Self> {
-        match text.to_ascii_uppercase().as_str() {
-            "GET" => Ok(Self::Get),
-            "HEAD" => Ok(Self::Head),
-            "POST" => Ok(Self::Post),
-            "PUT" => Ok(Self::Put),
-            "PATCH" => Ok(Self::Patch),
-            "DELETE" => Ok(Self::Delete),
-            _ => {
-                let names = crate::phrase::join(&Self::NAMES.map(crate::phrase::quote), "or");
-                Err(Error::usage(
+        let upper = text.to_ascii_uppercase();
+        Self::ALL
+            .into_iter()
+            .find(|method| method.as_str() == upper)
+            .ok_or_else(|| {
+                let names = crate::phrase::join(
+                    &Self::ALL.map(|method| crate::phrase::quote(method.as_str())),
+                    "or",
+                );
+                Error::usage(
                     format!("{} is not an HTTP method: a method is {names}", quote(text)),
                     format!("pass the method as {names}"),
-                ))
-            }
-        }
+                )
+            })
     }
 
     /// The upper-case name.
@@ -74,6 +80,12 @@ impl Method {
     }
 }
 
+impl fmt::Display for Method {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Whether a request may change state on the server, which decides the stored-selection
 /// rule of the project and billing headers and the side effects of a failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,12 +94,6 @@ pub(crate) enum Access {
     Read,
     /// It may change state.
     Write,
-}
-
-impl fmt::Display for Method {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
 }
 
 #[cfg(test)]

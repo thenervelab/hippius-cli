@@ -89,8 +89,8 @@ pub(crate) fn run(ctx: &Context<'_>, args: &Api) -> Result<Printed> {
     // `returns_secret`, whatever the flags.
     // A route that needs two flags refuses for the first one missing, so a rerun with its
     // hint meets the second.
-    let namespace = row == Some(routes::hub::PUBLICITY_UPDATE.endpoint());
-    for route_flag in client.route_flags(&request)? {
+    for (route_flag, route) in client.route_flags(&request)? {
+        let namespace = route == routes::hub::PUBLICITY_UPDATE.endpoint().template();
         require_route_flag(ctx, args, route_flag, namespace)?;
     }
     // A read that may create something, such as the first `GET /api/network/me/`, is a
@@ -275,8 +275,8 @@ const CONSEQUENCES: [(&Endpoint, &str); 14] = [
 /// Refuses a request that needs `route_flag` unless it was passed. A dry run sends nothing,
 /// so it needs no flag, as it needs no `--reveal` (tenet 5). Each flag refuses with its
 /// own code, `--public` and `--remove-others` with the curated commands' codes.
-/// `namespace` says the request is the Hub namespace publicity `PATCH`, whose `--public`
-/// refusal names who can pull rather than a bucket.
+/// `namespace` says the rule is the Hub namespace publicity route's, whatever the method sent,
+/// so its `--public` refusal names who can pull rather than a bucket.
 fn require_route_flag(
     ctx: &Context<'_>,
     args: &Api,

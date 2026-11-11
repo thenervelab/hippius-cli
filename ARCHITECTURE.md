@@ -125,18 +125,29 @@ there (`schema_route` in `scripts/lib.sh`) rather than keep their own copy.
 ### The row decides; the tables serve routes with no row
 
 The client looks up the row of every request first (`routes::row`, by the path alone, as the
-server's router picks a route, then the method; a `HEAD` reaches the `GET` row) and takes its
+server's router picks a route: the template with the most literal segments among those that
+match, then the method; a `HEAD` reaches the `GET` row) and takes its
 policy: the account class, project and billing handling, whether the answer reveals a
 secret, whether a read provisions, whether the route is permanent, whether a 503 means it was
 undone, and the guard `hipc api` applies. A guard that refuses carries why and the one path to
 the route's effect; the message names the method the request sent, so a write method that
-borrows the guard of another write method of its route names its own. The path is tried in
-each form the tables match (slashless, with a format suffix, in another letter case).
+borrows the guard of another write method of its route names its own. A write method with no
+row borrows only from the rows of the template its path reaches (`routes::route_at`,
+`Guard::lent_to`); a `Guard::Distinct` row says its method does something else and lends
+nothing. The path is tried in each form the tables match (slashless, with a format suffix,
+in another letter case). The secret, provisioning, permanent-delete, and guard checks also
+read it under every other API version (`account::in_every_version`), so a refused or secret
+route stays so on a version the API adds before a row names it; the row lookup itself
+reads the path only as written, so `hipc api` still treats such a path as a route it does
+not know.
 
-A placeholder's name says what fills it, and for two names, the shape the server's router
-takes: `database_id` and `invoice_id` are digits (`fits` in `routes.rs`). A path with another
-value there is another route: `/api/databases/metrics/` is not one database's route, so the
-tables decide it.
+A placeholder's name says what fills it, and for a few names, the shape that fills it
+(`fits` in `routes.rs`, the one place a name decides a shape): `database_id` and
+`invoice_id` are digits, as the server's router takes them; `project_id` and
+`billing_account_id` are ids of their kind; a Hub `model` is two segments. A path with
+another value there is another route: `/api/databases/metrics/` is not one database's route,
+and `/api/accounts/projects/default/` not one project's, so the tables decide them. A new
+template that names its placeholder anything else takes any value.
 
 The tables in `account.rs` and `project.rs` (`SCOPED_PREFIXES`, `PERSONAL_PREFIXES`,
 `PERSONAL_PATHS`, the project and billing tables, and the secret and guard tables of the
@@ -315,18 +326,25 @@ ships `GET /api/v2/accounts/members/`, whose answer renames `members` to `result
    would treat it as a route it does not know. The row decides, which is why it carries the
    class.
 2. Point `members_list` in `commands/account.rs` at `routes::account::MEMBERS_V2`, and
-   `["account", "members", ...]` in `spec/routes.rs` at the new constant. If `hipc` reads a
-   renamed field to decide something (`members` in `member_grants`), change that read in
-   its one place.
+   `["account", "members", ...]` in `spec/routes.rs` at the new constant. Keep the old
+   constant listed by moving it to the `["api"]` arm, which lists the routes only `hipc api`
+   reaches: a row no command lists fails
+   `spec::tests::every_row_is_a_route_some_command_lists`. If `hipc` reads a renamed field
+   to decide something (`members` in `member_grants`), change that read in its one place.
 3. A printed document that changes shape needs a new `schema_version` (tenet 15) and a
    `CHANGELOG.md` line. To keep the old shape, add the old field beside the new one before
    printing, the one transformation tenet 15 allows.
-4. Delete `MEMBERS` when no command sends it. `hipc api` reaches both versions throughout.
+4. Delete `MEMBERS`, and its line in the `["api"]` arm, when no command sends it. Until
+   then `hipc api` knows both versions. After it, `hipc api` treats the old path as a route
+   it does not know: a `GET` of it needs `--reveal` and a write warns, which is a
+   `CHANGELOG.md` line. A guard or a `reveals` the new row carries still holds for the old
+   path, since those checks read a path under every version the table names.
 
 The version is never a client setting, and `hipc` never negotiates it at run time: a release
 sends the version of each route it was tested against. A `Deprecation` or `Sunset` header on
-an answer is surfaced as a warning (`hippius::take_deprecation_warnings`, which `run.rs`
-adds to the run's warnings), and a `410` gets a hint to upgrade `hipc` (tenet 15).
+an answer is surfaced as a warning (`Client::take_deprecation_warnings`, which
+`Context::transmit` moves into the run's warnings after each request, one per route), and a
+`410` gets a hint to upgrade `hipc` (tenet 15).
 
 ## Error model
 

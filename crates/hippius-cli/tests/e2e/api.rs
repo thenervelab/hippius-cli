@@ -1497,7 +1497,19 @@ fn a_guard_holds_for_every_write_method_and_letter_case() {
     ];
     for (method, path, body, code) in cases {
         let argv = ["api", method, path, BODY, body, "--yes"];
-        Hipc::against(&home, &server).run(&argv).fails(2, code);
+        let error = Hipc::against(&home, &server).run(&argv).fails(2, code);
+        // A borrowed `--public` rule names what the route it comes from opens.
+        if code == "public_required" {
+            let opens = if path.contains("publicity") {
+                "the Hub namespace public"
+            } else {
+                "a private bucket"
+            };
+            assert!(
+                error["message"].as_str().is_some_and(|m| m.contains(opens)),
+                "{method} {path}: {error}"
+            );
+        }
     }
     // A refusal holds for every write method too, and its message names the method sent.
     let error = Hipc::against(&home, &server)
@@ -2418,14 +2430,14 @@ fn every_refusal_is_named_in_the_schema_and_the_help_with_its_methods() {
             &["GET", "HEAD"],
             "/kubernetes/clusters/7/secrets/",
             false,
-            "`GET` or `HEAD` of `/api/kubernetes/clusters/<cluster_id>/secrets/`",
+            "`GET` or `HEAD` of `/api/kubernetes/clusters/{cluster_id}/secrets/`",
             "GET or HEAD of /kubernetes/clusters/<cluster_id>/secrets/ is never sent",
         ),
         (
             &WRITES,
             "/cdn/zones/zab12cd34ef56/hostnames/a.example.com/dns-setup/",
             false,
-            "a write of `/api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`",
+            "a write of `/api/cdn/zones/{zone_id}/hostnames/{hostname}/dns-setup/`",
             "A write of /cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/ is never sent",
         ),
         (
@@ -2446,7 +2458,7 @@ fn every_refusal_is_named_in_the_schema_and_the_help_with_its_methods() {
             &WRITES,
             "/compute/app-engine/apps/vm-1/compose/",
             true,
-            "or of `/api/compute/app-engine/apps/<vm_id>/compose/` whose body sets `secrets`",
+            "or of `/api/compute/app-engine/apps/{vm_id}/compose/` whose body sets `secrets`",
             "A write of /compute/app-engine/apps/<vm_id>/compose/ whose body sets secrets is never \
              sent",
         ),

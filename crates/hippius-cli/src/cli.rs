@@ -870,7 +870,8 @@ fn api_long_about() -> String {
          plain http to a loopback port included, exits 2 usage; use curl for another host. A \
          refusal listed for one write method (POST, PUT, PATCH, or DELETE) holds for every \
          write method of the route that has no rule of its own, and every path counts in any \
-         letter case, with or without the trailing slash or a format suffix. {} A write \
+         letter case, with or without the trailing slash or a format suffix, and under any API \
+         version (/v2/...). {} A write \
          under /support/, such as a new ticket, a reply, or a chat handoff, whose body holds \
          HIPPIUS_TOKEN or a token a profile of the config file stores, as it is, quoted, \
          percent-encoded, or behind a JSON escape, also when whitespace or an invisible joining \

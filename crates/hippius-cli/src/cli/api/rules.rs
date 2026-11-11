@@ -9,22 +9,14 @@
 use hippius::routes::Guard;
 use hippius::{Method, RouteFlag};
 
-/// The six methods `hipc api` sends, reads first, in the order a rule lists them.
-const METHODS: [Method; 6] = [
-    Method::Get,
-    Method::Head,
-    Method::Post,
-    Method::Put,
-    Method::Patch,
-    Method::Delete,
-];
-
 /// The write methods: a rule of one lends to the others that have none (`hippius::api_guard`).
 const WRITES: [Method; 4] = [Method::Post, Method::Put, Method::Patch, Method::Delete];
 
 /// Routes the help leaves out: staff and operator routes no customer command sends. Their
 /// guards still apply, and `hipc schema` names them.
-const UNLISTED: [&str; 1] = ["/api/v1/operator/nodes/{node_id}/storage/"];
+const UNLISTED: [&str; 1] = [hippius::routes::operator::NODE_STORAGE_UPDATE
+    .endpoint()
+    .template()];
 
 /// How a rule is written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,16 +36,19 @@ impl Voice {
         }
     }
 
-    /// `template` as a reader writes it: `<zone_id>` for `{zone_id}`, since clap's help
-    /// renderer reads `{n}` as a line break, and without `/api` in the help.
+    /// `template` in this voice: in the schema as its `routes` write it, `{zone_id}`
+    /// included, so a guard's path matches a command's route as written; in the help without
+    /// `/api` and with `<zone_id>`, since clap's help renderer reads `{n}` as a line break.
     fn path(self, template: &str) -> String {
-        let shown = template.replace('{', "<").replace('}', ">");
         match self {
-            Self::Schema => self.literal(&shown),
-            Self::Help => shown
-                .strip_prefix(hippius::routes::API_BASE)
-                .unwrap_or(&shown)
-                .to_owned(),
+            Self::Schema => self.literal(template),
+            Self::Help => {
+                let shown = template.replace('{', "<").replace('}', ">");
+                shown
+                    .strip_prefix(hippius::routes::API_BASE)
+                    .unwrap_or(&shown)
+                    .to_owned()
+            }
         }
     }
 
@@ -76,7 +71,7 @@ fn templates() -> Vec<&'static str> {
 
 /// The methods of `template` whose guard `holds`.
 fn methods_where(template: &str, holds: impl Fn(Guard) -> bool) -> Vec<Method> {
-    METHODS
+    Method::ALL
         .into_iter()
         .filter(|&method| holds(hippius::api_guard(method, template)))
         .collect()
@@ -98,7 +93,7 @@ fn methods_phrase(voice: Voice, methods: &[Method]) -> String {
         .copied()
         .filter(|method| method.is_read())
         .collect();
-    if methods.len() == METHODS.len() {
+    if methods.len() == Method::ALL.len() {
         return "any method".to_owned();
     }
     let others: Vec<Method> = WRITES
@@ -136,7 +131,7 @@ pub(crate) fn refused(voice: Voice) -> Vec<String> {
     }
     let mut keys: Vec<&str> = Vec::new();
     for template in templates() {
-        for method in METHODS {
+        for method in Method::ALL {
             if let Guard::RefusedWhenSet { key, .. } = hippius::api_guard(method, template)
                 && !keys.contains(&key)
             {
@@ -181,12 +176,13 @@ pub(crate) fn refusals_explained() -> Vec<String> {
     let mut explained = Vec::new();
     for template in templates().into_iter().filter(|t| Voice::Help.lists(t)) {
         let mut seen: Vec<Guard> = Vec::new();
-        for method in METHODS {
+        for method in Method::ALL {
             let guard = hippius::api_guard(method, template);
             let (why, hint, key) = match guard {
                 Guard::Refused { why, hint } => (why, hint, None),
                 Guard::RefusedWhenSet { key, why, hint } => (why, hint, Some(key)),
                 Guard::None
+                | Guard::Distinct
                 | Guard::Needs(_)
                 | Guard::NeedsWhenSet(..)
                 | Guard::NeedsUnlessFalse(..) => continue,
@@ -230,6 +226,7 @@ fn condition(voice: Voice, guard: Guard, flag: RouteFlag) -> Option<String> {
             voice.literal("false")
         )),
         Guard::None
+        | Guard::Distinct
         | Guard::Refused { .. }
         | Guard::RefusedWhenSet { .. }
         | Guard::Needs(_)
@@ -354,7 +351,7 @@ mod tests {
     fn methods_read_as_a_rule_names_them() {
         use Method::{Delete, Get, Head, Patch, Post, Put};
         let said = |methods: &[Method]| methods_phrase(Voice::Schema, methods);
-        assert_eq!(said(&METHODS), "any method");
+        assert_eq!(said(&Method::ALL), "any method");
         assert_eq!(said(&WRITES), "a write");
         assert_eq!(said(&[Post, Put, Patch]), "a write other than `DELETE`");
         assert_eq!(said(&[Post, Put]), "a `POST` or `PUT`");
@@ -368,7 +365,7 @@ mod tests {
     #[test]
     fn the_help_and_the_schema_name_a_route_in_their_own_voice() {
         let template = "/api/cdn/zones/{zone_id}/";
-        assert_eq!(Voice::Schema.path(template), "`/api/cdn/zones/<zone_id>/`");
+        assert_eq!(Voice::Schema.path(template), "`/api/cdn/zones/{zone_id}/`");
         assert_eq!(Voice::Help.path(template), "/cdn/zones/<zone_id>/");
         let operator = UNLISTED[0];
         assert!(Voice::Schema.lists(operator) && !Voice::Help.lists(operator));

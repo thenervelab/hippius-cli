@@ -179,13 +179,13 @@ routes! {
     LIST_ITEMS_ADD: 1 = Route::post("/api/cdn/lists/{list_name}/items/")
         .scoped()
         .project()
-        .guard(Guard::Needs(&[]));
+        .guard(Guard::Distinct);
 
     /// Removes items from an IP list.
     LIST_ITEMS_REMOVE: 1 = Route::delete("/api/cdn/lists/{list_name}/items/")
         .scoped()
         .project()
-        .guard(Guard::Needs(&[]));
+        .guard(Guard::Distinct);
 
     /// Replaces an IP list's items.
     LIST_ITEMS_REPLACE: 1 = Route::put("/api/cdn/lists/{list_name}/items/")

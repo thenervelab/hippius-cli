@@ -850,7 +850,9 @@ impl Client {
     }
 
     /// The flags `hipc api` needs beyond `--yes` to send `request`, in the order it checks
-    /// them, and empty when it needs none (tenet 5). Its route's row gives the guard
+    /// them, each with the template of the route whose guard needs it, and empty when it needs
+    /// none (tenet 5). The template is the guard's own route's, also when a write method
+    /// borrows it, so a refusal can name what that route changes. Its route's row gives the guard
     /// ([`crate::routes`]), and the route-rule table in `account` the routes with no row; a
     /// bucket ACL set needs two, and a path with a format suffix the flags of both its forms.
     ///
@@ -865,14 +867,14 @@ impl Client {
     /// for a route never sent whatever the flags, a dry run included: an account deletion
     /// request, any request to the account token route, and the read of a Kubernetes
     /// cluster's sealed kubeconfig.
-    pub fn route_flags(&self, request: &Request) -> Result<Vec<RouteFlag>> {
+    pub fn route_flags(&self, request: &Request) -> Result<Vec<(RouteFlag, &'static str)>> {
         let target = self.target(request)?;
         let body = request.body.as_deref().map(Vec::as_slice);
         let mut needed = Vec::new();
         for Rule { guard, route } in account::route_rules(request.method, target.api_path()) {
             let flags = match guard {
-                // `route_rules` gives no `None`; a `Needs` with no flag needs nothing.
-                Guard::None | Guard::Needs(&[]) => &[],
+                // `route_rules` gives neither.
+                Guard::None | Guard::Distinct => &[],
                 Guard::Needs(flags) => flags,
                 Guard::NeedsWhenSet(flags, key) => {
                     if sets_key(body, key) {
@@ -899,8 +901,8 @@ impl Client {
                 }
             };
             for &flag in flags {
-                if !needed.contains(&flag) {
-                    needed.push(flag);
+                if !needed.iter().any(|&(other, _)| other == flag) {
+                    needed.push((flag, route));
                 }
             }
         }

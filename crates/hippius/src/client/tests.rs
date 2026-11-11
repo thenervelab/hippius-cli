@@ -694,7 +694,7 @@ fn flag_names(c: &Client, request: &Request) -> Vec<&'static str> {
     c.route_flags(request)
         .unwrap()
         .iter()
-        .map(|flag| flag.flag())
+        .map(|(flag, _)| flag.flag())
         .collect()
 }
 

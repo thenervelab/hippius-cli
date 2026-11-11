@@ -34,7 +34,7 @@ fn parses_self_and_ids_and_rejects_the_rest() {
 /// it, written out by hand: the e2e harness takes the header it expects from
 /// [`header`] itself, so this table is where a wrong classification fails.
 const PLAN_ROUTES: &[(&str, RouteClass)] = {
-    use RouteClass::{Personal, Scoped, Unsupported};
+    use RouteClass::{OwnAccount, Personal, Scoped};
     &[
         ("/api/accounts/", Personal),
         ("/api/accounts/members/", Scoped),
@@ -114,16 +114,16 @@ const PLAN_ROUTES: &[(&str, RouteClass)] = {
         ("/api/referral-codes/4/", Personal),
         ("/api/referral/analytics/", Personal),
         ("/api/referral/analytics/?refresh=true", Personal),
-        ("/api/referral/", Unsupported),
+        ("/api/referral/", OwnAccount),
         // Only the ticket routes are personal: the chat routes, and the routes the customer
         // console does not call, stay refused.
-        ("/api/support/chat/inbox/", Unsupported),
-        ("/api/support/", Unsupported),
-        ("/api/drive/subscription/", Unsupported),
-        ("/api/registry/subscribe/", Unsupported),
-        ("/api/billing/transactions/", Unsupported),
-        ("/api/billing/stripe/active-subscription/", Unsupported),
-        ("/api/services/status/", Unsupported),
+        ("/api/support/chat/inbox/", OwnAccount),
+        ("/api/support/", OwnAccount),
+        ("/api/drive/subscription/", OwnAccount),
+        ("/api/registry/subscribe/", OwnAccount),
+        ("/api/billing/transactions/", OwnAccount),
+        ("/api/billing/stripe/active-subscription/", OwnAccount),
+        ("/api/services/status/", OwnAccount),
         // The rest of the route families, one by one.
         ("/api/accounts/audit/", Scoped),
         ("/api/compute/account-ssh-keys/", Scoped),
@@ -164,31 +164,31 @@ const PLAN_ROUTES: &[(&str, RouteClass)] = {
         ("/api/billing/invoices/12/pdf/", Scoped),
         ("/api/billing/auto-reload/", Scoped),
         ("/api/s3/subscription/history/", Scoped),
-        ("/api/drive/subscription/history/", Unsupported),
-        ("/api/drive/", Unsupported),
-        ("/api/drive/subscription/checkout/pi_1/", Unsupported),
-        ("/api/registry/", Unsupported),
-        ("/api/registry/me/", Unsupported),
-        ("/api/registry/namespaces/check/?name=n", Unsupported),
-        ("/api/registry/provision/", Unsupported),
-        ("/api/registry/provision/status/", Unsupported),
-        ("/api/registry/robot/rotate/", Unsupported),
-        ("/api/registry/keys/", Unsupported),
-        ("/api/registry/keys/7/rotate/", Unsupported),
-        ("/api/registry/subscriptions/", Unsupported),
-        ("/api/registry/subscriptions/7/", Unsupported),
-        ("/api/billing/stripe/", Unsupported),
-        ("/api/infrastructure/vm/", Unsupported),
-        ("/api/v1/operator/", Unsupported),
+        ("/api/drive/subscription/history/", OwnAccount),
+        ("/api/drive/", OwnAccount),
+        ("/api/drive/subscription/checkout/pi_1/", OwnAccount),
+        ("/api/registry/", OwnAccount),
+        ("/api/registry/me/", OwnAccount),
+        ("/api/registry/namespaces/check/?name=n", OwnAccount),
+        ("/api/registry/provision/", OwnAccount),
+        ("/api/registry/provision/status/", OwnAccount),
+        ("/api/registry/robot/rotate/", OwnAccount),
+        ("/api/registry/keys/", OwnAccount),
+        ("/api/registry/keys/7/rotate/", OwnAccount),
+        ("/api/registry/subscriptions/", OwnAccount),
+        ("/api/registry/subscriptions/7/", OwnAccount),
+        ("/api/billing/stripe/", OwnAccount),
+        ("/api/infrastructure/vm/", OwnAccount),
+        ("/api/v1/operator/", OwnAccount),
         ("/api/accounts/?x=1", Personal),
         // The signed-in user, their notification settings, and their marketing consent.
         ("/api/users/me/", Personal),
         ("/api/notifications/settings/", Personal),
         ("/api/notifications/marketing-consent/", Personal),
-        ("/api/users/", Unsupported),
-        ("/api/users/me/x/", Unsupported),
-        ("/api/notifications/", Unsupported),
-        ("/api/notifications/transactional/", Unsupported),
+        ("/api/users/", OwnAccount),
+        ("/api/users/me/x/", OwnAccount),
+        ("/api/notifications/", OwnAccount),
+        ("/api/notifications/transactional/", OwnAccount),
     ]
 };
 
@@ -225,7 +225,7 @@ fn a_format_suffix_keeps_the_class_of_every_plan_route() {
                     assert_eq!(route_class(method, &form), expected, "{method} {form}");
                     assert_eq!(
                         header(&member, method, &form, None).is_err(),
-                        class == RouteClass::Unsupported,
+                        class == RouteClass::OwnAccount,
                         "{method} {form}"
                     );
                 }
@@ -238,7 +238,7 @@ fn a_format_suffix_keeps_the_class_of_every_plan_route() {
 #[test]
 fn the_route_classes_are_ordered_from_least_to_most_strict() {
     assert!(RouteClass::Personal < RouteClass::Scoped);
-    assert!(RouteClass::Scoped < RouteClass::Unsupported);
+    assert!(RouteClass::Scoped < RouteClass::OwnAccount);
 }
 
 /// A suffix is a `.` and one or more ASCII letters or digits at the end of the last
@@ -333,7 +333,7 @@ fn a_format_suffix_meets_the_guard_of_its_plain_route() {
     }
     assert_eq!(
         route_class(Method::Put, "/api/support/tickets/7.json/"),
-        RouteClass::Unsupported
+        RouteClass::OwnAccount
     );
     // The customer's close keeps the class of its plain route, as every ticket route does.
     assert_eq!(
@@ -343,7 +343,7 @@ fn a_format_suffix_meets_the_guard_of_its_plain_route() {
     // A `.` segment of its own is the written form's `{id}`, and both forms count.
     assert_eq!(
         route_class(Method::Put, "/api/support/tickets/.json/"),
-        RouteClass::Unsupported
+        RouteClass::OwnAccount
     );
 }
 
@@ -394,7 +394,7 @@ fn every_plan_route_family_gets_the_header_its_class_gives() {
         match class {
             RouteClass::Scoped => assert_eq!(sent.unwrap(), Some(ID), "{path}"),
             RouteClass::Personal => assert_eq!(sent.unwrap(), None, "{path}"),
-            RouteClass::Unsupported => assert_eq!(
+            RouteClass::OwnAccount => assert_eq!(
                 sent.unwrap_err().code().as_str(),
                 "account_scope_unsupported",
                 "{path}"
@@ -408,11 +408,11 @@ fn every_plan_route_family_gets_the_header_its_class_gives() {
 /// and ticket route stays personal, the customer's close (`PATCH`) included.
 #[test]
 fn a_put_of_one_ticket_is_unsupported_and_the_rest_of_the_tickets_personal() {
-    use RouteClass::{Personal, Unsupported};
+    use RouteClass::{OwnAccount, Personal};
     let rows = [
-        (Method::Put, "/api/support/tickets/7/", Unsupported),
-        (Method::Put, "/api/support/tickets/7", Unsupported),
-        (Method::Put, "/api/support/tickets/7/?x=1", Unsupported),
+        (Method::Put, "/api/support/tickets/7/", OwnAccount),
+        (Method::Put, "/api/support/tickets/7", OwnAccount),
+        (Method::Put, "/api/support/tickets/7/?x=1", OwnAccount),
         (Method::Patch, "/api/support/tickets/7/", Personal),
         (Method::Patch, "/api/support/tickets/7", Personal),
         (Method::Patch, "/api/support/tickets/7/?x=1", Personal),
@@ -614,7 +614,7 @@ fn rule_name(method: Method, path: &str) -> Option<String> {
     let mut rules: Vec<String> = route_rules(method, path)
         .into_iter()
         .filter_map(|rule| match rule.guard {
-            Guard::None | Guard::Needs([]) => None,
+            Guard::None | Guard::Distinct => None,
             Guard::Refused { .. } => Some("refused".to_owned()),
             Guard::RefusedWhenSet { key, .. } => Some(format!("refused if {key}")),
             Guard::Needs(flags) => Some(names(flags)),
@@ -1492,4 +1492,67 @@ fn a_bad_account_id_is_quoted_and_names_its_source() {
         error.hint(),
         Some("run `hipc account list` to see the account ids the token can act in")
     );
+}
+
+/// A route's secret, provisioning, permanent-delete, and guard rules hold for its path under
+/// another API version, with or without a version segment, in any letter case, so a version
+/// the API adds before a row names it fails closed. The row lookup reads the path as written,
+/// so `hipc api` still treats such a path as a route it does not know.
+#[test]
+fn a_rule_holds_for_its_route_under_another_api_version() {
+    for path in [
+        "/api/v2/auth/token/",
+        "/api/v1/auth/token/",
+        "/api/V9/Auth/Token",
+    ] {
+        for method in [Method::Get, Method::Post, Method::Put] {
+            assert_eq!(
+                rule_name(method, path).as_deref(),
+                Some("refused"),
+                "{method} {path}"
+            );
+        }
+    }
+    assert!(returns_secret(
+        Method::Post,
+        "/api/v2/objectstore/master-tokens/"
+    ));
+    assert!(returns_secret(
+        Method::Get,
+        "/api/v3/databases/7/backup-token/"
+    ));
+    assert!(provisions(Method::Get, "/api/v2/network/me/"));
+    assert!(permanent(
+        Method::Delete,
+        "/api/v2/registry/repositories/acme/app/"
+    ));
+    for path in [
+        "/api/v2/operator/nodes/7/storage/",
+        "/api/operator/nodes/7/storage/",
+    ] {
+        assert_eq!(
+            rule_name(Method::Put, path).as_deref(),
+            Some("--remove-others"),
+            "{path}"
+        );
+    }
+    assert_eq!(
+        rule_name(Method::Post, "/api/v2/network/isolation/").as_deref(),
+        Some("--change-isolation")
+    );
+    // A segment that is not a version is a path of its own.
+    for path in [
+        "/api/v/auth/token/",
+        "/api/vx/auth/token/",
+        "/api/x2/auth/token/",
+    ] {
+        assert_eq!(rule_name(Method::Post, path), None, "{path}");
+    }
+    assert!(!returns_secret(
+        Method::Post,
+        "/api/version/objectstore/master-tokens/"
+    ));
+    assert_eq!(row_of(Method::Get, "/api/v2/compute/vms/"), None);
+    assert_eq!(rule_name(Method::Get, "/api/v2/compute/vms/"), None);
+    assert!(!returns_secret(Method::Get, "/api/v2/compute/vms/"));
 }

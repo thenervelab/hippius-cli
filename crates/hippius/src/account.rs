@@ -203,7 +203,7 @@ fn decided(
             .iter()
             .any(|&(route, pattern)| route == method && matches_pattern(pattern, &form))
     };
-    folded(path).iter().any(|path| {
+    in_every_version(path).iter().any(|path| {
         classify(path, false, |form| {
             routes::row(method, form)
                 .map(from_row)
@@ -242,7 +242,7 @@ pub(crate) fn first_listed<'t, T>(
     };
     // The lower row wins, so `Reverse` makes it the larger outcome `classify` keeps.
     let at = |path: &str| classify(path, None, |form| row(form).map(|at| Some(Reverse(at))));
-    folded(path)
+    in_every_version(path)
         .iter()
         .map(|path| at(path))
         .max()
@@ -309,7 +309,7 @@ const ROUTE_RULES: &[(Method, &str, Guard)] = &[
 /// Every route `hipc api` has a rule for, with its method, template, and guard: each row,
 /// then each route with no row in the guard table. A write method with no entry of its own
 /// borrows the guard of another write method of its template when that guard lends
-/// ([`Guard::lends`]), as the client applies it.
+/// ([`Guard::lent_to`]), as the client applies it.
 pub fn api_routes() -> impl Iterator<Item = (Method, &'static str, Guard)> {
     routes::all()
         .map(|row| (row.method(), row.template(), row.guard()))
@@ -319,7 +319,8 @@ pub fn api_routes() -> impl Iterator<Item = (Method, &'static str, Guard)> {
 /// The guard `hipc api` applies to `method` on the route `template`, one of
 /// [`api_routes`]: its own entry's (a `HEAD` reaches the `GET` row, as the route lookup has
 /// it), else one a write method borrows from another write method of the template, as the
-/// client lends it, else [`Guard::None`]. The help and the schema say the rules of
+/// client lends it, else [`Guard::None`], which a [`Guard::Distinct`] row needs too. The
+/// help and the schema say the rules of
 /// `hipc api` from it; a test holds it to the rule the client applies on a path that fills
 /// each template.
 pub fn api_guard(method: Method, template: &str) -> Guard {
@@ -327,12 +328,11 @@ pub fn api_guard(method: Method, template: &str) -> Guard {
     let own = entries()
         .find(|&(route, ..)| route == method || (method == Method::Head && route == Method::Get))
         .map(|(.., guard)| guard);
-    let lent = || {
-        entries()
-            .find(|&(route, _, guard)| guard.lends() && !route.is_read() && !method.is_read())
-            .map(|(.., guard)| borrowed(guard, method))
-    };
-    own.or_else(lent).unwrap_or(Guard::None)
+    let lent = || entries().find_map(|(from, _, guard)| guard.lent_to(from, method));
+    match own.or_else(lent) {
+        Some(Guard::Distinct) | None => Guard::None,
+        Some(guard) => guard,
+    }
 }
 
 /// The rules on `method` to `path` (under `/api/`, no query), all of which apply: none or
@@ -345,12 +345,15 @@ pub fn api_guard(method: Method, template: &str) -> Guard {
 /// takes the guard of another write method's row there: swagger names one method, but a view
 /// may take another (Django REST framework's update views take `PUT` beside `PATCH`), and a
 /// guard that a second method skipped would guard nothing. A refusal borrowed this way names
-/// the request's own method ([`Client::route_flags`](crate::Client::route_flags)). A guard
-/// with no flag (`Needs(&[])`) lists a method the API documents as doing something else, so
+/// the request's own method ([`Client::route_flags`](crate::Client::route_flags)). A
+/// [`Guard::Distinct`] row lists a method the API documents as doing something else, so
 /// nothing is borrowed from it.
+///
+/// The path is also read under each other API version ([`in_every_version`]), so a rule
+/// holds for a new version of its route before a row names it.
 pub(crate) fn route_rules(method: Method, path: &str) -> Vec<Rule> {
     let mut rules = Vec::new();
-    for form in folded(path) {
+    for form in in_every_version(path) {
         let plain = without_format_suffix(&form);
         rules.extend(
             [Some(&*form), plain.as_deref()]
@@ -377,9 +380,76 @@ fn folded(path: &str) -> Vec<Cow<'_, str>> {
     }
 }
 
+/// `path` (no query) in every form the secret, provisioning, permanent-delete, and guard
+/// tables read it in: [`folded`]'s, and each of those under every other API version. A path
+/// under a version segment, `/api/v<n>/`, is also read without it, and a path with or without
+/// one under each version a template or a table entry names (`v1`, of the operator's routes),
+/// so a refused or secret route stays refused or secret on a version the API adds before a
+/// row names it, which fails closed: the cost is a flag or a `--reveal` a new version may not
+/// need. The row lookup of `hipc api` ([`row_of`]) and the header rules read the path only as
+/// written, so a route under a new version is still one `hipc` does not know.
+fn in_every_version(path: &str) -> Vec<Cow<'_, str>> {
+    let mut forms = folded(path);
+    let named = named_versions();
+    for at in 0..forms.len() {
+        let Some((version, rest)) = versioned(&forms[at]) else {
+            continue;
+        };
+        let others: Vec<String> = std::iter::once(None)
+            .chain(named.iter().copied().map(Some))
+            .filter(|&other| other != version)
+            .map(|other| match other {
+                Some(other) => format!("{API_PREFIX}{other}/{rest}"),
+                None => format!("{API_PREFIX}{rest}"),
+            })
+            .collect();
+        for other in others {
+            if !forms.iter().any(|form| *form == other) {
+                forms.push(Cow::Owned(other));
+            }
+        }
+    }
+    forms
+}
+
+/// The start of every path the tables read: [`routes::API_BASE`] and its `/`.
+const API_PREFIX: &str = "/api/";
+
+/// `path` as its API version and what follows it: `(Some("v2"), "auth/token/")` for
+/// `/api/v2/auth/token/`, `(None, "auth/token/")` for `/api/auth/token/`, and `None` for a
+/// path not under `/api/`. A version is `v` and one or more ASCII digits.
+fn versioned(path: &str) -> Option<(Option<&str>, &str)> {
+    let rest = path.strip_prefix(API_PREFIX)?;
+    let (first, after) = rest.split_once('/')?;
+    let is_version = first
+        .strip_prefix('v')
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()));
+    Some(if is_version {
+        (Some(first), after)
+    } else {
+        (None, rest)
+    })
+}
+
+/// The API versions the templates of the rows and the entries of the tables name, each once.
+fn named_versions() -> Vec<&'static str> {
+    let mut versions = Vec::new();
+    let named = routes::all()
+        .map(Endpoint::template)
+        .chain(SECRET_ROUTES.iter().map(|&(_, pattern)| pattern))
+        .chain(ROUTE_RULES.iter().map(|&(_, pattern, _)| pattern));
+    for version in named.filter_map(|template| versioned(template)?.0) {
+        if !versions.contains(&version) {
+            versions.push(version);
+        }
+    }
+    versions
+}
+
 /// The rule on `method` to one `form` (with its trailing `/`): the guard of its row, or for a
 /// method with none, of [`ROUTE_RULES`]' entry; else one a write borrows from another write
-/// method of the path. `None` when nothing beyond `--yes` is needed.
+/// method of the route the path reaches ([`routes::route_at`]), or of a table entry, which
+/// [`Guard::lent_to`] gives. `None` when nothing beyond `--yes` is needed.
 fn rule_of(method: Method, form: &str) -> Option<Rule> {
     let own = routes::row(method, form)
         .map(|row| (row.template(), row.guard()))
@@ -390,27 +460,17 @@ fn rule_of(method: Method, form: &str) -> Option<Rule> {
                 .map(|&(_, pattern, guard)| (pattern, guard))
         });
     let lent = || {
-        let rows = routes::matching(form).map(|row| (row.method(), row.template(), row.guard()));
+        let rows = routes::route_at(form).map(|row| (row.method(), row.template(), row.guard()));
         let table = ROUTE_RULES
             .iter()
             .filter(|(_, pattern, _)| matches_pattern(pattern, form))
             .copied();
-        rows.chain(table)
-            .find(|&(route, _, guard)| guard.lends() && !route.is_read() && !method.is_read())
-            .map(|(_, route, guard)| (route, borrowed(guard, method)))
+        rows.chain(table).find_map(|(from, route, guard)| {
+            guard.lent_to(from, method).map(|guard| (route, guard))
+        })
     };
     let (route, guard) = own.or_else(lent)?;
-    (guard != Guard::None).then_some(Rule { guard, route })
-}
-
-/// `guard`, borrowed from another write method's row for `method`. A `PUT` replaces the whole
-/// resource, so a field its body leaves out may be reset rather than kept: a guard that asks
-/// for a flag when the body sets a key asks for it whatever a `PUT` body sets.
-fn borrowed(guard: Guard, method: Method) -> Guard {
-    match (guard, method) {
-        (Guard::NeedsWhenSet(flags, _), Method::Put) => Guard::Needs(flags),
-        _ => guard,
-    }
+    (!matches!(guard, Guard::None | Guard::Distinct)).then_some(Rule { guard, route })
 }
 
 /// The outcome of a route table for `path` (its query ignored): `table` gives the outcome
@@ -502,7 +562,7 @@ const TICKET_PUT: &str = "/api/support/tickets/{id}/";
 /// method. A path with a format suffix takes the stricter class of its two forms
 /// ([`classify`]).
 pub(crate) fn route_class(method: Method, path: &str) -> RouteClass {
-    classify(path, RouteClass::Unsupported, |form| {
+    classify(path, RouteClass::OwnAccount, |form| {
         routes::row(method, form)
             .map(Endpoint::account)
             .or_else(|| listed_class(method, form))
@@ -514,7 +574,7 @@ pub(crate) fn route_class(method: Method, path: &str) -> RouteClass {
 pub(crate) fn listed_class(method: Method, path: &str) -> Option<RouteClass> {
     let path = &*with_trailing_slash(path);
     if method == Method::Put && matches_pattern(TICKET_PUT, path) {
-        return Some(RouteClass::Unsupported);
+        return Some(RouteClass::OwnAccount);
     }
     let personal = PERSONAL_PATHS.contains(&path)
         || PERSONAL_PREFIXES.iter().any(|p| path.starts_with(p))
@@ -584,12 +644,12 @@ pub(crate) fn header<'a>(
     };
     match route_class(method, path) {
         RouteClass::Scoped => Ok(Some(id.as_str())),
-        RouteClass::Unsupported if billing_header.is_some() && names_billing_only(method, path) => {
+        RouteClass::OwnAccount if billing_header.is_some() && names_billing_only(method, path) => {
             Ok(Some(id.as_str()))
         }
         RouteClass::Personal => Ok(None),
         // A `hipc api` path can carry a secret in its query (tenet 9).
-        RouteClass::Unsupported => Err(id.0.refusal(&format!(
+        RouteClass::OwnAccount => Err(id.0.refusal(&format!(
             "{} cannot act in another account",
             quote(without_query_values(path))
         ))),

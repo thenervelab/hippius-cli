@@ -152,7 +152,7 @@ routes! {
     /// lends the request's refusal to no other method.
     DELETION_WITHDRAW: 0 = Route::delete("/api/account/deletion/")
         .own_account()
-        .guard(Guard::Needs(&[]));
+        .guard(Guard::Distinct);
 }
 
 /// The body of [`NOTIFICATIONS_UPDATE`]: only the settings given, so one left out keeps its

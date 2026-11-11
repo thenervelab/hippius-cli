@@ -252,6 +252,12 @@ pub(crate) fn is_id(selector: Selector, text: &str) -> bool {
     })
 }
 
+/// Whether `text` names one of `selector`'s kind where a route's path takes it: an id, or
+/// `default`, the Default one, as `hipc account billing-accounts costs default` sends it.
+pub(crate) fn names_one_of(selector: Selector, text: &str) -> bool {
+    is_id(selector, text) || text == DEFAULT
+}
+
 /// Parses `text`, from `source`, as an id of `selector`, or `None` for the word that clears
 /// the selection.
 pub(crate) fn parse_id(

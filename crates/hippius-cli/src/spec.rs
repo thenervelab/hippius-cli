@@ -305,7 +305,7 @@ fn api_refused_when() -> String {
     format!(
         "the target is a full URL off the configured API origin, or the request is {}; a write \
          is `POST`, `PUT`, `PATCH`, or `DELETE`, and each path counts in any letter case, with \
-         or without the trailing slash or a format suffix",
+         or without the trailing slash or a format suffix, and under any API version",
         hippius::phrase::join(&refused, "or")
     )
 }
@@ -319,7 +319,8 @@ static API_CONFIRMATION: LazyLock<String> = LazyLock::new(api_confirmation);
 fn api_confirmation() -> String {
     format!(
         "the method is not `GET` or `HEAD`, or the request is {}, whose read may create \
-         something, with or without the trailing slash or a format suffix; a write to a route \
+         something, with or without the trailing slash or a format suffix, and under any API \
+         version; a write to a route \
          no command lists in its `routes` also warns that `hipc` does not know it",
         hippius::phrase::join(&rules::provisioning_reads(Voice::Schema), "or")
     )
@@ -1045,7 +1046,8 @@ mod tests {
                     "api".to_owned(),
                     "the method is not `GET` or `HEAD`, or the request is a `GET` or `HEAD` of \
                      `/api/network/me/`, whose read may create something, with or without the \
-                     trailing slash or a format suffix; a write to a route no command lists in \
+                     trailing slash or a format suffix, and under any API version; a write to a \
+                     route no command lists in \
                      its `routes` also warns that `hipc` does not know it"
                 ),
             ]
@@ -1311,21 +1313,21 @@ mod tests {
         assert_eq!(
             api["guards"][1]["when"],
             "the request is a `POST` of `/api/cdn/zones/`, a `PATCH` or `DELETE` of \
-             `/api/cdn/zones/<zone_id>/` whose body sets `origin`, a `PATCH` of \
+             `/api/cdn/zones/{zone_id}/` whose body sets `origin`, a `PATCH` of \
              `/api/registry/me/publicity/` unless its body sets `public` to `false`, or a `PUT` \
-             of `/api/objectstore/buckets/<bucket_name>/acl/set/`; a body that is not a JSON \
+             of `/api/objectstore/buckets/{bucket_name}/acl/set/`; a body that is not a JSON \
              object counts as setting the key; each rule holds for every write method of its \
              route that has no rule of its own; a `PUT` that borrows a rule on a key of the \
              body needs the flag whatever its body sets"
         );
         let remove_others = api["guards"][2]["when"].as_str().unwrap();
         assert!(
-            remove_others.contains("a `PUT` of `/api/v1/operator/nodes/<node_id>/storage/`"),
+            remove_others.contains("a `PUT` of `/api/v1/operator/nodes/{node_id}/storage/`"),
             "{remove_others}"
         );
         assert!(
             remove_others.ends_with(
-                "a `POST` or `DELETE` of `/api/cdn/lists/<list_name>/items/`, which the API \
+                "a `POST` or `DELETE` of `/api/cdn/lists/{list_name}/items/`, which the API \
                  documents as doing something else, needs none"
             ),
             "{remove_others}"
