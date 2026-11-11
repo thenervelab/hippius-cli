@@ -156,7 +156,7 @@ pub(super) fn scale(ctx: &Context<'_>, args: &NodePoolScale) -> Result<Printed> 
     };
     let current = pool_size(pool, &operations);
     let (action, adds) = target.scale(current, count, matched)?;
-    ctx.confirm_write(checked, &action, None)?;
+    let confirmed = ctx.confirm_write(checked, &action, None)?;
     // Read again after the question, both ways: the question named `count` as a change from
     // `current`, and the server applies `count` to the pool as it is then. A scale down signs
     // nothing, but a pool that grew since the question would lose more nodes than it named,
@@ -186,7 +186,7 @@ pub(super) fn scale(ctx: &Context<'_>, args: &NodePoolScale) -> Result<Printed> 
             json!({ "count": count, "operations": signed })
         }
     };
-    ctx.send(&client, &post(action, &body))?
+    ctx.send_confirmed(&client, &post(action, &body), &confirmed)?
         .document()
         .map(Printed::Document)
 }
@@ -265,7 +265,7 @@ pub(super) fn replace(ctx: &Context<'_>, args: &NodeReplace) -> Result<Printed> 
         target.pool_named(),
         signed_vm(signing, "VM")
     );
-    ctx.confirm_write(checked, &action, None)?;
+    let confirmed = ctx.confirm_write(checked, &action, None)?;
     let (pools, operations, answered) = read_again(ctx, &client, &reads[1], &reads[2])?;
     let unchanged = pools
         .iter()
@@ -280,9 +280,13 @@ pub(super) fn replace(ctx: &Context<'_>, args: &NodeReplace) -> Result<Printed> 
     let mut params = signing.clone();
     params.insert("replaces".to_owned(), node.into());
     let operation = matched.sign_add_node(&params, &answered)?;
-    ctx.send(&client, &post(action, &json!({ "operation": operation })))?
-        .document()
-        .map(Printed::Document)
+    ctx.send_confirmed(
+        &client,
+        &post(action, &json!({ "operation": operation })),
+        &confirmed,
+    )?
+    .document()
+    .map(Printed::Document)
 }
 
 /// The keys of a pool's `signing_params`, the only ones a node is signed over.

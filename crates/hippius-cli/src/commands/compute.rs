@@ -284,8 +284,8 @@ fn vm_delete(ctx: &Context<'_>, client: &Client, vm_id: &str) -> Result<Printed>
         None => format!("`{vm_id}`"),
     };
     let request = delete(&named);
-    ctx.confirm_write(checked, &request.action(), Some(VM_LEFT_BILLED))?;
-    ctx.send(client, &request)?
+    let confirmed = ctx.confirm_write(checked, &request.action(), Some(VM_LEFT_BILLED))?;
+    ctx.send_confirmed(client, &request, &confirmed)?
         .document()
         .map(Printed::Document)
 }
@@ -1507,9 +1507,9 @@ fn restore(ctx: &Context<'_>, client: &Client, args: &BackupRestore) -> Result<P
     ));
     let consequence = "everything written after that backup is lost, and the VM stops for a \
                        few minutes";
-    ctx.confirm_write(checked, &request.action(), Some(consequence))?;
+    let confirmed = ctx.confirm_write(checked, &request.action(), Some(consequence))?;
     let restore = ctx
-        .send(client, &request)
+        .send_confirmed(client, &request, &confirmed)
         .and_then(|response| response.document());
     restore.map(Printed::Document).map_err(|error| {
         // A 400 for a point from before the VM's last reboot sent without

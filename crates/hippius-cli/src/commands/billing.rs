@@ -417,15 +417,18 @@ fn update_profile(ctx: &Context<'_>, args: &ProfileUpdate) -> Result<Printed> {
         )),
         (None, _) => Some(format!("set the billing email to {}", phrase::quote(email))),
     };
-    if let Some(action) = action {
-        let consequence = if email.is_empty() {
-            "the invoices and billing emails no longer go to that address"
-        } else {
-            "the invoices and billing emails go to the new address"
-        };
-        ctx.confirm_write(checked, &action, Some(consequence))?;
-    }
-    ctx.send(&client, &request)
+    let confirmed = match action {
+        Some(action) => {
+            let consequence = if email.is_empty() {
+                "the invoices and billing emails no longer go to that address"
+            } else {
+                "the invoices and billing emails go to the new address"
+            };
+            ctx.confirm_write(checked, &action, Some(consequence))?
+        }
+        None => ctx.unasked(checked),
+    };
+    ctx.send_confirmed(&client, &request, &confirmed)
         .and_then(|response| response.document())
         .map(Printed::Document)
         .map_err(check)
@@ -484,15 +487,15 @@ fn update_auto_reload(ctx: &Context<'_>, args: &AutoReloadUpdate) -> Result<Prin
     }
     let body = given.kept_from(&current)?;
     let request = Request::to(&billing::AUTO_RELOAD_UPDATE, []).json(&body);
-    let request = match charges_more(&read, &current, &body) {
+    let (request, confirmed) = match charges_more(&read, &current, &body) {
         Some((action, consequence)) => {
             let request = request.about(action);
-            ctx.confirm_write(checked, &request.action(), Some(consequence))?;
-            request
+            let confirmed = ctx.confirm_write(checked, &request.action(), Some(consequence))?;
+            (request, confirmed)
         }
-        None => request.about(save),
+        None => (request.about(save), ctx.unasked(checked)),
     };
-    ctx.send(&client, &request)
+    ctx.send_confirmed(&client, &request, &confirmed)
         .and_then(|response| response.document())
         .map(Printed::Document)
         .map_err(|error| check_first(error, "hipc billing auto-reload get"))

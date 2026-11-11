@@ -171,8 +171,8 @@ fn cluster_delete(ctx: &Context<'_>, client: &Client, id: u64) -> Result<Printed
         None => format!("`{id}`"),
     };
     let request = delete(&named);
-    ctx.confirm_write(checked, &request.action(), None)?;
-    ctx.send(client, &request)?
+    let confirmed = ctx.confirm_write(checked, &request.action(), None)?;
+    ctx.send_confirmed(client, &request, &confirmed)?
         .document()
         .map(Printed::Document)
 }
@@ -314,8 +314,8 @@ fn operation(ctx: &Context<'_>, target: &OperationTarget, verb: Verb) -> Result<
         )));
     }
     let request = post(operation_action(verb, &op, id, op_id));
-    ctx.confirm_write(checked, &request.action(), None)?;
-    ctx.send(&client, &request)?
+    let confirmed = ctx.confirm_write(checked, &request.action(), None)?;
+    ctx.send_confirmed(&client, &request, &confirmed)?
         .document()
         .map(Printed::Document)
 }

@@ -82,7 +82,7 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
         .map_err(unavailable_hint)?;
     check_secret_names(&parsed, secrets.as_ref(), &compose)?;
     let question = format!("{action}, billed per hour from the balance");
-    ctx.confirm_write(checked, &question, None)?;
+    let confirmed = ctx.confirm_write(checked, &question, None)?;
     let redactions = secrets.as_ref().map(AppSecrets::redactions);
     let redactions: &[String] = redactions.as_ref().map_or(&[], |texts| texts.as_slice());
     // The body's copies of the values are cleared once it is serialized, the file's with
@@ -91,7 +91,7 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
         launch(create_body(args, &compose, secrets.as_ref().map(AppSecrets::body)).as_value());
     drop(secrets);
     let response = ctx
-        .send(&client, &request)
+        .send_confirmed(&client, &request, &confirmed)
         .map_err(|error| sanitized(balance_hint(unavailable_hint(error)), &action, redactions))?;
     let launched = response
         .document()

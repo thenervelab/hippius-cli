@@ -163,20 +163,21 @@ pub(crate) fn replace_list(
         Write::Checked(checked) => checked,
     };
     let action = replace.write.action();
-    let found = if replace.remove_others {
-        ctx.confirm_write(checked, &action, replace.consequence)?;
+    let (found, confirmed) = if replace.remove_others {
+        let confirmed = ctx.confirm_write(checked, &action, replace.consequence)?;
         // Nothing is compared, so the read gives only the version. A read the command needs
         // for itself comes after the question (tenet 5), which also keeps the version fresh.
-        if reads {
+        let found = if reads {
             Some(current(ctx.send(client, &replace.read)?.document()?)?)
         } else {
             None
-        }
+        };
+        (found, confirmed)
     } else {
         let found = current(ctx.send(client, &replace.read)?.document()?)?;
         refuse_removal(ctx, replace, &found)?;
-        ctx.confirm_write(checked, &action, replace.consequence)?;
-        Some(found)
+        let confirmed = ctx.confirm_write(checked, &action, replace.consequence)?;
+        (Some(found), confirmed)
     };
     let write = match &found {
         Some(found) => filled(
@@ -186,7 +187,7 @@ pub(crate) fn replace_list(
         ),
         None => replace.write.clone(),
     };
-    let body = ctx.send(client, &write)?.document()?;
+    let body = ctx.send_confirmed(client, &write, &confirmed)?.document()?;
     Ok(Printed::Document(body))
 }
 

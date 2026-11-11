@@ -242,7 +242,7 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
     } else {
         format!("subscribe to the Hub plan `{}`", args.plan)
     };
-    ctx.confirm_write(checked, &action, Some(PayFrom::Credits.how()))?;
+    let confirmed = ctx.confirm_write(checked, &action, Some(PayFrom::Credits.how()))?;
     let plans = read_list(ctx, &client, &plans)?;
     let plan_id = resolve_plan(&plans, &args.plan)?;
     let subscriptions = read_list(ctx, &client, &subscriptions)?;
@@ -261,7 +261,7 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
     for id in &paid {
         let request = Request::to(&hub::SUBSCRIPTION_CANCEL, [id])
             .about(format!("cancel the Hub subscription `{id}`"));
-        if let Err(error) = ctx.send(&client, &request) {
+        if let Err(error) = ctx.send_confirmed(&client, &request, &confirmed) {
             return Err(mark.fail(&cancelled, error, "cancel"));
         }
         cancelled.push(*id);
@@ -274,7 +274,7 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
     // A body that is not JSON, or none, goes through `after_cancels` too, so the cancels
     // are named.
     match ctx
-        .send(&client, &request)
+        .send_confirmed(&client, &request, &confirmed)
         .and_then(|response| response.document())
     {
         Ok(body) => {

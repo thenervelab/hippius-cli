@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 
 use crate::cli::Global;
 use crate::output::{self, Mode, Terminal};
+use crate::spec::Confirmation;
 
 /// The outcome of [`Context::call`].
 #[derive(Debug)]
@@ -77,12 +78,25 @@ pub(crate) struct Checked {
     skipped_billing: Option<String>,
 }
 
+/// Proof that a write passed the confirmation step of tenet 5: its question was answered,
+/// or `--yes` given ([`Context::confirm_write`]), or the command's schema row asks only
+/// sometimes and the command found that this write is not one it asks about
+/// ([`Context::unasked`]). [`Context::send_confirmed`] takes it, and [`Context::send`] refuses
+/// a write of a command whose row asks, so such a write cannot be sent without one. Only this
+/// module makes one.
+#[derive(Debug)]
+#[must_use = "a confirmed write is sent with `Context::send_confirmed`"]
+pub(crate) struct Confirmed(());
+
 /// The flags, the terminal, and the output mode one command runs with.
 #[derive(Debug)]
 pub(crate) struct Context<'a> {
     global: &'a Global,
     terminal: &'a Terminal,
     mode: Mode,
+    /// When the command asks before a write, as its schema row says: what decides whether a
+    /// write needs a [`Confirmed`].
+    asks: Confirmation,
     /// The words of the command line after `hipc`, for a hint that repeats it with a flag.
     args: &'a [String],
     /// A request that is not a read got a 2xx, or failed after it may have reached the
@@ -99,11 +113,13 @@ impl<'a> Context<'a> {
         terminal: &'a Terminal,
         mode: Mode,
         args: &'a [String],
+        asks: Confirmation,
     ) -> Self {
         Self {
             global,
             terminal,
             mode,
+            asks,
             args,
             wrote: Cell::new(false),
             warnings: RefCell::new(Vec::new()),
@@ -308,22 +324,31 @@ impl<'a> Context<'a> {
     }
 
     /// Runs `request`: describes it under `--dry-run`, asks for the confirmation `gate`
-    /// names, then sends it.
+    /// names, then sends it. An open write is one the command's row never asks about, or, for
+    /// a row that asks sometimes, one the command decided it does not ask about; a row that
+    /// always asks never sends one open.
     pub(crate) fn call(&self, client: &Client, request: &Request, gate: Gate<'_>) -> Result<Step> {
         match gate {
             Gate::Open if self.global.dry_run => {
-                return self.dry_run_document(client, request).map(Step::DryRun);
+                self.dry_run_document(client, request).map(Step::DryRun)
             }
-            // An open request meets the same refusals in `send`.
-            Gate::Open => {}
+            // An open request meets the same refusals in `transmit`.
+            Gate::Open => {
+                assert!(
+                    request.is_read() || self.asks != Confirmation::Always,
+                    "a command whose schema row always asks sends no write open"
+                );
+                self.transmit(client, request).map(Step::Sent)
+            }
             Gate::Confirm { consequence } => match self.check_write(client, request)? {
-                Write::DryRun(doc) => return Ok(Step::DryRun(doc)),
+                Write::DryRun(doc) => Ok(Step::DryRun(doc)),
                 Write::Checked(checked) => {
-                    self.confirm_write(checked, &request.action(), consequence)?;
+                    let confirmed = self.confirm_write(checked, &request.action(), consequence)?;
+                    self.send_confirmed(client, request, &confirmed)
+                        .map(Step::Sent)
                 }
             },
         }
-        self.send(client, request).map(Step::Sent)
     }
 
     /// The checks before a write's question: [`Context::call`] makes them for one request,
@@ -359,12 +384,30 @@ impl<'a> Context<'a> {
         checked: Checked,
         action: &str,
         consequence: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<Confirmed> {
         let action = scoped(action, checked);
         self.confirm(Question {
             action: &action,
             consequence,
-        })
+        })?;
+        Ok(Confirmed(()))
+    }
+
+    /// The [`Confirmed`] of a write [`Context::check_write`] checked that the command does not
+    /// ask about: its row asks only when a condition holds (`confirmation_when` in `hipc
+    /// schema`), and the command found that it does not, such as a spend cap that is lowered.
+    ///
+    /// # Panics
+    ///
+    /// When the command's row asks always or never: a write of the first is asked about, and
+    /// one of the second needs no [`Confirmed`].
+    pub(crate) fn unasked(&self, checked: Checked) -> Confirmed {
+        assert!(
+            matches!(self.asks, Confirmation::When(_)),
+            "only a command whose schema row asks sometimes leaves a write unasked"
+        );
+        drop(checked);
+        Confirmed(())
     }
 
     /// The `--dry-run` document for `request`. When a person may read it
@@ -413,13 +456,40 @@ impl<'a> Context<'a> {
             .map(Value::Array)
     }
 
-    /// Sends `request` with no dry-run check and no confirmation: for the later requests of
-    /// a command that already passed both, such as the cancels and the subscribe after a
-    /// confirmed `hub subscription subscribe --replace`. Prints the `--debug` lines.
+    /// Sends `request` with no dry-run check and no confirmation: a read, or a write of a
+    /// command whose schema row never asks. A write of a command that asks goes through
+    /// [`Context::send_confirmed`]. Prints the `--debug` lines.
+    ///
+    /// # Panics
+    ///
+    /// For a write of a command whose row asks, and under `--dry-run`.
     pub(crate) fn send(&self, client: &Client, request: &Request) -> Result<Response> {
         assert!(
+            request.is_read() || self.asks == Confirmation::Never,
+            "a write of a command whose schema row asks is sent with its Confirmed"
+        );
+        self.transmit(client, request)
+    }
+
+    /// Sends a write that passed the confirmation step, as `confirmed` proves, with no
+    /// dry-run check: the write itself, and the later writes of a command that asked once for
+    /// all of them, such as the cancels and the subscribe after a confirmed `hub subscription
+    /// subscribe --replace`. Prints the `--debug` lines.
+    pub(crate) fn send_confirmed(
+        &self,
+        client: &Client,
+        request: &Request,
+        confirmed: &Confirmed,
+    ) -> Result<Response> {
+        let Confirmed(()) = confirmed;
+        self.transmit(client, request)
+    }
+
+    /// Sends `request` and records whether it may have written, printing the `--debug` lines.
+    fn transmit(&self, client: &Client, request: &Request) -> Result<Response> {
+        assert!(
             !self.global.dry_run,
-            "Context::send runs only after the caller's --dry-run check"
+            "a request is sent only after the caller's --dry-run check"
         );
         let url = client.url(request)?;
         if self.global.debug {

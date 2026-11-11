@@ -165,19 +165,19 @@ fn cap_update(
              `monthly_cap_credits`"
         )),
     };
-    let request = match question {
+    let (request, confirmed) = match question {
         Some(action) => {
             let request = patch(&action);
-            ctx.confirm_write(
+            let confirmed = ctx.confirm_write(
                 checked,
                 &request.action(),
                 Some("the zone may then spend more of the balance each month"),
             )?;
-            request
+            (request, confirmed)
         }
-        None => draft,
+        None => (draft, ctx.unasked(checked)),
     };
-    ctx.send(client, &request)?
+    ctx.send_confirmed(client, &request, &confirmed)?
         .document()
         .map(Printed::Document)
 }
@@ -605,8 +605,8 @@ fn update_zone(ctx: &Context<'_>, args: &ZoneUpdate) -> Result<Printed> {
     let zone = ctx.send(&client, &read)?.document()?;
     let kept = zone_origin(&zone, &args.zone_id)?;
     let request = patch(with_origin(&kept))?;
-    ctx.confirm_write(checked, &request.action(), None)?;
-    ctx.send(&client, &request)?
+    let confirmed = ctx.confirm_write(checked, &request.action(), None)?;
+    ctx.send_confirmed(&client, &request, &confirmed)?
         .document()
         .map(Printed::Document)
 }
@@ -965,7 +965,7 @@ fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
         Write::Checked(checked) => checked,
     };
     let consequence = "it adds or changes records in the domain's DNS zone at the provider";
-    ctx.confirm_write(checked, &draft.action(), Some(consequence))?;
+    let confirmed = ctx.confirm_write(checked, &draft.action(), Some(consequence))?;
     let action = draft.action();
     // The body's copies of the credential are cleared once it is serialized, and the request's
     // bytes when it is dropped (tenet 8).
@@ -975,7 +975,7 @@ fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
             .within("credentials", provider_field())
             .as_value(),
     );
-    ctx.send(&client, &request)
+    ctx.send_confirmed(&client, &request, &confirmed)
         .and_then(|response| response.document())
         .map(|done| Printed::Document(dns_setup_answer(done, provider.code())))
         .map_err(|error| dns_setup_error(error, &credentials, &action))

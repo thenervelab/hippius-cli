@@ -196,16 +196,16 @@ fn update_limit(ctx: &Context<'_>, cap: &MonthlyCap) -> Result<Printed> {
             )),
         },
     };
-    let request = match question {
+    let (request, confirmed) = match question {
         Some((action, consequence)) => {
             let request = put().about(action);
-            ctx.confirm_write(checked, &request.action(), Some(consequence))?;
-            request
+            let confirmed = ctx.confirm_write(checked, &request.action(), Some(consequence))?;
+            (request, confirmed)
         }
-        None => draft,
+        None => (draft, ctx.unasked(checked)),
     };
     // Only the read's 404 is the switch being off: a 404 after a good read is plain.
-    let response = ctx.send(&client, &request)?;
+    let response = ctx.send_confirmed(&client, &request, &confirmed)?;
     applied(&response, cap).map(Printed::Document)
 }
 
@@ -342,10 +342,12 @@ fn update(ctx: &Context<'_>, args: &RunnerSettingsUpdate) -> Result<Printed> {
         Write::Checked(checked) => checked,
     };
     let current = ctx.send(&client, &read)?.document()?;
-    if may_spend_more(args, &current) {
-        ctx.confirm_write(checked, &request.action(), Some(consequence))?;
-    }
-    ctx.send(&client, &request)?
+    let confirmed = if may_spend_more(args, &current) {
+        ctx.confirm_write(checked, &request.action(), Some(consequence))?
+    } else {
+        ctx.unasked(checked)
+    };
+    ctx.send_confirmed(&client, &request, &confirmed)?
         .document()
         .map(Printed::Document)
 }

@@ -537,9 +537,9 @@ fn accept(
     };
     let request = accept_request(&invite.0).about(action);
     let consequence = "the token then acts in that account with the access the invite grants";
-    ctx.confirm_write(checked, &request.action(), Some(consequence))?;
+    let confirmed = ctx.confirm_write(checked, &request.action(), Some(consequence))?;
     let joined = ctx
-        .send(client, &request)
+        .send_confirmed(client, &request, &confirmed)
         .and_then(|response| response.document())
         .map(|joined| redact_value(joined, &invite.0))
         .map_err(|error| with_accept_hint(error.redacted(&invite.0)))?;

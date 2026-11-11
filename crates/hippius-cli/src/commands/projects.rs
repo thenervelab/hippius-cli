@@ -319,12 +319,12 @@ fn transfer(ctx: &Context<'_>, args: &ProjectTransfer) -> Result<Printed> {
         format!("{own} {}", phrase::quote(&id))
     };
     let request = write(&named, &from);
-    ctx.confirm_write(
+    let confirmed = ctx.confirm_write(
         checked,
         &request.action(),
         Some("the project moves to that account once it accepts"),
     )?;
-    ctx.send(&client, &request)?
+    ctx.send_confirmed(&client, &request, &confirmed)?
         .document()
         .map(Printed::Document)
 }
@@ -700,8 +700,8 @@ fn decide(
         named.push_str(&format!(" {by} the account {account}"));
     }
     let request = write(&named).listed_by(TRANSFERS);
-    ctx.confirm_write(checked, &request.action(), None)?;
-    let response = ctx.send(client, &request)?;
+    let confirmed = ctx.confirm_write(checked, &request.action(), None)?;
+    let response = ctx.send_confirmed(client, &request, &confirmed)?;
     match done {
         Some(done) => {
             let body = response.json()?;

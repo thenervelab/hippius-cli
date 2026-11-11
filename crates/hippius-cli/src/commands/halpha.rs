@@ -409,7 +409,7 @@ pub(crate) fn top_up(
     };
     let buy = buy_request(alpha, &least.0.to_string(), &key).about(action);
     let asked = ctx.will_ask();
-    ctx.confirm_write(
+    let confirmed = ctx.confirm_write(
         checked,
         &buy.action(),
         Some("the hAlpha is spent on chain, and a buy cannot be undone"),
@@ -420,7 +420,7 @@ pub(crate) fn top_up(
         check_in_flight(ctx, &client, &recent)?;
     }
     let started = ctx
-        .send(&client, &buy)
+        .send_confirmed(&client, &buy, &confirmed)
         .and_then(|response| response.document())
         .map_err(|error| buy_failed(ctx, error, retry.is_some(), least, &key))?;
     let wait = wait_timeout.map_or(WAIT_TIMEOUT, Duration::from_secs);

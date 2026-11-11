@@ -102,9 +102,11 @@ fn close(ctx: &Context<'_>, ticket_id: u64, status: TicketUpdateStatus) -> Resul
         None => format!("close the ticket `{ticket_id}`"),
     };
     let consequence = "the support team stops working on it";
-    ctx.confirm_write(checked, &action, Some(consequence))?;
+    let confirmed = ctx.confirm_write(checked, &action, Some(consequence))?;
     // Swagger answers the whole ticket, printed as sent.
-    ctx.send(&client, &draft)?.document().map(Printed::Document)
+    ctx.send_confirmed(&client, &draft, &confirmed)?
+        .document()
+        .map(Printed::Document)
 }
 
 /// `GET /api/support/tickets/`, with `status` only when `--status` is given.
