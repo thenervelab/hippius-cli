@@ -10,7 +10,7 @@ use hippius::routes::compute::{self, FirewallUpdateBody};
 use hippius::{Error, Request, Result, phrase};
 use serde_json::{Map, Value, json};
 
-use super::{VMS, firewall_get};
+use super::VMS;
 use crate::cli::FirewallUpdate;
 use crate::commands::replace::{self, Entry, Found, Replace, replace_list};
 use crate::commands::{Input, Printed};
@@ -470,6 +470,12 @@ fn is_ipv4_cidr(text: &str) -> bool {
         && (prefix == "0" || !prefix.starts_with('0'))
         && prefix.parse::<u8>().is_ok_and(|p| p <= 32);
     prefix_ok && address.parse::<Ipv4Addr>().is_ok()
+}
+
+pub(super) fn firewall_get(vm_id: &str) -> Request {
+    Request::to(&compute::FIREWALL, [&vm_id])
+        .about(format!("get the firewall of the VM `{vm_id}`"))
+        .listed_by(VMS)
 }
 
 #[cfg(test)]

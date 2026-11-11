@@ -27,7 +27,7 @@ use serde_json::{Map, Value};
 use super::{APPS, Compose, Hashed, check_hash, read_compose, unavailable_hint};
 use crate::cli::{AppCreate, BackupInterval, DiskTier, FailoverMode, GuestPoweroff};
 use crate::commands::Printed;
-use crate::commands::compute::{
+use crate::commands::compute::launch::{
     POLL_INTERVAL, STAYS_STOPPED, backups_clause, balance_hint, launch_wait,
 };
 use crate::commands::poll::{Next, Schedule, Wait, poll_until};
