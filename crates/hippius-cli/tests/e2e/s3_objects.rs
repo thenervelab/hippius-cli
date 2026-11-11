@@ -131,6 +131,29 @@ fn text_mode_prints_the_objects() {
     assert!(run.stdout().contains("2026/a.jpg"), "{}", run.stdout());
 }
 
+/// An object key is written by whoever holds a bucket token, so text mode escapes a control
+/// character in it rather than let it reach the terminal (tenet 15).
+#[test]
+fn text_mode_escapes_the_control_characters_of_a_key() {
+    let key = "a\u{1b}]0;owned\u{7}b";
+    let server = Server::start(vec![page("", &listing(&[key], None))]);
+    let argv = objects(&["photos"]);
+    let mut full = vec!["--output", "text"];
+    full.extend(argv.iter().map(String::as_str));
+    let run = Hipc::against(&Home::new(), &server).run(&full);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert!(
+        !run.stdout().contains(['\u{1b}', '\u{7}']),
+        "{}",
+        run.stdout()
+    );
+    assert!(
+        run.stdout().contains(r"a\u{1b}]0;owned\u{7}b"),
+        "{}",
+        run.stdout()
+    );
+}
+
 #[test]
 fn an_empty_bucket_is_an_empty_page_and_an_empty_token_is_the_last_page() {
     // boto3 leaves `Contents` out of an empty page.

@@ -6,7 +6,7 @@ use hippius::routes::billing;
 use serde_json::{Value, json};
 
 use crate::common::{
-    BILLING, Hipc, Home, MEMBER, Reply, Run, Server, draft, parsed, route, route_of,
+    BILLING, Hipc, Home, MEMBER, Reply, Run, Server, draft, parsed, route, route_each, route_of,
 };
 
 const PROFILE: &str = "/api/billing/profile/";
@@ -552,6 +552,32 @@ fn auto_reload_update_needs_yes_when_the_setting_in_force_is_unknown() {
     for (answer, what) in cases {
         asks(&answer, &all, &what, &sent);
     }
+}
+
+/// Each run reads the setting again and sends back what that read holds with the change: a
+/// change another client made between the question and the run with `--yes` is kept, not
+/// undone with what the question saw. Within one run the read and the write are two requests
+/// and the API takes no precondition (owner decision D6), so a change between them is
+/// overwritten; the command's help says the read and the write are separate.
+#[test]
+fn auto_reload_update_sends_back_what_the_run_that_sends_read() {
+    let changed = setting(true, "armed", "20.00", "80.00", r#""300.00""#);
+    let server = Server::start(vec![
+        route_each(
+            "GET",
+            AUTO_RELOAD,
+            vec![Reply::json(200, &armed()), Reply::json(200, &changed)],
+        ),
+        route("PUT", AUTO_RELOAD, Reply::json(200, &changed)),
+    ]);
+    let argv = reload(&["--target", "100"]);
+    hipc(&server, &words(&argv)).fails(2, "confirmation_required");
+    hipc(&server, &with_yes(&words(&argv))).ok();
+    assert_eq!(methods(&server), ["GET", "GET", "PUT"]);
+    assert_eq!(
+        server.requests()[2].json(),
+        body(true, "20.00", "100.00", json!("300.00"))
+    );
 }
 
 /// Turning auto-reload off, leaving it off, or lowering or keeping every amount while it is on

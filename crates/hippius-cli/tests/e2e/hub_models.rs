@@ -106,6 +106,29 @@ fn models_list_prints_one_page_and_the_next_from_the_total() {
     assert_eq!(server.only_request().target, "/api/models/?page_size=2");
 }
 
+/// The model index is public and its rows are written by other accounts, so text mode
+/// escapes a control character in a row rather than let it reach the terminal (tenet 15).
+#[test]
+fn models_list_in_text_escapes_the_control_characters_of_a_row() {
+    let row = r#"{"project":"acme","repo":"l\u001b]0;owned\u0007m","primary_tag":"v\u001b[2K1","format":"g\u0007guf"}"#;
+    let server = Server::start(vec![route_of(
+        &hub::MODELS,
+        [],
+        Reply::json(
+            200,
+            &format!(r#"{{"page":1,"page_size":100,"total":1,"results":[{row}]}}"#),
+        ),
+    )]);
+    let run =
+        Hipc::against(&Home::new(), &server).run(&["--output", "text", "hub", "models", "list"]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    let shown = run.stdout();
+    assert!(!shown.contains(['\u{1b}', '\u{7}']), "{shown}");
+    for escaped in [r"l\u{1b}]0;owned\u{7}m", r"v\u{1b}[2K1", r"g\u{7}guf"] {
+        assert!(shown.contains(escaped), "{escaped}: {shown}");
+    }
+}
+
 #[test]
 fn models_list_last_page_has_no_next() {
     for (body, args) in [

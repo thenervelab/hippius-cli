@@ -5,7 +5,7 @@ use hippius::routes::compute;
 use serde_json::{Value, json};
 
 use crate::common::{
-    Hipc, Home, MEMBER, Recorded, Reply, Run, Server, VM, draft, parsed, route_of,
+    Hipc, Home, MEMBER, Recorded, Reply, Run, Server, VM, draft, parsed, route_each, route_of,
 };
 
 const POINT: &str = "run_7c1d";
@@ -489,6 +489,44 @@ fn restore_without_a_vm_name_is_internal_and_sends_no_post() {
     }
 }
 
+/// `confirm` is the name the run that sends read, which the server checks against the VM.
+/// A run without `--yes` asks and stops; the run with `--yes` reads the VM again and is asked
+/// nothing, so a VM renamed between the two runs is confirmed under its new name, which nobody
+/// was shown: the server's check is then the only guard. An empty name is sent as it is read,
+/// for the server to refuse.
+#[test]
+fn restore_confirms_the_name_the_sending_run_read() {
+    let renamed = r#"{"vm_id":"0f8fad5b-d9cb-469f-a165-70867728950e","name":"db-2"}"#;
+    let unnamed = r#"{"vm_id":"0f8fad5b-d9cb-469f-a165-70867728950e","name":""}"#;
+    let server = Server::start(vec![
+        route_each(
+            "GET",
+            &format!("/api/compute/vms/{VM}/"),
+            vec![
+                Reply::json(200, VM_DOC),
+                Reply::json(200, renamed),
+                Reply::json(200, unnamed),
+            ],
+        ),
+        route_of(&compute::BACKUP_RESTORE, [&VM], Reply::json(202, RESTORE)),
+    ]);
+    let error =
+        hipc(&server, &["restore", VM, "--run-id", POINT]).fails(2, "confirmation_required");
+    assert!(
+        error["message"].as_str().unwrap().contains("`db-1`"),
+        "{error}"
+    );
+    restore(&server).ok();
+    restore(&server).ok();
+    let confirms: Vec<Value> = server
+        .requests()
+        .iter()
+        .filter(|request| request.method == "POST")
+        .map(|request| request.json()["confirm"].clone())
+        .collect();
+    assert_eq!(confirms, [json!("db-2"), json!("")]);
+}
+
 #[test]
 fn restore_dry_run_reads_nothing_and_shows_a_placeholder_name() {
     let server = Server::start(vec![]);
@@ -531,6 +569,42 @@ fn restore_dry_run_reads_nothing_and_shows_a_placeholder_name() {
     let run = text(&server, &["restore", VM, "--run-id", POINT, "--dry-run"]);
     assert_eq!(run.code(), Some(0));
     assert_eq!(run.stderr(), "", "a dry run restores nothing");
+    assert!(server.requests().is_empty());
+}
+
+/// A dry run of a policy update or delete needs no `--yes`, sends nothing, and ends with the
+/// write a real run sends (tenet 5).
+#[test]
+fn policy_update_and_delete_dry_runs_send_nothing() {
+    let server = Server::start(vec![]);
+    let url = format!("{}/api/compute/vms/{VM}/backup/", server.url());
+    let write = |method: &str, body: Value| {
+        json!({
+            "method": method,
+            "url": url,
+            "account_header": null,
+            "project_header": null,
+            "billing_header": null,
+            "body": body,
+        })
+    };
+    let args = [
+        "policy",
+        "update",
+        VM,
+        "--interval",
+        "900",
+        "--failover",
+        "auto",
+        "--dry-run",
+    ];
+    let doc = hipc(&server, &args).dry_ok();
+    assert_eq!(
+        draft(&doc),
+        &write("PUT", json!({ "interval_s": 900, "failover_mode": "auto" }))
+    );
+    let doc = hipc(&server, &["policy", "delete", VM, "--dry-run"]).dry_ok();
+    assert_eq!(draft(&doc), &write("DELETE", Value::Null));
     assert!(server.requests().is_empty());
 }
 

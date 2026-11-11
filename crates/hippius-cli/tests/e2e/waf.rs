@@ -110,6 +110,50 @@ fn version_and_list_lists_read_an_object_or_a_bare_array() {
     );
 }
 
+/// The events and the analytics report requests from outside callers, whose paths, user
+/// agents and countries anyone can choose, so text mode escapes a control character in them
+/// rather than let it reach the terminal (tenet 15).
+#[test]
+fn text_mode_escapes_the_control_characters_of_an_outside_request() {
+    let hostile = r#""/x\u001b]0;owned\u0007y""#;
+    let server = Server::start(vec![
+        route_of(
+            &cdn::WAF_EVENTS,
+            [&ZONE],
+            Reply::json(
+                200,
+                &format!(
+                    r#"{{"events":[{{"path":{hostile},"user_agent":{hostile}}}],"cursor":null}}"#
+                ),
+            ),
+        ),
+        route_of(
+            &cdn::WAF_ANALYTICS,
+            [&ZONE],
+            Reply::json(
+                200,
+                &format!(r#"{{"top_paths":[{{"path":{hostile},"count":3}}]}}"#),
+            ),
+        ),
+    ]);
+    for command in ["events", "analytics"] {
+        let run = Hipc::against(&Home::new(), &server)
+            .run(&["--output", "text", "cdn", "waf", command, ZONE]);
+        assert_eq!(run.code(), Some(0), "{command}: {}", run.stderr());
+        assert!(
+            !run.stdout().contains(['\u{1b}', '\u{7}']),
+            "{command}: {}",
+            run.stdout()
+        );
+        // The events sit in a list, which text mode prints as JSON, so the escapes are JSON's.
+        assert!(
+            run.stdout().contains(r"/x\u001b]0;owned\u0007y"),
+            "{command}: {}",
+            run.stdout()
+        );
+    }
+}
+
 #[test]
 fn analytics_and_events_send_only_the_query_parameters_given() {
     let server = Server::start(vec![

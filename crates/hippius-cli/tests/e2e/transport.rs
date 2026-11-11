@@ -43,6 +43,9 @@ fn plain_http_to_anything_but_a_loopback_address_is_refused_before_sending() {
     }
 }
 
+/// One row per class of status, end to end. Every status the tenet 4 table names (412, 502
+/// and 504 among them, and the redirects) is mapped in the library's own
+/// `client::tests::every_status_maps_to_its_contract_code`.
 #[test]
 fn statuses_map_to_codes_with_retry_hints_and_side_effects() {
     let server = Server::start(vec![

@@ -4,7 +4,7 @@
 
 use hippius::routes::s3;
 
-use crate::common::{Hipc, Home, Reply, Server, draft, route_of};
+use crate::common::{BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Server, draft, route_of};
 
 const PATH: &str = "/api/objectstore/buckets/photos/presigned-url/";
 
@@ -248,5 +248,34 @@ fn hipc_api_needs_reveal_on_the_route() {
     assert!(server.requests().is_empty());
     let run = Hipc::against(&Home::new(), &server).run(&["api", "GET", target, "--reveal"]);
     assert!(run.ok()["url"].as_str().unwrap().contains(SIGNATURE));
+    assert_eq!(server.requests().len(), 1);
+}
+
+/// Presign is a bucket route, so a membership and a project go on the request as headers
+/// (tenet 12), and a billing account, which the route does not take, is refused before
+/// anything is sent.
+#[test]
+fn a_membership_and_a_project_go_on_the_request_and_a_billing_account_is_refused() {
+    let server = server();
+    let argv = [
+        "s3",
+        "buckets",
+        "objects",
+        "presign",
+        "photos",
+        "2026/cat.jpg",
+        "--reveal",
+    ];
+    Hipc::against(&Home::new(), &server)
+        .env("HIPPIUS_ACCOUNT", MEMBER)
+        .env("HIPPIUS_PROJECT", PROJECT)
+        .run(&argv)
+        .ok();
+    let request = server.only_request();
+    assert_eq!(request.header("x-hippius-account"), Some(MEMBER));
+    assert_eq!(request.header("x-hippius-project"), Some(PROJECT));
+    Hipc::against(&Home::new(), &server)
+        .run(&[&["--billing", BILLING][..], &argv].concat())
+        .fails(2, "billing_scope_unsupported");
     assert_eq!(server.requests().len(), 1);
 }
