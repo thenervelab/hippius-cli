@@ -626,6 +626,11 @@ impl<'a> Context<'a> {
         if may_have_written(request.is_read(), &sent) {
             self.wrote.set(true);
         }
+        for warning in client.take_deprecation_warnings() {
+            if !self.warnings.borrow().contains(&warning) {
+                self.run_warning(&warning);
+            }
+        }
         if self.global.debug {
             let status = match &sent {
                 Ok(response) => response.status().to_string(),

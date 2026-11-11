@@ -1462,7 +1462,27 @@ fn a_deprecated_route_is_one_warning_with_the_dates_its_headers_hold() {
     let odd = warning(Some("@soon <script>"), Some("next week")).expect("a warning");
     assert!(!odd.contains("soon") && !odd.contains("week"), "{odd}");
     assert!(warning(None, Some("Fri, 01 Jan 2027 00:00:00 GMT")).is_some());
-    assert_eq!(take_deprecation_warnings(), Vec::<String>::new());
+}
+
+/// A client keeps the deprecation warnings of its own answers, one per route whatever fills
+/// its placeholders, and a path with no row as it is; a take empties them.
+#[test]
+fn a_client_keeps_one_deprecation_warning_per_route_until_taken() {
+    let c = client(Selection::Own);
+    let deprecated = |name: &str| (name == "deprecation").then(|| "true".to_owned());
+    let none = |_: &str| None;
+    c.note_deprecation(Method::Get, "/api/compute/vms/vm_a/", &deprecated);
+    c.note_deprecation(Method::Get, "/api/compute/vms/vm_b/", &deprecated);
+    c.note_deprecation(Method::Get, "/api/accounts/", &none);
+    c.note_deprecation(Method::Get, "/api/unknown/x/", &deprecated);
+    let marks = |route: &str| {
+        format!("the API marks `GET {route}` as deprecated: a newer `hipc` may send another route")
+    };
+    assert_eq!(
+        c.take_deprecation_warnings(),
+        [marks("/api/compute/vms/{vm_id}/"), marks("/api/unknown/x/")]
+    );
+    assert_eq!(c.take_deprecation_warnings(), Vec::<String>::new());
 }
 
 /// A `410 Gone` hints to upgrade `hipc`, whatever its body says, unless it may have been

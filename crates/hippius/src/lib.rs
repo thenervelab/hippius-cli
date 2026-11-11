@@ -47,9 +47,7 @@ mod wallet;
 pub use crate::account::{api_guard, api_routes, same_route, secret_routes};
 pub use crate::app_secrets::{AppSecrets, is_secret_name};
 pub use crate::aws::{AccessKeyId, AwsFiles, AwsProfile, SecretKey, configure};
-pub use crate::client::{
-    Client, Request, Response, follow, is_default_origin, take_deprecation_warnings,
-};
+pub use crate::client::{Client, Request, Response, follow, is_default_origin};
 pub use crate::config::{
     ConfigFile, HubMarker, Overrides, Settings, Token, config_path, take_split_link,
     take_unknown_keys_warning,

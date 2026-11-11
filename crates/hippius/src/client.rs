@@ -8,9 +8,10 @@
 //! The client never retries and never follows a redirect: a retry could charge twice, and a
 //! redirect could carry the token to another host.
 
+use std::cell::RefCell;
 use std::fmt;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -510,39 +511,6 @@ impl Target {
     }
 }
 
-/// The warnings of the routes the API marked deprecated in this run's answers, each once, in
-/// the order they came ([`take_deprecation_warnings`]). A lock poisoned by a panic keeps no
-/// more: the panic ends the run, whose warnings then print nowhere.
-static DEPRECATIONS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-/// Takes the warnings of the routes the API marked deprecated in this run's answers, with a
-/// `Deprecation` (RFC 9745) or a `Sunset` (RFC 8594) header, each once, in the order they
-/// came, so the caller prints them as `warning:` lines or a `warnings` array (tenet 15).
-/// `hipc` surfaces them and changes nothing about the request.
-pub fn take_deprecation_warnings() -> Vec<String> {
-    DEPRECATIONS
-        .lock()
-        .map(|mut warnings| std::mem::take(&mut *warnings))
-        .unwrap_or_default()
-}
-
-/// Keeps the warning of an answer to `method` to `path` whose `header`s say the route is
-/// deprecated ([`deprecation_warning`]) for [`take_deprecation_warnings`], once.
-fn note_deprecation(method: Method, path: &str, header: &dyn Fn(&str) -> Option<String>) {
-    let deprecation = header("deprecation");
-    let sunset = header("sunset");
-    let Some(warning) =
-        deprecation_warning(method, path, deprecation.as_deref(), sunset.as_deref())
-    else {
-        return;
-    };
-    if let Ok(mut warnings) = DEPRECATIONS.lock()
-        && !warnings.contains(&warning)
-    {
-        warnings.push(warning);
-    }
-}
-
 /// The warning for `method` to `path`, whose answer carried `deprecation` or `sunset`, or
 /// `None` when it carried neither. Only a date the header holds in its standard form is
 /// repeated (`@` and Unix seconds for `Deprecation`, an HTTP date for `Sunset`), as a day:
@@ -606,6 +574,9 @@ pub struct Client {
     project: Option<ProjectId>,
     /// The selected billing account, `None` for the Default one.
     billing: Option<BillingId>,
+    /// The warnings of the routes the API marked deprecated in this client's answers, each
+    /// once, in the order they came, until [`Client::take_deprecation_warnings`] takes them.
+    deprecations: RefCell<Vec<String>>,
 }
 
 impl Client {
@@ -648,6 +619,7 @@ impl Client {
             account: settings.account.clone(),
             project: settings.project.clone(),
             billing: settings.billing.clone(),
+            deprecations: RefCell::new(Vec::new()),
         })
     }
 
@@ -1210,7 +1182,7 @@ impl Client {
         let request_id = header("x-request-id").filter(|id| id.len() <= MAX_REQUEST_ID_BYTES);
         let location = header("location");
         let date = header("date");
-        note_deprecation(request.method, resolved.target.api_path(), &header);
+        self.note_deprecation(request.method, resolved.target.api_path(), &header);
         // The status has arrived, so it decides even when the body cannot be read: a 2xx
         // write was done (`partial`, not retryable), and a 4xx is that status's error.
         // The limit is one byte past the cap: ureq 3.5.0 refuses a read once its limit is used
@@ -1258,6 +1230,39 @@ impl Client {
             sent_secrets: &sent_secrets,
         });
         Err(self.without_token(error))
+    }
+
+    /// Takes the warnings of the routes the API marked deprecated in this client's answers
+    /// since the last take, with a `Deprecation` (RFC 9745) or a `Sunset` (RFC 8594) header,
+    /// each route once, in the order they came, so the caller prints them as `warning:` lines
+    /// or a `warnings` array (tenet 15). `hipc` surfaces them and changes nothing about the
+    /// request.
+    pub fn take_deprecation_warnings(&self) -> Vec<String> {
+        self.deprecations.take()
+    }
+
+    /// Keeps the warning of an answer to `method` to `path` whose `header`s say the route is
+    /// deprecated ([`deprecation_warning`]) for [`Client::take_deprecation_warnings`], once
+    /// per route: a path is named by the template of its row, so `/api/compute/vms/a/` and
+    /// `/b/` are one warning, and a path with no row by itself.
+    fn note_deprecation(
+        &self,
+        method: Method,
+        path: &str,
+        header: &dyn Fn(&str) -> Option<String>,
+    ) {
+        let deprecation = header("deprecation");
+        let sunset = header("sunset");
+        let route = account::row_of(method, path).map_or(path, |row| row.template());
+        let Some(warning) =
+            deprecation_warning(method, route, deprecation.as_deref(), sunset.as_deref())
+        else {
+            return;
+        };
+        let mut warnings = self.deprecations.borrow_mut();
+        if !warnings.contains(&warning) {
+            warnings.push(warning);
+        }
     }
 
     /// The spellings of the token a request carries, empty when it carries none, cleared on

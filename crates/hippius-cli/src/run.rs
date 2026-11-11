@@ -108,10 +108,11 @@ fn repeated_global(args: &[OsString]) -> Option<hippius::Error> {
     ))
 }
 
-/// The warnings of the whole run, for JSON's `warnings`: the command's own run warnings, which
-/// were printed as they came, then those of the config file and the answers, printed here in
-/// text mode. Also after a failure: a command can write the config and then fail at a later
-/// step, and an answer that failed can say its route is deprecated. JSON mode writes no
+/// The warnings of the whole run, for JSON's `warnings`: the command's own run warnings and
+/// those of answers that marked their route deprecated, which were printed as they came, then
+/// those of the config file, printed here in text mode. Also after a failure: a command can
+/// write the config and then fail at a later step, and an answer that failed can say its route
+/// is deprecated. JSON mode writes no
 /// warning lines, so the `warnings` array beside the document or the error is where an agent
 /// sees them.
 fn run_warnings(ctx: &Context<'_>) -> Vec<String> {
@@ -120,7 +121,6 @@ fn run_warnings(ctx: &Context<'_>) -> Vec<String> {
     for warning in split_link
         .into_iter()
         .chain(hippius::take_unknown_keys_warning())
-        .chain(hippius::take_deprecation_warnings())
     {
         ctx.warning(&warning);
         warnings.push(warning);
