@@ -1174,6 +1174,36 @@ fn firewall_update_whose_read_fails_sends_no_put() {
     assert_eq!(given.requests().len(), 2);
 }
 
+/// `--remove-others` compares nothing, so its read takes only the `revision`: a server rule
+/// `hipc` does not read (an `icmp` rule with `ports: null`), or no `rules` at all, still lets
+/// the list be replaced after the yes. A read with no `revision` is still refused, since the
+/// PUT needs it.
+#[test]
+fn remove_others_reads_only_the_revision_of_the_rules() {
+    let rules = r#"{"rules":[{"protocol":"tcp","ports":["22"]}]}"#;
+    for answer in [
+        r#"{"rules":[{"protocol":"icmp","ports":null}],"revision":"r5"}"#,
+        r#"{"revision":"r5"}"#,
+    ] {
+        let server = Server::start(vec![
+            route_of(&compute::FIREWALL, [&VM], Reply::json(200, answer)),
+            route_of(&compute::FIREWALL_UPDATE, [&VM], Reply::json(200, RULES)),
+        ]);
+        update_stdin(&server, rules, &["--yes", "--remove-others"]).ok();
+        assert_eq!(puts(&server)[0]["base_revision"], "r5", "{answer}");
+    }
+    let server = Server::start(vec![
+        route_of(
+            &compute::FIREWALL,
+            [&VM],
+            Reply::json(200, r#"{"rules":[]}"#),
+        ),
+        route_of(&compute::FIREWALL_UPDATE, [&VM], Reply::json(200, RULES)),
+    ]);
+    update_stdin(&server, rules, &["--yes", "--remove-others"]).fails(1, "internal");
+    assert_eq!(server.only_request().method, "GET");
+}
+
 /// A 409 on a PUT whose revision came from the guard's own read means the rules changed
 /// since that read: running the same command again reads them again, so the hint says to.
 #[test]

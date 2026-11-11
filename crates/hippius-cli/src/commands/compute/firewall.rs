@@ -62,17 +62,24 @@ pub(super) fn update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed
     };
     let current = |answer: Value| {
         let unreadable = || crate::commands::unreadable(&read_action);
-        let rules = answer.get("rules").and_then(Value::as_array);
-        let entries = rules
-            .ok_or_else(unreadable)?
-            .iter()
-            .map(|rule| {
-                Rule::read(rule, Source::Server)
-                    .ok()
-                    .map(|rule| rule.entry())
-            })
-            .collect::<Option<Vec<Entry>>>()
-            .ok_or_else(unreadable)?;
+        // `--remove-others` compares nothing, so a server rule `hipc` does not read must not
+        // refuse a replace the person has said yes to: only the revision is read.
+        let entries = if args.remove_others {
+            Vec::new()
+        } else {
+            answer
+                .get("rules")
+                .and_then(Value::as_array)
+                .ok_or_else(unreadable)?
+                .iter()
+                .map(|rule| {
+                    Rule::read(rule, Source::Server)
+                        .ok()
+                        .map(|rule| rule.entry())
+                })
+                .collect::<Option<Vec<Entry>>>()
+                .ok_or_else(unreadable)?
+        };
         let body = if args.base_revision.is_some() {
             None
         } else {
