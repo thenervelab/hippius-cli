@@ -6,7 +6,10 @@
 
 use clap::{ArgAction, Args, Subcommand};
 
-use crate::cli::{Usd, examples, number, usd};
+use crate::cli::ids::account_id;
+use crate::cli::values::{Spaces, label};
+use crate::cli::{BillingAccount, ProjectTarget, examples, number};
+use crate::units::{Usd, usd, whole_number};
 
 /// `hipc account projects create`.
 #[derive(Debug, Args)]
@@ -19,9 +22,8 @@ pub(crate) struct ProjectCreate {
 /// `hipc account projects update`.
 #[derive(Debug, Args)]
 pub(crate) struct ProjectUpdate {
-    /// The project id, proj_ and 20 lowercase hex characters, from hipc account projects list
-    #[arg(value_parser = project_id)]
-    pub(crate) project_id: String,
+    #[command(flatten)]
+    pub(crate) project: ProjectTarget,
     /// The new name, 1 to 64 characters on one line, none invisible, sent trimmed
     #[arg(long, value_parser = principal_name)]
     pub(crate) name: String,
@@ -30,12 +32,11 @@ pub(crate) struct ProjectUpdate {
 /// `hipc account projects transfer`.
 #[derive(Debug, Args)]
 pub(crate) struct ProjectTransfer {
-    /// The project id, proj_ and 20 lowercase hex characters, from hipc account projects list
-    #[arg(value_parser = project_id)]
-    pub(crate) project_id: String,
+    #[command(flatten)]
+    pub(crate) project: ProjectTarget,
     /// The account the project is offered to: acct_ and 20 lowercase hex characters
     #[arg(long, value_name = "ACCOUNT_ID", value_parser = account_id)]
-    pub(crate) to_account: String,
+    pub(crate) to_account: hippius::AccountId,
 }
 
 #[derive(Debug, Subcommand)]
@@ -47,12 +48,7 @@ pub(crate) enum Budget {
     #[command(after_help = examples(&[
         "hipc account projects budget get proj_0a1b2c3d4e5f60718293",
     ]))]
-    Get {
-        /// The project id, proj_ and 20 lowercase hex characters, from hipc account projects
-        /// list
-        #[arg(value_parser = project_id)]
-        project_id: String,
-    },
+    Get(ProjectTarget),
     /// Set a project's monthly budget; needs --yes
     ///
     /// The PUT replaces the whole budget, so every field is given. The owner, the billing
@@ -72,20 +68,14 @@ pub(crate) enum Budget {
     #[command(after_help = examples(&[
         "hipc account projects budget delete proj_0a1b2c3d4e5f60718293 --yes",
     ]))]
-    Delete {
-        /// The project id, proj_ and 20 lowercase hex characters, from hipc account projects
-        /// list
-        #[arg(value_parser = project_id)]
-        project_id: String,
-    },
+    Delete(ProjectTarget),
 }
 
 /// `hipc account projects budget update`.
 #[derive(Debug, Args)]
 pub(crate) struct BudgetUpdate {
-    /// The project id, proj_ and 20 lowercase hex characters, from hipc account projects list
-    #[arg(value_parser = project_id)]
-    pub(crate) project_id: String,
+    #[command(flatten)]
+    pub(crate) project: ProjectTarget,
     /// The month's spend limit in US dollars to the cent, more than 0
     ///
     /// budget get reads amounts back in credits (1 credit = $1).
@@ -113,12 +103,7 @@ pub(crate) enum Quota {
     #[command(after_help = examples(&[
         "hipc account projects quota get proj_0a1b2c3d4e5f60718293",
     ]))]
-    Get {
-        /// The project id, proj_ and 20 lowercase hex characters, from hipc account projects
-        /// list
-        #[arg(value_parser = project_id)]
-        project_id: String,
-    },
+    Get(ProjectTarget),
     /// Change the project's own compute limits given; the others are kept; needs --yes
     ///
     /// Each limit is a whole number up to 2147483647, or none to leave only the account's
@@ -146,9 +131,8 @@ pub(crate) enum Quota {
     ])
 ))]
 pub(crate) struct QuotaUpdate {
-    /// The project id, proj_ and 20 lowercase hex characters, from hipc account projects list
-    #[arg(value_parser = project_id)]
-    pub(crate) project_id: String,
+    #[command(flatten)]
+    pub(crate) project: ProjectTarget,
     /// VMs, or none
     #[arg(long, value_name = "COUNT", value_parser = quota_limit)]
     pub(crate) vms: Option<QuotaLimit>,
@@ -173,25 +157,6 @@ pub(crate) struct QuotaUpdate {
     /// Runners, or none
     #[arg(long, value_name = "COUNT", value_parser = quota_limit)]
     pub(crate) runners: Option<QuotaLimit>,
-}
-
-impl QuotaUpdate {
-    /// The limits given, each with the key the API names it by, in the console's order.
-    pub(crate) fn limits(&self) -> Vec<(&'static str, QuotaLimit)> {
-        [
-            ("vms", self.vms),
-            ("databases", self.databases),
-            ("clusters", self.clusters),
-            ("vcpus", self.vcpus),
-            ("memory_gb", self.memory),
-            ("disk_gb", self.disk),
-            ("public_ips", self.public_ips),
-            ("runners", self.runners),
-        ]
-        .into_iter()
-        .filter_map(|(key, limit)| limit.map(|limit| (key, limit)))
-        .collect()
-    }
 }
 
 /// One of a project's own compute limits.
@@ -233,8 +198,8 @@ pub(crate) enum ProjectTransfers {
         /// default, or bill_ and 20 lowercase hex characters
         ///
         /// Not --billing, which is the global flag that picks a billing account.
-        #[arg(long, value_name = "BILLING_ACCOUNT_ID", value_parser = bill_to)]
-        bill_to: Option<String>,
+        #[arg(long, value_name = "BILLING_ACCOUNT_ID", value_parser = BillingAccount::parse)]
+        bill_to: Option<BillingAccount>,
     },
     /// Decline a project offered to the token's own account; needs --yes
     ///
@@ -268,85 +233,10 @@ const TRANSFER_ID: &str =
 /// The most characters a project or billing account name may have: the console's limit.
 const MAX_NAME: usize = 64;
 
-/// A project or billing account name: 1 to 64 characters once trimmed, as the console
-/// checks it, sent trimmed as the console sends it. A control character, a tab or a newline
-/// included, is refused: the console shows a name on one line, where a tab or a newline
-/// would misalign or split it. So is a character that changes how text reads without being
-/// seen (a bidi override, a zero-width space), with which two names that look the same
-/// would be two projects, and a person would pick the wrong one.
+/// A project or billing account name: a [`label`] of 1 to 64 characters once trimmed, as the
+/// console checks it, sent trimmed as the console sends it.
 pub(crate) fn principal_name(value: &str) -> Result<String, String> {
-    let value = value.trim();
-    if value.is_empty() || value.chars().count() > MAX_NAME {
-        return Err(format!("a name is 1 to {MAX_NAME} characters"));
-    }
-    // The line and paragraph separators break a line as a newline does, so they get this
-    // message rather than the one about invisible characters.
-    if value
-        .chars()
-        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
-    {
-        return Err(
-            "a name holds no control character or line break, a tab or a newline \
-                    included, since it is shown on one line"
-                .to_owned(),
-        );
-    }
-    if value.chars().any(crate::output::changes_how_text_reads) {
-        return Err(
-            "a name holds no invisible character, such as a bidi override or a \
-                    zero-width space, since two names would look the same"
-                .to_owned(),
-        );
-    }
-    Ok(value.to_owned())
-}
-
-/// A project id, which goes into the path. `default` is refused: the Default project is
-/// the account itself and has no id these routes take.
-pub(crate) fn project_id(value: &str) -> Result<String, String> {
-    match hippius::ProjectId::parse(value, &hippius::Source::Argument) {
-        Ok(Some(_)) => Ok(value.to_owned()),
-        _ => Err(
-            "a project id is `proj_` and 20 lowercase hex characters, from \
-                  `hipc account projects list`; the Default project has none"
-                .to_owned(),
-        ),
-    }
-}
-
-/// A billing account id, which goes into the path; `default` is refused as for
-/// [`project_id`].
-pub(crate) fn billing_account_id(value: &str) -> Result<String, String> {
-    match hippius::BillingId::parse(value, &hippius::Source::Argument) {
-        Ok(Some(_)) => Ok(value.to_owned()),
-        _ => Err(
-            "a billing account id is `bill_` and 20 lowercase hex characters, from \
-                  `hipc account billing-accounts list`; the Default billing account has none"
-                .to_owned(),
-        ),
-    }
-}
-
-/// The billing account an accepted project goes to: `default` or an id, as the costs read
-/// takes it.
-fn bill_to(value: &str) -> Result<String, String> {
-    match hippius::BillingId::parse(value, &hippius::Source::Argument) {
-        Ok(_) => Ok(value.to_owned()),
-        Err(_) => Err(
-            "a billing account is `default`, or `bill_` and 20 lowercase hex \
-                       characters, from `hipc account billing-accounts list`"
-                .to_owned(),
-        ),
-    }
-}
-
-/// The account a project is offered to: an account id, never `self`, which names no
-/// account the server can find.
-fn account_id(value: &str) -> Result<String, String> {
-    match hippius::Selection::parse(value, &hippius::Source::Argument) {
-        Ok(hippius::Selection::Member(_)) => Ok(value.to_owned()),
-        _ => Err("an account id is `acct_` and 20 lowercase hex characters".to_owned()),
-    }
+    label(value, 1..=MAX_NAME, Spaces::Trimmed, "a name")
 }
 
 /// A budget's limit: US dollars to the cent, more than 0, as the console requires.
@@ -368,11 +258,248 @@ fn quota_limit(value: &str) -> Result<QuotaLimit, String> {
     if value == "none" {
         return Ok(QuotaLimit::None);
     }
-    let limit: u64 = value
-        .parse()
-        .map_err(|_| "a limit is a whole number, such as `5`, or `none`".to_owned())?;
+    let limit = whole_number(value)
+        .ok_or_else(|| "a limit is a whole number, such as `5`, or `none`".to_owned())?;
     if limit > MAX_QUOTA {
         return Err(format!("a limit is at most `{MAX_QUOTA}`"));
     }
     Ok(QuotaLimit::At(limit))
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory as _;
+    use clap::error::ErrorKind;
+
+    use crate::cli::Cli;
+    use crate::cli::tests::refusal;
+
+    const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
+    const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
+
+    /// Asserts that `parser` refuses each command line of `argv` by its validator, saying `says`.
+    fn refuses(parser: &mut clap::Command, argv: &[&str], says: &str) {
+        let (kind, message) = refusal(parser, argv);
+        assert_eq!(kind, ErrorKind::ValueValidation, "{argv:?}: {message}");
+        assert!(message.contains(says), "{argv:?}: {message}");
+    }
+
+    /// A name is 1 to 64 characters on one line, none invisible, once trimmed, as the console
+    /// checks it, in each command that takes one.
+    #[test]
+    fn a_name_outside_the_console_rule_is_refused() {
+        let long = "x".repeat(65);
+        let too_short_or_long = "a name is one line of 1 to 64 characters";
+        let control = "a name holds no control character or line break, a tab or a newline \
+                       included, since it is shown on one line";
+        let invisible = "a name holds no invisible character, such as a bidi override or a \
+                         zero-width space, since two that look the same would differ";
+        let mut parser = Cli::command();
+        for (name, says) in [
+            ("", too_short_or_long),
+            ("   ", too_short_or_long),
+            (long.as_str(), too_short_or_long),
+            ("two\nlines", control),
+            ("tab\there", control),
+            ("line\u{2028}break", control),
+            ("para\u{2029}graph", control),
+            ("web\u{202e}dorp", invisible),
+            ("w\u{200b}eb", invisible),
+            ("web\u{feff}x", invisible),
+        ] {
+            assert_eq!(
+                super::principal_name(name),
+                Err(says.to_owned()),
+                "{name:?}"
+            );
+            for command in [
+                &["projects", "create"][..],
+                &["projects", "update", PROJECT],
+                &["billing-accounts", "create"],
+                &["billing-accounts", "update", BILLING],
+            ] {
+                let argv = [&["account"], command, &["--name", name]].concat();
+                refuses(&mut parser, &argv, says);
+            }
+        }
+        let fits = "é".repeat(64);
+        assert_eq!(super::principal_name(&format!(" {fits} ")), Ok(fits));
+    }
+
+    /// Every id goes into the path, so a malformed one, or `default`, which names the account
+    /// itself and no project or billing account these routes take, is refused at parse time.
+    #[test]
+    fn a_malformed_or_default_id_is_refused_by_each_command() {
+        let project = "a project id is `proj_` and 20 lowercase hex characters, from `hipc \
+                       account projects list`; the Default project has none";
+        let mut parser = Cli::command();
+        for id in [
+            "default",
+            "proj_x",
+            "proj_0A1B2C3D4E5F60718293",
+            "../x",
+            BILLING,
+        ] {
+            for command in [
+                &["update", id, "--name", "x"][..],
+                &["delete", id],
+                &["transfer", id, "--to-account", "acct_ffffffffffffffffffff"],
+                &["budget", "get", id],
+                &["budget", "delete", id],
+                &["quota", "get", id],
+                &["quota", "update", id, "--vms", "1"],
+                &[
+                    "budget",
+                    "update",
+                    id,
+                    "--monthly-limit",
+                    "1",
+                    "--alert-at",
+                    "50",
+                    "--block-launches",
+                    "true",
+                ],
+            ] {
+                let argv = [&["account", "projects"], command].concat();
+                refuses(&mut parser, &argv, project);
+            }
+        }
+        for id in ["default", "bill_x", PROJECT] {
+            refuses(
+                &mut parser,
+                &["account", "billing-accounts", "update", id, "--name", "x"],
+                "a billing account id is `bill_` and 20 lowercase hex characters, from `hipc \
+                 account billing-accounts list`; the Default billing account has none",
+            );
+        }
+        for id in ["self", "acct_x", "ACCT_0123456789ABCDEF0123"] {
+            refuses(
+                &mut parser,
+                &[
+                    "account",
+                    "projects",
+                    "transfer",
+                    PROJECT,
+                    "--to-account",
+                    id,
+                ],
+                "an account id is `acct_` and 20 lowercase hex characters",
+            );
+        }
+        for id in ["x", "1.5", "0x5"] {
+            for verb in ["accept", "decline", "cancel"] {
+                refuses(
+                    &mut parser,
+                    &["account", "project-transfers", verb, id],
+                    "a transfer id is a whole number, from `hipc account project-transfers list`",
+                );
+            }
+        }
+        refuses(
+            &mut parser,
+            &[
+                "account",
+                "project-transfers",
+                "accept",
+                "5",
+                "--bill-to",
+                "bill_x",
+            ],
+            "a billing account is `default`, or `bill_` and 20 lowercase hex characters, from \
+             `hipc account billing-accounts list`",
+        );
+    }
+
+    /// The console's rules on a budget: a limit above 0 to the cent, thresholds of 1 to 100,
+    /// and the launch block given.
+    #[test]
+    fn budget_update_refuses_what_the_console_refuses() {
+        let mut parser = Cli::command();
+        let budget = |flags: &str| -> Vec<String> {
+            ["account", "projects", "budget", "update", PROJECT]
+                .into_iter()
+                .chain(flags.split(' '))
+                .map(str::to_owned)
+                .collect()
+        };
+        for (flags, kind, says) in [
+            (
+                "--monthly-limit 0 --alert-at 50 --block-launches true",
+                ErrorKind::ValueValidation,
+                "a monthly limit is more than `0`",
+            ),
+            (
+                "--monthly-limit 0.00 --alert-at 50 --block-launches true",
+                ErrorKind::ValueValidation,
+                "a monthly limit is more than `0`",
+            ),
+            (
+                "--monthly-limit 1.234 --alert-at 50 --block-launches true",
+                ErrorKind::ValueValidation,
+                "an amount is US dollars to the cent, such as `50` or `12.50`",
+            ),
+            (
+                "--monthly-limit 1 --alert-at 0 --block-launches true",
+                ErrorKind::ValueValidation,
+                "0 is not in 1..=100",
+            ),
+            (
+                "--monthly-limit 1 --alert-at 101 --block-launches true",
+                ErrorKind::ValueValidation,
+                "101 is not in 1..=100",
+            ),
+            (
+                "--monthly-limit 1 --alert-at 50 --block-launches maybe",
+                ErrorKind::InvalidValue,
+                "--block-launches",
+            ),
+            (
+                "--monthly-limit 1 --alert-at 50",
+                ErrorKind::MissingRequiredArgument,
+                "--block-launches",
+            ),
+            (
+                "--monthly-limit 1 --block-launches true",
+                ErrorKind::MissingRequiredArgument,
+                "--alert-at",
+            ),
+            (
+                "--alert-at 50 --block-launches true",
+                ErrorKind::MissingRequiredArgument,
+                "--monthly-limit",
+            ),
+        ] {
+            let argv = budget(flags);
+            let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+            let (refused_as, message) = refusal(&mut parser, &argv);
+            assert_eq!(refused_as, kind, "{flags}: {message}");
+            assert!(message.contains(says), "{flags}: {message}");
+        }
+    }
+
+    /// A quota limit is a whole number up to the largest signed 32-bit integer, or `none`.
+    #[test]
+    fn a_quota_limit_is_a_count_or_none() {
+        let mut parser = Cli::command();
+        for (value, says) in [
+            ("1.5", "a limit is a whole number, such as `5`, or `none`"),
+            ("five", "a limit is a whole number, such as `5`, or `none`"),
+            ("None", "a limit is a whole number, such as `5`, or `none`"),
+            ("", "a limit is a whole number, such as `5`, or `none`"),
+            (
+                "18446744073709551616",
+                "a limit is a whole number, such as `5`, or `none`",
+            ),
+            ("2147483648", "a limit is at most `2147483647`"),
+            ("18446744073709551615", "a limit is at most `2147483647`"),
+        ] {
+            refuses(
+                &mut parser,
+                &[
+                    "account", "projects", "quota", "update", PROJECT, "--vcpus", value,
+                ],
+                says,
+            );
+        }
+    }
 }

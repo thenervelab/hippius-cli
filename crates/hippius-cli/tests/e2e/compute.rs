@@ -1,12 +1,11 @@
 //! `hipc compute`: the catalog, VMs, the launch wait, and SSH keys.
 
-use std::io::{BufRead as _, Read as _, Write as _};
-
+use hippius::routes::compute;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, draft, route};
-
-const VM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+use crate::common::{
+    Hipc, Home, MEMBER, Reply, Run, Server, VM, draft, route, route_each_of, route_of,
+};
 
 /// A positive attestation, as swagger documents the fields.
 const ATTESTED: &str = concat!(
@@ -24,10 +23,6 @@ fn vm(status: &str) -> String {
     format!(r#"{{"vm_id":"{VM}","name":"web","status":"{status}","flavor":"small"}}"#)
 }
 
-fn vm_route(method: &'static str, suffix: &str, reply: Reply) -> crate::common::Route {
-    route(method, &format!("/api/compute/vms/{VM}/{suffix}"), reply)
-}
-
 fn hipc(server: &Server, args: &[&str]) -> Run {
     let mut argv = vec!["compute"];
     argv.extend(args);
@@ -40,14 +35,25 @@ fn create(server: &Server, extra: &[&str]) -> Run {
     hipc(server, &args)
 }
 
+/// The backup options, listing the intervals a launch with `--backup-interval` may send
+/// (owner decision D19).
+fn backup_options() -> crate::common::Route {
+    route_of(
+        &compute::BACKUP_OPTIONS,
+        [],
+        Reply::json(
+            200,
+            r#"{"intervals":[{"seconds":900},{"seconds":3600},{"seconds":21600},{"seconds":86400}]}"#,
+        ),
+    )
+}
+
 /// The tenet 4 failure with the documented stdout exception: stdout is the last VM.
 fn fails_with_vm(run: &Run, code: &str) -> Value {
-    assert_eq!(run.code(), Some(1), "{}", run.stderr());
-    let error: Value = serde_json::from_str(run.stderr()).expect("stderr is one JSON object");
-    assert_eq!(error["error"]["code"], code, "{}", run.stderr());
-    assert_eq!(error["error"]["side_effects"], "partial");
+    let error = run.fails_keeping_stdout(1, code);
+    assert_eq!(error["side_effects"], "partial");
     assert!(
-        error["error"]["hint"]
+        error["hint"]
             .as_str()
             .expect("the failure has a hint")
             .contains(&format!("hipc compute vms get {VM}")),
@@ -63,35 +69,31 @@ fn objects_print_as_sent_and_lists_are_envelopes() {
         r#"{"images":[{"name":"ubuntu-24.04","default_user":"ubuntu"}],"gateway_available":true}"#;
     let groups = r#"{"available":true,"groups":[{"name":"web","vms":2}]}"#;
     let server = Server::start(vec![
-        route(
-            "GET",
-            "/api/compute/prices/",
+        route_of(
+            &compute::PRICES,
+            [],
             Reply::json(200, r#"{"currency":"USD","vm":{"small":1}}"#),
         ),
-        route(
-            "GET",
-            "/api/compute/quota/",
+        route_of(
+            &compute::QUOTA,
+            [],
             Reply::json(200, r#"{"runway":{"gate":true,"hours":24}}"#),
         ),
-        route("GET", "/api/compute/images/", Reply::json(200, images)),
-        route(
-            "GET",
-            "/api/compute/placement-groups/",
-            Reply::json(200, groups),
-        ),
-        route(
-            "GET",
-            "/api/compute/flavors/",
+        route_of(&compute::IMAGES, [], Reply::json(200, images)),
+        route_of(&compute::PLACEMENT_GROUPS, [], Reply::json(200, groups)),
+        route_of(
+            &compute::FLAVORS,
+            [],
             Reply::json(200, r#"[{"code":"small","vcpus":1}]"#),
         ),
-        route(
-            "GET",
-            "/api/compute/regions/",
+        route_of(
+            &compute::REGIONS,
+            [],
             Reply::json(200, r#"[{"code":"FR"},{"code":"AU"}]"#),
         ),
-        route(
-            "GET",
-            "/api/compute/vms/",
+        route_of(
+            &compute::VMS,
+            [],
             Reply::json(200, &format!("[{}]", vm("running"))),
         ),
     ]);
@@ -122,19 +124,19 @@ fn objects_print_as_sent_and_lists_are_envelopes() {
 #[test]
 fn catalog_errors_map_to_their_codes() {
     let server = Server::start(vec![
-        route(
-            "GET",
-            "/api/compute/flavors/",
+        route_of(
+            &compute::FLAVORS,
+            [],
             Reply::json(403, r#"{"detail":"Compute is in private beta."}"#),
         ),
-        route(
-            "GET",
-            "/api/compute/regions/",
+        route_of(
+            &compute::REGIONS,
+            [],
             Reply::json(503, r#"{"detail":"down"}"#),
         ),
-        route(
-            "GET",
-            "/api/compute/quota/",
+        route_of(
+            &compute::QUOTA,
+            [],
             Reply::json(429, r#"{"detail":"slow down"}"#).header("Retry-After", "3"),
         ),
     ]);
@@ -161,9 +163,9 @@ const CHARGE_CAP: &str = concat!(
 #[test]
 fn charge_cap_prints_the_object_as_sent_nulls_included() {
     for body in [CHARGE_CAP, r#"{"charge_cap":null,"request":null}"#] {
-        let server = Server::start(vec![route(
-            "GET",
-            "/api/compute/charge-cap/",
+        let server = Server::start(vec![route_of(
+            &compute::CHARGE_CAP,
+            [],
             Reply::json(200, body),
         )]);
         assert_eq!(
@@ -179,9 +181,9 @@ fn charge_cap_prints_the_object_as_sent_nulls_included() {
 
 #[test]
 fn charge_cap_in_a_membership_sends_the_header_and_debug_shows_the_url() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/compute/charge-cap/",
+    let server = Server::start(vec![route_of(
+        &compute::CHARGE_CAP,
+        [],
         Reply::json(200, CHARGE_CAP),
     )]);
     let run = Hipc::against(&Home::new(), &server)
@@ -217,9 +219,9 @@ fn charge_cap_errors_map_to_their_codes() {
         (500, r#"{"detail":"boom"}"#, "internal"),
         (503, r#"{"detail":"down"}"#, "unavailable"),
     ] {
-        let server = Server::start(vec![route(
-            "GET",
-            "/api/compute/charge-cap/",
+        let server = Server::start(vec![route_of(
+            &compute::CHARGE_CAP,
+            [],
             Reply::json(status, body),
         )]);
         let error = hipc(&server, &["charge-cap"]).fails(1, code);
@@ -239,9 +241,9 @@ fn charge_cap_errors_map_to_their_codes() {
 /// flag would change nothing and the hint does not name it.
 #[test]
 fn a_server_account_scope_refusal_exits_2_with_the_account_hint() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/compute/charge-cap/",
+    let server = Server::start(vec![route_of(
+        &compute::CHARGE_CAP,
+        [],
         Reply::json(403, r#"{"code":"account_scope_unsupported"}"#),
     )]);
     let error = Hipc::against(&Home::new(), &server)
@@ -266,16 +268,16 @@ fn a_server_account_scope_refusal_exits_2_with_the_account_hint() {
 #[test]
 fn a_membership_sends_the_header_on_compute_but_never_on_ssh_keys() {
     let server = Server::start(vec![
-        route("GET", "/api/compute/vms/", Reply::json(200, "[]")),
-        route(
-            "GET",
-            "/api/compute/placement-groups/",
+        route_of(&compute::VMS, [], Reply::json(200, "[]")),
+        route_of(
+            &compute::PLACEMENT_GROUPS,
+            [],
             Reply::json(200, r#"{"available":false,"groups":[]}"#),
         ),
-        vm_route("GET", "attestation/", Reply::json(200, ATTESTED)),
-        route(
-            "GET",
-            "/api/ssh-keys/",
+        route_of(&compute::VM_ATTESTATION, [&VM], Reply::json(200, ATTESTED)),
+        route_of(
+            &compute::SSH_KEYS,
+            [],
             Reply::json(
                 200,
                 r#"{"count":0,"next":null,"previous":null,"results":[]}"#,
@@ -312,7 +314,11 @@ fn a_membership_sends_the_header_on_compute_but_never_on_ssh_keys() {
 #[test]
 fn an_answer_shaped_like_a_dry_run_is_printed_as_it_came() {
     let answer = r#"{"dry_run":true,"requests":[{"method":"GET"}],"status":"running"}"#;
-    let server = Server::start(vec![vm_route("GET", "", Reply::json(200, answer))]);
+    let server = Server::start(vec![route_of(
+        &compute::VM,
+        [&VM],
+        Reply::json(200, answer),
+    )]);
     let doc = hipc(&server, &["vms", "get", VM]).ok();
     assert_eq!(doc, serde_json::from_str::<Value>(answer).unwrap());
     let mut argv = vec!["--output", "text", "compute", "vms", "get", VM];
@@ -335,18 +341,22 @@ fn an_answer_shaped_like_a_dry_run_is_printed_as_it_came() {
 
 #[test]
 fn get_is_the_vm_and_a_missing_one_is_not_found() {
-    let server = Server::start(vec![vm_route("GET", "", Reply::json(200, &vm("running")))]);
+    let server = Server::start(vec![route_of(
+        &compute::VM,
+        [&VM],
+        Reply::json(200, &vm("running")),
+    )]);
     assert_eq!(hipc(&server, &["vms", "get", VM]).ok()["status"], "running");
-    let missing = Server::start(vec![vm_route("GET", "", Reply::not_found())]);
+    let missing = Server::start(vec![route_of(&compute::VM, [&VM], Reply::not_found())]);
     hipc(&missing, &["vms", "get", VM]).fails(1, "not_found");
 }
 
 #[test]
 fn attestation_prints_the_server_object_unchanged() {
     for body in [ATTESTED, UNPROVEN] {
-        let server = Server::start(vec![vm_route(
-            "GET",
-            "attestation/",
+        let server = Server::start(vec![route_of(
+            &compute::VM_ATTESTATION,
+            [&VM],
             Reply::json(200, body),
         )]);
         let doc = hipc(&server, &["vms", "attestation", VM]).ok();
@@ -362,9 +372,9 @@ fn attestation_prints_the_server_object_unchanged() {
 #[test]
 fn attestation_text_mode_reads_unknown_as_not_proven() {
     let text = |body: &str| {
-        let server = Server::start(vec![vm_route(
-            "GET",
-            "attestation/",
+        let server = Server::start(vec![route_of(
+            &compute::VM_ATTESTATION,
+            [&VM],
             Reply::json(200, body),
         )]);
         let run = Hipc::against(&Home::new(), &server).run(&[
@@ -407,11 +417,15 @@ fn attestation_text_mode_reads_unknown_as_not_proven() {
 
 #[test]
 fn attestation_errors_map_to_their_codes_and_a_dry_run_sends_nothing() {
-    let missing = Server::start(vec![vm_route("GET", "attestation/", Reply::not_found())]);
+    let missing = Server::start(vec![route_of(
+        &compute::VM_ATTESTATION,
+        [&VM],
+        Reply::not_found(),
+    )]);
     hipc(&missing, &["vms", "attestation", VM]).fails(1, "not_found");
-    let down = Server::start(vec![vm_route(
-        "GET",
-        "attestation/",
+    let down = Server::start(vec![route_of(
+        &compute::VM_ATTESTATION,
+        [&VM],
         Reply::json(502, r#"{"error":"control plane unreachable"}"#),
     )]);
     let error = hipc(&down, &["vms", "attestation", VM]).fails(1, "unavailable");
@@ -439,9 +453,9 @@ fn a_vm_id_that_could_change_the_route_is_usage_without_a_request() {
     }
     assert!(server.requests().is_empty());
     let longest = "a".repeat(64);
-    let ok = Server::start(vec![route(
-        "GET",
-        &format!("/api/compute/vms/{longest}/"),
+    let ok = Server::start(vec![route_of(
+        &compute::VM,
+        [&longest],
         Reply::json(200, "{}"),
     )]);
     hipc(&ok, &["vms", "get", &longest]).ok();
@@ -449,9 +463,9 @@ fn a_vm_id_that_could_change_the_route_is_usage_without_a_request() {
 
 #[test]
 fn create_sends_exactly_the_flags_given() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, &vm("pending")),
     )]);
     create(&server, &["--no-wait", "--yes"]).ok();
@@ -648,9 +662,9 @@ fn a_placement_group_adds_exactly_its_field_to_the_body() {
         assert_eq!(draft(&doc)["body"]["placement_group"], name);
     }
     assert!(server.requests().is_empty());
-    let sent = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let sent = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, &vm("pending")),
     )]);
     create(&sent, &["--placement-group", "web", "--no-wait", "--yes"]).ok();
@@ -694,9 +708,9 @@ fn a_bad_placement_group_is_usage_without_a_request() {
 fn placement_groups_unavailable_hints_to_check_the_vm_list() {
     let unavailable = r#"{"error":"placement-groups-unavailable"}"#;
     // Swagger names the slug, not its field, so a `code` carries it too.
-    let under_code = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let under_code = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(503, r#"{"code":"placement-groups-unavailable"}"#),
     )]);
     let error = create(&under_code, &["--yes"]).fails(1, "unavailable");
@@ -706,9 +720,9 @@ fn placement_groups_unavailable_hints_to_check_the_vm_list() {
             .unwrap()
             .contains("hipc compute vms list")
     );
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(503, unavailable).header("Retry-After", "30"),
     )]);
     let error = create(&server, &["--placement-group", "web", "--yes"]).fails(1, "unavailable");
@@ -736,18 +750,18 @@ fn placement_groups_unavailable_hints_to_check_the_vm_list() {
         ),
         (502, unavailable, "unavailable"),
     ] {
-        let server = Server::start(vec![route(
-            "POST",
-            "/api/compute/vms/",
+        let server = Server::start(vec![route_of(
+            &compute::VM_CREATE,
+            [],
             Reply::json(status, body),
         )]);
         let error = create(&server, &["--yes"]).fails(1, code);
         assert_eq!(error["side_effects"], "partial", "{body}");
         assert_eq!(error["hint"], generic, "{body}");
     }
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(400, r#"{"error":"bad-placement-group"}"#),
     )]);
     let error = create(&server, &["--yes"]).fails(1, "validation");
@@ -769,12 +783,8 @@ fn a_launch_that_breaks_anti_affinity_keeps_the_vm_on_stdout() {
     })
     .to_string();
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/compute/vms/",
-            Reply::json(202, &vm("pending")),
-        ),
-        vm_route("GET", "", Reply::json(200, &failed)),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+        route_of(&compute::VM, [&VM], Reply::json(200, &failed)),
     ]);
     let run = create(&server, &["--wait", "--placement-group", "web", "--yes"]);
     let doc = fails_with_vm(&run, "partial_failure");
@@ -784,9 +794,9 @@ fn a_launch_that_breaks_anti_affinity_keeps_the_vm_on_stdout() {
 
 #[test]
 fn no_wait_prints_the_launch_answer_without_polling() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, &vm("pending")),
     )]);
     let doc = create(&server, &["--no-wait", "--yes"]).ok();
@@ -798,9 +808,9 @@ fn no_wait_prints_the_launch_answer_without_polling() {
 /// document, as `--no-wait` prints it.
 #[test]
 fn a_pipe_gets_the_launch_answer_without_a_wait() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, &vm("pending")),
     )]);
     let doc = create(&server, &["--yes"]).ok();
@@ -830,12 +840,8 @@ fn a_pipe_gets_the_launch_answer_without_a_wait() {
 #[test]
 fn a_wait_timeout_waits_on_a_pipe_without_wait() {
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/compute/vms/",
-            Reply::json(202, &vm("pending")),
-        ),
-        vm_route("GET", "", Reply::json(200, &vm("running"))),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+        route_of(&compute::VM, [&VM], Reply::json(200, &vm("running"))),
     ]);
     let doc = create(&server, &["--wait-timeout", "5", "--yes"]).ok();
     assert_eq!(doc["status"], "running");
@@ -843,12 +849,8 @@ fn a_wait_timeout_waits_on_a_pipe_without_wait() {
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].path(), format!("/api/compute/vms/{VM}/"));
     let still = Server::start(vec![
-        route(
-            "POST",
-            "/api/compute/vms/",
-            Reply::json(202, &vm("pending")),
-        ),
-        vm_route("GET", "", Reply::json(200, &vm("provisioning"))),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+        route_of(&compute::VM, [&VM], Reply::json(200, &vm("provisioning"))),
     ]);
     let run = create(&still, &["--wait-timeout", "1", "--yes"]);
     fails_with_vm(&run, "timeout");
@@ -867,9 +869,9 @@ fn a_wait_timeout_waits_on_a_pipe_without_wait() {
 
 #[test]
 fn a_launch_already_running_is_printed_without_polling() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, &vm("running")),
     )]);
     assert_eq!(
@@ -883,12 +885,8 @@ fn a_launch_already_running_is_printed_without_polling() {
 #[test]
 fn the_wait_polls_the_vm_until_it_runs() {
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/compute/vms/",
-            Reply::json(202, &vm("pending")),
-        ),
-        vm_route("GET", "", Reply::json(200, &vm("running"))),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+        route_of(&compute::VM, [&VM], Reply::json(200, &vm("running"))),
     ]);
     let doc = create(&server, &["--wait", "--yes"]).ok();
     assert_eq!(doc["status"], "running");
@@ -903,12 +901,8 @@ fn a_wait_that_runs_out_is_timeout_and_keeps_the_vm_on_stdout() {
     // "booting" is not a status this version knows, so the wait goes on until the end.
     for status in ["provisioning", "booting"] {
         let server = Server::start(vec![
-            route(
-                "POST",
-                "/api/compute/vms/",
-                Reply::json(202, &vm("pending")),
-            ),
-            vm_route("GET", "", Reply::json(200, &vm(status))),
+            route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+            route_of(&compute::VM, [&VM], Reply::json(200, &vm(status))),
         ]);
         let run = create(&server, &["--wait", "--wait-timeout", "1", "--yes"]);
         assert_eq!(fails_with_vm(&run, "timeout")["status"], status);
@@ -930,9 +924,9 @@ fn a_wait_that_runs_out_is_timeout_and_keeps_the_vm_on_stdout() {
 #[test]
 fn a_terminal_status_other_than_running_is_a_partial_failure_and_keeps_the_vm() {
     for status in ["failed", "decommissioning", "decommissioned"] {
-        let server = Server::start(vec![route(
-            "POST",
-            "/api/compute/vms/",
+        let server = Server::start(vec![route_of(
+            &compute::VM_CREATE,
+            [],
             Reply::json(202, &vm(status)),
         )]);
         let run = create(&server, &["--wait", "--yes"]);
@@ -945,21 +939,21 @@ fn a_terminal_status_other_than_running_is_a_partial_failure_and_keeps_the_vm() 
 #[test]
 fn a_failing_poll_keeps_the_last_vm_on_stdout() {
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/compute/vms/",
-            Reply::json(202, &vm("pending")),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+        route_of(
+            &compute::VM,
+            [&VM],
+            Reply::json(502, r#"{"detail":"bad gateway"}"#),
         ),
-        vm_route("GET", "", Reply::json(502, r#"{"detail":"bad gateway"}"#)),
     ]);
     let run = create(&server, &["--wait", "--yes"]);
     assert_eq!(fails_with_vm(&run, "unavailable")["status"], "pending");
     assert_eq!(server.requests().len(), 5, "one launch and four polls");
     // The 502 alone would be retryable, but a retry of the create launches a second VM.
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["retryable"], false);
+    let error = run.error();
+    assert_eq!(error["retryable"], false);
     assert!(
-        error["error"]["hint"]
+        error["hint"]
             .as_str()
             .unwrap()
             .contains("where the launch stands")
@@ -970,29 +964,25 @@ fn a_failing_poll_keeps_the_last_vm_on_stdout() {
 fn a_poll_answer_that_is_not_json_or_empty_keeps_the_last_vm() {
     for body in ["<html>", ""] {
         let server = Server::start(vec![
-            route(
-                "POST",
-                "/api/compute/vms/",
-                Reply::json(202, &vm("pending")),
-            ),
-            vm_route("GET", "", Reply::json(200, body)),
+            route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+            route_of(&compute::VM, [&VM], Reply::json(200, body)),
         ]);
         let run = create(&server, &["--wait", "--yes"]);
         assert_eq!(fails_with_vm(&run, "internal")["status"], "pending");
-        let error: Value = serde_json::from_str(run.stderr()).unwrap();
-        assert_eq!(error["error"]["retryable"], false);
+        let error = run.error();
+        assert_eq!(error["retryable"], false);
     }
 }
 
 #[test]
 fn a_launch_answer_without_a_status_keeps_waiting() {
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/compute/vms/",
+        route_of(
+            &compute::VM_CREATE,
+            [],
             Reply::json(202, &format!(r#"{{"vm_id":"{VM}"}}"#)),
         ),
-        vm_route("GET", "", Reply::json(200, &vm("running"))),
+        route_of(&compute::VM, [&VM], Reply::json(200, &vm("running"))),
     ]);
     assert_eq!(
         create(&server, &["--wait", "--yes"]).ok()["status"],
@@ -1005,9 +995,9 @@ fn a_launch_answer_without_a_status_keeps_waiting() {
 /// message and the hint (tenet 15).
 #[test]
 fn a_backtick_in_the_launched_vm_id_cannot_end_the_quote() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, r#"{"vm_id":"v`x","status":"failed"}"#),
     )]);
     let run = Hipc::against(&Home::new(), &server).run(&[
@@ -1027,7 +1017,7 @@ fn a_backtick_in_the_launched_vm_id_cannot_end_the_quote() {
         serde_json::from_str::<Value>(run.stdout()).unwrap()["vm_id"],
         "v`x"
     );
-    let error = serde_json::from_str::<Value>(run.stderr()).unwrap()["error"].clone();
+    let error = run.error();
     assert_eq!(error["code"], "partial_failure");
     assert_eq!(
         error["message"],
@@ -1051,9 +1041,9 @@ fn a_launched_vm_id_that_is_not_an_id_never_reaches_a_hint() {
         "-x",
     ] {
         let body = serde_json::json!({ "vm_id": id, "status": "failed" }).to_string();
-        let server = Server::start(vec![route(
-            "POST",
-            "/api/compute/vms/",
+        let server = Server::start(vec![route_of(
+            &compute::VM_CREATE,
+            [],
             Reply::json(202, &body),
         )]);
         let run = Hipc::against(&Home::new(), &server).run(&[
@@ -1068,16 +1058,16 @@ fn a_launched_vm_id_that_is_not_an_id_never_reaches_a_hint() {
             "--yes",
         ]);
         assert_eq!(run.code(), Some(1), "{id}");
-        let error = serde_json::from_str::<Value>(run.stderr()).unwrap()["error"].clone();
+        let error = run.error();
         assert_eq!(
             error["hint"], "run `hipc compute vms list` to find the new VM",
             "{id}"
         );
     }
     // A real id still gets the command that shows the VM.
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, r#"{"vm_id":"vm-1_a","status":"failed"}"#),
     )]);
     let run = Hipc::against(&Home::new(), &server).run(&[
@@ -1091,7 +1081,7 @@ fn a_launched_vm_id_that_is_not_an_id_never_reaches_a_hint() {
         "7",
         "--yes",
     ]);
-    let error = serde_json::from_str::<Value>(run.stderr()).unwrap()["error"].clone();
+    let error = run.error();
     assert_eq!(
         error["hint"],
         "run `hipc compute vms get vm-1_a` to see where the launch stands"
@@ -1101,12 +1091,8 @@ fn a_launched_vm_id_that_is_not_an_id_never_reaches_a_hint() {
 #[test]
 fn text_mode_names_the_vm_before_the_wait_and_not_when_none_follows() {
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/compute/vms/",
-            Reply::json(202, &vm("pending")),
-        ),
-        vm_route("GET", "", Reply::json(200, &vm("running"))),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+        route_of(&compute::VM, [&VM], Reply::json(200, &vm("running"))),
     ]);
     let args = [
         "--output",
@@ -1128,9 +1114,9 @@ fn text_mode_names_the_vm_before_the_wait_and_not_when_none_follows() {
         format!("note: launched the VM `{VM}`; waiting until it is running\n")
     );
     assert_eq!(server.requests().len(), 2, "the launch was polled once");
-    let running = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let running = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, &vm("running")),
     )]);
     let run = Hipc::against(&Home::new(), &running).run(&args);
@@ -1141,9 +1127,9 @@ fn text_mode_names_the_vm_before_the_wait_and_not_when_none_follows() {
         1,
         "a running launch is not polled"
     );
-    let failed = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let failed = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, &vm("failed")),
     )]);
     let run = Hipc::against(&Home::new(), &failed).run(&args);
@@ -1154,24 +1140,24 @@ fn text_mode_names_the_vm_before_the_wait_and_not_when_none_follows() {
 
 #[test]
 fn a_launch_answer_without_a_vm_id_is_internal_and_printed() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, r#"{"status":"pending"}"#),
     )]);
     let run = create(&server, &["--wait", "--yes"]);
     assert_eq!(run.code(), Some(1));
     assert_eq!(run.json(), json!({"status": "pending"}));
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "internal");
-    assert_eq!(error["error"]["side_effects"], "partial");
+    let error = run.error();
+    assert_eq!(error["code"], "internal");
+    assert_eq!(error["side_effects"], "partial");
 }
 
 #[test]
 fn a_refused_launch_prints_nothing_on_stdout() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(402, r#"{"detail":"Balance does not cover 24 hours"}"#),
     )]);
     let error = create(&server, &["--yes"]).fails(1, "payment_required");
@@ -1188,8 +1174,8 @@ fn a_refused_launch_prints_nothing_on_stdout() {
 #[test]
 fn start_needs_no_confirmation_and_stop_needs_yes_and_warns_only_in_text_mode() {
     let server = Server::start(vec![
-        vm_route("POST", "start/", Reply::json(200, &vm("running"))),
-        vm_route("POST", "stop/", Reply::json(200, &vm("stopped"))),
+        route_of(&compute::VM_START, [&VM], Reply::json(200, &vm("running"))),
+        route_of(&compute::VM_STOP, [&VM], Reply::json(200, &vm("stopped"))),
     ]);
     assert_eq!(
         hipc(&server, &["vms", "start", VM]).ok()["status"],
@@ -1244,14 +1230,14 @@ fn start_needs_no_confirmation_and_stop_needs_yes_and_warns_only_in_text_mode() 
 #[test]
 fn power_errors_map_to_their_codes() {
     let server = Server::start(vec![
-        vm_route(
-            "POST",
-            "start/",
+        route_of(
+            &compute::VM_START,
+            [&VM],
             Reply::json(409, r#"{"detail":"Already running"}"#),
         ),
-        vm_route(
-            "POST",
-            "stop/",
+        route_of(
+            &compute::VM_STOP,
+            [&VM],
             Reply::json(502, r#"{"detail":"node down"}"#),
         ),
     ]);
@@ -1262,9 +1248,13 @@ fn power_errors_map_to_their_codes() {
 #[test]
 fn reboot_and_delete_need_yes() {
     let server = Server::start(vec![
-        vm_route("GET", "", Reply::json(200, &vm("running"))),
-        vm_route("POST", "reboot/", Reply::json(200, &vm("running"))),
-        vm_route("DELETE", "", Reply::json(202, &vm("decommissioning"))),
+        route_of(&compute::VM, [&VM], Reply::json(200, &vm("running"))),
+        route_of(&compute::VM_REBOOT, [&VM], Reply::json(200, &vm("running"))),
+        route_of(
+            &compute::VM_DELETE,
+            [&VM],
+            Reply::json(202, &vm("decommissioning")),
+        ),
     ]);
     let error = hipc(&server, &["vms", "reboot", VM]).fails(2, "confirmation_required");
     assert!(error["message"].as_str().unwrap().contains(VM));
@@ -1299,10 +1289,14 @@ fn reboot_and_delete_need_yes() {
         ]
     );
     let gone = Server::start(vec![
-        vm_route("GET", "", Reply::json(200, &vm("decommissioning"))),
-        vm_route(
-            "DELETE",
-            "",
+        route_of(
+            &compute::VM,
+            [&VM],
+            Reply::json(200, &vm("decommissioning")),
+        ),
+        route_of(
+            &compute::VM_DELETE,
+            [&VM],
             Reply::json(409, r#"{"detail":"Already decommissioned"}"#),
         ),
     ]);
@@ -1311,9 +1305,9 @@ fn reboot_and_delete_need_yes() {
 
 #[test]
 fn a_delete_of_a_vm_with_no_name_names_its_id_and_a_failed_read_deletes_nothing() {
-    let server = Server::start(vec![vm_route(
-        "GET",
-        "",
+    let server = Server::start(vec![route_of(
+        &compute::VM,
+        [&VM],
         Reply::json(200, &format!(r#"{{"vm_id":"{VM}","status":"running"}}"#)),
     )]);
     let error = hipc(&server, &["vms", "delete", VM]).fails(2, "confirmation_required");
@@ -1325,7 +1319,7 @@ fn a_delete_of_a_vm_with_no_name_names_its_id_and_a_failed_read_deletes_nothing(
         "{error}"
     );
     // A VM the read cannot find is not deleted: the read's error is the command's.
-    let missing = Server::start(vec![vm_route("GET", "", Reply::not_found())]);
+    let missing = Server::start(vec![route_of(&compute::VM, [&VM], Reply::not_found())]);
     let error = hipc(&missing, &["vms", "delete", VM, "--yes"]).fails(1, "not_found");
     assert_eq!(error["side_effects"], "none");
     let sent = missing.only_request();
@@ -1387,9 +1381,9 @@ fn ssh_keys_list_follows_drf_pages() {
 
 #[test]
 fn ssh_keys_create_uploads_the_public_key_file() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/ssh-keys/",
+    let server = Server::start(vec![route_of(
+        &compute::SSH_KEY_CREATE,
+        [],
         Reply::json(201, r#"{"id":3,"name":"laptop"}"#),
     )]);
     let home = Home::new();
@@ -1539,9 +1533,9 @@ fn create_sends_a_public_ip_and_a_public_key_only_when_given() {
     }
     assert!(none.requests().is_empty());
 
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, &vm("pending")),
     )]);
     let args = [
@@ -1559,9 +1553,9 @@ fn create_sends_a_public_ip_and_a_public_key_only_when_given() {
 
     // Swagger: with no free address the launch is refused with 409 `no-free-public-ip`
     // before anything is bought, so it is a plain `conflict` with the body kept.
-    let full = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let full = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(409, r#"{"error":"no-free-public-ip"}"#),
     )]);
     let error = create(&full, &["--public-ip", "--no-wait", "--yes"]).fails(1, "conflict");
@@ -1572,11 +1566,10 @@ fn create_sends_a_public_ip_and_a_public_key_only_when_given() {
 /// `vms create --flavor small --ssh-key-id 7 <extra>` in text mode against a server that
 /// answers the launch with `answer`.
 fn launch_in_text(answer: &str, extra: &[&str]) -> Run {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
-        Reply::json(202, answer),
-    )]);
+    let server = Server::start(vec![
+        backup_options(),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, answer)),
+    ]);
     let mut args = vec!["--output", "text"];
     args.extend(extra);
     create(&server, &args)
@@ -1610,9 +1603,9 @@ fn a_launch_with_a_public_ip_says_inbound_is_blocked_only_in_text_mode() {
         run.stderr()
     );
 
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, &vm("pending")),
     )]);
     let doc = create(&server, &["--public-ip", "--no-wait", "--yes"]).ok();
@@ -1646,9 +1639,9 @@ fn a_launch_whose_address_failed_says_so_and_quotes_the_server() {
         "{}",
         run.stdout()
     );
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, &answer),
     )]);
     let doc = create(&server, &["--public-ip", "--no-wait", "--yes"]).ok();
@@ -1669,8 +1662,8 @@ fn a_launch_that_waits_reports_a_failed_address_from_either_answer() {
         (failed("pending"), vm("running")),
     ] {
         let server = Server::start(vec![
-            route("POST", "/api/compute/vms/", Reply::json(202, &answer)),
-            vm_route("GET", "", Reply::json(200, &polled)),
+            route_of(&compute::VM_CREATE, [], Reply::json(202, &answer)),
+            route_of(&compute::VM, [&VM], Reply::json(200, &polled)),
         ]);
         let args = ["--output", "text", "--public-ip", "--wait", "--yes"];
         let run = create(&server, &args);
@@ -1770,9 +1763,9 @@ fn create_refuses_a_private_key_or_a_bad_key_file_without_sending() {
 
 #[test]
 fn ssh_keys_delete_needs_yes_and_names_the_key_on_204() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/ssh-keys/3/",
+    let server = Server::start(vec![route_of(
+        &compute::SSH_KEY_DELETE,
+        [&3],
         Reply::json(204, ""),
     )]);
     hipc(&server, &["ssh-keys", "delete", "3"]).fails(2, "confirmation_required");
@@ -1786,100 +1779,158 @@ fn ssh_keys_delete_needs_yes_and_names_the_key_on_204() {
 
 #[test]
 fn ssh_keys_delete_prints_a_body_when_there_is_one() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/ssh-keys/3/",
+    let server = Server::start(vec![route_of(
+        &compute::SSH_KEY_DELETE,
+        [&3],
         Reply::json(200, r#"{"id":3,"deleted":true,"note":"x"}"#),
     )]);
     let doc = hipc(&server, &["ssh-keys", "delete", "3", "--yes"]).ok();
     assert_eq!(doc["note"], "x");
 }
 
+/// Asserts that `doc`, the dry run of `hipc compute <args>`, lists at least one request, each
+/// one a method and a path that the command's row in `schema` lists among its routes: a
+/// dry run naming another route, or another method, fails here.
+fn assert_requests_are_routes_of_the_command(schema: &Value, doc: &Value, args: &[&str]) {
+    let commands = schema["commands"]
+        .as_array()
+        .expect("the schema lists commands");
+    let words: Vec<&str> = std::iter::once("compute")
+        .chain(args.iter().copied())
+        .collect();
+    let row = commands
+        .iter()
+        .filter(|command| {
+            let path = command["path"].as_array().expect("a path is an array");
+            path.len() <= words.len() && path.iter().zip(&words).all(|(word, arg)| word == arg)
+        })
+        .max_by_key(|command| command["path"].as_array().map(Vec::len));
+    assert!(row.is_some(), "{args:?} has no schema row");
+    let routes = row.expect("asserted above")["routes"]
+        .as_array()
+        .expect("a row lists its routes");
+    let fits = |template: &str, path: &str| {
+        let (template, path): (Vec<&str>, Vec<&str>) =
+            (template.split('/').collect(), path.split('/').collect());
+        template.len() == path.len()
+            && template.iter().zip(&path).all(|(part, segment)| {
+                part == segment || (part.starts_with('{') && !segment.is_empty())
+            })
+    };
+    let requests = doc["requests"]
+        .as_array()
+        .expect("a dry run lists its requests");
+    assert!(!requests.is_empty(), "{args:?}: {doc}");
+    for request in requests {
+        let url = request["url"].as_str().expect("a request has a URL");
+        let path = url
+            .split_once("/api/")
+            .map(|(_, rest)| format!("/api/{}", rest.split('?').next().unwrap_or_default()))
+            .unwrap_or_default();
+        assert!(
+            routes
+                .iter()
+                .any(|route| route["method"] == request["method"]
+                    && route["path"]
+                        .as_str()
+                        .is_some_and(|template| fits(template, &path))),
+            "{args:?}: {} {path} is not among {routes:?}",
+            request["method"]
+        );
+    }
+}
+
+/// `hipc compute` command lines, each of which a dry run describes without a request.
+const DRY_RUNS: &[&[&str]] = &[
+    &["prices"],
+    &["quota"],
+    &["charge-cap"],
+    &["flavors"],
+    &["images"],
+    &["apps"],
+    &["regions"],
+    &["feasibility", "--flavor", "small"],
+    &["account-ssh-keys"],
+    &["vms", "list"],
+    &["vms", "get", VM],
+    &["vms", "failovers", VM],
+    &["vms", "start", VM],
+    &["vms", "stop", VM],
+    &["vms", "reboot", VM],
+    &["vms", "resize-options", VM],
+    &["vms", "resize", VM, "--flavor", "large"],
+    &["vms", "resize-status", VM, "7"],
+    &["vms", "delete", VM],
+    &["public-ip", "availability"],
+    &["public-ip", "availability", "--region", "FR"],
+    &["public-ip", "get", VM],
+    &["public-ip", "create", VM],
+    &["public-ip", "delete", VM],
+    &["public-ip", "usage", VM],
+    &["public-ip", "usage", VM, "--range", "7d"],
+    &["firewall", "get", VM],
+    &["exposures", "list", VM],
+    &["exposures", "create", VM, "--port", "8080"],
+    &[
+        "exposures",
+        "create",
+        VM,
+        "--port",
+        "53",
+        "--mode",
+        "raw",
+        "--protocol",
+        "udp",
+    ],
+    &["exposures", "delete", VM, "7"],
+    &["backups", "options"],
+    &["backups", "policy", "get", VM],
+    &["backups", "policy", "update", VM, "--interval", "900"],
+    &["backups", "policy", "delete", VM],
+    &["backups", "list", VM],
+    &["backups", "restore", VM, "--run-id", "run_1"],
+    &["backups", "restore-status", VM],
+    &["runners", "settings", "get"],
+    &["runners", "settings", "update", "--enabled", "true"],
+    &["runners", "installations", "list"],
+    &["runners", "installations", "delete", "7"],
+    &["runners", "jobs"],
+    &["runners", "connect"],
+    &["ssh-keys", "list"],
+    &["ssh-keys", "get", "3"],
+    &["ssh-keys", "delete", "3"],
+    &["databases", "list"],
+    &["databases", "get", "7"],
+    &[
+        "databases",
+        "create",
+        "--tier",
+        "ha",
+        "--size",
+        "xl",
+        "--engine-version",
+        "16",
+    ],
+    &["databases", "delete", "7"],
+    &["databases", "restart", "7"],
+    &["databases", "restore", "7"],
+    &["databases", "exposure", "create", "7"],
+    &["databases", "exposure", "delete", "7"],
+    &["databases", "events", "7"],
+    &["databases", "metrics", "7"],
+    &["databases", "refusals"],
+];
+
 #[test]
 fn these_compute_commands_dry_run_without_a_request() {
     let server = Server::start(vec![]);
-    for args in [
-        &["prices"][..],
-        &["quota"],
-        &["charge-cap"],
-        &["flavors"],
-        &["images"],
-        &["apps"],
-        &["regions"],
-        &["feasibility", "--flavor", "small"],
-        &["account-ssh-keys"],
-        &["vms", "list"],
-        &["vms", "get", VM],
-        &["vms", "failovers", VM],
-        &["vms", "start", VM],
-        &["vms", "stop", VM],
-        &["vms", "reboot", VM],
-        &["vms", "resize-options", VM],
-        &["vms", "resize", VM, "--flavor", "large"],
-        &["vms", "resize-status", VM, "7"],
-        &["vms", "delete", VM],
-        &["public-ip", "availability"],
-        &["public-ip", "availability", "--region", "FR"],
-        &["public-ip", "get", VM],
-        &["public-ip", "create", VM],
-        &["public-ip", "delete", VM],
-        &["public-ip", "usage", VM],
-        &["public-ip", "usage", VM, "--range", "7d"],
-        &["firewall", "get", VM],
-        &["exposures", "list", VM],
-        &["exposures", "create", VM, "--port", "8080"],
-        &[
-            "exposures",
-            "create",
-            VM,
-            "--port",
-            "53",
-            "--mode",
-            "raw",
-            "--protocol",
-            "udp",
-        ],
-        &["exposures", "delete", VM, "7"],
-        &["backups", "options"],
-        &["backups", "policy", "get", VM],
-        &["backups", "policy", "update", VM, "--interval", "900"],
-        &["backups", "policy", "delete", VM],
-        &["backups", "list", VM],
-        &["backups", "restore", VM, "--run-id", "run_1"],
-        &["backups", "restore-status", VM],
-        &["runners", "settings", "get"],
-        &["runners", "settings", "update", "--enabled", "true"],
-        &["runners", "installations", "list"],
-        &["runners", "installations", "delete", "7"],
-        &["runners", "jobs"],
-        &["runners", "connect"],
-        &["ssh-keys", "list"],
-        &["ssh-keys", "get", "3"],
-        &["ssh-keys", "delete", "3"],
-        &["databases", "list"],
-        &["databases", "get", "7"],
-        &[
-            "databases",
-            "create",
-            "--tier",
-            "ha",
-            "--size",
-            "xl",
-            "--engine-version",
-            "16",
-        ],
-        &["databases", "delete", "7"],
-        &["databases", "restart", "7"],
-        &["databases", "restore", "7"],
-        &["databases", "exposure", "create", "7"],
-        &["databases", "exposure", "delete", "7"],
-        &["databases", "events", "7"],
-        &["databases", "metrics", "7"],
-        &["databases", "refusals"],
-    ] {
+    let schema = Hipc::new(&Home::new()).run(&["schema"]).ok();
+    for args in DRY_RUNS {
         let mut argv = args.to_vec();
         argv.push("--dry-run");
-        assert_eq!(hipc(&server, &argv).ok()["dry_run"], true, "{args:?}");
+        let doc = hipc(&server, &argv).ok();
+        assert_eq!(doc["dry_run"], true, "{args:?}");
+        assert_requests_are_routes_of_the_command(&schema, &doc, args);
     }
     let home = Home::new();
     let key = home.file("id.pub", b"ssh-ed25519 AAAA me@laptop\n");
@@ -1902,8 +1953,7 @@ fn these_compute_commands_dry_run_without_a_request() {
 #[test]
 fn compute_needs_a_token() {
     let server = Server::start(vec![]);
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&["compute", "prices"])
         .fails(1, "auth");
     assert!(server.requests().is_empty());
@@ -1945,9 +1995,9 @@ fn no_source_encodes_a_price() {
 
 #[test]
 fn a_list_read_whole_that_the_server_paginates_is_internal() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VMS,
+        [],
         Reply::json(
             200,
             r#"{"count":3,"next":"{base}/api/compute/vms/?page=2","previous":null,"results":[{}]}"#,
@@ -1965,9 +2015,9 @@ fn a_list_read_whole_that_the_server_paginates_is_internal() {
 
 #[test]
 fn a_launch_answered_2xx_with_an_unreadable_body_is_partial() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, "<html>ok</html>"),
     )]);
     let error = create(&server, &["--yes"]).fails(1, "internal");
@@ -1980,9 +2030,9 @@ fn a_launch_answered_2xx_with_an_unreadable_body_is_partial() {
 
 #[test]
 fn a_launch_answered_5xx_is_partial_and_not_retryable() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(503, r#"{"detail":"busy"}"#),
     )]);
     let error = create(&server, &["--yes"]).fails(1, "unavailable");
@@ -1992,9 +2042,9 @@ fn a_launch_answered_5xx_is_partial_and_not_retryable() {
         "a retry could launch a second VM"
     );
     // A read that gets a 5xx did nothing, so it may be retried.
-    let read = Server::start(vec![route(
-        "GET",
-        "/api/compute/vms/",
+    let read = Server::start(vec![route_of(
+        &compute::VMS,
+        [],
         Reply::json(503, r#"{"detail":"busy"}"#),
     )]);
     let error = hipc(&read, &["vms", "list"]).fails(1, "unavailable");
@@ -2008,26 +2058,26 @@ fn a_launch_answered_5xx_is_partial_and_not_retryable() {
 fn a_launched_vm_whose_id_cannot_be_polled_is_internal_not_usage() {
     for id in ["a b", "a?b=1", "a/b", "..", ""] {
         let launched = json!({ "vm_id": id, "status": "pending" }).to_string();
-        let server = Server::start(vec![route(
-            "POST",
-            "/api/compute/vms/",
+        let server = Server::start(vec![route_of(
+            &compute::VM_CREATE,
+            [],
             Reply::json(202, &launched),
         )]);
         let run = create(&server, &["--wait", "--yes"]);
         assert_eq!(run.code(), Some(1), "a launch went through: never exit 2");
         assert_eq!(run.json()["vm_id"], id);
-        let error: Value = serde_json::from_str(run.stderr()).unwrap();
-        assert_eq!(error["error"]["code"], "internal");
-        assert_eq!(error["error"]["side_effects"], "partial");
+        let error = run.error();
+        assert_eq!(error["code"], "internal");
+        assert_eq!(error["side_effects"], "partial");
         assert_eq!(
-            error["error"]["message"],
+            error["message"],
             format!(
                 "the launch answer names the VM `{id}`, which `hipc` cannot poll: a VM id is 1 \
                  to 64 letters, digits, `-`, and `_`"
             )
         );
         assert_eq!(
-            error["error"]["hint"],
+            error["hint"],
             "run `hipc compute vms list` to find the new VM"
         );
         assert_eq!(server.requests().len(), 1, "{id}: no poll is sent");
@@ -2047,12 +2097,8 @@ fn a_poll_answer_for_another_vm_ends_the_wait() {
         (r#"{"vm_id":7,"status":"running"}"#, "no VM"),
     ] {
         let server = Server::start(vec![
-            route(
-                "POST",
-                "/api/compute/vms/",
-                Reply::json(202, &vm("pending")),
-            ),
-            vm_route("GET", "", Reply::json(200, answer)),
+            route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+            route_of(&compute::VM, [&VM], Reply::json(200, answer)),
         ]);
         let run = create(&server, &["--wait", "--yes"]);
         let printed = fails_with_vm(&run, "internal");
@@ -2060,9 +2106,9 @@ fn a_poll_answer_for_another_vm_ends_the_wait() {
             printed["status"], "pending",
             "{answer}: this VM's last document"
         );
-        let stderr: Value = serde_json::from_str(run.stderr()).unwrap();
+        let stderr = run.error();
         assert_eq!(
-            stderr["error"]["message"],
+            stderr["message"],
             format!("the poll of the VM `{VM}` answered with the document of {named}")
         );
         assert_eq!(server.requests().len(), 2);
@@ -2071,7 +2117,11 @@ fn a_poll_answer_for_another_vm_ends_the_wait() {
 
 #[test]
 fn a_confirmation_in_a_membership_names_the_account() {
-    let server = Server::start(vec![vm_route("GET", "", Reply::json(200, &vm("running")))]);
+    let server = Server::start(vec![route_of(
+        &compute::VM,
+        [&VM],
+        Reply::json(200, &vm("running")),
+    )]);
     let error = Hipc::against(&Home::new(), &server)
         .env("HIPPIUS_ACCOUNT", MEMBER)
         .run(&["compute", "vms", "delete", VM])
@@ -2093,9 +2143,9 @@ fn a_confirmation_in_a_membership_names_the_account() {
 
 #[test]
 fn a_page_number_with_a_leading_zero_is_the_same_page() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/ssh-keys/",
+    let server = Server::start(vec![route_of(
+        &compute::SSH_KEYS,
+        [],
         Reply::json(
             200,
             r#"{"next":"{base}/api/ssh-keys/?page=01","previous":null,"results":[]}"#,
@@ -2112,9 +2162,9 @@ fn a_page_number_with_a_leading_zero_is_the_same_page() {
 
 #[test]
 fn a_page_token_with_a_leading_zero_asks_for_that_page() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/ssh-keys/",
+    let server = Server::start(vec![route_of(
+        &compute::SSH_KEYS,
+        [],
         Reply::json(
             200,
             r#"{"count":0,"next":null,"previous":null,"results":[]}"#,
@@ -2128,125 +2178,60 @@ fn a_page_token_with_a_leading_zero_asks_for_that_page() {
     );
 }
 
-/// A server that answers each connection with the next of `replies` (status, body), in
-/// order, and returns the request lines it saw.
-fn in_sequence(replies: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
-    let replies = replies
-        .into_iter()
-        .map(|(status, body)| (status, String::new(), body))
-        .collect();
-    let (url, handle) = in_sequence_timed(replies);
-    let lines = std::thread::spawn(move || {
-        let seen = handle.join().expect("the server thread");
-        seen.into_iter().map(|(line, _)| line).collect()
-    });
-    (url, lines)
+/// A server whose launch answers with the first of `replies`, and whose VM answers each
+/// poll with the next of the rest, then every later poll with the last.
+fn in_sequence(replies: Vec<Reply>) -> Server {
+    let mut replies = replies.into_iter();
+    let launch = replies.next().expect("a launch answer");
+    Server::start(vec![
+        route_of(&compute::VM_CREATE, [], launch),
+        route_each_of(&compute::VM, [&VM], replies.collect()),
+    ])
 }
 
-/// [`in_sequence`] with each reply's extra header lines (each ending in `\r\n`), and the time
-/// each request arrived beside its request line.
-fn in_sequence_timed(
-    replies: Vec<(u16, String, String)>,
-) -> (
-    String,
-    std::thread::JoinHandle<Vec<(String, std::time::Instant)>>,
-) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-    let url = format!("http://{}", listener.local_addr().expect("a bound address"));
-    let handle = std::thread::spawn(move || {
-        let mut seen = Vec::new();
-        for (status, headers, body) in replies {
-            let Ok((mut stream, _)) = listener.accept() else {
-                break;
-            };
-            // The whole request, headers and body, before the answer.
-            let mut reader = std::io::BufReader::new(&stream);
-            let mut line = String::new();
-            drop(reader.read_line(&mut line));
-            seen.push((line.trim_end().to_owned(), std::time::Instant::now()));
-            let mut length = 0;
-            loop {
-                let mut header = String::new();
-                if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
-                    break;
-                }
-                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap_or(0);
-                }
-            }
-            let mut request_body = vec![0_u8; length];
-            drop(reader.read_exact(&mut request_body));
-            drop(reader);
-            let head = format!(
-                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                 {headers}Connection: close\r\n\r\n",
-                body.len()
-            );
-            drop(stream.write_all(format!("{head}{body}").as_bytes()));
-        }
-        seen
-    });
-    (url, handle)
-}
+/// `vms create --flavor small --ssh-key-id 7 --wait --yes`.
+const WAITED_LAUNCH: [&str; 9] = [
+    "compute",
+    "vms",
+    "create",
+    "--wait",
+    "--flavor",
+    "small",
+    "--ssh-key-id",
+    "7",
+    "--yes",
+];
 
 #[test]
 fn a_passing_poll_failure_is_tolerated_and_the_wait_goes_on() {
-    let (url, server) = in_sequence(vec![
-        (202, vm("pending")),
-        (502, r#"{"detail":"bad gateway"}"#.to_owned()),
-        (200, vm("running")),
+    let server = in_sequence(vec![
+        Reply::json(202, &vm("pending")),
+        Reply::json(502, r#"{"detail":"bad gateway"}"#),
+        Reply::json(200, &vm("running")),
     ]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, crate::common::TOKEN)
-        .run(&[
-            "compute",
-            "vms",
-            "create",
-            "--wait",
-            "--flavor",
-            "small",
-            "--ssh-key-id",
-            "7",
-            "--yes",
-        ])
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&WAITED_LAUNCH)
         .ok();
     assert_eq!(doc["status"], "running");
-    assert_eq!(server.join().unwrap().len(), 3);
+    assert_eq!(server.requests().len(), 3);
 }
 
 /// A retryable poll failure with a `Retry-After` longer than the poll interval (2 seconds)
 /// waits that long before the next poll.
 #[test]
 fn a_poll_failure_waits_for_its_retry_after() {
-    let (url, server) = in_sequence_timed(vec![
-        (202, String::new(), vm("pending")),
-        (
-            503,
-            "Retry-After: 4\r\n".to_owned(),
-            r#"{"detail":"busy"}"#.to_owned(),
-        ),
-        (200, String::new(), vm("running")),
+    let server = in_sequence(vec![
+        Reply::json(202, &vm("pending")),
+        Reply::json(503, r#"{"detail":"busy"}"#).header("Retry-After", "4"),
+        Reply::json(200, &vm("running")),
     ]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, crate::common::TOKEN)
-        .run(&[
-            "compute",
-            "vms",
-            "create",
-            "--wait",
-            "--flavor",
-            "small",
-            "--ssh-key-id",
-            "7",
-            "--yes",
-        ])
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&WAITED_LAUNCH)
         .ok();
     assert_eq!(doc["status"], "running");
-    let seen = server.join().unwrap();
+    let seen = server.requests();
     assert_eq!(seen.len(), 3);
-    let gap = seen[2].1.duration_since(seen[1].1);
+    let gap = seen[2].received.duration_since(seen[1].received);
     assert!(gap >= std::time::Duration::from_millis(3_900), "{gap:?}");
 }
 
@@ -2254,99 +2239,86 @@ fn a_poll_failure_waits_for_its_retry_after() {
 /// with the VM on stdout, and sends no poll the server asked not to get.
 #[test]
 fn a_retry_after_past_the_deadline_ends_the_wait_without_another_poll() {
-    let (url, server) = in_sequence_timed(vec![
-        (202, String::new(), vm("pending")),
-        (
-            503,
-            "Retry-After: 60\r\n".to_owned(),
-            r#"{"detail":"busy"}"#.to_owned(),
-        ),
-        (200, String::new(), vm("running")),
+    let server = in_sequence(vec![
+        Reply::json(202, &vm("pending")),
+        Reply::json(503, r#"{"detail":"busy"}"#).header("Retry-After", "60"),
+        Reply::json(200, &vm("running")),
     ]);
     let started = std::time::Instant::now();
-    let run = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, crate::common::TOKEN)
-        .run(&[
-            "compute",
-            "vms",
-            "create",
-            "--wait",
-            "--wait-timeout",
-            "4",
-            "--flavor",
-            "small",
-            "--ssh-key-id",
-            "7",
-            "--yes",
-        ]);
+    let run = Hipc::against(&Home::new(), &server)
+        .run(&[&WAITED_LAUNCH[..], &["--wait-timeout", "4"]].concat());
     let took = started.elapsed();
     assert_eq!(fails_with_vm(&run, "timeout")["status"], "pending");
     assert!(took < std::time::Duration::from_secs(30), "{took:?}");
-    // The third reply is never asked for: a connection now ends the server thread.
-    drop(std::net::TcpStream::connect(
-        url.trim_start_matches("http://"),
-    ));
-    assert_eq!(
-        server.join().unwrap().len(),
-        3,
-        "the create, one poll, this probe"
-    );
+    assert_eq!(server.requests().len(), 2, "the create and one poll");
 }
 
 #[test]
 fn a_non_retryable_poll_failure_ends_the_wait_at_once() {
-    let (url, server) = in_sequence(vec![
-        (202, vm("pending")),
-        (404, r#"{"detail":"Not found."}"#.to_owned()),
-    ]);
-    let run = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, crate::common::TOKEN)
-        .run(&[
-            "compute",
-            "vms",
-            "create",
-            "--wait",
-            "--flavor",
-            "small",
-            "--ssh-key-id",
-            "7",
-            "--yes",
-        ]);
+    let server = in_sequence(vec![Reply::json(202, &vm("pending")), Reply::not_found()]);
+    let run = Hipc::against(&Home::new(), &server).run(&WAITED_LAUNCH);
     assert_eq!(fails_with_vm(&run, "not_found")["status"], "pending");
-    assert_eq!(server.join().unwrap().len(), 2, "no poll after a 404");
+    assert_eq!(server.requests().len(), 2, "no poll after a 404");
 }
 
 #[test]
 fn a_success_resets_the_count_of_failed_polls() {
-    let bad = || (502, r#"{"detail":"bad gateway"}"#.to_owned());
-    let (url, server) = in_sequence(vec![
-        (202, vm("pending")),
+    let bad = || Reply::json(502, r#"{"detail":"bad gateway"}"#);
+    let server = in_sequence(vec![
+        Reply::json(202, &vm("pending")),
         bad(),
-        (200, vm("provisioning")),
+        Reply::json(200, &vm("provisioning")),
         bad(),
         bad(),
         bad(),
-        (200, vm("running")),
+        Reply::json(200, &vm("running")),
     ]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, crate::common::TOKEN)
-        .run(&[
-            "compute",
-            "vms",
-            "create",
-            "--wait",
-            "--flavor",
-            "small",
-            "--ssh-key-id",
-            "7",
-            "--yes",
-        ])
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&WAITED_LAUNCH)
         .ok();
     assert_eq!(doc["status"], "running");
-    assert_eq!(server.join().unwrap().len(), 7);
+    assert_eq!(server.requests().len(), 7);
+}
+
+/// The test suite's poll interval (`common::POLL_MS`) replaces the real 2 seconds: three
+/// polls fit in a one-second wait, where the real interval leaves room for one, at the
+/// deadline.
+#[test]
+fn the_test_poll_interval_shortens_every_pause_of_the_wait() {
+    let server = in_sequence(vec![
+        Reply::json(202, &vm("pending")),
+        Reply::json(200, &vm("provisioning")),
+        Reply::json(502, r#"{"detail":"bad gateway"}"#),
+        Reply::json(200, &vm("running")),
+    ]);
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&[&WAITED_LAUNCH[..], &["--wait-timeout", "1"]].concat())
+        .ok();
+    assert_eq!(doc["status"], "running");
+    assert_eq!(server.requests().len(), 4);
+}
+
+/// A test poll interval that is not a whole number of milliseconds above zero is ignored, so
+/// a one-second wait keeps the real 2 seconds and polls once, at the deadline. Zero in
+/// particular would skip the deadline check and poll for ever.
+#[test]
+fn a_test_poll_interval_of_zero_or_not_a_number_is_ignored() {
+    for value in ["0", "x", "-5", "1.5"] {
+        let server = in_sequence(vec![
+            Reply::json(202, &vm("pending")),
+            Reply::json(200, &vm("provisioning")),
+            Reply::json(200, &vm("running")),
+        ]);
+        let run = Hipc::against(&Home::new(), &server)
+            .env("HIPC_TEST_POLL_INTERVAL_MS", value)
+            .run(&[&WAITED_LAUNCH[..], &["--wait-timeout", "1"]].concat());
+        assert_eq!(
+            fails_with_vm(&run, "timeout")["status"],
+            "provisioning",
+            "{value}"
+        );
+        assert_eq!(server.requests().len(), 2, "{value}: one poll");
+    }
 }
 
 fn resize(status: &str) -> String {
@@ -2366,8 +2338,16 @@ fn resize_options_and_status_print_the_object_as_sent() {
         r#""blocked":null,"cooldown_until":null,"in_flight":null}"#
     );
     let server = Server::start(vec![
-        vm_route("GET", "resize/", Reply::json(200, options)),
-        vm_route("GET", "resize/7/", Reply::json(200, &resize("done"))),
+        route_of(
+            &compute::VM_RESIZE_OPTIONS,
+            [&VM],
+            Reply::json(200, options),
+        ),
+        route_of(
+            &compute::VM_RESIZE_STATUS,
+            [&VM, &7],
+            Reply::json(200, &resize("done")),
+        ),
     ]);
     assert_eq!(
         hipc(&server, &["vms", "resize-options", VM]).ok(),
@@ -2387,15 +2367,19 @@ fn resize_options_and_status_print_the_object_as_sent() {
             format!("GET /api/compute/vms/{VM}/resize/7/")
         ]
     );
-    let missing = Server::start(vec![vm_route("GET", "resize/8/", Reply::not_found())]);
+    let missing = Server::start(vec![route_of(
+        &compute::VM_RESIZE_STATUS,
+        [&VM, &8],
+        Reply::not_found(),
+    )]);
     hipc(&missing, &["vms", "resize-status", VM, "8"]).fails(1, "not_found");
 }
 
 #[test]
 fn resize_needs_yes_and_says_the_vm_reboots() {
-    let server = Server::start(vec![vm_route(
-        "POST",
-        "resize/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_RESIZE,
+        [&VM],
         Reply::json(202, &resize("pending")),
     )]);
     let error = hipc(&server, &["vms", "resize", VM, "--flavor", "large"])
@@ -2450,7 +2434,11 @@ fn resize_errors_map_to_their_codes() {
         (503, r#"{"error":"resize-unavailable"}"#, "unavailable"),
     ];
     for (status, body, code) in cases {
-        let server = Server::start(vec![vm_route("POST", "resize/", Reply::json(status, body))]);
+        let server = Server::start(vec![route_of(
+            &compute::VM_RESIZE,
+            [&VM],
+            Reply::json(status, body),
+        )]);
         let error = hipc(
             &server,
             &["vms", "resize", VM, "--flavor", "large", "--yes"],
@@ -2480,9 +2468,9 @@ fn resize_errors_map_to_their_codes() {
 
 #[test]
 fn a_resize_cooldown_with_retry_after_sets_the_delay() {
-    let server = Server::start(vec![vm_route(
-        "POST",
-        "resize/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_RESIZE,
+        [&VM],
         Reply::json(429, r#"{"error":"resize-cooldown","retry_after_s":600}"#)
             .header("Retry-After", "600"),
     )]);
@@ -2516,9 +2504,17 @@ fn a_resize_id_that_is_not_a_number_is_usage_without_a_request() {
 #[test]
 fn a_membership_sends_the_header_on_every_resize_route() {
     let server = Server::start(vec![
-        vm_route("GET", "resize/", Reply::json(200, "{}")),
-        vm_route("POST", "resize/", Reply::json(202, &resize("pending"))),
-        vm_route("GET", "resize/7/", Reply::json(200, &resize("stopping"))),
+        route_of(&compute::VM_RESIZE_OPTIONS, [&VM], Reply::json(200, "{}")),
+        route_of(
+            &compute::VM_RESIZE,
+            [&VM],
+            Reply::json(202, &resize("pending")),
+        ),
+        route_of(
+            &compute::VM_RESIZE_STATUS,
+            [&VM, &7],
+            Reply::json(200, &resize("stopping")),
+        ),
     ]);
     let member = |args: &[&str]| {
         let mut argv = vec!["compute", "vms"];
@@ -2551,8 +2547,16 @@ fn a_membership_sends_the_header_on_every_resize_route() {
 #[test]
 fn resize_prints_a_text_block_in_text_mode() {
     let server = Server::start(vec![
-        vm_route("POST", "resize/", Reply::json(202, &resize("pending"))),
-        vm_route("GET", "resize/7/", Reply::json(200, &resize("relaunching"))),
+        route_of(
+            &compute::VM_RESIZE,
+            [&VM],
+            Reply::json(202, &resize("pending")),
+        ),
+        route_of(
+            &compute::VM_RESIZE_STATUS,
+            [&VM, &7],
+            Reply::json(200, &resize("relaunching")),
+        ),
     ]);
     // The test points `hipc` at the server with `HIPPIUS_API_URL`, which the note repeats.
     let next = format!(
@@ -2593,40 +2597,17 @@ fn vm_with(status: &str, fields: Value) -> String {
     doc.to_string()
 }
 
-/// `vms create --flavor small --ssh-key-id 7 --wait --yes <extra>` against a server that
-/// answers each request with the next of `replies`, and the request lines it saw.
-///
-/// When hipc stops before every reply was taken, empty connections take the rest, so the
-/// server thread ends and the test fails on its assertions instead of hanging; they are
-/// left out of the lines returned.
+/// `vms create --flavor small --ssh-key-id 7 --wait --yes <extra>` against
+/// [`in_sequence`] `replies` (status, body), and the requests it sent, as `METHOD path`.
 fn launch_in_sequence(replies: Vec<(u16, String)>, extra: &[&str]) -> (Run, Vec<String>) {
-    let (url, server) = in_sequence(replies);
-    let address = url.trim_start_matches("http://").to_owned();
-    let mut args = vec![
-        "compute",
-        "vms",
-        "create",
-        "--flavor",
-        "small",
-        "--ssh-key-id",
-        "7",
-        "--wait",
-        "--yes",
-    ];
-    args.extend(extra);
-    let run = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, crate::common::TOKEN)
-        .run(&args);
-    while !server.is_finished() {
-        drop(std::net::TcpStream::connect(&address));
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    let seen = server.join().expect("the server thread ends");
-    (
-        run,
-        seen.into_iter().filter(|line| !line.is_empty()).collect(),
-    )
+    let server = in_sequence(
+        replies
+            .into_iter()
+            .map(|(status, body)| Reply::json(status, &body))
+            .collect(),
+    );
+    let run = Hipc::against(&Home::new(), &server).run(&[&WAITED_LAUNCH[..], extra].concat());
+    (run, server.calls())
 }
 
 /// With `--public-ip` the wait goes on past `running` until `network_ready` is true, which
@@ -2649,7 +2630,7 @@ fn a_public_ip_launch_waits_for_network_ready_that_arrives_late() {
     assert!(
         seen[1..]
             .iter()
-            .all(|line| line.starts_with(&format!("GET /api/compute/vms/{VM}/ "))),
+            .all(|call| *call == format!("GET /api/compute/vms/{VM}/")),
         "{seen:?}"
     );
 }
@@ -2672,9 +2653,9 @@ fn a_launch_without_a_public_ip_does_not_wait_for_network_ready() {
 /// reachable is polled, and text mode says what the wait is for.
 #[test]
 fn a_public_ip_launch_answer_is_polled_only_until_it_is_reachable() {
-    let ready = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let ready = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(
             202,
             &vm_with(
@@ -2688,14 +2669,14 @@ fn a_public_ip_launch_answer_is_polled_only_until_it_is_reachable() {
     assert_eq!(ready.requests().len(), 1);
 
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/compute/vms/",
+        route_of(
+            &compute::VM_CREATE,
+            [],
             Reply::json(202, &vm_with("running", json!({"network_ready": false}))),
         ),
-        vm_route(
-            "GET",
-            "",
+        route_of(
+            &compute::VM,
+            [&VM],
             Reply::json(200, &vm_with("running", json!({"network_ready": true}))),
         ),
     ]);
@@ -2719,14 +2700,10 @@ fn a_public_ip_launch_answer_is_polled_only_until_it_is_reachable() {
 #[test]
 fn a_wait_for_network_ready_that_runs_out_is_timeout_and_keeps_the_vm() {
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/compute/vms/",
-            Reply::json(202, &vm("pending")),
-        ),
-        vm_route(
-            "GET",
-            "",
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+        route_of(
+            &compute::VM,
+            [&VM],
             Reply::json(200, &vm_with("running", json!({"network_ready": false}))),
         ),
     ]);
@@ -2734,9 +2711,9 @@ fn a_wait_for_network_ready_that_runs_out_is_timeout_and_keeps_the_vm() {
     let doc = fails_with_vm(&run, "timeout");
     assert_eq!(doc["status"], "running");
     assert_eq!(doc["network_ready"], false);
-    let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
+    let error = run.error();
     assert_eq!(
-        error["error"]["message"],
+        error["message"],
         format!(
             "the VM `{VM}` was running, but its public IPv4 was not reachable \
              (`network_ready`) after 1 second"
@@ -2800,22 +2777,18 @@ fn a_stalled_boot_shown_failed_is_waited_through() {
 #[test]
 fn a_stalled_boot_that_does_not_recover_is_timeout() {
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/compute/vms/",
-            Reply::json(202, &vm("pending")),
-        ),
-        vm_route(
-            "GET",
-            "",
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+        route_of(
+            &compute::VM,
+            [&VM],
             Reply::json(200, &vm_with("failed", json!({"boot_stalled": true}))),
         ),
     ]);
     let run = create(&server, &["--wait-timeout", "1", "--yes"]);
     assert_eq!(fails_with_vm(&run, "timeout")["boot_stalled"], true);
-    let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
+    let error = run.error();
     assert_eq!(
-        error["error"]["message"],
+        error["message"],
         format!(
             "the VM `{VM}` was not running after 1 second: its boot stalled (`boot_stalled`) \
              and has not recovered"
@@ -2834,12 +2807,8 @@ fn failed_without_a_stall_and_decommissioning_stay_terminal() {
         vm_with("decommissioned", json!({"boot_stalled": true})),
     ] {
         let server = Server::start(vec![
-            route(
-                "POST",
-                "/api/compute/vms/",
-                Reply::json(202, &vm("pending")),
-            ),
-            vm_route("GET", "", Reply::json(200, &answer)),
+            route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+            route_of(&compute::VM, [&VM], Reply::json(200, &answer)),
         ]);
         let run = create(&server, &["--public-ip", "--wait", "--yes"]);
         fails_with_vm(&run, "partial_failure");
@@ -2856,7 +2825,13 @@ fn launch_options_add_exactly_their_fields_to_the_body() {
     let body = |extra: &[&str]| {
         let mut args = extra.to_vec();
         args.push("--dry-run");
-        create(&server, &args).ok()["requests"][0]["body"].clone()
+        let doc = create(&server, &args).ok();
+        let requests = doc["requests"]
+            .as_array()
+            .expect("a dry run lists its requests");
+        let launch = requests.iter().find(|request| request["method"] == "POST");
+        assert!(launch.is_some(), "{doc}");
+        launch.expect("asserted above")["body"].clone()
     };
     assert_eq!(
         body(&["--os-disk-tier", "hdd"]),
@@ -2909,11 +2884,10 @@ fn launch_options_add_exactly_their_fields_to_the_body() {
     );
     assert!(server.requests().is_empty());
 
-    let sent = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
-        Reply::json(202, &vm("pending")),
-    )]);
+    let sent = Server::start(vec![
+        backup_options(),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+    ]);
     let args = [
         "--os-disk-tier",
         "hdd",
@@ -2923,8 +2897,9 @@ fn launch_options_add_exactly_their_fields_to_the_body() {
         "--yes",
     ];
     create(&sent, &args).ok();
+    assert_eq!(sent.requests().len(), 2);
     assert_eq!(
-        sent.only_request().json(),
+        sent.requests()[1].json(),
         json!({
             "flavor": "small",
             "ssh_key_ids": [7],
@@ -2934,8 +2909,68 @@ fn launch_options_add_exactly_their_fields_to_the_body() {
     );
 }
 
+/// A launch with `--backup-interval` reads the backup options after the question and is
+/// refused (`usage`) when they do not list the interval, before anything is launched, as
+/// `backups policy update` is (owner decision D19). The dry run lists the read, then the
+/// launch, and a launch without the flag reads nothing.
+#[test]
+fn a_launch_backup_interval_the_server_does_not_offer_is_refused_before_the_launch() {
+    let server = Server::start(vec![
+        backup_options(),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+    ]);
+    let error = create(
+        &server,
+        &["--backup-interval", "7200", "--no-wait", "--yes"],
+    )
+    .fails(2, "usage");
+    assert_eq!(
+        error["message"],
+        "a backup interval `7200` is not one the server offers: the server offers `900`, \
+         `3600`, `21600`, and `86400`"
+    );
+    assert_eq!(
+        error["hint"],
+        "run `hipc compute backups options` to see them"
+    );
+    assert_eq!(server.only_request().method, "GET");
+    create(&server, &["--backup-interval", "7200", "--no-wait"]).fails(2, "confirmation_required");
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "the read comes after the question"
+    );
+    let doc = create(&server, &["--backup-interval", "900", "--dry-run"]).ok();
+    let sent: Vec<(&str, &str)> = doc["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["method"].as_str().unwrap(), r["url"].as_str().unwrap()))
+        .collect();
+    assert_eq!(sent.len(), 2, "{doc}");
+    assert_eq!(sent[0].0, "GET");
+    assert!(sent[0].1.ends_with("/api/compute/backup-options/"), "{doc}");
+    assert_eq!(sent[1].0, "POST");
+    // With `--open-port`, the read comes first, then the launch and the rules.
+    let doc = create(
+        &server,
+        &["--backup-interval", "900", "--open-port", "22", "--dry-run"],
+    )
+    .ok();
+    let methods: Vec<&str> = doc["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(methods, ["GET", "POST", "PUT"]);
+    create(&server, &["--no-wait", "--yes"]).ok();
+    assert_eq!(server.requests()[1].method, "POST");
+    assert_eq!(server.requests().len(), 2);
+}
+
 /// Every launch option is checked against swagger before anything is sent, a dry run
-/// included: the tier enum, the backup interval set, a dedicated disk's size (at least
+/// included: the tier enum, a backup interval of whole seconds, a dedicated disk's size (at least
 /// 1000 GiB) and count (1 to 8, one tier and size for all), and no backups beside
 /// dedicated disks (swagger: 409 `dedicated-pinned`).
 #[test]
@@ -2945,7 +2980,7 @@ fn bad_launch_options_are_usage_without_a_request() {
     let cases: [(&[&str], &str); 15] = [
         (&["--os-disk-tier", "sata"], "sata"),
         (&["--os-disk-tier", "HDD"], "HDD"),
-        (&["--backup-interval", "600"], "600"),
+        (&["--backup-interval", "0"], "a backup interval is"),
         (&["--backup-interval", "1h"], "1h"),
         (&["--dedicated-disk", "999:hdd"], "a dedicated disk is"),
         (&["--dedicated-disk", "1000"], "a dedicated disk is"),
@@ -3094,9 +3129,15 @@ fn schema_lists_the_launch_options() {
         flag(&["compute", "feasibility"], "--os-disk-tier")["possible_values"],
         tiers
     );
-    assert_eq!(
-        flag(&create, "--backup-interval")["possible_values"],
-        json!(["900", "3600", "21600", "86400"])
+    // The intervals are the server's (owner decision D5): the help names those known today.
+    let interval = flag(&create, "--backup-interval");
+    assert_eq!(interval["possible_values"], json!([]));
+    assert!(
+        interval["help"]
+            .as_str()
+            .unwrap()
+            .ends_with("900, 3600, 21600, or 86400"),
+        "{interval}"
     );
     let disk = flag(&create, "--dedicated-disk");
     assert_eq!(disk["repeats"], true);
@@ -3127,11 +3168,10 @@ fn a_launch_whose_backups_failed_says_so_and_quotes_the_server() {
     );
     assert!(run.stdout().contains("not `golden`"), "{}", run.stdout());
 
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
-        Reply::json(202, &answer),
-    )]);
+    let server = Server::start(vec![
+        backup_options(),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &answer)),
+    ]);
     let run = create(&server, &args);
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert_eq!(run.stderr(), "", "JSON mode says nothing on stderr");
@@ -3171,8 +3211,9 @@ fn a_launch_that_waits_reports_failed_backups_from_the_polled_vm() {
         ),
     ] {
         let server = Server::start(vec![
-            route("POST", "/api/compute/vms/", Reply::json(202, &answer)),
-            vm_route("GET", "", Reply::json(200, &polled)),
+            backup_options(),
+            route_of(&compute::VM_CREATE, [], Reply::json(202, &answer)),
+            route_of(&compute::VM, [&VM], Reply::json(200, &polled)),
         ]);
         let args = [
             "--output",
@@ -3194,7 +3235,7 @@ fn a_launch_that_waits_reports_failed_backups_from_the_polled_vm() {
             stderr.trim_end(),
             "{answer} then {polled}"
         );
-        assert_eq!(server.requests().len(), 2, "{answer}");
+        assert_eq!(server.requests().len(), 3, "{answer}");
     }
 }
 
@@ -3589,14 +3630,10 @@ fn the_help_says_where_the_money_controls_are() {
 #[test]
 fn a_launch_with_open_ports_sets_the_firewall_after_the_launch() {
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/compute/vms/",
-            Reply::json(202, &vm("pending")),
-        ),
-        vm_route(
-            "PUT",
-            "firewall/",
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+        route_of(
+            &compute::FIREWALL_UPDATE,
+            [&VM],
             Reply::json(200, r#"{"rules":[],"revision":"r2"}"#),
         ),
     ]);
@@ -3672,18 +3709,12 @@ fn a_waited_launch_prints_the_rules_it_set() {
         "ports": ["22"],
         "description": "opened at launch by hipc",
     }]});
-    let launch = || {
-        route(
-            "POST",
-            "/api/compute/vms/",
-            Reply::json(202, &vm("pending")),
-        )
-    };
-    let opened = || vm_route("PUT", "firewall/", Reply::json(200, "{}"));
+    let launch = || route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending")));
+    let opened = || route_of(&compute::FIREWALL_UPDATE, [&VM], Reply::json(200, "{}"));
     let server = Server::start(vec![
         launch(),
         opened(),
-        vm_route("GET", "", Reply::json(200, &vm("running"))),
+        route_of(&compute::VM, [&VM], Reply::json(200, &vm("running"))),
     ]);
     let doc = create(&server, &["--open-ssh", "--wait-timeout", "5", "--yes"]).ok();
     assert_eq!(doc["status"], "running");
@@ -3691,7 +3722,7 @@ fn a_waited_launch_prints_the_rules_it_set() {
     let still = Server::start(vec![
         launch(),
         opened(),
-        vm_route("GET", "", Reply::json(200, &vm("provisioning"))),
+        route_of(&compute::VM, [&VM], Reply::json(200, &vm("provisioning"))),
     ]);
     let run = create(&still, &["--open-ssh", "--wait-timeout", "1", "--yes"]);
     let vm = fails_with_vm(&run, "timeout");
@@ -3703,7 +3734,7 @@ fn a_waited_launch_prints_the_rules_it_set() {
     // A `firewall` the server sent is the server's, and stays.
     let theirs = r#"{"vm_id":"VM","status":"pending","firewall":"server"}"#.replace("VM", VM);
     let server = Server::start(vec![
-        route("POST", "/api/compute/vms/", Reply::json(202, &theirs)),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &theirs)),
         opened(),
     ]);
     let doc = create(&server, &["--open-ssh", "--no-wait", "--yes"]).ok();
@@ -3716,14 +3747,10 @@ fn a_waited_launch_prints_the_rules_it_set() {
 #[test]
 fn a_launch_whose_ports_cannot_be_opened_is_a_partial_failure() {
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/compute/vms/",
-            Reply::json(202, &vm("pending")),
-        ),
-        vm_route(
-            "PUT",
-            "firewall/",
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+        route_of(
+            &compute::FIREWALL_UPDATE,
+            [&VM],
             Reply::json(422, r#"{"detail":"bad rule"}"#),
         ),
     ]);
@@ -3757,17 +3784,17 @@ fn a_launch_whose_ports_cannot_be_opened_is_a_partial_failure() {
     );
     // A launch answer without a usable id cannot be given its rules: `internal`, the answer
     // on stdout, and no firewall request.
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, r#"{"status":"pending"}"#),
     )]);
     let run = create(&server, &["--open-port", "80", "--no-wait", "--yes"]);
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
     assert_eq!(run.json(), json!({"status": "pending"}));
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "internal");
-    assert_eq!(error["error"]["side_effects"], "partial");
+    let error = run.error();
+    assert_eq!(error["code"], "internal");
+    assert_eq!(error["side_effects"], "partial");
     assert_eq!(server.requests().len(), 1);
 }
 
@@ -3778,18 +3805,18 @@ fn a_launch_whose_ports_cannot_be_opened_is_a_partial_failure() {
 fn a_launched_id_with_a_leading_dash_still_gets_its_rules() {
     let launched = r#"{"vm_id":"-vm1","status":"pending"}"#;
     let server = Server::start(vec![
-        route("POST", "/api/compute/vms/", Reply::json(202, launched)),
-        route(
-            "PUT",
-            "/api/compute/vms/-vm1/firewall/",
+        route_of(&compute::VM_CREATE, [], Reply::json(202, launched)),
+        route_of(
+            &compute::FIREWALL_UPDATE,
+            [&"-vm1"],
             Reply::json(422, r#"{"detail":"bad rule"}"#),
         ),
     ]);
     let run = create(&server, &["--open-ssh", "--no-wait", "--yes"]);
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "partial_failure");
-    let hint = error["error"]["hint"].as_str().unwrap();
+    let error = run.error();
+    assert_eq!(error["code"], "partial_failure");
+    let hint = error["hint"].as_str().unwrap();
     assert!(
         hint.starts_with("run `hipc compute firewall update --rules-file - --yes -- -vm1` with "),
         "{hint}"
@@ -3814,15 +3841,15 @@ fn a_launched_id_with_a_leading_dash_still_gets_its_rules() {
         .stdin(rules.as_bytes())
         .run(&argv)
         .dry_ok();
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/compute/vms/",
+    let server = Server::start(vec![route_of(
+        &compute::VM_CREATE,
+        [],
         Reply::json(202, r#"{"vm_id":"a/b","status":"pending"}"#),
     )]);
     let run = create(&server, &["--open-ssh", "--no-wait", "--yes"]);
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
-    let error: Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "internal");
+    let error = run.error();
+    assert_eq!(error["code"], "internal");
     assert_eq!(server.requests().len(), 1);
 }
 
@@ -3831,12 +3858,8 @@ fn a_launched_id_with_a_leading_dash_still_gets_its_rules() {
 #[test]
 fn a_launch_with_open_ports_notes_them_in_text_mode() {
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/compute/vms/",
-            Reply::json(202, &vm("pending")),
-        ),
-        vm_route("PUT", "firewall/", Reply::json(200, "{}")),
+        route_of(&compute::VM_CREATE, [], Reply::json(202, &vm("pending"))),
+        route_of(&compute::FIREWALL_UPDATE, [&VM], Reply::json(200, "{}")),
     ]);
     let run = Hipc::against(&Home::new(), &server).run(&[
         "--output",

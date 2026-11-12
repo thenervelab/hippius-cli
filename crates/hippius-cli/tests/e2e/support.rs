@@ -3,12 +3,12 @@
 //! blank one is refused before anything is sent. The ticket routes act as the signed-in user,
 //! so no selector header is sent.
 
+use hippius::routes::support;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Route, Server, TOKEN, draft, route};
-
-const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
-const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
+use crate::common::{
+    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Route, Server, TOKEN, draft, route, route_of,
+};
 
 /// One ticket, in the shape of swagger's `TicketDetail`.
 const TICKET: &str = concat!(
@@ -44,11 +44,11 @@ const TEXT: &str = "the VM `vm_1` stays in `starting`\n";
 const LIMIT: usize = 1024 * 1024;
 
 fn ticket_route(reply: Reply) -> Route {
-    route("POST", "/api/support/tickets/", reply)
+    route_of(&support::TICKET_CREATE, [], reply)
 }
 
 fn message_route(reply: Reply) -> Route {
-    route("POST", "/api/support/tickets/7/messages/", reply)
+    route_of(&support::MESSAGE_CREATE, [&7], reply)
 }
 
 /// The path of a private file in `home` that holds `text`.
@@ -116,9 +116,9 @@ fn list_all_follows_every_page_and_a_bare_array_is_one_page() {
     );
 
     // Swagger documents the answer as a bare array.
-    let bare = Server::start(vec![route(
-        "GET",
-        "/api/support/tickets/",
+    let bare = Server::start(vec![route_of(
+        &support::TICKETS,
+        [],
         Reply::json(200, r#"[{"id":7}]"#),
     )]);
     let doc = Hipc::against(&home, &bare)
@@ -184,8 +184,8 @@ fn list_refuses_a_status_and_a_page_token_the_api_does_not_have() {
 #[test]
 fn get_prints_the_ticket_and_a_missing_one_names_the_list() {
     let server = Server::start(vec![
-        route("GET", "/api/support/tickets/7/", Reply::json(200, TICKET)),
-        route("GET", "/api/support/tickets/8/", Reply::not_found()),
+        route_of(&support::TICKET, [&7], Reply::json(200, TICKET)),
+        route_of(&support::TICKET, [&8], Reply::not_found()),
     ]);
     let home = Home::new();
     let doc = Hipc::against(&home, &server)
@@ -286,10 +286,7 @@ fn create_without_yes_is_refused_and_sends_nothing() {
             .contains("open the support ticket `Refund`"),
         "{error}"
     );
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
-        .run(&args)
-        .fails(1, "auth");
+    Hipc::tokenless(&home, &server).run(&args).fails(1, "auth");
     assert!(server.requests().is_empty());
 }
 
@@ -299,7 +296,7 @@ fn create_and_reply_dry_runs_show_the_body_and_send_nothing() {
     let server = Server::start(vec![]);
     let home = Home::new();
     let file = body_file(&home, TEXT);
-    let hipc = || Hipc::new(&home).env("HIPPIUS_API_URL", server.url());
+    let hipc = || Hipc::tokenless(&home, &server);
     let doc = hipc()
         .run(&[
             "--dry-run",
@@ -345,6 +342,39 @@ fn create_and_reply_dry_runs_show_the_body_and_send_nothing() {
     assert_eq!(doc["requests"].as_array().unwrap().len(), 1);
     assert_eq!(doc["requests"][0]["body"], draft(&doc)["body"]);
     assert!(server.requests().is_empty());
+}
+
+/// A create or a reply the server answers 502 or 503 may have posted the ticket or the
+/// message, so each is `partial` and not retryable (tenet 4): a retry could post it twice.
+#[test]
+fn a_create_or_reply_answered_502_or_503_is_partial() {
+    for status in [502, 503] {
+        let reply = || Reply::json(status, r#"{"error":"x"}"#).header("Retry-After", "4");
+        let server = Server::start(vec![ticket_route(reply()), message_route(reply())]);
+        let home = Home::new();
+        let file = body_file(&home, TEXT);
+        for args in [
+            &[
+                "support",
+                "tickets",
+                "create",
+                "--subject",
+                "Help",
+                "--body-file",
+                &file,
+                "--yes",
+            ][..],
+            &["support", "tickets", "reply", "7", "--body-file", &file],
+        ] {
+            let error = Hipc::against(&home, &server)
+                .run(args)
+                .fails(1, "unavailable");
+            assert_eq!(error["side_effects"], "partial", "{args:?}");
+            assert_eq!(error["retryable"], false, "{args:?}");
+            assert_eq!(error["http_status"], status, "{args:?}");
+        }
+        assert_eq!(server.requests().len(), 2);
+    }
 }
 
 #[test]
@@ -419,10 +449,11 @@ fn a_ticket_text_that_holds_a_token_is_usage_and_sends_nothing() {
             assert!(!error.to_string().contains("padded"), "{error}");
         }
     }
-    // The subject is checked too.
+    // A token whole in the subject is refused too, by the scan of the command line, which
+    // answers before the ticket text is read.
     let file = body_file(&home, TEXT);
     let subject = format!("token {TOKEN}");
-    Hipc::against(&home, &server)
+    let error = Hipc::against(&home, &server)
         .run(&[
             "support",
             "tickets",
@@ -434,6 +465,11 @@ fn a_ticket_text_that_holds_a_token_is_usage_and_sends_nothing() {
             "--yes",
         ])
         .fails(2, "usage");
+    assert_eq!(
+        error["message"],
+        "the command line holds an API token, so it is not repeated here; treat the token as \
+         exposed to anyone who can read this machine's process list or shell history"
+    );
     assert!(server.requests().is_empty());
     // An empty stored token matches no text.
     home.write_config("[profiles.other]\ntoken = \"\"\n");
@@ -535,11 +571,54 @@ fn a_ticket_text_with_a_split_token_or_an_access_key_is_refused() {
     assert_eq!(server.requests().len(), 3);
 }
 
+/// An access key whole in the subject is the command line's to refuse (the argv scan answers
+/// first, as for a token); one split between the subject and the message is the ticket
+/// text's. Neither refusal quotes the words, and nothing is sent.
+#[test]
+fn an_access_key_in_the_subject_is_refused() {
+    let server = Server::start(vec![]);
+    let home = Home::new();
+    let key = crate::common::SEED_PHRASES[0];
+    let (first, last) = key.split_at(key.match_indices(' ').nth(5).map_or(0, |(at, _)| at));
+    for (subject, message, says) in [
+        (
+            key,
+            TEXT,
+            "the command line holds what looks like a seed phrase, so it is not repeated here; \
+             treat the words as exposed to anyone who can read this machine's process list or \
+             shell history",
+        ),
+        (
+            first,
+            last,
+            "the ticket text holds what looks like an access key, which a person on the Hippius \
+             support team would read",
+        ),
+    ] {
+        let file = body_file(&home, message);
+        let error = Hipc::against(&home, &server)
+            .run(&[
+                "support",
+                "tickets",
+                "create",
+                "--subject",
+                subject,
+                "--body-file",
+                &file,
+                "--yes",
+            ])
+            .fails(2, "usage");
+        assert_eq!(error["message"], says, "{subject:?} {message:?}");
+        assert!(!error.to_string().contains("curtain"), "{error}");
+    }
+    assert!(server.requests().is_empty());
+}
+
 #[test]
 fn a_reply_to_a_missing_ticket_names_the_list() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/support/tickets/8/messages/",
+    let server = Server::start(vec![route_of(
+        &support::MESSAGE_CREATE,
+        [&8],
         Reply::not_found(),
     )]);
     let home = Home::new();
@@ -567,10 +646,7 @@ fn a_blank_message_is_usage_and_sends_nothing() {
             vec!["support", "tickets", "reply", "7"],
         ] {
             let args = [command, vec!["--body-file", &file, "--yes"]].concat();
-            let error = Hipc::new(&home)
-                .env("HIPPIUS_API_URL", server.url())
-                .run(&args)
-                .fails(2, "usage");
+            let error = Hipc::tokenless(&home, &server).run(&args).fails(2, "usage");
             assert_eq!(
                 error["message"],
                 format!("the message from `{file}` is blank")
@@ -659,7 +735,11 @@ fn a_subject_outside_one_line_of_255_characters_is_usage() {
             error["message"]
                 .as_str()
                 .unwrap()
-                .contains("a subject is one line of 1 to 255 characters"),
+                .contains(if subject.contains('\n') {
+                    "a subject holds no control character or line break"
+                } else {
+                    "a subject is one line of 1 to 255 characters"
+                }),
             "{error}"
         );
     }
@@ -686,9 +766,9 @@ fn a_subject_outside_one_line_of_255_characters_is_usage() {
 /// it goes out without the account header.
 #[test]
 fn a_membership_refuses_the_staff_ticket_update_through_hipc_api_but_sends_the_close() {
-    let server = Server::start(vec![route(
-        "PATCH",
-        "/api/support/tickets/7/",
+    let server = Server::start(vec![route_of(
+        &support::TICKET_UPDATE,
+        [&7],
         Reply::json(200, CLOSED),
     )]);
     let home = Home::new();
@@ -726,9 +806,9 @@ fn a_membership_refuses_the_staff_ticket_update_through_hipc_api_but_sends_the_c
 /// the caller wrote, or none, with or without a membership, and never the account header.
 #[test]
 fn hipc_api_sends_a_ticket_patch_with_the_body_given() {
-    let server = Server::start(vec![route(
-        "PATCH",
-        "/api/support/tickets/7/",
+    let server = Server::start(vec![route_of(
+        &support::TICKET_UPDATE,
+        [&7],
         Reply::json(200, CLOSED),
     )]);
     let home = Home::new();
@@ -780,8 +860,8 @@ fn hipc_api_sends_a_ticket_patch_with_the_body_given() {
 #[test]
 fn a_selection_sends_every_ticket_command_without_a_selector_header() {
     let server = Server::start(vec![
-        route("GET", "/api/support/tickets/", Reply::json(200, "[]")),
-        route("GET", "/api/support/tickets/7/", Reply::json(200, TICKET)),
+        route_of(&support::TICKETS, [], Reply::json(200, "[]")),
+        route_of(&support::TICKET, [&7], Reply::json(200, TICKET)),
         ticket_route(Reply::json(201, TICKET)),
         message_route(Reply::json(201, MESSAGE)),
         route(
@@ -789,7 +869,7 @@ fn a_selection_sends_every_ticket_command_without_a_selector_header() {
             "/api/support/tickets/7/messages/?page_size=100",
             Reply::json(200, "[]"),
         ),
-        route("PATCH", "/api/support/tickets/7/", Reply::json(200, CLOSED)),
+        route_of(&support::TICKET_UPDATE, [&7], Reply::json(200, CLOSED)),
     ]);
     let home = Home::new();
     let file = body_file(&home, TEXT);
@@ -994,8 +1074,8 @@ fn sent(server: &Server) -> Vec<(String, String)> {
 /// The read, then the close, as a close of an open ticket sends them.
 fn close_routes(ticket: &str) -> Vec<Route> {
     vec![
-        route("GET", "/api/support/tickets/7/", Reply::json(200, ticket)),
-        route("PATCH", "/api/support/tickets/7/", Reply::json(200, CLOSED)),
+        route_of(&support::TICKET, [&7], Reply::json(200, ticket)),
+        route_of(&support::TICKET_UPDATE, [&7], Reply::json(200, CLOSED)),
     ]
 }
 
@@ -1056,8 +1136,7 @@ fn update_without_yes_names_the_subject_and_a_dry_run_lists_the_read_then_the_pa
     );
     assert_eq!(sent(&server), read_then_patch()[..1]);
     let dry = Server::start(vec![]);
-    let doc = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", dry.url())
+    let doc = Hipc::tokenless(&home, &dry)
         .run(&[&["--dry-run"], &args[..]].concat())
         .ok();
     assert_eq!(draft(&doc)["method"], "PATCH");
@@ -1160,8 +1239,8 @@ fn update_takes_only_the_closed_status_and_a_whole_number_id() {
 #[test]
 fn a_close_of_a_missing_ticket_names_the_list_and_changed_nothing() {
     let server = Server::start(vec![
-        route("GET", "/api/support/tickets/8/", Reply::not_found()),
-        route("PATCH", "/api/support/tickets/8/", Reply::json(200, CLOSED)),
+        route_of(&support::TICKET, [&8], Reply::not_found()),
+        route_of(&support::TICKET_UPDATE, [&8], Reply::json(200, CLOSED)),
     ]);
     let error = Hipc::against(&Home::new(), &server)
         .run(&[

@@ -20,21 +20,23 @@ pub(crate) mod projects;
 pub(crate) mod referrals;
 pub(crate) mod replace;
 pub(crate) mod s3;
+pub(crate) mod spend_cap;
 pub(crate) mod support;
 
-use std::collections::HashSet;
 use std::io::Read;
 use std::os::fd::AsFd as _;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
+use hippius::routes::{self, Change, Route, SettingChangeBody};
 use hippius::{
-    Client, ConfigFile, Error, Method, Overrides, Request, Response, Result, Source, phrase,
+    Client, ConfigFile, Error, Overrides, Page, Request, Response, Result, Source, phrase, view_of,
 };
-use serde_json::{Value, json};
-use zeroize::Zeroizing;
+use serde_json::{Map, Value};
+use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::cli::{Funding, PlanSetting, StorageCap};
-use crate::context::{self, Context, Gate, Step};
+use crate::context::{self, ConfirmedStep, Context, DryRun, Gate, Step, Write, WritePlan};
 
 /// Whether `error` is the API's refusal of a call made before `route` set the account's service up:
 /// a 403 whose `detail` is exactly `You must call <route> first.`, the sentence both setup routes
@@ -53,8 +55,8 @@ pub(crate) fn set_up_first(error: &Error, route: &str) -> bool {
 }
 
 /// A hint that runs `hipc <words>` with the profile, origin, and selectors this run was
-/// given, so a copied line acts where this one did, then says `why`. Without a plain form
-/// of those ([`Context::next_command`]), it names the bare command.
+/// given, so a copied line acts where this one did, then says `why`. When one of those
+/// cannot be written as typed ([`Context::next_command`]), it names the bare command.
 pub(crate) fn run_hint(ctx: &Context<'_>, words: &str, why: &str) -> String {
     let command = ctx
         .next_command(words)
@@ -107,17 +109,8 @@ pub(crate) struct Input<'a> {
     pub(crate) what: &'static str,
 }
 
-/// A JSON value that holds a secret, every string in it cleared when dropped
-/// ([`hippius::clear_strings`]).
-pub(crate) struct Cleared(pub(crate) Value);
-
-impl Drop for Cleared {
-    fn drop(&mut self) {
-        hippius::clear_strings(&mut self.0);
-    }
-}
-
 /// What [`Input::open`] opened: stdin, or a regular file that passed the checks.
+#[derive(Debug)]
 enum Opened {
     Stdin,
     File(std::fs::File),
@@ -148,7 +141,10 @@ impl Input<'_> {
 
     /// [`Input::read_text`], but a symlink is followed, for a file a dotfile manager links,
     /// such as `~/.ssh/id_ed25519.pub`: its target is held to the checks of
-    /// [`Input::read`], a regular file and not the config or an AWS file.
+    /// [`Input::read`], a regular file and not the config or an AWS file. The path is resolved
+    /// before the target is opened, so a directory on it swapped for a symlink in between is
+    /// followed; what holds is the check on the opened descriptor, which refuses the config and
+    /// AWS files by device and inode whatever path reached them.
     pub(crate) fn read_text_following_links(&self, limit: u64) -> Result<String> {
         let bytes = if self.path == Path::new("-") {
             self.read(limit)?
@@ -201,22 +197,19 @@ impl Input<'_> {
         Ok(Opened::File(file))
     }
 
-    /// Refuses the file whose metadata is `opened` when it is the hipc config file, which
-    /// holds the token, or the AWS credentials or config file, which can hold S3 keys: a file
-    /// flag sends what it reads, to the API, to support staff, or into a published page. Each
-    /// is matched by device and inode, so a hard link or another spelling of its path is
-    /// refused too. The files at the default
-    /// paths are refused as well as the ones the variables name, since either may hold a
-    /// secret. A file that cannot be inspected (`None`) is not refused: the read then fails,
-    /// or reads a file that is not one of them.
+    /// Refuses the file whose metadata is `opened` when it is the hipc config file, which holds the
+    /// token, or the AWS credentials or config file, which can hold S3 keys: a file flag sends what
+    /// it reads, to the API, to support staff, or into a published page. Each is matched by device
+    /// and inode, so a hard link or another spelling of its path is refused too. The files at the
+    /// default paths are refused as well as the ones the variables name, since either may hold a
+    /// secret. A file that cannot be inspected (`None`) is not refused: the read then fails, or
+    /// reads a file that is not one of them.
     fn refuse_secret_store(&self, opened: Option<&std::fs::Metadata>) -> Result<()> {
-        use std::os::unix::fs::MetadataExt as _;
         let home = context::env_os("HOME").map(PathBuf::from);
         let config = [
             context::config_path().ok(),
             hippius::config_path(None, home.clone()).ok(),
         ];
-        // The AWS config file can hold keys too, so it is refused with the credentials file.
         let aws = home.as_ref().map(|home| home.join(".aws"));
         let credentials = [
             context::env_os("AWS_SHARED_CREDENTIALS_FILE").map(PathBuf::from),
@@ -301,12 +294,12 @@ impl Input<'_> {
     /// ([`Input::unquoted_if_missing`]).
     pub(crate) fn read_secret(&self) -> Result<Zeroizing<String>> {
         let mut bytes = self.read_cleared(MAX_SECRET_FILE_BYTES)?;
-        if std::str::from_utf8(&bytes).is_err() {
-            return Err(self.not_utf8());
-        }
-        Ok(Zeroizing::new(
-            String::from_utf8(std::mem::take(&mut *bytes)).expect("checked: UTF-8"),
-        ))
+        String::from_utf8(std::mem::take(&mut *bytes))
+            .map(Zeroizing::new)
+            .map_err(|refused| {
+                refused.into_bytes().zeroize();
+                self.not_utf8()
+            })
     }
 
     /// Refuses a path that names no file, such as one that does not exist, without quoting
@@ -351,13 +344,6 @@ impl Input<'_> {
             Opened::File(file) => self.take(file, limit, &mut bytes)?,
         }
         Ok(bytes)
-    }
-
-    /// [`Input::read_secret`] of stdin, for a secret that must not outlive its use, such as
-    /// a hotkey phrase piped in.
-    pub(crate) fn read_cleared_stdin(&self) -> Result<Zeroizing<String>> {
-        debug_assert_eq!(self.path, Path::new("-"), "only stdin");
-        self.read_secret()
     }
 
     /// Reads at most `limit` bytes of UTF-8 text.
@@ -418,6 +404,83 @@ pub(crate) fn require_public(ctx: &Context<'_>, public: bool, exposure: &str) ->
     ))
 }
 
+impl From<DryRun> for Printed {
+    fn from(dry_run: DryRun) -> Self {
+        Self::Document(dry_run.into())
+    }
+}
+
+/// The write a command decided on after its reads, and whether it asks about it: what
+/// [`read_then_write`] sends.
+#[derive(Debug)]
+pub(crate) struct Decided {
+    write: Request,
+    /// The question's action and consequence ([`crate::context::Question`]), or `None` for a
+    /// write the command's row does not ask about this time ([`Context::unasked`]).
+    question: Option<(String, Option<String>)>,
+}
+
+impl Decided {
+    /// `write`, asked about with its own action ([`Request::action`]) and `consequence`.
+    pub(crate) fn asked(write: Request, consequence: Option<&str>) -> Self {
+        let action = write.action();
+        Self::asked_as(write, action, consequence)
+    }
+
+    /// `write`, asked about as `action`, which names what the reads found, with
+    /// `consequence`.
+    pub(crate) fn asked_as(write: Request, action: String, consequence: Option<&str>) -> Self {
+        Self {
+            write,
+            question: Some((action, consequence.map(str::to_owned))),
+        }
+    }
+
+    /// `write`, sent without a question: the command's row asks only when a condition holds,
+    /// and the reads showed that it does not ([`Context::unasked`]).
+    pub(crate) fn unasked(write: Request) -> Self {
+        Self {
+            write,
+            question: None,
+        }
+    }
+}
+
+/// A write that reads first, in the order of tenet 5: under `--dry-run` the document of
+/// `plan`, with nothing sent; otherwise the write's own refusals and the token check, then
+/// `decide`, which sends the reads and returns the write and its question, then the question,
+/// then the write. What `render` makes of the write's outcome is printed; it maps the write's
+/// own error, which no step before it can produce.
+///
+/// # Errors
+///
+/// The refusals of [`Context::check_write`] and [`Context::confirm_write`], the error of
+/// `decide`, and the error `render` returns.
+pub(crate) fn read_then_write(
+    ctx: &Context<'_>,
+    client: &Client,
+    plan: &WritePlan<'_>,
+    decide: impl FnOnce() -> Result<Decided>,
+    render: impl FnOnce(Result<Response>) -> Result<Value>,
+) -> Result<Printed> {
+    let checked = match ctx.check_write(client, plan)? {
+        Write::DryRun(doc) => return Ok(doc.into()),
+        Write::Checked(checked) => checked,
+    };
+    let Decided { write, question } = decide()?;
+    debug_assert!(
+        plan.drafts(client, &write),
+        "the write `decide` returns reaches the draft's route, which scoped the question"
+    );
+    let confirmed = match question {
+        Some((action, consequence)) => {
+            ctx.confirm_write(checked, &action, consequence.as_deref())?
+        }
+        None => ctx.unasked(checked),
+    };
+    render(ctx.send_confirmed(client, &write, &confirmed)).map(Printed::Document)
+}
+
 /// Sends `request` through the `--dry-run` and confirmation gate, and prints what `render`
 /// makes of the answer, or the dry-run document: the helper for a command that sends one
 /// request and prints what it makes of the answer.
@@ -430,8 +493,75 @@ pub(crate) fn print_with(
 ) -> Result<Printed> {
     match ctx.call(client, request, gate)? {
         Step::Sent(response) => render(response).map(Printed::Document),
-        Step::DryRun(doc) => Ok(Printed::Document(doc)),
+        Step::DryRun(doc) => Ok(doc.into()),
     }
+}
+
+/// A catalog the server owns, and the code a write takes from it (owner decision D5).
+#[derive(Debug)]
+pub(crate) struct Catalog<'a> {
+    pub(crate) read: Request,
+    pub(crate) codes: fn(&Value) -> Vec<String>,
+    /// What a code names, with its article: `an S3 plan`.
+    pub(crate) what: &'a str,
+    /// The code the write sends.
+    pub(crate) wanted: &'a str,
+    /// The command that lists the catalog, for the refusal's hint.
+    pub(crate) listed_by: &'a str,
+}
+
+impl Catalog<'_> {
+    /// Sends the catalog read and refuses (`usage`) a [`Catalog::wanted`] it does not list,
+    /// naming what it does list.
+    ///
+    /// # Errors
+    ///
+    /// The read's error, an answer that is not JSON, and the refusal.
+    pub(crate) fn check(&self, ctx: &Context<'_>, client: &Client) -> Result<()> {
+        let codes = (self.codes)(&ctx.send(client, &self.read)?.json()?);
+        if codes.iter().any(|code| code == self.wanted) {
+            return Ok(());
+        }
+        let offered = if codes.is_empty() {
+            "the server lists none".to_owned()
+        } else {
+            let quoted: Vec<String> = codes.iter().map(phrase::quote).collect();
+            format!("the server offers {}", phrase::join(&quoted, "and"))
+        };
+        Err(Error::usage(
+            format!(
+                "{} `{}` is not one the server offers: {offered}",
+                self.what, self.wanted
+            ),
+            format!("run `{}` to see them", self.listed_by),
+        ))
+    }
+}
+
+/// Sends `write`, confirmed with `consequence`, once `catalog`, when given, lists the code it
+/// sends, as `hipc hub subscription subscribe` resolves its plan: the question first, then the
+/// catalog read, then the write. A code the catalog does not list is refused (`usage`) after
+/// the read, and nothing is written ([`Catalog::check`]). A dry run reads nothing and lists
+/// the read and the write. Without a catalog this is [`Context::call_confirmed`].
+pub(crate) fn send_from_catalog(
+    ctx: &Context<'_>,
+    client: &Client,
+    catalog: Option<&Catalog<'_>>,
+    write: &Request,
+    consequence: Option<&str>,
+) -> Result<ConfirmedStep> {
+    let Some(catalog) = catalog else {
+        return ctx.call_confirmed(client, write, consequence);
+    };
+    let plan = WritePlan::new(&[&catalog.read], write);
+    let checked = match ctx.check_write(client, &plan)? {
+        Write::DryRun(doc) => return Ok(ConfirmedStep::DryRun(doc)),
+        Write::Checked(checked) => checked,
+    };
+    let confirmed = ctx.confirm_write(checked, &write.action(), consequence)?;
+    catalog.check(ctx, client)?;
+    let response = ctx.send_confirmed(client, write, &confirmed)?;
+    Ok(ConfirmedStep::Sent(response, confirmed))
 }
 
 /// Sends `request`, a GET of a list, and prints what `render` makes of the answer, the list
@@ -444,7 +574,7 @@ pub(crate) fn print_list_with(
 ) -> Result<Printed> {
     match ctx.call(client, request, Gate::Open)? {
         Step::Sent(response) => render(response).map(Printed::List),
-        Step::DryRun(doc) => Ok(Printed::Document(doc)),
+        Step::DryRun(doc) => Ok(doc.into()),
     }
 }
 
@@ -485,25 +615,37 @@ pub(crate) fn print_envelope(
     })
 }
 
-/// The PATCH of `path`, a Drive or S3 subscription, that keeps the plan: `--pay-from` or
-/// `--storage-cap`. The command's `change` group takes one of them when `--plan` is
-/// absent. `service` names the plan in the question, as `Drive` or `S3`. Both change what
-/// later renewals or storage cost, so both are confirmed, and the action an agent reads in
-/// the refusal names the money.
+/// Each top-level field `body` sends, with its value, in the order it sends them: what a
+/// question names is read from the body, so no field is named and not sent, or sent and not
+/// named.
+pub(crate) fn sent_fields(body: &impl serde::Serialize) -> Map<String, Value> {
+    serde_json::to_value(body)
+        .and_then(serde_json::from_value)
+        .expect("a request body that names fields is a JSON object")
+}
+
+/// `route`, the PATCH of a Drive or S3 subscription, that keeps the plan: `--pay-from` or
+/// `--storage-cap`, sent as [`SettingChangeBody`] writes it. The command's `change` group takes
+/// one of them when `--plan` is absent. `service` names the plan in the question, as `Drive` or
+/// `S3`. Both change what later renewals or storage cost, so both are confirmed, and the action
+/// an agent reads in the refusal names the money.
 pub(crate) fn plan_setting(
-    path: &str,
+    route: &Route<0>,
     service: &str,
     setting: &PlanSetting,
 ) -> Result<(Request, Gate<'static>)> {
-    let (body, action, consequence) = if let Some(funding) = setting.pay_from {
+    let (change, action, consequence) = if let Some(funding) = setting.pay_from {
         let action = match funding {
             Funding::Credits => format!("pay each renewal of the {service} plan from the balance"),
             Funding::Card => {
                 format!("charge each renewal of the {service} plan to the card saved at Stripe")
             }
         };
-        let body = json!({ "funding": funding.code() });
-        (body, action, "it changes how every later renewal is paid")
+        let change = SettingChangeBody {
+            funding: Some(funding.code()),
+            ..SettingChangeBody::default()
+        };
+        (change, action, "it changes how every later renewal is paid")
     } else {
         // The `change` group takes `--plan`, `--pay-from`, or `--storage-cap`, and the
         // caller handled `--plan`; this holds if the group ever changes.
@@ -514,18 +656,21 @@ pub(crate) fn plan_setting(
             )
         })?;
         let (cap, up_to) = match cap {
-            StorageCap::Bytes(bytes) => (Value::from(bytes), format!("`{bytes}` bytes")),
+            StorageCap::Bytes(bytes) => (Change::Set(bytes), format!("`{bytes}` bytes")),
             StorageCap::Default => (
-                Value::Null,
+                Change::Clear,
                 "the default cap of twice the plan's storage".to_owned(),
             ),
         };
         let action =
             format!("bill the storage of the {service} plan past its quota, up to {up_to}");
-        let body = json!({ "storage_cap_bytes": cap });
-        (body, action, "storage past the quota is billed")
+        let change = SettingChangeBody {
+            storage_cap_bytes: cap,
+            ..SettingChangeBody::default()
+        };
+        (change, action, "storage past the quota is billed")
     };
-    let request = Request::new(Method::Patch, path).json(&body).about(action);
+    let request = Request::to(route, []).json(&change).about(action);
     Ok((
         request,
         Gate::Confirm {
@@ -565,23 +710,25 @@ pub(crate) fn drop_next_step(document: &mut Value) {
 /// JSON mode prints no note, so without it an agent would not learn how the flow goes on.
 /// It is always a `hipc` command that runs as printed, so it is added only for an
 /// `intent_id` the checkout command accepts and that cannot be read as a flag; such an id
-/// needs no shell quoting. It repeats the run's profile, origin, and selectors, and is left
-/// out when one of them is not a plain word ([`Context::next_command`]). A field of that
-/// name in the answer is dropped first ([`drop_next_step`]).
+/// needs no shell quoting. It repeats the run's profile, origin, and selectors, quoted where
+/// a shell needs it, and is left out when one of them is not printable ASCII
+/// ([`Context::next_command`]). A field of that name in the answer is dropped first
+/// ([`drop_next_step`]).
 pub(crate) fn subscribed(ctx: &Context<'_>, response: &Response, service: &str) -> Result<Value> {
     let mut body = response.document()?;
     drop_next_step(&mut body);
     if response.status() != 202 {
         return Ok(body);
     }
-    let next_step = body
-        .get("intent_id")
-        .and_then(Value::as_str)
+    let checkout: routes::billing::Checkout = view_of(&body);
+    let next_step = checkout
+        .intent_id
+        .as_deref()
         .and_then(|id| crate::cli::as_argument(id, crate::cli::intent_id))
         .and_then(|id| ctx.next_command(&format!("{service} subscription checkout {id}")));
     // The URL is not repeated here: it is on stdout, and a quoted URL would have its query
     // values, which can hold the checkout session's secret, redacted (tenet 9).
-    let start = if body.get("checkout_url").and_then(Value::as_str).is_some() {
+    let start = if checkout.checkout_url.is_some() {
         "nothing has been bought yet: the plan starts once the checkout at `checkout_url` in \
          the output is paid"
     } else {
@@ -598,16 +745,21 @@ pub(crate) fn subscribed(ctx: &Context<'_>, response: &Response, service: &str) 
 }
 
 /// The `--dry-run` document of a command that changes a local file and sends nothing:
-/// `dry_run` first, then `action`, what it would do, then the fields of the document a real
-/// run prints, which name the profile it would change.
-pub(crate) fn local_dry_run(action: &str, fields: Value) -> Value {
-    let mut doc = serde_json::Map::new();
-    doc.insert("dry_run".to_owned(), Value::Bool(true));
-    doc.insert("action".to_owned(), action.into());
-    if let Value::Object(fields) = fields {
-        doc.extend(fields);
-    }
+/// `dry_run` first, then `action`, what it would do, then `fields`, the fields of the document
+/// a real run prints, which name the profile it would change. `fields` is an object by its
+/// type, so none of them can be dropped.
+pub(crate) fn local_dry_run(action: &str, fields: Map<String, Value>) -> Value {
+    let mut doc = object([("dry_run", true.into()), ("action", action.into())]);
+    doc.extend(fields);
     Value::Object(doc)
+}
+
+/// A JSON object of `fields`, in order: a document `hipc` builds whole.
+pub(crate) fn object<const N: usize>(fields: [(&str, Value); N]) -> Map<String, Value> {
+    fields
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect()
 }
 
 /// Stores a selection in the profile with `set`, and prints `{"profile", <field>: <value>}`:
@@ -624,40 +776,17 @@ pub(crate) fn store_selection(
 ) -> Result<Printed> {
     let path = context::config_path()?;
     let overrides = ctx.overrides()?;
+    let document = |profile: String| object([("profile", profile.into()), (field, value.into())]);
     if ctx.dry_run() {
         let profile = profile(&ConfigFile::load(path)?, &overrides)?;
-        return Ok(Printed::Document(local_dry_run(
-            action,
-            json!({ "profile": profile, field: value }),
-        )));
+        return Ok(Printed::Document(local_dry_run(action, document(profile))));
     }
     let profile = ConfigFile::edit(path, |config| {
         let profile = profile(config, &overrides)?;
         set(config, &profile);
         Ok(profile)
     })?;
-    Ok(Printed::Document(
-        json!({ "profile": profile, field: value }),
-    ))
-}
-
-/// The `--dry-run` document of a command that would send several requests: `dry_run`
-/// first, then the requests of each dry-run document in `documents`, in order. Each comes
-/// from [`Context::call`], whose `requests` names only its own request.
-pub(crate) fn dry_run_requests(documents: Vec<Value>) -> Value {
-    let requests: Vec<Value> = documents
-        .into_iter()
-        .flat_map(|mut doc| {
-            doc["requests"]
-                .as_array_mut()
-                .map(std::mem::take)
-                .unwrap_or_default()
-        })
-        .collect();
-    let mut doc = serde_json::Map::new();
-    doc.insert("dry_run".to_owned(), Value::Bool(true));
-    doc.insert("requests".to_owned(), Value::Array(requests));
-    Value::Object(doc)
+    Ok(Printed::Document(Value::Object(document(profile))))
 }
 
 /// One failed part of a partial failure, for `error.details`: the part's name under `key`,
@@ -695,19 +824,29 @@ pub(crate) fn print_keyed_list(
 ///
 /// # Errors
 ///
-/// `internal` for an object without a `key` list, for a `next` link (a later page this
-/// command does not read), or for any other shape.
+/// `internal` when the answer is an object without a `key` list, has a `next` link (a later
+/// page this command does not read), or has any other shape.
 pub(crate) fn keyed_list(answer: Value, request: &Request, key: &str) -> Result<Value> {
-    let Value::Object(mut body) = answer else {
+    let Value::Object(body) = answer else {
         return hippius::page(answer)?.complete_envelope(request.target());
     };
-    let Some(Value::Array(items)) = body.shift_remove(key) else {
+    let Some(page) = keyed_page(body, key) else {
         return Err(Error::internal(format!(
             "cannot {}: the API answered without a `{key}` list",
             request.action()
         )));
     };
-    hippius::page_beside(items, body)?.complete_envelope(request.target())
+    page?.complete_envelope(request.target())
+}
+
+/// The list an answer `body` holds under `key`, with `body`'s other fields beside it
+/// ([`hippius::page_beside`]), or `None` when `key` is not a list: [`keyed_list`], and the
+/// accounts answer, which is read the same way and named in its own error.
+pub(crate) fn keyed_page(mut body: Map<String, Value>, key: &str) -> Option<Result<Page>> {
+    let Some(Value::Array(items)) = body.shift_remove(key) else {
+        return None;
+    };
+    Some(hippius::page_beside(items, body))
 }
 
 /// `hipc status`: `GET /api/services/status/` (swagger `services_status_list`), the state of
@@ -716,7 +855,8 @@ pub(crate) fn keyed_list(answer: Value, request: &Request, key: &str) -> Result<
 /// status page. The route is in no scoped or personal list, so a membership is refused rather
 /// than answered with the caller's own products (tenet 12).
 pub(crate) fn status(ctx: &Context<'_>) -> Result<Printed> {
-    let request = Request::get("/services/status/").about("get the state of each product");
+    let request =
+        Request::to(&routes::support::SERVICES_STATUS, []).about("get the state of each product");
     print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
 }
 
@@ -737,85 +877,73 @@ pub(crate) fn require_reveal_or_file(ctx: &Context<'_>, reveal: bool, to_file: b
     }
 }
 
-/// The most pages one command follows. Arbitrary: far more than any account's list holds
-/// at the API's page sizes, and it stops a server that keeps answering a new `next` from
-/// turning one command into a request storm and an unbounded buffer.
-const MAX_PAGES: usize = 1000;
-
-/// The most bytes of answers one list keeps across its pages (`s3 tokens list` reads two
-/// lists, each held to this). Arbitrary: every page is
-/// held until the list ends, and each may be up to the client's 32 MiB body cap, so the
-/// page cap alone would allow gigabytes. No account's list comes near this.
-const MAX_LIST_BYTES: usize = 64 * 1024 * 1024;
-
-/// The pages one list has followed. Every page loop reports each page it read and admits
-/// each `next` through it, so a link back to a page already read, a page past
-/// [`MAX_PAGES`], or a list past [`MAX_LIST_BYTES`] is refused the same way everywhere.
-#[derive(Debug)]
-pub(crate) struct Pages {
-    seen: HashSet<String>,
-    bytes: usize,
-}
-
-impl Pages {
-    /// A list whose first page is `first`: a page number, a cursor, or a URL for `hipc api`.
-    pub(crate) fn starting_at(first: &str) -> Self {
-        Self {
-            seen: HashSet::from([first.to_owned()]),
-            bytes: 0,
-        }
-    }
-
-    /// Counts a page of `bytes` that was read.
-    ///
-    /// # Errors
-    ///
-    /// `internal` once the list holds more than [`MAX_LIST_BYTES`].
-    pub(crate) fn read(&mut self, bytes: usize) -> Result<()> {
-        self.bytes = self.bytes.saturating_add(bytes);
-        if self.bytes > MAX_LIST_BYTES {
-            return Err(Error::internal(format!(
-                "the list is larger than {} MiB across its pages, so reading stopped",
-                MAX_LIST_BYTES / (1024 * 1024)
-            )));
-        }
-        Ok(())
-    }
-
-    /// Admits the next page.
-    ///
-    /// # Errors
-    ///
-    /// `internal` for a page already read (a loop) or one past [`MAX_PAGES`].
-    pub(crate) fn admit(&mut self, next: &str) -> Result<()> {
-        if self.seen.len() >= MAX_PAGES {
-            return Err(Error::internal(format!(
-                "the list goes on past {MAX_PAGES} pages, so reading stopped"
-            )));
-        }
-        if !self.seen.insert(next.to_owned()) {
-            // A URL (`hipc api`'s next link) shows no query values (tenet 9); a page number or
-            // an opaque cursor is data, quoted whole, since cutting it at a `?` or `#` would
-            // name another token.
-            let shown = if next.contains("://") {
-                hippius::without_query_values(next)
-            } else {
-                next.to_owned()
-            };
-            return Err(Error::internal(format!(
-                "the API's next page leads back to {}, which was already read",
-                phrase::quote(shown)
-            )));
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use hippius::Code;
 
     use super::*;
+
+    /// The files under `dir`, at any depth.
+    fn rust_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("the source tree is readable") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                rust_files(&path, files);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    /// A command builds every request from a route constant (`Request::to`), so only the
+    /// table spells a path and the row decides its policy. Two exceptions build one from a
+    /// written target: `hipc api`, which sends the route it is given, and the one dry-run
+    /// stand-in a route cannot build, the cancel `hipc hub subscription subscribe --replace`
+    /// may send first, whose `{subscription_id}` `Route::path` would percent-encode.
+    #[test]
+    fn only_hipc_api_builds_a_request_from_a_written_target() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let allowed = [("commands/api.rs", None), ("commands/hub.rs", Some(1))];
+        // Built here, so this file does not hold what it looks for.
+        let written = ["new", "get"].map(|constructor| format!("Request::{constructor}("));
+        let mut files = Vec::new();
+        rust_files(&src, &mut files);
+        let counted: Vec<(String, usize, Option<usize>)> = files
+            .iter()
+            .map(|file| {
+                let text = std::fs::read_to_string(file).expect("a source file is UTF-8");
+                let count = written.iter().map(|call| text.matches(call).count()).sum();
+                let name = file
+                    .strip_prefix(&src)
+                    .expect("under src")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let limit = allowed
+                    .iter()
+                    .find(|(allowed, _)| *allowed == name)
+                    .map_or(Some(0), |&(_, limit)| limit);
+                (name, count, limit)
+            })
+            .collect();
+        let over: Vec<&(String, usize, Option<usize>)> = counted
+            .iter()
+            .filter(|(_, count, limit)| limit.is_some_and(|limit| *count > limit))
+            .collect();
+        assert_eq!(over, Vec::<&(String, usize, Option<usize>)>::new());
+    }
+
+    /// `dry_run` comes first, then `action`, then every field of the real run's document, in
+    /// order: the fields are an object by their type, so none can be dropped.
+    #[test]
+    fn a_local_dry_run_keeps_every_field_after_its_action() {
+        let fields = object([("profile", "default".into()), ("token_stored", true.into())]);
+        assert_eq!(
+            local_dry_run("store_token", fields).to_string(),
+            r#"{"dry_run":true,"action":"store_token","profile":"default","token_stored":true}"#
+        );
+    }
 
     /// The `change` group of clap guarantees one setting; without one, the PATCH is refused
     /// as `usage` rather than a panic.
@@ -825,41 +953,20 @@ mod tests {
             pay_from: None,
             storage_cap: None,
         };
-        let error = plan_setting("/s3/subscription/", "S3", &setting).unwrap_err();
+        let error = plan_setting(&routes::s3::SUBSCRIPTION_CHANGE, "S3", &setting).unwrap_err();
         assert_eq!(error.code(), Code::Usage);
         assert_eq!(
             error.message(),
             "nothing to change in the S3 plan was given"
         );
-    }
-
-    #[test]
-    fn pages_refuse_a_loop_a_page_past_the_cap_and_a_list_past_its_bytes() {
-        let mut pages = Pages::starting_at("1");
-        assert_eq!(pages.admit("1").unwrap_err().code(), Code::Internal);
-        pages.admit("2").unwrap();
-        pages.read(MAX_LIST_BYTES).unwrap();
-        assert_eq!(pages.read(1).unwrap_err().code(), Code::Internal);
-        let mut pages = Pages::starting_at("1");
-        for n in 2..=MAX_PAGES {
-            pages.admit(&n.to_string()).unwrap();
-        }
-        assert_eq!(pages.admit("x").unwrap_err().code(), Code::Internal);
-    }
-
-    #[test]
-    fn a_loop_quotes_a_cursor_whole_and_a_url_without_its_query_values() {
-        let looped = |next: &str| {
-            let mut pages = Pages::starting_at(next);
-            pages.admit(next).unwrap_err().message().to_owned()
+        let card = PlanSetting {
+            pay_from: Some(Funding::Card),
+            storage_cap: None,
         };
+        let (request, _) = plan_setting(&routes::s3::SUBSCRIPTION_CHANGE, "S3", &card).unwrap();
         assert_eq!(
-            looped("a?b=c#d`e\n"),
-            "the API's next page leads back to `a?b=c#d\\u{60}e\\n`, which was already read"
-        );
-        assert_eq!(
-            looped("https://api.example/x/?page=2&key=s3cr3t"),
-            "the API's next page leads back to `https://api.example/x/?page=<redacted>&key=<redacted>`, which was already read"
+            request.action(),
+            "charge each renewal of the S3 plan to the card saved at Stripe"
         );
     }
 }

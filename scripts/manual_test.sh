@@ -67,20 +67,17 @@
 # resource), and the directory, which also holds the stored token, is left behind; delete
 # the resources it names by hand. A `runner-max`, `runner-cap` or `billing-name` line is not a
 # resource but a change: put it back, from the value in `restore/<kind>.<id>` beside the
-# ledger (for `runner-cap`, the body to send with `hipc api PUT /runners/limit/`). Then
+# ledger (for `runner-cap`, the body to send with `hipc api PUT` to the route of `hipc compute
+# runners limit update`, which `hipc schema compute runners limit update` names). Then
 # delete the directory.
 #
 # Written for bash 3.2, the macOS /bin/bash: no associative arrays, no mapfile, and empty
 # arrays are expanded with ${a[@]+"${a[@]}"} under `set -u`.
 set -euo pipefail
 
-# Tracing would print the token the moment it is read, and every secret after it.
-case "$-" in
-*x*)
-  echo "manual_test: refusing to run with xtrace (bash -x or SHELLOPTS=xtrace): it prints the token" >&2
-  exit 2
-  ;;
-esac
+# shellcheck source=lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+refuse_xtrace manual_test
 
 # Byte semantics for sed and grep on hipc's raw output.
 export LC_ALL=C
@@ -907,6 +904,15 @@ spend_gate() {
   fi
 }
 
+# api_route <command path> <method> [value...]: the route `hipc schema` lists for the command,
+# for a step that sends it through `hipc api`, so the script keeps no copy of the path. With
+# no binary to ask, as in --list mode, a placeholder that names the command's route.
+api_route() {
+  local route
+  route="$(schema_route "$HIPC" "$@" | head -n 1)"
+  printf '%s' "${route:-<the $2 route of hipc $1>}"
+}
+
 # Whether the binary under test has a command, from its schema; the spend tier uses it for
 # a step a newer hipc adds, so the script runs against an older release too.
 # In --list mode it asks the binary --hipc names, and is false without one, so the listing
@@ -1350,6 +1356,9 @@ scenario_hub() {
     -- hipc --json hub events list
   step read net/not_found,hub_unprovisioned "Read the usage" "see storage and pulls against the plan" \
     -- hipc --json hub usage
+  step read net/not_found,hub_unprovisioned "Read the usage by repository" \
+    "see each repository's size and pulls, every page of them" \
+    -- hipc --json hub usage --repositories
   step read net/hub_unprovisioned "List the repositories" "see the images in the namespace" \
     -- hipc --json hub repositories list
   repository="$(pick "<repository>" "library/hipc-manual" 'first(rows // [] | .[] | .name)')"
@@ -1686,7 +1695,10 @@ vm_spend() {
   [[ "$LAST_EXIT" != 0 ]] || walled=0
   step read net "Read the firewall" "confirm it has no rule" \
     -- hipc --json compute firewall get "$vm"
-  check online "the firewall has no rule" -- last_is '(.rules // []) | length == 0'
+  check online "the firewall has no rule" -- last_is '.rules | type == "array" and length == 0'
+  # The read-back gates the attach too: an update the server accepted but did not apply, or
+  # rules under another key, must not leave a public IP on a VM with an open port.
+  last_is '.rules | type == "array" and length == 0' || walled=1
   # The IP steps need the exposure gone and the firewall closed, offline too.
   outer="$BLOCK_SKIP"
   if [[ $LIST == 0 && $closed != 0 && -z "$BLOCK_SKIP" ]]; then
@@ -1957,7 +1969,8 @@ runner_cap_change() {
     -- hipc --json compute runners limit get
   check online "the cap is the new one" -- shows "$RUNNER_CAP_IS" limit "$higher"
   step undo net "Put the runner spend cap back" "the server's own monthly_cap, read before" \
-    -- hipc --json api PUT /runners/limit/ --body-file "$H/runner-limit.json" --yes
+    -- hipc --json api PUT "$(api_route "compute runners limit update" PUT)" \
+    --body-file "$H/runner-limit.json" --yes
   local restored=$LAST_EXIT
   step read net "Read the runner limit" "confirm it is back" \
     -- hipc --json compute runners limit get
@@ -2317,19 +2330,9 @@ cluster_dry_runs() {
     -- hipc --output text compute kubernetes clusters delete "$cluster" --yes --dry-run
 }
 
-# The console's public test vector for a cluster key file, as scripts/release-check.sh
-# uses it: the seeds 11..42 and 1..32, never a real key. Both seeds are in the mask, and
-# the teardown scans every step's raw output for them (see scan_key_outputs).
-TEST_KEY_SIGN_SEED="CwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJicoKSo="
-TEST_KEY_BOX_SEED="AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="
-write_test_cluster_key() {
-  # The first write creates the file under umask 077, so it is 0600 as hipc requires.
-  printf '{"version":1,"kind":"hippius-k8s-cluster-key",' >"$1"
-  printf '"sign_secret_key":"%s","sign_public_key":"%s",' \
-    "$TEST_KEY_SIGN_SEED" "VCgh6VKd0a0kO/3/XGQKZRlLSBaYemUN6GHXzp5BemM=" >>"$1"
-  printf '"box_secret_key":"%s","box_public_key":"%s"}\n' \
-    "$TEST_KEY_BOX_SEED" "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw=" >>"$1"
-}
+# The cluster key is the test vector from scripts/lib.sh, written under the script's umask
+# 077. Both seeds are in the mask, and the teardown scans every step's raw output for them
+# (see scan_key_outputs).
 # The key path is built after begin_scenario sets H; a path under an earlier home would
 # still pass the catalogue pin, where every home is `~`, so it is checked at run time.
 key_in_home() { [[ "$1" == "$H/"* && -f "$1" ]]; }
@@ -2621,11 +2624,11 @@ scenario_agent() {
     -- hipc --json compute ssh-keys list --all
   check online "the answer is one array" -- stdout_is_array
   step read net "Call a route directly" "hipc api sends a GET with the token and prints it" \
-    -- hipc --json api GET /api/services/status/
+    -- hipc --json api GET "$(api_route status GET)"
   check always "the answer is JSON" -- answer_is_json
   step error err:confirmation_required "Send a write through hipc api without --yes" \
     "a method other than GET or HEAD is confirmed, so nothing is sent" \
-    -- hipc --json api DELETE "/api/objectstore/buckets/$bucket/"
+    -- hipc --json api DELETE "$(api_route "s3 buckets delete" DELETE "$bucket")"
   step error net-err:auth "Use a bad token" "a wrong token is exit 1 with the code auth" \
     -- "HIPPIUS_TOKEN=$BAD_TOKEN" hipc --json auth status
   step error err:confirmation_required "Delete without --yes" \
@@ -2948,6 +2951,10 @@ cleanup_list() {
   vm) args=(compute vms list) ;;
   database) args=(compute databases list) ;;
   cdn-zone) args=(cdn zones list) ;;
+  *)
+    record FAIL "cleanup: no list for the ledger kind $1"
+    return 1
+    ;;
   esac
   "$HIPC" --json "${args[@]}" >"$WORK/clean.out" 2>"$WORK/clean.err" </dev/null
 }
@@ -3050,7 +3057,7 @@ cleanup_undo() {
 # Puts back what a change step of kind $1 changed on the resource $2, from the value
 # change_begin saved, and proves it by a read.
 cleanup_restore() {
-  local kind="$1" id="$2" value filter code hand=""
+  local kind="$1" id="$2" value filter code hand="" route
   local -a undo=() read=()
   value="$(cat "$WORK/restore/$kind.$id")"
   case "$kind" in
@@ -3061,8 +3068,9 @@ cleanup_restore() {
     ;;
   runner-cap)
     printf '%s\n' "$value" >"$WORK/restore/runner-cap.body"
-    undo=(api PUT /runners/limit/ --body-file "$WORK/restore/runner-cap.body")
-    hand="printf '%s\\n' $(quote_word "$value") | hipc api PUT /runners/limit/ --body-file - --yes"
+    route="$(api_route "compute runners limit update" PUT)"
+    undo=(api PUT "$route" --body-file "$WORK/restore/runner-cap.body")
+    hand="printf '%s\\n' $(quote_word "$value") | hipc api PUT $route --body-file - --yes"
     read=(compute runners limit get)
     filter="$RUNNER_CAP_BACK"
     ;;
@@ -3164,6 +3172,11 @@ cleanup_one() {
   vm) delete_args=(compute vms delete "$id") ;;
   database) delete_args=(compute databases delete "$id") ;;
   cdn-zone) delete_args=(cdn zones delete "$id") ;;
+  *)
+    say "cleanup: $kind $name: FAIL, no delete for this ledger kind; delete it by hand"
+    record FAIL "cleanup: no delete for the ledger kind $kind"
+    return 0
+    ;;
   esac
   say "cleanup: \$ hipc --json $(show_argv "${delete_args[@]}") --yes"
   if ! "$HIPC" --json "${delete_args[@]}" --yes >"$WORK/clean.out" 2>"$WORK/clean.err" \
@@ -3517,7 +3530,9 @@ keep_ledger() {
 
 finish() {
   local status=$?
-  set +e
+  # `set -u` off too: an unbound expansion in a trap ends the trap at once, which would skip
+  # the cleanup, the scan, and the removal of $WORK below, and leave the scenarios' status.
+  set +eu
   trap '' INT TERM
   if [[ -n "$WORK" && -d "$WORK" ]]; then
     if [[ $status == 130 || $status == 143 ]]; then

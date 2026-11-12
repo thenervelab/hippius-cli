@@ -3,14 +3,14 @@
 //! swagger types none; each confirmed write sends nothing without `--yes`; and the selectors
 //! go where tenet 12 says, the transfers being personal.
 
+use hippius::routes::account;
 use serde_json::{Value, json};
 
 use crate::common::{
-    ACCOUNTS, Hipc, Home, MEMBER, Reply, Run, Server, draft, no_server, one_request_dry_run, route,
+    self, ACCOUNTS, BILLING, Hipc, Home, MEMBER, OWN_ACCOUNT, PROJECT, Reply, Run, Server, draft,
+    no_server, one_request_dry_run, parsed, route, route_of,
 };
 
-const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
-const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
 const OTHER: &str = "acct_ffffffffffffffffffff";
 /// A second project, beside `PROJECT`.
 const SECOND: &str = "proj_ffffffffffffffffffff";
@@ -51,10 +51,6 @@ const TRANSFER: &str = concat!(
     r#""created_at":"2026-11-01T10:00:00Z","expires_at":"2026-11-08T10:00:00Z","#,
     r#""decided_at":null}"#
 );
-
-fn parsed(text: &str) -> Value {
-    serde_json::from_str(text).expect("the fixture is JSON")
-}
 
 fn hipc(server: &Server, args: &[&str]) -> Run {
     Hipc::against(&Home::new(), server).run(args)
@@ -109,9 +105,9 @@ fn confirmed(
 /// trimmed with the Default billing account, as the console does, and prints the project.
 #[test]
 fn projects_create_sends_the_trimmed_name_without_yes() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/accounts/projects/",
+    let server = Server::start(vec![route_of(
+        &account::PROJECT_CREATE,
+        [],
         Reply::json(201, ONE_PROJECT),
     )]);
     let doc = hipc(&server, &projects(&["create", "--name", "  web "])).ok();
@@ -125,9 +121,9 @@ fn projects_create_sends_the_trimmed_name_without_yes() {
 #[test]
 fn billing_accounts_create_and_update_send_the_name_without_yes() {
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/accounts/billing-accounts/",
+        route_of(
+            &account::BILLING_ACCOUNT_CREATE,
+            [],
             Reply::json(201, ONE_BILLING),
         ),
         route(
@@ -168,50 +164,19 @@ fn projects_update_renames_without_yes() {
     assert_eq!(sent.json(), json!({"name": "web"}));
 }
 
-/// A name is 1 to 64 characters on one line, none invisible, once trimmed, as the console
-/// checks it; the rest is refused before anything is sent, each with why.
+/// `cli::projects::tests` holds every refused name in each command that takes one; this pins
+/// the `usage` a refusal becomes, and that 64 characters fit, counted as characters.
 #[test]
 fn a_name_outside_the_console_rule_is_refused() {
     let server = Server::start(vec![]);
-    let long = "x".repeat(65);
-    let fits = "é".repeat(64);
-    let too_short_or_long = "a name is 1 to 64 characters";
-    let control = "a name holds no control character or line break, a tab or a newline \
-                   included, since it is shown on one line";
-    let invisible = "a name holds no invisible character, such as a bidi override or a \
-                     zero-width space, since two names would look the same";
-    for (name, why) in [
-        ("", too_short_or_long),
-        ("   ", too_short_or_long),
-        (long.as_str(), too_short_or_long),
-        ("two\nlines", control),
-        ("tab\there", control),
-        ("line\u{2028}break", control),
-        ("para\u{2029}graph", control),
-        ("web\u{202e}dorp", invisible),
-        ("w\u{200b}eb", invisible),
-        ("web\u{feff}x", invisible),
-    ] {
-        for args in [
-            projects(&["create", "--name", name]),
-            projects(&["update", PROJECT, "--name", name]),
-            vec!["account", "billing-accounts", "create", "--name", name],
-            vec![
-                "account",
-                "billing-accounts",
-                "update",
-                BILLING,
-                "--name",
-                name,
-            ],
-        ] {
-            let error = hipc(&server, &args).fails(2, "usage");
-            let message = error["message"].as_str().unwrap();
-            assert!(message.ends_with(why), "{args:?}: {message}");
-        }
-    }
+    let error = hipc(&server, &projects(&["create", "--name", "two\nlines"])).fails(2, "usage");
+    assert_eq!(
+        error["message"],
+        "invalid value `two\\nlines` for `--name <NAME>`: a name holds no control character or \
+         line break, a tab or a newline included, since it is shown on one line"
+    );
     assert!(server.requests().is_empty());
-    // 64 characters is the limit, counted as characters, not bytes.
+    let fits = "é".repeat(64);
     let doc = Hipc::new(&Home::new())
         .run(&[
             "--dry-run",
@@ -225,97 +190,47 @@ fn a_name_outside_the_console_rule_is_refused() {
     assert_eq!(draft(&doc)["body"]["name"], fits);
 }
 
-/// Every id goes into the path, so a malformed one, or `default`, which names the account
-/// itself and no project or billing account these routes take, is refused at parse time.
+/// `cli::projects::tests` holds every refused id in each command; this pins the `usage` each
+/// id parser's refusal becomes, and that nothing is sent.
 #[test]
 fn a_malformed_or_default_id_is_refused_before_anything_is_sent() {
     let server = Server::start(vec![]);
-    let project_refusal = "a project id is `proj_` and 20 lowercase hex characters, from \
-                           `hipc account projects list`; the Default project has none";
-    for id in [
-        "default",
-        "proj_x",
-        "proj_0A1B2C3D4E5F60718293",
-        "../x",
-        "bill_9f8e7d6c5b4a39281706",
-    ] {
-        for args in [
-            projects(&["update", id, "--name", "x"]),
-            projects(&["delete", id, "--yes"]),
-            projects(&["transfer", id, "--to-account", OTHER, "--yes"]),
-            projects(&["budget", "get", id]),
-            projects(&["budget", "delete", id, "--yes"]),
-            projects(&["quota", "get", id]),
-            projects(&["quota", "update", id, "--vms", "1", "--yes"]),
-            projects(&[
-                "budget",
-                "update",
-                id,
-                "--monthly-limit",
-                "1",
-                "--alert-at",
-                "50",
-                "--block-launches",
-                "true",
-                "--yes",
-            ]),
-        ] {
-            let error = hipc(&server, &args).fails(2, "usage");
-            let message = error["message"].as_str().unwrap();
-            assert!(message.ends_with(project_refusal), "{args:?}: {message}");
-        }
-    }
-    for id in ["default", "bill_x", PROJECT] {
-        let error = hipc(
-            &server,
-            &["account", "billing-accounts", "update", id, "--name", "x"],
-        )
-        .fails(2, "usage");
-        assert!(
-            error["message"].as_str().unwrap().ends_with(
-                "a billing account id is `bill_` and 20 lowercase hex characters, from \
-                 `hipc account billing-accounts list`; the Default billing account has none"
-            ),
-            "{error}"
-        );
-    }
-    for id in ["self", "acct_x", MEMBER.to_uppercase().as_str()] {
-        let error = hipc(
-            &server,
-            &projects(&["transfer", PROJECT, "--to-account", id, "--yes"]),
-        )
-        .fails(2, "usage");
-        assert!(
-            error["message"]
-                .as_str()
-                .unwrap()
-                .ends_with("an account id is `acct_` and 20 lowercase hex characters"),
-            "{error}"
-        );
-    }
-    for id in ["x", "1.5", "0x5"] {
-        for verb in ["accept", "decline", "cancel"] {
-            let error = hipc(&server, &transfers(&[verb, id, "--yes"])).fails(2, "usage");
-            assert!(
-                error["message"].as_str().unwrap().ends_with(
-                    "a transfer id is a whole number, from `hipc account project-transfers list`"
-                ),
-                "{error}"
-            );
-        }
-    }
-    let error = hipc(
-        &server,
-        &transfers(&["accept", "5", "--bill-to", "bill_x", "--yes"]),
-    )
-    .fails(2, "usage");
-    assert!(
-        error["message"].as_str().unwrap().ends_with(
-            "a billing account is `default`, or `bill_` and 20 lowercase hex characters, from \
-             `hipc account billing-accounts list`"
+    for (args, says) in [
+        (
+            projects(&["update", "default", "--name", "x"]),
+            "a project id is `proj_` and 20 lowercase hex characters, from `hipc account \
+             projects list`; the Default project has none",
         ),
-        "{error}"
-    );
+        (
+            vec![
+                "account",
+                "billing-accounts",
+                "update",
+                "bill_x",
+                "--name",
+                "x",
+            ],
+            "a billing account id is `bill_` and 20 lowercase hex characters, from `hipc \
+             account billing-accounts list`; the Default billing account has none",
+        ),
+        (
+            projects(&["transfer", PROJECT, "--to-account", "acct_x", "--yes"]),
+            "an account id is `acct_` and 20 lowercase hex characters",
+        ),
+        (
+            transfers(&["accept", "x", "--yes"]),
+            "a transfer id is a whole number, from `hipc account project-transfers list`",
+        ),
+        (
+            transfers(&["accept", "5", "--bill-to", "bill_x", "--yes"]),
+            "a billing account is `default`, or `bill_` and 20 lowercase hex characters, from \
+             `hipc account billing-accounts list`",
+        ),
+    ] {
+        let error = hipc(&server, &args).fails(2, "usage");
+        let message = error["message"].as_str().expect("the message is a string");
+        assert!(message.ends_with(says), "{args:?}: {message}");
+    }
     assert!(server.requests().is_empty());
 }
 
@@ -484,8 +399,8 @@ fn offered(
 ) {
     let path = format!("/api/accounts/projects/{PROJECT}/transfer/");
     let server = Server::start(vec![
-        route("GET", "/api/accounts/projects/", Reply::json(200, projects)),
-        route("GET", "/api/accounts/", Reply::json(200, accounts)),
+        route_of(&account::PROJECTS, [], Reply::json(200, projects)),
+        route_of(&account::ACCOUNTS, [], Reply::json(200, accounts)),
         route("POST", &path, Reply::json(201, TRANSFER)),
     ]);
     let argv = if code == "confirmation_required" {
@@ -602,10 +517,21 @@ fn projects_transfer_refuses_an_accounts_answer_without_one_own_account() {
     let args = projects(&["transfer", PROJECT, "--to-account", TARGET]);
     let none = "the API's accounts list does not mark exactly one account as the token's own \
                 with `is_owner`";
+    // Read as `hipc account list` reads it: an answer without an `accounts` list says so.
+    for accounts in ["{}", r#"{"accounts":{}}"#, "[]"] {
+        offered(
+            &args,
+            (&projects_answer(), accounts),
+            &["/api/accounts/projects/", "/api/accounts/"],
+            (
+                "internal",
+                "the API answered `GET /api/accounts/` without an `accounts` list",
+            ),
+            false,
+        );
+    }
     for accounts in [
         r#"{"accounts":[]}"#,
-        "{}",
-        r#"{"accounts":{}}"#,
         // The first is no longer taken for the own account.
         r#"{"accounts":[{"id":"acct_ffffffffffffffffffff"}]}"#,
         r#"{"accounts":[{"id":"acct_ffffffffffffffffffff","is_owner":"true"}]}"#,
@@ -653,7 +579,7 @@ fn projects_transfer_refuses_the_same_account_and_an_unknown_project() {
         ("usage", &same(MEMBER)),
         false,
     );
-    let own = "acct_ffffffffffffffffffff";
+    let own = OWN_ACCOUNT;
     for accounts in [ACCOUNTS, MEMBER_FIRST] {
         offered(
             &projects(&["transfer", PROJECT, "--to-account", own]),
@@ -733,7 +659,11 @@ fn projects_transfer_dry_run_from_the_own_account_lists_both_reads() {
         .as_array()
         .expect("requests")
         .iter()
-        .map(|request| request["url"].as_str().expect("url"))
+        .map(|request| {
+            request["url"]
+                .as_str()
+                .expect("each recorded request has a url")
+        })
         .collect();
     assert_eq!(
         urls,
@@ -836,47 +766,24 @@ fn budget_update_sends_the_whole_budget_with_yes() {
     );
 }
 
-/// The console's rules, checked before anything is sent: a limit above 0 to the cent, 1 to 5
-/// thresholds of 1 to 100, each once, and the launch block given.
+/// `cli::projects::tests` holds the console's rules on a budget; this pins the `usage` a
+/// validator's and a missing flag's refusal become.
 #[test]
 fn budget_update_refuses_what_the_console_refuses() {
     let server = Server::start(vec![]);
-    let cases = [
+    for (flags, says) in [
         (
             "--monthly-limit 0 --alert-at 50 --block-launches true",
-            "a monthly limit is more than `0`",
+            "invalid value `0` for `--monthly-limit <USD>`: a monthly limit is more than `0`",
         ),
         (
-            "--monthly-limit 0.00 --alert-at 50 --block-launches true",
-            "a monthly limit is more than `0`",
+            "--monthly-limit 1 --alert-at 50",
+            "the following required arguments were not provided: `--block-launches <BOOL>`",
         ),
-        (
-            "--monthly-limit 1.234 --alert-at 50 --block-launches true",
-            "an amount is US dollars to the cent, such as `50` or `12.50`",
-        ),
-        (
-            "--monthly-limit 1 --alert-at 0 --block-launches true",
-            "0 is not in `1..=100`",
-        ),
-        (
-            "--monthly-limit 1 --alert-at 101 --block-launches true",
-            "101 is not in `1..=100`",
-        ),
-        (
-            "--monthly-limit 1 --alert-at 50 --block-launches maybe",
-            "--block-launches",
-        ),
-        ("--monthly-limit 1 --alert-at 50", "--block-launches"),
-        ("--monthly-limit 1 --block-launches true", "--alert-at"),
-        ("--alert-at 50 --block-launches true", "--monthly-limit"),
-    ];
-    for (flags, says) in cases {
+    ] {
         let args = budget_update_args(flags);
         let error = hipc(&server, &with_yes(&args)).fails(2, "usage");
-        assert!(
-            error["message"].as_str().unwrap().contains(says),
-            "{args:?}: {error}"
-        );
+        assert_eq!(error["message"], says, "{args:?}");
     }
     assert!(server.requests().is_empty());
 }
@@ -994,34 +901,17 @@ fn quota_update_needs_a_limit_and_reads_each_as_a_count_or_none() {
         error["message"].as_str().unwrap().contains("--vms"),
         "{error}"
     );
-    for value in ["1.5", "five", "None", "", "18446744073709551616"] {
-        let error = hipc(
-            &server,
-            &projects(&["quota", "update", PROJECT, "--vcpus", value, "--yes"]),
-        )
-        .fails(2, "usage");
-        assert!(
-            error["message"]
-                .as_str()
-                .unwrap()
-                .ends_with("a limit is a whole number, such as `5`, or `none`"),
-            "{value}: {error}"
-        );
-    }
-    for value in ["2147483648", "18446744073709551615"] {
-        let error = hipc(
-            &server,
-            &projects(&["quota", "update", PROJECT, "--vms", value, "--yes"]),
-        )
-        .fails(2, "usage");
-        assert!(
-            error["message"]
-                .as_str()
-                .unwrap()
-                .ends_with("a limit is at most `2147483647`"),
-            "{value}: {error}"
-        );
-    }
+    // `cli::projects::tests` holds every refused limit.
+    let error = hipc(
+        &server,
+        &projects(&["quota", "update", PROJECT, "--vcpus", "1.5", "--yes"]),
+    )
+    .fails(2, "usage");
+    assert_eq!(
+        error["message"],
+        "invalid value `1.5` for `--vcpus <COUNT>`: a limit is a whole number, such as `5`, or \
+         `none`"
+    );
     assert!(server.requests().is_empty());
     let doc = Hipc::new(&Home::new())
         .run(&[
@@ -1048,9 +938,9 @@ fn quota_update_needs_a_limit_and_reads_each_as_a_count_or_none() {
 fn project_transfers_list_is_one_envelope_and_personal() {
     let outgoing = OUTGOING;
     let answer = format!(r#"{{"incoming":[{TRANSFER}],"outgoing":[{outgoing},7],"count":2}}"#);
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/accounts/project-transfers/",
+    let server = Server::start(vec![route_of(
+        &account::PROJECT_TRANSFERS,
+        [],
         Reply::json(200, &answer),
     )]);
     let doc = hipc(&server, &transfers(&["list"])).ok();
@@ -1075,9 +965,9 @@ fn project_transfers_list_is_one_envelope_and_personal() {
     }
     // A `direction` the API sends is replaced by hipc's, which the list the transfer was in
     // decides.
-    let sent_direction = Server::start(vec![route(
-        "GET",
-        "/api/accounts/project-transfers/",
+    let sent_direction = Server::start(vec![route_of(
+        &account::PROJECT_TRANSFERS,
+        [],
         Reply::json(
             200,
             r#"{"incoming":[{"id":1,"direction":"outgoing"}],"outgoing":[]}"#,
@@ -1087,9 +977,9 @@ fn project_transfers_list_is_one_envelope_and_personal() {
         hipc(&sent_direction, &transfers(&["list"])).ok()["items"],
         json!([{"id": 1, "direction": "incoming"}])
     );
-    let empty = Server::start(vec![route(
-        "GET",
-        "/api/accounts/project-transfers/",
+    let empty = Server::start(vec![route_of(
+        &account::PROJECT_TRANSFERS,
+        [],
         Reply::json(200, r#"{"incoming":[],"outgoing":[]}"#),
     )]);
     assert_eq!(
@@ -1104,9 +994,9 @@ fn project_transfers_list_is_one_envelope_and_personal() {
 fn project_transfers_list_names_the_project_and_accounts_in_text() {
     let odd = r#"{"id":8,"project":{"x":1},"from_account":null,"to_account":"acct_x"}"#;
     let answer = format!(r#"{{"incoming":[{TRANSFER}],"outgoing":[{odd}]}}"#);
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/accounts/project-transfers/",
+    let server = Server::start(vec![route_of(
+        &account::PROJECT_TRANSFERS,
+        [],
         Reply::json(200, &answer),
     )]);
     let run = hipc(
@@ -1142,9 +1032,9 @@ fn project_transfers_list_refuses_another_shape() {
         r#"{"incoming":[],"outgoing":null}"#,
         "[]",
     ] {
-        let server = Server::start(vec![route(
-            "GET",
-            "/api/accounts/project-transfers/",
+        let server = Server::start(vec![route_of(
+            &account::PROJECT_TRANSFERS,
+            [],
             Reply::json(200, answer),
         )]);
         let error = hipc(&server, &transfers(&["list"])).fails(1, "internal");
@@ -1310,9 +1200,9 @@ fn a_transfer_is_named_with_what_the_list_gives() {
     ];
     for (transfer, action) in cases {
         let answer = format!(r#"{{"incoming":[{transfer}],"outgoing":[]}}"#);
-        let server = Server::start(vec![route(
-            "GET",
-            "/api/accounts/project-transfers/",
+        let server = Server::start(vec![route_of(
+            &account::PROJECT_TRANSFERS,
+            [],
             Reply::json(200, &answer),
         )]);
         let error = hipc(&server, &transfers(&["decline", "5"])).fails(2, "confirmation_required");
@@ -1330,9 +1220,9 @@ fn a_transfer_is_named_with_what_the_list_gives() {
 /// sent.
 #[test]
 fn a_transfer_not_on_its_side_is_refused_after_the_read() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/accounts/project-transfers/",
+    let server = Server::start(vec![route_of(
+        &account::PROJECT_TRANSFERS,
+        [],
         Reply::json(200, &transfers_answer()),
     )]);
     let cases = [
@@ -1370,9 +1260,9 @@ fn a_transfer_not_on_its_side_is_refused_after_the_read() {
     let requests = server.requests();
     assert_eq!(requests.len(), cases.len());
     assert!(requests.iter().all(|r| r.method == "GET"));
-    let broken = Server::start(vec![route(
-        "GET",
-        "/api/accounts/project-transfers/",
+    let broken = Server::start(vec![route_of(
+        &account::PROJECT_TRANSFERS,
+        [],
         Reply::json(200, r#"{"incoming":[]}"#),
     )]);
     hipc(&broken, &transfers(&["accept", "5", "--yes"])).fails(1, "internal");
@@ -1385,11 +1275,7 @@ fn a_transfer_not_on_its_side_is_refused_after_the_read() {
 fn a_membership_sends_the_account_header_and_is_named() {
     let path = format!("/api/accounts/projects/{PROJECT}/budget/");
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/accounts/projects/",
-            Reply::json(201, ONE_PROJECT),
-        ),
+        route_of(&account::PROJECT_CREATE, [], Reply::json(201, ONE_PROJECT)),
         route("DELETE", &path, Reply::json(204, "")),
     ]);
     hipc(
@@ -1492,14 +1378,14 @@ fn the_selectors_follow_the_route_classes() {
     );
     assert!(server.requests().is_empty());
     let personal = Server::start(vec![
-        route(
-            "GET",
-            "/api/accounts/project-transfers/",
+        route_of(
+            &account::PROJECT_TRANSFERS,
+            [],
             Reply::json(200, &transfers_answer()),
         ),
-        route(
-            "POST",
-            "/api/accounts/project-transfers/5/decline/",
+        route_of(
+            &account::PROJECT_TRANSFER_DECLINE,
+            [&5],
             Reply::json(204, ""),
         ),
     ]);
@@ -1557,12 +1443,16 @@ fn a_stored_selection_is_left_off_a_read_and_a_create() {
             "--dry-run",
         ])
         .ok();
-    assert_eq!(doc["billing_header"], serde_json::Value::Null, "{doc}");
+    assert_eq!(
+        draft(&doc).get("billing_header"),
+        Some(&serde_json::Value::Null),
+        "{doc}"
+    );
     assert!(server.requests().is_empty());
     // The create goes out, and no billing header is on the wire.
-    let creates = Server::start(vec![route(
-        "POST",
-        "/api/accounts/billing-accounts/",
+    let creates = Server::start(vec![route_of(
+        &account::BILLING_ACCOUNT_CREATE,
+        [],
         Reply::json(201, ONE_BILLING),
     )]);
     Hipc::against(&billed, &creates)
@@ -1596,12 +1486,8 @@ fn a_stored_project_is_left_off_a_write_that_names_the_project() {
         route("PUT", &budget, Reply::json(200, BUDGET)),
         route("DELETE", &budget, Reply::json(204, "")),
         route("PATCH", &quota, Reply::json(200, QUOTA)),
-        route(
-            "GET",
-            "/api/accounts/projects/",
-            Reply::json(200, &projects_answer()),
-        ),
-        route("GET", "/api/accounts/", Reply::json(200, ACCOUNTS)),
+        route_of(&account::PROJECTS, [], Reply::json(200, &projects_answer())),
+        route_of(&account::ACCOUNTS, [], Reply::json(200, ACCOUNTS)),
         route("POST", &transfer, Reply::json(201, TRANSFER)),
     ]);
     let writes: [(&[&str], &str, &str); 6] = [
@@ -1792,6 +1678,9 @@ fn archiving_the_stored_project_clears_the_selection() {
 #[test]
 fn a_selection_that_cannot_be_cleared_is_a_warning() {
     use std::os::unix::fs::PermissionsExt as _;
+    if !common::permission_bits_apply() {
+        return;
+    }
     let path = format!("/api/accounts/projects/{PROJECT}/");
     let server = Server::start(vec![route("DELETE", &path, Reply::json(204, ""))]);
     let home = Home::new();

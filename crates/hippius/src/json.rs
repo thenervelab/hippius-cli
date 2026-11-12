@@ -1,5 +1,5 @@
 //! The list shapes of the console API, and the list envelope `hipc` prints for them
-//! (`TENETS.md` tenet 6).
+//! (tenet 6).
 //!
 //! A list endpoint answers either a bare JSON array, or Django REST framework's
 //! `{count, next, previous, results}` when it paginates. [`page`] reads either into a
@@ -10,36 +10,62 @@
 //! inside an object do; its `next` and `previous` links do not, because the token
 //! says where the list goes on.
 //!
-//! One route pages by cursor instead: `GET /api/runners/jobs/` answers
-//! `{results, next_before}`. [`cursor_page`] reads that shape, and only where a caller asks
-//! for it, so an object that happens to hold `results` is never taken for a cursor page.
-//! Its token is the cursor, as a decimal string.
+//! A route that pages another way says so on its row ([`crate::routes::Paging`]), and its
+//! answer is read into the same [`Page`], with the token the server gave as its [`Next`]: the
+//! runner jobs answer `{results, next_before}`, which [`cursor_page`] reads, and only where a
+//! caller asks for it, so an object that happens to hold `results` is never taken for a
+//! cursor page. An answer [`page`] reads that names a next page in a cursor field rather than
+//! in `next` is refused: read as DRF's, it would print a short list as if it were complete.
 
 use serde_json::{Map, Value};
 
-use crate::client::without_query_values;
 use crate::error::{Error, Result};
 use crate::phrase::quote;
+use crate::url::without_query_values;
+
+/// The fields that hold the next page of a list paged by cursor. [`page`] refuses an answer
+/// that sets one and no `next` link: a route that moved to cursor paging while a command
+/// still reads it by page number.
+const CURSOR_FIELDS: [&str; 3] = ["next_before", "next_cursor", "cursor"];
 
 /// One page of a list answer.
 #[derive(Debug)]
 pub struct Page {
     /// The items on this page.
     pub items: Vec<Value>,
-    /// The `next` link of a paginated answer, or `None` on the last page and for a bare
-    /// array.
-    pub next: Option<String>,
+    /// Where the list goes on, or `None` on the last page and for a bare array.
+    pub next: Option<Next>,
     /// The answer's other fields, such as `count`, kept beside the items in the envelope:
-    /// everything but `results` and the `next` and `previous` links. Empty for a bare
+    /// everything but the items and the fields that name the next page. Empty for a bare
     /// array.
     pub fields: Map<String, Value>,
+}
+
+/// Where a list goes on after a [`Page`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Next {
+    /// A DRF `next` link: its `page` number is the token ([`Page::next_page_token`]), and
+    /// `hipc api --all` follows it as it is.
+    Link(String),
+    /// The token itself, which goes back in the route's token query: a cursor, a
+    /// continuation token, or a page number worked out from the answer.
+    Token(String),
+}
+
+impl Next {
+    /// The link or the token, as the server gave it.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Link(text) | Self::Token(text) => text,
+        }
+    }
 }
 
 /// Reads a list answer: a bare array, or a paginated `{results, next}` object.
 ///
 /// # Errors
 ///
-/// `internal` for any other shape.
+/// `internal` for any other shape, and as [`page_beside`].
 pub fn page(answer: Value) -> Result<Page> {
     match answer {
         Value::Array(items) => Ok(Page {
@@ -62,15 +88,26 @@ pub fn page(answer: Value) -> Result<Page> {
 ///
 /// # Errors
 ///
-/// `internal` when `next` is neither a string nor null.
+/// `internal` when `next` is neither a string nor null, and when there is no `next` link but
+/// a cursor field (`next_before`, `next_cursor`, or `cursor`) names a next page.
 pub fn page_beside(items: Vec<Value>, mut fields: Map<String, Value>) -> Result<Page> {
     let next = match fields.shift_remove("next") {
         None | Some(Value::Null) => None,
-        Some(Value::String(next)) => Some(next),
+        Some(Value::String(next)) => Some(Next::Link(next)),
         // Treating a malformed link as the last page would print a short list as if it
         // were complete.
         Some(_) => return Err(not_a_list()),
     };
+    if next.is_none()
+        && let Some(field) = CURSOR_FIELDS
+            .into_iter()
+            .find(|field| fields.get(*field).is_some_and(|value| !value.is_null()))
+    {
+        return Err(Error::internal(format!(
+            "the API answered a list whose next page is named by `{field}`, a cursor, where \
+             `hipc` reads a `next` link, so the rest of the list is unknown"
+        )));
+    }
     fields.shift_remove("previous");
     Ok(Page {
         items,
@@ -80,22 +117,24 @@ pub fn page_beside(items: Vec<Value>, mut fields: Map<String, Value>) -> Result<
 }
 
 impl Page {
-    /// The `page` number of the `next` link, the token `--page-token` takes.
+    /// The token `--page-token` takes for the next page: the `page` number of a `next` link,
+    /// or the token itself.
     ///
     /// # Errors
     ///
     /// `internal` when there is a `next` link without a numeric `page` parameter: it cannot
     /// be expressed as a token, and dropping it would hide that more pages exist.
     pub fn next_page_token(&self) -> Result<Option<String>> {
-        let Some(next) = &self.next else {
-            return Ok(None);
-        };
-        page_number(next).map(Some).ok_or_else(|| {
-            Error::internal(format!(
-                "the API's `next` link {} has no page number",
-                quote(without_query_values(next))
-            ))
-        })
+        match &self.next {
+            None => Ok(None),
+            Some(Next::Token(token)) => Ok(Some(token.clone())),
+            Some(Next::Link(next)) => page_number(next).map(Some).ok_or_else(|| {
+                Error::internal(format!(
+                    "the API's `next` link {} has no page number",
+                    quote(without_query_values(next))
+                ))
+            }),
+        }
     }
 
     /// This page as the envelope `hipc` prints for one page of a longer list.
@@ -126,16 +165,16 @@ impl Page {
     ///
     /// # Errors
     ///
-    /// `internal` when the answer has a `next` link. Dropping it would print, or decide
-    /// on, a short list as if it were complete; the Hub double-charge guard would miss an
-    /// active plan on page 2.
+    /// `internal` when the answer names a next page. Dropping it would print, or decide on,
+    /// a short list as if it were complete; the Hub double-charge guard would miss an active
+    /// plan on page 2.
     pub fn into_complete(self, path: &str) -> Result<Vec<Value>> {
         match self.next {
             None => Ok(self.items),
             Some(next) => Err(Error::internal(format!(
                 "the API split a list into pages, and this command reads it whole: its `next` \
                  link is {}",
-                quote(without_query_values(&next))
+                quote(without_query_values(next.as_str()))
             ))
             .with_hint(format!(
                 "run `hipc api GET {path}` to see the answer and its `next` link"
@@ -144,47 +183,27 @@ impl Page {
     }
 }
 
-/// One page of a cursor list, `{"results": [...], "next_before": <integer or null>}`.
-#[derive(Debug)]
-pub struct CursorPage {
-    /// The items on this page.
-    pub items: Vec<Value>,
-    /// The server's `next_before` as a decimal string, or `None` on the last page: the
-    /// token `--page-token` takes, which goes back as `?before=`.
-    pub next_page_token: Option<String>,
-    /// The answer's other fields, such as `count`, kept beside the items in the envelope,
-    /// as [`Page`] keeps them.
-    pub fields: Map<String, Value>,
-}
-
-impl CursorPage {
-    /// This page as the envelope `hipc` prints for one page of a longer list.
-    pub fn envelope(self) -> Value {
-        page_envelope(self.items, self.next_page_token, self.fields)
-    }
-}
-
 /// Reads a cursor page: an object with a `results` array and a `next_before` that is a
-/// non-negative integer or null. The console types `next_before` as `number | null` and
-/// never omits it.
+/// non-negative integer or null, whose token is the cursor as a decimal string, which goes
+/// back as `?before=`. The console types `next_before` as `number | null` and never omits it.
 ///
 /// # Errors
 ///
 /// `internal` for any other shape, a missing `next_before` included: reading it as the
 /// last page would print a short list as if it were complete.
-pub fn cursor_page(answer: Value) -> Result<CursorPage> {
+pub fn cursor_page(answer: Value) -> Result<Page> {
     let Value::Object(mut map) = answer else {
         return Err(not_a_list());
     };
     let Some(Value::Array(items)) = map.shift_remove("results") else {
         return Err(not_a_list());
     };
-    let next_page_token = match map.shift_remove("next_before") {
+    let next = match map.shift_remove("next_before") {
         Some(Value::Null) => None,
         // As a number, so the token is one spelling of the cursor whatever the server
         // wrote (`812`, not `812.0` or `8.12e2`, which `as_u64` refuses).
         Some(Value::Number(cursor)) => match cursor.as_u64() {
-            Some(cursor) => Some(cursor.to_string()),
+            Some(cursor) => Some(Next::Token(cursor.to_string())),
             None => return Err(not_a_cursor(&format!("`{cursor}`"))),
         },
         // The kind, not the value: a server string or object has no place in the message.
@@ -203,9 +222,9 @@ pub fn cursor_page(answer: Value) -> Result<CursorPage> {
             ));
         }
     };
-    Ok(CursorPage {
+    Ok(Page {
         items,
-        next_page_token,
+        next,
         fields: map,
     })
 }
@@ -261,297 +280,11 @@ fn not_a_list() -> Error {
     Error::internal("the API answered a list request with something other than a list")
 }
 
-/// `value` with every field named `name` removed, at any depth of objects and arrays, and
-/// every other field kept: for a one-time secret that only the call issuing it may print
-/// (tenet 9), and for the server's error body, where a secret has no reason to be
-/// (`Client::send`). Removed at every level, not only the top, so a response that nests
-/// the object, or lists several, cannot print it if its shape changes.
-pub fn without_field(value: Value, name: &str) -> Value {
-    without_fields(value, &|key| key == name)
-}
-
-/// `value` with every field whose name `withheld` picks removed, at any depth of objects and
-/// arrays, as [`without_field`] removes one name: for a secret that more than one spelling
-/// may name.
-pub fn without_fields(value: Value, withheld: &dyn Fn(&str) -> bool) -> Value {
-    match value {
-        Value::Object(fields) => Value::Object(
-            fields
-                .into_iter()
-                .filter(|(key, _)| !withheld(key))
-                .map(|(key, value)| (key, without_fields(value, withheld)))
-                .collect(),
-        ),
-        Value::Array(items) => Value::Array(
-            items
-                .into_iter()
-                .map(|item| without_fields(item, withheld))
-                .collect(),
-        ),
-        other => other,
-    }
-}
-
-/// What [`redact_value`] writes in place of the secret.
-const REDACTED: &str = "<redacted>";
-
-/// `text` with every occurrence of each of `secrets` replaced by `<redacted>`. Every place any
-/// secret matches is found first, overlapping matches included, and matches that overlap are
-/// one span with one marker: so neither secret of two that overlap in the text shows a part of
-/// itself, a shorter secret is never replaced inside a longer one that holds it, and none is
-/// replaced inside a `<redacted>` another wrote, as a pass per secret would do for a secret
-/// such as `d`. With one secret whose matches cannot overlap it is [`str::replace`]. The text
-/// that held a secret is cleared, not left in freed memory.
-///
-/// # Panics
-///
-/// When a secret is empty, which would match between every two characters.
-pub fn redact_all<S: AsRef<str>>(text: String, secrets: &[S]) -> String {
-    let mut spans: Vec<(usize, usize)> = Vec::new();
-    for secret in secrets {
-        let secret = secret.as_ref();
-        assert!(!secret.is_empty(), "an empty secret cannot be redacted");
-        let mut from = 0;
-        while let Some(at) = text[from..].find(secret) {
-            let start = from + at;
-            spans.push((start, start + secret.len()));
-            // The next match may start inside this one: one character on.
-            from = start + text[start..].chars().next().map_or(1, char::len_utf8);
-        }
-    }
-    if spans.is_empty() {
-        return text;
-    }
-    spans.sort_unstable();
-    let mut out = String::with_capacity(text.len());
-    let mut written = 0;
-    let mut spans = spans.into_iter().peekable();
-    while let Some((start, mut end)) = spans.next() {
-        // Every later span that starts before this one ends is part of it.
-        while let Some(&(next, next_end)) = spans.peek() {
-            if next >= end {
-                break;
-            }
-            end = end.max(next_end);
-            spans.next();
-        }
-        out.push_str(&text[written..start]);
-        out.push_str(REDACTED);
-        written = end;
-    }
-    out.push_str(&text[written..]);
-    drop(zeroize::Zeroizing::new(text));
-    out
-}
-
-/// `value` with every occurrence of `secret` in a string or a field name replaced by
-/// `<redacted>`, at any depth: for a secret the caller sent, such as an invite token, which an
-/// answer has no reason to repeat but must never print if it does (tenet 9). A number that is
-/// the secret, as an all-digit secret echoed unquoted would be, becomes the string
-/// `<redacted>`. Both are compared as digit strings: the number without its sign, its point,
-/// its exponent, and its leading and trailing zeros (`-12345.0` and `12345e0` are `12345`),
-/// and the secret without its leading and trailing zeros. A number whose digits only hold the
-/// secret's is redacted once the secret has `LONG_DIGITS` digits or more; below that it is
-/// left alone, so a short secret does not turn counts and ids into markers.
-///
-/// # Panics
-///
-/// When `secret` is empty, which would match between every two characters.
-pub fn redact_value(value: Value, secret: &str) -> Value {
-    redact_value_all(value, &[secret])
-}
-
-/// [`redact_value`] of each of `secrets` at once: every string and field name in one
-/// [`redact_all`] pass, and a number that any of them is.
-///
-/// # Panics
-///
-/// When a secret is empty, which would match between every two characters.
-pub fn redact_value_all<S: AsRef<str>>(value: Value, secrets: &[S]) -> Value {
-    // Checked here too, so a value with no string still refuses an empty secret.
-    assert!(
-        secrets.iter().all(|secret| !secret.as_ref().is_empty()),
-        "an empty secret cannot be redacted"
-    );
-    redacted_value(value, secrets)
-}
-
-/// [`redact_value_all`] once its secrets are checked.
-fn redacted_value<S: AsRef<str>>(value: Value, secrets: &[S]) -> Value {
-    let clean = |text: String| redact_all(text, secrets);
-    match value {
-        Value::String(text) => Value::String(clean(text)),
-        Value::Object(fields) => {
-            let mut redacted = Map::new();
-            for (key, value) in fields {
-                insert_unique(&mut redacted, &clean(key), redacted_value(value, secrets));
-            }
-            Value::Object(redacted)
-        }
-        Value::Array(items) => Value::Array(
-            items
-                .into_iter()
-                .map(|item| redacted_value(item, secrets))
-                .collect(),
-        ),
-        Value::Number(number)
-            if secrets
-                .iter()
-                .any(|secret| number_holds(&number.to_string(), secret.as_ref())) =>
-        {
-            Value::from(REDACTED)
-        }
-        other => other,
-    }
-}
-
-/// Inserts `value` under `key`, or under `key (2)`, `key (3)`, and so on when a redacted key
-/// already took it, so no field is lost when two names redact to the same text.
-pub fn insert_unique(fields: &mut Map<String, Value>, key: &str, value: Value) {
-    let mut name = key.to_owned();
-    let mut n = 2;
-    while fields.contains_key(&name) {
-        name = format!("{key} ({n})");
-        n += 1;
-    }
-    fields.insert(name, value);
-}
-
-/// How many digits an all-digit secret needs before any number holding them is redacted.
-/// Arbitrary: eight digits are rare by chance in a count, an id, or a size, and a token that
-/// short is weak anyway.
-const LONG_DIGITS: usize = 8;
-
-/// Whether the JSON number `text` spells `secret` (see [`redact_value`]): the rule for a
-/// number in any redacted copy of an answer.
-pub fn number_holds(text: &str, secret: &str) -> bool {
-    if secret.is_empty() || !secret.bytes().all(|b| b.is_ascii_digit()) {
-        return false;
-    }
-    let mantissa = text.split(['e', 'E']).next().unwrap_or(text);
-    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
-    let digits = digits.trim_matches('0');
-    let secret = secret.trim_matches('0');
-    digits == secret || (secret.len() >= LONG_DIGITS && digits.contains(secret))
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
-
-    /// All secrets at once, whatever order they come in: a short secret cuts neither a longer
-    /// one that holds it nor a marker already written.
-    #[test]
-    fn several_secrets_are_redacted_at_once() {
-        let secrets = ["a", "dacted"];
-        assert_eq!(
-            redact_all("dacted a b".to_owned(), &secrets),
-            "<redacted> <redacted> b"
-        );
-        assert_eq!(redact_all("ééa".to_owned(), &secrets), "éé<redacted>");
-        // Two secrets that start at the same place: the longer is taken whole.
-        assert_eq!(
-            redact_all("tok-1 tok".to_owned(), &["tok", "tok-1"]),
-            "<redacted> <redacted>"
-        );
-        // Two secrets that overlap in the text are one span, so neither shows a part of
-        // itself, whichever starts first.
-        assert_eq!(
-            redact_all("<xaBCDEFG>".to_owned(), &["xa", "aBCDEFG"]),
-            "<<redacted>>"
-        );
-        assert_eq!(
-            redact_all("aBCxyz".to_owned(), &["Cxyz", "aBC"]),
-            "<redacted>"
-        );
-        // A secret that overlaps itself is one span too; apart, each match is its own.
-        assert_eq!(
-            redact_all("aaa b aa".to_owned(), &["aa"]),
-            "<redacted> b <redacted>"
-        );
-        assert_eq!(
-            redact_all("abab".to_owned(), &["ab"]),
-            "<redacted><redacted>"
-        );
-        // Two field names that redact to the same text are both kept.
-        assert_eq!(
-            redact_value_all(json!({"acted": 1, "d": 2}), &["acted", "d"]),
-            json!({"<redacted>": 1, "<redacted> (2)": 2})
-        );
-        assert_eq!(redact_all("x".to_owned(), &[] as &[&str]), "x");
-        // A pass per secret would cut the marker the first one wrote.
-        assert_eq!(
-            redact_all("tok-1".to_owned(), &["tok-1", "d"]),
-            "<redacted>"
-        );
-        let value = json!({"tok-1 d": ["tok-1", 12_345_678], "n": 7});
-        assert_eq!(
-            redact_value_all(value, &["tok-1", "d", "12345678"]),
-            json!({"<redacted> <redacted>": ["<redacted>", "<redacted>"], "n": 7})
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "an empty secret cannot be redacted")]
-    fn an_empty_secret_among_several_panics() {
-        drop(redact_all("x".to_owned(), &["a", ""]));
-    }
-
-    #[test]
-    fn a_secret_is_redacted_in_every_string_and_field_name() {
-        let value = json!({
-            "token": "tok-1",
-            "error": "invite tok-1 is spent",
-            "nested": [{"tok-1": 1, "n": 2}, "x tok-1 tok-1"],
-            "ok": true,
-            "none": null
-        });
-        assert_eq!(
-            redact_value(value, "tok-1"),
-            json!({
-                "token": "<redacted>",
-                "error": "invite <redacted> is spent",
-                "nested": [{"<redacted>": 1, "n": 2}, "x <redacted> <redacted>"],
-                "ok": true,
-                "none": null
-            })
-        );
-        assert_eq!(
-            redact_value(json!(12), "1"),
-            json!(12),
-            "a number that only holds the secret's digits is kept"
-        );
-        assert_eq!(
-            redact_value(json!({"n": [12345]}), "12345"),
-            json!({"n": ["<redacted>"]}),
-            "a number that is the secret is redacted"
-        );
-        let spelled: Value =
-            serde_json::from_str("[-12345.0, 12345e0, 0.0012345, 123456]").unwrap();
-        assert_eq!(
-            redact_value(spelled, "12345"),
-            json!(["<redacted>", "<redacted>", "<redacted>", 123_456]),
-            "a sign and a zero tail do not hide the secret; a short one inside a number is kept"
-        );
-        let long: Value = serde_json::from_str("[9867530912345, 1.86753091]").unwrap();
-        assert_eq!(
-            redact_value(long, "86753091"),
-            json!(["<redacted>", "<redacted>"]),
-            "a secret of eight digits or more is redacted inside any number"
-        );
-        assert_eq!(
-            redact_value(json!(12_345_678), "abcdefgh"),
-            json!(12_345_678)
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "an empty secret cannot be redacted")]
-    fn an_empty_secret_is_a_bug() {
-        drop(redact_value(json!(1), ""));
-    }
 
     /// A `next` link the server wrote can carry a signed token in its query, so the
     /// messages that quote it show the names only.
@@ -560,7 +293,7 @@ mod tests {
         let signed = "https://h/api/x/?sig=s3cr3t&cursor=abc";
         let no_number = Page {
             items: Vec::new(),
-            next: Some(signed.to_owned()),
+            next: Some(Next::Link(signed.to_owned())),
             fields: Map::new(),
         };
         let message = no_number.next_page_token().unwrap_err().to_string();
@@ -568,7 +301,7 @@ mod tests {
         assert!(message.contains("sig=<redacted>"), "{message}");
         let paginated = Page {
             items: Vec::new(),
-            next: Some(signed.to_owned()),
+            next: Some(Next::Link(signed.to_owned())),
             fields: Map::new(),
         };
         let error = paginated.into_complete("/x/").unwrap_err();
@@ -616,8 +349,10 @@ mod tests {
         let page = page(answer).unwrap();
         assert_eq!(page.items, [json!({"id": 1})]);
         assert_eq!(
-            page.next.as_deref(),
-            Some("https://api.hippius.com/api/ssh-keys/?page=2")
+            page.next,
+            Some(Next::Link(
+                "https://api.hippius.com/api/ssh-keys/?page=2".to_owned()
+            ))
         );
         let last = super::page(json!({"next": null, "results": []})).unwrap();
         assert_eq!(last.next, None);
@@ -659,7 +394,7 @@ mod tests {
     fn one_page_envelope_carries_the_next_token_or_refuses_a_link_without_one() {
         let with_next = Page {
             items: vec![json!(1)],
-            next: Some("https://x/a/?page=2".into()),
+            next: Some(Next::Link("https://x/a/?page=2".into())),
             fields: Map::new(),
         };
         assert_eq!(
@@ -677,7 +412,7 @@ mod tests {
         );
         let cursor = Page {
             items: vec![],
-            next: Some("https://x/a/?cursor=abc".into()),
+            next: Some(Next::Link("https://x/a/?cursor=abc".into())),
             fields: Map::new(),
         };
         assert_eq!(cursor.envelope().unwrap_err().code().as_str(), "internal");
@@ -687,14 +422,14 @@ mod tests {
     fn a_cursor_page_carries_its_cursor_as_a_decimal_token() {
         let page = cursor_page(json!({"results": [{"id": 1}], "next_before": 812})).unwrap();
         assert_eq!(page.items, [json!({"id": 1})]);
-        assert_eq!(page.next_page_token.as_deref(), Some("812"));
+        assert_eq!(page.next_page_token().unwrap().as_deref(), Some("812"));
         assert_eq!(
-            page.envelope(),
+            page.envelope().unwrap(),
             json!({"items": [{"id": 1}], "next_page_token": "812"})
         );
         let last = cursor_page(json!({"results": [], "next_before": null})).unwrap();
         assert_eq!(
-            last.envelope(),
+            last.envelope().unwrap(),
             json!({"items": [], "next_page_token": null})
         );
     }
@@ -710,7 +445,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            page.envelope(),
+            page.envelope().unwrap(),
             json!({"count": 3, "items": [{"id": 1}], "next_page_token": "812"})
         );
     }
@@ -781,6 +516,54 @@ mod tests {
             json!({"items": [], "next_page_token": null})
         );
         assert!(page(json!([1])).unwrap().fields.is_empty());
+    }
+
+    /// A list read by page number whose answer names its next page in a cursor field, and
+    /// not in `next`, would print as complete: it is refused, read whole or one page at a
+    /// time. A cursor field that is null, or beside a `next` link, names nothing more.
+    #[test]
+    fn a_cursor_field_without_a_next_link_is_refused() {
+        for field in CURSOR_FIELDS {
+            for cursor in [json!(812), json!("abc")] {
+                let answer = json!({"count": 9, "next": null, "results": [1], field: cursor});
+                let error = page(answer).unwrap_err();
+                assert_eq!(
+                    error.message(),
+                    format!(
+                        "the API answered a list whose next page is named by `{field}`, a \
+                         cursor, where `hipc` reads a `next` link, so the rest of the list is \
+                         unknown"
+                    )
+                );
+                let keyed = Map::from_iter([(field.to_owned(), cursor)]);
+                assert!(page_beside(vec![json!(1)], keyed).is_err(), "{field}");
+            }
+            let last = json!({"results": [1], field: null});
+            assert_eq!(page(last).unwrap().items, [json!(1)]);
+            let linked = json!({"next": "https://x/a/?page=2", "results": [], field: 3});
+            let linked = page(linked).unwrap();
+            assert_eq!(linked.next_page_token().unwrap().as_deref(), Some("2"));
+            assert_eq!(linked.fields.get(field), Some(&json!(3)));
+        }
+    }
+
+    /// A token a reader worked out is the next page's token as it is, and a list read whole
+    /// that has one is refused as one with a `next` link is.
+    #[test]
+    fn a_token_is_the_next_page_as_it_is() {
+        let page = Page {
+            items: vec![json!(1)],
+            next: Some(Next::Token("t2".to_owned())),
+            fields: Map::new(),
+        };
+        assert_eq!(page.next.as_ref().map(Next::as_str), Some("t2"));
+        assert_eq!(page.next_page_token().unwrap().as_deref(), Some("t2"));
+        let error = page.into_complete("/x/").unwrap_err();
+        assert_eq!(
+            error.message(),
+            "the API split a list into pages, and this command reads it whole: its `next` link \
+             is `t2`"
+        );
     }
 
     #[test]

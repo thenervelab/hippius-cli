@@ -2,14 +2,15 @@
 //! profile update sends only the fields given; the auto-reload update reads the setting first,
 //! sends it back whole, and asks only when it may charge the card more.
 
+use hippius::routes::billing;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, draft, route};
+use crate::common::{
+    BILLING, Hipc, Home, MEMBER, Reply, Run, Server, draft, parsed, route, route_each, route_of,
+};
 
 const PROFILE: &str = "/api/billing/profile/";
 const AUTO_RELOAD: &str = "/api/billing/auto-reload/";
-const CARD_SETUP: &str = "/api/billing/auto-reload/card-setup/";
-const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
 
 /// A saved profile, in the shape the console types it.
 const SAVED_PROFILE: &str = concat!(
@@ -19,10 +20,6 @@ const SAVED_PROFILE: &str = concat!(
 );
 
 const CHECKOUT: &str = r#"{"checkout_url":"https://checkout.stripe.com/c/pay/cs_1?k=v"}"#;
-
-fn parsed(text: &str) -> Value {
-    serde_json::from_str(text).expect("the fixture is JSON")
-}
 
 fn hipc(server: &Server, args: &[&str]) -> Run {
     Hipc::against(&Home::new(), server).run(args)
@@ -48,7 +45,11 @@ fn read_and_put(path: &str, answer: &str) -> Server {
 
 #[test]
 fn profile_get_prints_the_profile_as_sent() {
-    let server = Server::start(vec![route("GET", PROFILE, Reply::json(200, SAVED_PROFILE))]);
+    let server = Server::start(vec![route_of(
+        &billing::PROFILE,
+        [],
+        Reply::json(200, SAVED_PROFILE),
+    )]);
     assert_eq!(
         hipc(&server, &["billing", "profile", "get"]).ok(),
         parsed(SAVED_PROFILE)
@@ -64,7 +65,11 @@ fn profile_get_prints_the_profile_as_sent() {
 /// no `--yes`.
 #[test]
 fn profile_update_sends_only_the_fields_given() {
-    let server = Server::start(vec![route("PUT", PROFILE, Reply::json(200, SAVED_PROFILE))]);
+    let server = Server::start(vec![route_of(
+        &billing::PROFILE_UPDATE,
+        [],
+        Reply::json(200, SAVED_PROFILE),
+    )]);
     let args = [
         "billing",
         "profile",
@@ -203,8 +208,12 @@ fn a_billing_email_change_needs_yes() {
         Reply::json(200, r#"{"billing_email":""}"#),
     ] {
         let server = Server::start(vec![
-            route("GET", PROFILE, answer),
-            route("PUT", PROFILE, Reply::json(200, SAVED_PROFILE)),
+            route_of(&billing::PROFILE, [], answer),
+            route_of(
+                &billing::PROFILE_UPDATE,
+                [],
+                Reply::json(200, SAVED_PROFILE),
+            ),
         ]);
         let error = hipc(&server, &update("b@example.com")).fails(2, "confirmation_required");
         assert_eq!(
@@ -215,9 +224,9 @@ fn a_billing_email_change_needs_yes() {
         assert_eq!(methods(&server), ["GET", "GET", "PUT"]);
     }
     // A read that fails otherwise stops before the PUT, with nothing written.
-    let server = Server::start(vec![route(
-        "GET",
-        PROFILE,
+    let server = Server::start(vec![route_of(
+        &billing::PROFILE,
+        [],
         Reply::json(503, r#"{"detail":"down"}"#),
     )]);
     let error = hipc(&server, &with_yes(&update("b@example.com"))).fails(1, "unavailable");
@@ -225,8 +234,7 @@ fn a_billing_email_change_needs_yes() {
     assert_eq!(methods(&server), ["GET"]);
     // The dry run lists the read, then the PUT, and sends nothing.
     let server = Server::start(vec![]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .run(&[&["--dry-run"][..], &update("b@example.com")].concat())
         .ok();
     let shown: Vec<&str> = doc["requests"]
@@ -244,8 +252,7 @@ fn a_billing_email_change_needs_yes() {
 #[test]
 fn profile_update_dry_run_is_one_put() {
     let server = Server::start(vec![]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .run(&[
             "--dry-run",
             "billing",
@@ -268,9 +275,9 @@ fn profile_update_dry_run_is_one_put() {
 #[test]
 fn profile_update_reports_a_failed_write() {
     let args = ["billing", "profile", "update", "--city", "Paris"];
-    let rejected = Server::start(vec![route(
-        "PUT",
-        PROFILE,
+    let rejected = Server::start(vec![route_of(
+        &billing::PROFILE_UPDATE,
+        [],
         Reply::json(400, r#"{"tax_id":["Enter a valid VAT number."]}"#),
     )]);
     let error = hipc(&rejected, &args).fails(1, "validation");
@@ -288,7 +295,11 @@ fn profile_update_reports_a_failed_write() {
             .unwrap_or_default()
             .contains("profile get")
     );
-    let down = Server::start(vec![route("PUT", PROFILE, Reply::json(502, "{}"))]);
+    let down = Server::start(vec![route_of(
+        &billing::PROFILE_UPDATE,
+        [],
+        Reply::json(502, "{}"),
+    )]);
     let error = hipc(&down, &args).fails(1, "unavailable");
     assert_eq!(error["side_effects"], "partial");
     assert_eq!(
@@ -296,7 +307,11 @@ fn profile_update_reports_a_failed_write() {
         "run `hipc billing profile get` to check whether it was saved before running the \
          command again"
     );
-    let broken = Server::start(vec![route("PUT", PROFILE, Reply::json(500, "{}"))]);
+    let broken = Server::start(vec![route_of(
+        &billing::PROFILE_UPDATE,
+        [],
+        Reply::json(500, "{}"),
+    )]);
     let error = hipc(&broken, &args).fails(1, "internal");
     assert_eq!(error["side_effects"], "partial");
     assert_eq!(
@@ -539,6 +554,32 @@ fn auto_reload_update_needs_yes_when_the_setting_in_force_is_unknown() {
     }
 }
 
+/// Each run reads the setting again and sends back what that read holds with the change: a
+/// change another client made between the question and the run with `--yes` is kept, not
+/// undone with what the question saw. Within one run the read and the write are two requests
+/// and the API takes no precondition (owner decision D6), so a change between them is
+/// overwritten; the command's help says the read and the write are separate.
+#[test]
+fn auto_reload_update_sends_back_what_the_run_that_sends_read() {
+    let changed = setting(true, "armed", "20.00", "80.00", r#""300.00""#);
+    let server = Server::start(vec![
+        route_each(
+            "GET",
+            AUTO_RELOAD,
+            vec![Reply::json(200, &armed()), Reply::json(200, &changed)],
+        ),
+        route("PUT", AUTO_RELOAD, Reply::json(200, &changed)),
+    ]);
+    let argv = reload(&["--target", "100"]);
+    hipc(&server, &words(&argv)).fails(2, "confirmation_required");
+    hipc(&server, &with_yes(&words(&argv))).ok();
+    assert_eq!(methods(&server), ["GET", "GET", "PUT"]);
+    assert_eq!(
+        server.requests()[2].json(),
+        body(true, "20.00", "100.00", json!("300.00"))
+    );
+}
+
 /// Turning auto-reload off, leaving it off, or lowering or keeping every amount while it is on
 /// charges no more, so it is sent without `--yes`, with the other fields as read.
 #[test]
@@ -585,7 +626,7 @@ fn auto_reload_update_needs_no_yes_when_it_cannot_charge_more() {
             "--monthly-cap",
             "200",
         ],
-        &body(true, "9.99", "50.00", cap.clone()),
+        &body(true, "9.99", "50.00", cap),
     );
     // A cap where there was none limits the charges.
     sends(
@@ -720,10 +761,7 @@ fn auto_reload_update_dry_run_lists_the_read_then_the_write() {
     let update = reload(&["--enabled", "true", "--monthly-cap", "none"]);
     let mut argv = vec!["--dry-run"];
     argv.extend(words(&update));
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
-        .run(&argv)
-        .ok();
+    let doc = Hipc::tokenless(&Home::new(), &server).run(&argv).ok();
     let expected = json!({
         "enabled": true,
         "threshold": "<the setting's threshold>",
@@ -742,15 +780,19 @@ fn auto_reload_update_dry_run_lists_the_read_then_the_write() {
 
 #[test]
 fn auto_reload_update_stops_on_a_failed_read_and_reports_a_rejected_write() {
-    let off = Server::start(vec![route("GET", AUTO_RELOAD, Reply::not_found())]);
+    let off = Server::start(vec![route_of(
+        &billing::AUTO_RELOAD,
+        [],
+        Reply::not_found(),
+    )]);
     let args = reload(&["--enabled", "false"]);
     hipc(&off, &with_yes(&words(&args))).fails(1, "not_found");
     assert_eq!(methods(&off), ["GET"]);
     let refused = Server::start(vec![
-        route("GET", AUTO_RELOAD, Reply::json(200, &armed())),
-        route(
-            "PUT",
-            AUTO_RELOAD,
+        route_of(&billing::AUTO_RELOAD, [], Reply::json(200, &armed())),
+        route_of(
+            &billing::AUTO_RELOAD_UPDATE,
+            [],
             Reply::json(409, r#"{"error":"no wallet","code":"no_wallet"}"#),
         ),
     ]);
@@ -781,8 +823,8 @@ fn auto_reload_update_stops_on_a_failed_read_and_reports_a_rejected_write() {
     );
     // A write that may have reached the server names the read that shows whether it took.
     let down = Server::start(vec![
-        route("GET", AUTO_RELOAD, Reply::json(200, &armed())),
-        route("PUT", AUTO_RELOAD, Reply::json(503, "{}")),
+        route_of(&billing::AUTO_RELOAD, [], Reply::json(200, &armed())),
+        route_of(&billing::AUTO_RELOAD_UPDATE, [], Reply::json(503, "{}")),
     ]);
     let error = hipc(&down, &words(&args)).fails(1, "unavailable");
     assert_eq!(error["side_effects"], "partial");
@@ -841,7 +883,11 @@ fn a_membership_needs_a_billing_account() {
 /// `--yes`. `next_step` names the read that shows the card, with the run's selectors.
 #[test]
 fn card_setup_prints_the_checkout_and_names_the_next_step() {
-    let server = Server::start(vec![route("POST", CARD_SETUP, Reply::json(200, CHECKOUT))]);
+    let server = Server::start(vec![route_of(
+        &billing::AUTO_RELOAD_CARD_SETUP,
+        [],
+        Reply::json(200, CHECKOUT),
+    )]);
     let doc = hipc(&server, &["billing", "auto-reload", "card-setup"]).ok();
     let next = format!("hipc --api-url {} billing auto-reload get", server.url());
     assert_eq!(doc["checkout_url"], parsed(CHECKOUT)["checkout_url"]);
@@ -880,35 +926,40 @@ fn card_setup_prints_the_checkout_and_names_the_next_step() {
     );
 }
 
-/// A selector that is not one plain word gives no command to name, and an answer that is not
-/// an object gains no field.
+/// A profile name clap would read as a flag is joined to `--profile` in the next command, and
+/// an answer that is not an object gains no field.
 #[test]
-fn card_setup_leaves_out_a_next_step_it_cannot_name() {
-    let server = Server::start(vec![route("POST", CARD_SETUP, Reply::json(200, CHECKOUT))]);
+fn card_setup_joins_a_flag_shaped_profile_and_adds_no_field_to_a_non_object() {
+    let server = Server::start(vec![route_of(
+        &billing::AUTO_RELOAD_CARD_SETUP,
+        [],
+        Reply::json(200, CHECKOUT),
+    )]);
     let home = Home::new();
     home.write_config("[profiles.\"-work\"]\n");
-    let run = Hipc::against(&home, &server)
-        .env("HIPPIUS_PROFILE", "-work")
-        .run(&["--output", "text", "billing", "auto-reload", "card-setup"]);
-    assert_eq!(run.code(), Some(0), "{}", run.stderr());
-    assert_eq!(
-        run.stderr(),
-        "note: nothing is charged: the card is saved once the checkout at `checkout_url` in the \
-         output is completed\n"
-    );
     let doc = Hipc::against(&home, &server)
         .env("HIPPIUS_PROFILE", "-work")
         .run(&["billing", "auto-reload", "card-setup"])
         .ok();
-    assert!(doc.get("next_step").is_none(), "{doc}");
-    let list = Server::start(vec![route("POST", CARD_SETUP, Reply::json(200, "[]"))]);
+    assert_eq!(
+        doc["next_step"],
+        format!(
+            "hipc --profile=-work --api-url {} billing auto-reload get",
+            server.url()
+        )
+    );
+    let list = Server::start(vec![route_of(
+        &billing::AUTO_RELOAD_CARD_SETUP,
+        [],
+        Reply::json(200, "[]"),
+    )]);
     assert_eq!(
         hipc(&list, &["billing", "auto-reload", "card-setup"]).ok(),
         json!([])
     );
-    let failing = Server::start(vec![route(
-        "POST",
-        CARD_SETUP,
+    let failing = Server::start(vec![route_of(
+        &billing::AUTO_RELOAD_CARD_SETUP,
+        [],
         Reply::json(502, r#"{"error":"stripe is down"}"#),
     )]);
     let error = hipc(&failing, &["billing", "auto-reload", "card-setup"]).fails(1, "unavailable");
@@ -921,14 +972,22 @@ fn card_setup_leaves_out_a_next_step_it_cannot_name() {
 #[test]
 fn the_billing_account_goes_on_every_request() {
     let server = Server::start(vec![
-        route("GET", PROFILE, Reply::json(200, SAVED_PROFILE)),
-        route("PUT", PROFILE, Reply::json(200, SAVED_PROFILE)),
-        route("GET", AUTO_RELOAD, Reply::json(200, &armed())),
-        route("PUT", AUTO_RELOAD, Reply::json(200, &armed())),
-        route("POST", CARD_SETUP, Reply::json(200, CHECKOUT)),
-        route(
-            "GET",
-            "/api/billing/auto-reload/history/",
+        route_of(&billing::PROFILE, [], Reply::json(200, SAVED_PROFILE)),
+        route_of(
+            &billing::PROFILE_UPDATE,
+            [],
+            Reply::json(200, SAVED_PROFILE),
+        ),
+        route_of(&billing::AUTO_RELOAD, [], Reply::json(200, &armed())),
+        route_of(&billing::AUTO_RELOAD_UPDATE, [], Reply::json(200, &armed())),
+        route_of(
+            &billing::AUTO_RELOAD_CARD_SETUP,
+            [],
+            Reply::json(200, CHECKOUT),
+        ),
+        route_of(
+            &billing::AUTO_RELOAD_HISTORY,
+            [],
             Reply::json(200, r#"{"results":[]}"#),
         ),
     ]);

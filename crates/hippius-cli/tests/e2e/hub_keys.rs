@@ -2,9 +2,12 @@
 //! rotate print a one-time secret, so they need `--reveal` before anything is sent; a list
 //! never prints one. Every write needs `--yes`, and `/api/registry/` refuses a membership.
 
+use hippius::routes::hub;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, hub_provision_hint, route};
+use crate::common::{
+    Hipc, Home, MEMBER, Reply, Server, docker_logins, draft, hub_provision_hint, route, route_of,
+};
 
 /// A key row as the list answers it, in the shape `hippius-hub registry keys list` reads.
 const ROW: &str = concat!(
@@ -32,7 +35,7 @@ fn issued_as_printed() -> Value {
 }
 
 fn keys_list(reply: Reply) -> Server {
-    Server::start(vec![route("GET", "/api/registry/keys/", reply)])
+    Server::start(vec![route_of(&hub::KEYS, [], reply)])
 }
 
 #[test]
@@ -137,22 +140,12 @@ fn list_drops_every_command_field_the_server_sends() {
 /// can list, so the whole list is refused and nothing is printed.
 #[test]
 fn list_refuses_a_row_with_any_other_docker_login_command() {
-    for row in [
-        json!({"id": 7, "argv": ["docker", "login", "-u", "robot", "-p", "leaked_secret"]}),
-        json!({"id": 7, "argv": ["echo", "leaked_secret", "|", "docker", "login", "-u", "r"]}),
-        json!({"id": 7, "argv": ["DOCKER_PASSWORD=leaked_secret", "docker", "login"]}),
-        json!({"id": 7, "help": "docker\u{200D}login --password=leaked_secret"}),
-        json!({"id": 7, "name": "echo leaked_secret | docker login"}),
-        // As a shell reads them: quotes, backslashes, a continued line, a flag between the
-        // words, a substitution, and a key.
-        json!({"id": 7, "help": "\"docker\" \"login\" -u u -p leaked_secret"}),
-        json!({"id": 7, "help": "docker \\\nlogin -p leaked_secret"}),
-        json!({"id": 7, "help": "docke\\r log\\in -p leaked_secret"}),
-        json!({"id": 7, "help": "docker $'login' -p leaked_secret"}),
-        json!({"id": 7, "help": "/usr/bin/docker -D login -p leaked_secret"}),
-        json!({"id": 7, "help": "$(printf docker) login -p leaked_secret"}),
-        json!({"id": 7, "docker login -u r -p leaked_secret": "ok"}),
-    ] {
+    let rows = docker_logins("leaked_secret")
+        .into_iter()
+        .map(|login| json!({"id": 7, "help": login}))
+        // A command as a key.
+        .chain([json!({"id": 7, "docker login -u r -p leaked_secret": "ok"})]);
+    for row in rows {
         let rows = json!([row]).to_string();
         let server = keys_list(Reply::json(200, &rows));
         let run = Hipc::against(&Home::new(), &server).run(&["hub", "keys", "list"]);
@@ -203,9 +196,9 @@ fn list_without_a_project_hints_at_namespace_create() {
 
 #[test]
 fn create_sends_the_name_and_role_and_prints_the_secret_once() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/registry/keys/",
+    let server = Server::start(vec![route_of(
+        &hub::KEY_CREATE,
+        [],
         Reply::json(201, ISSUED),
     )]);
     let run = Hipc::against(&Home::new(), &server).run(&[
@@ -223,9 +216,9 @@ fn create_sends_the_name_and_role_and_prints_the_secret_once() {
 
 #[test]
 fn create_sends_the_expiry_in_days_as_a_number() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/registry/keys/",
+    let server = Server::start(vec![route_of(
+        &hub::KEY_CREATE,
+        [],
         Reply::json(201, ISSUED),
     )]);
     Hipc::against(&Home::new(), &server)
@@ -278,7 +271,10 @@ fn bad_flags_are_usage_and_send_nothing() {
     let home = Home::new();
     let create = ["hub", "keys", "create", "--reveal", "--yes"];
     for (extra, words) in [
-        (&["--name", "ci", "--role", "write"][..], "write"),
+        (
+            &["--name", "ci", "--role", "Write"][..],
+            "a key role is a code",
+        ),
         (&["--name", "ci"], "--role"),
         (&["--role", "read"], "--name"),
         (
@@ -296,10 +292,7 @@ fn bad_flags_are_usage_and_send_nothing() {
         (&["--name=-push", "--role", "read"], "a key name is"),
     ] {
         let args = [&create[..], extra].concat();
-        let error = Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
-            .run(&args)
-            .fails(2, "usage");
+        let error = Hipc::tokenless(&home, &server).run(&args).fails(2, "usage");
         assert!(
             error["message"].as_str().unwrap().contains(words),
             "{args:?}: {error}"
@@ -309,10 +302,7 @@ fn bad_flags_are_usage_and_send_nothing() {
         &["hub", "keys", "rotate", "x", "--reveal", "--yes"][..],
         &["hub", "keys", "delete", "../7", "--yes"],
     ] {
-        let error = Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
-            .run(args)
-            .fails(2, "usage");
+        let error = Hipc::tokenless(&home, &server).run(args).fails(2, "usage");
         assert!(
             error["message"]
                 .as_str()
@@ -345,8 +335,7 @@ fn create_and_rotate_without_reveal_are_refused_and_send_nothing() {
             "{error}"
         );
         // Before the token check too.
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&home, &server)
             .run(args)
             .fails(2, "reveal_required");
     }
@@ -380,19 +369,16 @@ fn writes_without_yes_are_refused_and_name_the_key() {
             error["message"].as_str().unwrap().contains(action),
             "{error}"
         );
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
-            .run(args)
-            .fails(1, "auth");
+        Hipc::tokenless(&home, &server).run(args).fails(1, "auth");
     }
     assert!(server.requests().is_empty());
 }
 
 #[test]
 fn rotate_posts_no_body_and_prints_the_new_secret() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/registry/keys/7/rotate/",
+    let server = Server::start(vec![route_of(
+        &hub::KEY_ROTATE,
+        [&7],
         Reply::json(201, ISSUED),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -486,9 +472,9 @@ fn create_and_rotate_drop_the_server_login_command_and_refuse_any_other() {
     }
     // A create answer without an id names no rotate.
     let answer = json!({"secret": "s", "help": "docker login -p s"});
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/registry/keys/",
+    let server = Server::start(vec![route_of(
+        &hub::KEY_CREATE,
+        [],
         Reply::json(201, &answer.to_string()),
     )]);
     let error = Hipc::against(&Home::new(), &server)
@@ -519,9 +505,9 @@ fn a_login_that_starts_with_a_dash_is_refused() {
          flag, so `hipc` printed none of the answer"
     );
     assert_eq!(error["side_effects"], "none");
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/registry/keys/7/rotate/",
+    let server = Server::start(vec![route_of(
+        &hub::KEY_ROTATE,
+        [&7],
         Reply::json(
             201,
             r#"{"id":7,"login":"-x","secret":"hub_key_secret_value"}"#,
@@ -544,8 +530,8 @@ fn a_login_that_starts_with_a_dash_is_refused() {
 #[test]
 fn a_missing_key_names_the_list() {
     let server = Server::start(vec![
-        route("POST", "/api/registry/keys/8/rotate/", Reply::not_found()),
-        route("DELETE", "/api/registry/keys/8/", Reply::not_found()),
+        route_of(&hub::KEY_ROTATE, [&8], Reply::not_found()),
+        route_of(&hub::KEY_DELETE, [&8], Reply::not_found()),
     ]);
     let home = Home::new();
     for args in [
@@ -561,9 +547,9 @@ fn a_missing_key_names_the_list() {
 
 #[test]
 fn delete_answers_the_id_when_the_server_sends_no_body() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/registry/keys/7/",
+    let server = Server::start(vec![route_of(
+        &hub::KEY_DELETE,
+        [&7],
         Reply::bytes(204, "application/json", b""),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -576,9 +562,9 @@ fn delete_answers_the_id_when_the_server_sends_no_body() {
 /// A delete answers no secret; one the server sent anyway is not printed (tenet 9).
 #[test]
 fn delete_prints_a_body_without_its_secret() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/registry/keys/7/",
+    let server = Server::start(vec![route_of(
+        &hub::KEY_DELETE,
+        [&7],
         Reply::json(200, r#"{"id":7,"revoked":true,"secret":"leaked_secret"}"#),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -598,9 +584,9 @@ fn delete_prints_a_body_without_its_secret() {
             json!({"id": 7, "deleted": true}),
         ),
     ] {
-        let server = Server::start(vec![route(
-            "DELETE",
-            "/api/registry/keys/7/",
+        let server = Server::start(vec![route_of(
+            &hub::KEY_DELETE,
+            [&7],
             Reply::json(200, &body.to_string()),
         )]);
         let run =
@@ -709,11 +695,7 @@ fn get_prints_a_preview_with_a_null_secret() {
         r#""docker_login_cmd":"docker login -u robot$acme+ci -p leaked_secret","#,
         r#""robot":{"password":"leaked_secret"}}"#
     );
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/keys/7/",
-        Reply::json(200, body),
-    )]);
+    let server = Server::start(vec![route_of(&hub::KEY, [&7], Reply::json(200, body))]);
     let run = Hipc::against(&Home::new(), &server).run(&["hub", "keys", "get", "7"]);
     assert_eq!(
         run.ok(),
@@ -736,11 +718,7 @@ fn get_prints_a_preview_with_a_null_secret() {
 #[test]
 fn get_refuses_an_answer_with_any_other_docker_login_command() {
     let body = r#"{"id":7,"help":"docker login -u r -p leaked_secret"}"#;
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/keys/7/",
-        Reply::json(200, body),
-    )]);
+    let server = Server::start(vec![route_of(&hub::KEY, [&7], Reply::json(200, body))]);
     let run = Hipc::against(&Home::new(), &server).run(&["hub", "keys", "get", "7"]);
     assert!(!run.stderr().contains("leaked_secret"), "{}", run.stderr());
     let error = run.fails(1, "internal");
@@ -753,11 +731,7 @@ fn get_refuses_an_answer_with_any_other_docker_login_command() {
 
 #[test]
 fn get_of_a_missing_key_names_the_list_and_bad_ids_are_usage() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/registry/keys/8/",
-        Reply::not_found(),
-    )]);
+    let server = Server::start(vec![route_of(&hub::KEY, [&8], Reply::not_found())]);
     let error = Hipc::against(&Home::new(), &server)
         .run(&["hub", "keys", "get", "8"])
         .fails(1, "not_found");

@@ -25,41 +25,41 @@
 
 use std::cmp::Ordering;
 
-use hippius::{Client, Error, ISSUES_URL, Method, Request, Response, Result, phrase};
-use serde_json::{Map, Value, json};
+use hippius::routes::runners;
+use hippius::{
+    Client, Error, ISSUES_URL, Request, Response, Result, Slot, TextOrNumber, phrase, view_of,
+};
+use serde_json::{Value, json};
 
 use crate::cli::{
-    MonthlyCap, RunnerInstallations, RunnerLimit, RunnerSettings, RunnerSettingsUpdate, RunnerSize,
-    Runners,
+    MonthlyCap, RunnerInstallations, RunnerLimit, RunnerSettings, RunnerSettingsUpdate, Runners,
 };
-use crate::commands::credits::{amount, compare};
-use crate::commands::{Printed, list, print_body, print_body_or, print_envelope, print_with};
-use crate::context::{Context, Gate, Write};
-
-const LIMIT: &str = "/runners/limit/";
+use crate::commands::spend_cap::{self, InForce, NewCap};
+use crate::commands::{
+    Decided, Printed, list, print_body, print_body_or, print_envelope, print_with, read_then_write,
+};
+use crate::context::{Context, Gate, WritePlan};
+use crate::units::compare;
 
 pub(super) fn run(ctx: &Context<'_>, command: &Runners) -> Result<Printed> {
     match command {
         Runners::Settings(RunnerSettings::Get) => {
-            let request = Request::get("/runners/settings/").about("get the runner settings");
+            let request = Request::to(&runners::SETTINGS, []).about("get the runner settings");
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         Runners::Settings(RunnerSettings::Update(args)) => update(ctx, args),
         // The API answers a bare array.
         Runners::Installations(RunnerInstallations::List) => {
             let request =
-                Request::get("/runners/installations/").about("list the GitHub App installations");
+                Request::to(&runners::INSTALLATIONS, []).about("list the GitHub App installations");
             print_envelope(ctx, &ctx.load_authed_client()?, &request)
         }
         Runners::Installations(RunnerInstallations::Delete { installation_id }) => {
-            let request = Request::new(
-                Method::Delete,
-                format!("/runners/installations/{installation_id}/"),
-            )
-            .listed_by("hipc compute runners installations list")
-            .about(format!(
-                "unlink the GitHub App installation `{installation_id}` from the account"
-            ));
+            let request = Request::to(&runners::INSTALLATION_DELETE, [installation_id])
+                .listed_by("hipc compute runners installations list")
+                .about(format!(
+                    "unlink the GitHub App installation `{installation_id}` from the account"
+                ));
             let gate = Gate::Confirm {
                 consequence: Some(UNLINKED),
             };
@@ -67,12 +67,12 @@ pub(super) fn run(ctx: &Context<'_>, command: &Runners) -> Result<Printed> {
             print_body_or(ctx, &ctx.load_authed_client()?, &request, gate, done)
         }
         Runners::Jobs(args) => {
-            let request = Request::get("/runners/jobs/").about("list the runner jobs");
-            list::run_cursor(ctx, &ctx.load_authed_client()?, &request, args)
+            let request = Request::to(&runners::JOBS, []).about("list the runner jobs");
+            list::run(ctx, &ctx.load_authed_client()?, &request, args)
         }
         Runners::Connect => connect(ctx, &ctx.load_authed_client()?),
         Runners::Usage => {
-            let request = Request::get("/runners/usage/").about("get the runner spend");
+            let request = Request::to(&runners::USAGE, []).about("get the runner spend");
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         Runners::Limit(RunnerLimit::Get) => {
@@ -84,7 +84,7 @@ pub(super) fn run(ctx: &Context<'_>, command: &Runners) -> Result<Printed> {
 }
 
 fn read_limit() -> Request {
-    Request::get(LIMIT).about("get the runner spend limit")
+    Request::to(&runners::LIMIT, []).about("get the runner spend limit")
 }
 
 /// A 404 on the limit is the server-wide switch being off, not a missing resource the
@@ -109,124 +109,70 @@ fn not_enabled(error: Error) -> Error {
 fn update_limit(ctx: &Context<'_>, cap: &MonthlyCap) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
     let (sent, shown) = match cap {
-        MonthlyCap::Credits(credits) => (
-            Value::from(credits.as_str()),
-            format!("`{credits}` credits"),
-        ),
-        MonthlyCap::None => (Value::Null, "none".to_owned()),
+        MonthlyCap::Credits(credits) => (Some(credits.as_str()), format!("`{credits}` credits")),
+        MonthlyCap::None => (None, "none".to_owned()),
     };
-    // Credits go in `monthly_cap`, as `cdn cap update` sends them, although the CDN cap reads
-    // back base units there and credits in `monthly_cap_credits`. Both names are assumptions
-    // for this route until a live run checks them (swagger types no body).
-    let put = || Request::new(Method::Put, LIMIT).json(&json!({ "monthly_cap": sent }));
+    let put = || {
+        Request::to(&runners::LIMIT_UPDATE, [])
+            .json(&runners::LimitUpdateBody { monthly_cap: sent })
+    };
     let draft = put().about(format!("set the monthly runner spend cap to {shown}"));
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(&client, &[&read_limit(), &draft])?;
-            return Ok(Printed::Document(doc));
-        }
-        Write::Checked(checked) => checked,
-    };
-    let limit = ctx
-        .send(&client, &read_limit())
-        .and_then(|response| response.document())
-        .map_err(not_enabled)?;
-    let more = "runners may then spend more of the balance each month";
-    let unknown = "if the cap in force is higher than it shows, runners may then spend more of \
-                   the balance each month";
-    let set_unknown = |new: &str| {
-        format!(
-            "set the monthly runner spend cap to `{new}` credits, where the current cap is \
-             unknown: the limit has no amount in `monthly_cap_credits`"
-        )
-    };
-    let not_an_amount = |old: &str| {
-        format!(
-            "where `monthly_cap_credits` is {}, which is not an amount of credits",
-            phrase::quote(old)
-        )
-    };
-    // Whether `null` means no cap, rather than a server default, is not confirmed against the
-    // live API, so a cap set over `null` is asked about. Removing a cap that already reads
-    // `null` sends the same `null` back, so it asks nothing.
-    let question = match (cap, current_cap(&limit)) {
-        (MonthlyCap::None, Current::Null) => None,
-        (MonthlyCap::None, Current::Unknown) => Some((
-            "remove the monthly runner spend cap, whose current value is unknown: the limit \
-             has no amount in `monthly_cap_credits`"
-                .to_owned(),
-            unknown,
-        )),
-        (MonthlyCap::None, Current::Credits(old)) => Some(if amount(&old).is_some() {
-            (
-                format!(
-                    "remove the monthly runner spend cap of {} credits",
-                    phrase::quote(&old)
-                ),
-                more,
-            )
-        } else {
-            (
-                format!(
-                    "remove the monthly runner spend cap, {}",
-                    not_an_amount(&old)
-                ),
-                unknown,
-            )
-        }),
-        (MonthlyCap::Credits(new), Current::Null) => Some((
-            format!(
-                "set the monthly runner spend cap to `{new}` credits, where the limit shows \
-                 `null`, unset or a server default"
-            ),
-            unknown,
-        )),
-        (MonthlyCap::Credits(new), Current::Unknown) => Some((set_unknown(new), unknown)),
-        (MonthlyCap::Credits(new), Current::Credits(old)) => match compare(new, &old) {
-            Some(Ordering::Greater) => Some((
-                format!(
-                    "raise the monthly runner spend cap from {} to `{new}` credits",
-                    phrase::quote(&old)
-                ),
-                more,
-            )),
-            Some(Ordering::Less | Ordering::Equal) => None,
-            None => Some((
-                format!(
-                    "set the monthly runner spend cap to `{new}` credits, {}",
-                    not_an_amount(&old)
-                ),
-                unknown,
-            )),
-        },
-    };
-    let request = match question {
-        Some((action, consequence)) => {
-            let request = put().about(action);
-            ctx.confirm_write(checked, &request.action(), Some(consequence))?;
-            request
-        }
-        None => draft,
+    let read = read_limit();
+    let decide = || {
+        let limit = ctx
+            .send(&client, &read)
+            .and_then(|response| response.document())
+            .map_err(not_enabled)?;
+        Ok(match limit_question(cap, &limit) {
+            Some((action, consequence)) => Decided::asked(put().about(action), Some(&consequence)),
+            None => Decided::unasked(draft.clone()),
+        })
     };
     // Only the read's 404 is the switch being off: a 404 after a good read is plain.
-    let response = ctx.send(&client, &request)?;
-    applied(&response, cap).map(Printed::Document)
+    let render = |sent: Result<Response>| applied(&sent?, cap);
+    read_then_write(
+        ctx,
+        &client,
+        &WritePlan::new(&[&read], &draft),
+        decide,
+        render,
+    )
+}
+
+/// The action and the consequence of the question an update to `cap` asks over the limit
+/// read as `limit`, or `None` when it is sent unasked ([`spend_cap::question`]).
+fn limit_question(cap: &MonthlyCap, limit: &Value) -> Option<(String, String)> {
+    let new = match cap {
+        MonthlyCap::Credits(credits) => NewCap::Credits(credits),
+        MonthlyCap::None => NewCap::None,
+    };
+    let in_force = current_cap(limit);
+    let order = match (new, &in_force) {
+        (NewCap::Credits(new), InForce::Credits(old)) => compare(new, old),
+        _ => None,
+    };
+    let runners_cap = spend_cap::Cap {
+        named: "the monthly runner spend cap",
+        read: "the limit",
+        spender: "runners",
+    };
+    spend_cap::question(runners_cap, new, &in_force, order)
 }
 
 /// The answer to the `PUT`, checked. `monthly_cap` is an unverified name for this route, and a
 /// server that ignores an unknown field answers 200 with the cap unchanged: a cut that did not
 /// happen would then exit 0 while runners keep spending. Only an answer whose
 /// `monthly_cap_credits` is the amount sent, compared as [`compare`] does, or that reads
-/// [`Current::Null`] after a removal, is the change made. Any other 2xx is `internal` with
+/// [`InForce::Null`] after a removal, is the change made. Any other 2xx is `internal` with
 /// `partial` side effects, and nothing goes to stdout, as for a peer rename: the `PUT` was
-/// sent, and may or may not have changed the cap. The hint reads the limit rather than
-/// sending the `PUT` again, whose effect is unknown.
+/// sent, and may or may not have changed the cap. The hint reads the limit, not the default
+/// `internal` hint to run the command again, which would send a `PUT` whose effect is unknown.
 fn applied(response: &Response, cap: &MonthlyCap) -> Result<Value> {
     let answer = response.document()?;
     let current = current_cap(&answer);
     let done = match (cap, &current) {
-        (MonthlyCap::None, Current::Null) => true,
-        (MonthlyCap::Credits(new), Current::Credits(now)) => {
+        (MonthlyCap::None, InForce::Null) => true,
+        (MonthlyCap::Credits(new), InForce::Credits(now)) => {
             compare(new, now) == Some(Ordering::Equal)
         }
         _ => false,
@@ -235,55 +181,34 @@ fn applied(response: &Response, cap: &MonthlyCap) -> Result<Value> {
         return Ok(answer);
     }
     let why = match current {
-        Current::Null => "the API answered a cap of `null`".to_owned(),
-        Current::Unknown => {
+        InForce::Null => "the API answered a cap of `null`".to_owned(),
+        InForce::Unknown => {
             "the API answered without an amount in `monthly_cap_credits`".to_owned()
         }
-        Current::Credits(now) => format!(
+        InForce::Credits(now) => format!(
             "the API answered `monthly_cap_credits` {}",
             phrase::quote(&now)
         ),
     };
-    // Not the default `internal` hint, which says to run the command again: that would send
-    // a `PUT` whose effect is unknown, so the hint reads the limit instead (tenet 15).
     Err(response.refused(&why).with_hint(format!(
         "run `hipc compute runners limit get` to see the cap in force, and report what it \
          prints at `{ISSUES_URL}`"
     )))
 }
 
-/// What the limit says of the cap in force.
-enum Current {
-    /// `monthly_cap` and `monthly_cap_credits` are both present and `null`: no cap, or a
-    /// server default; which is unconfirmed.
-    Null,
-    /// Neither a cap in credits nor `null`: no `monthly_cap_credits`, or no `monthly_cap`, or
-    /// an answer that is not an object. A missing field is not read as `null`: a server that
-    /// leaves the field out says nothing of the cap.
-    Unknown,
-    /// `monthly_cap_credits`, a string or a number, which [`compare`]
-    /// reads as an amount or not.
-    Credits(String),
-}
-
-/// The cap in force, from `monthly_cap_credits` only. If this route follows the CDN cap,
-/// `monthly_cap` holds base units (`20000000000000000000` for 20 credits), and comparing
-/// credits against that would make every raise look like a cut. A JSON number is read as
-/// serde writes it, so one in exponent form, such as `1e+300`, is not a decimal amount and the
-/// cap counts as unknown on purpose: a cap hipc cannot compare exactly is never judged a lower
-/// one.
-fn current_cap(limit: &Value) -> Current {
-    let credits = limit.get("monthly_cap_credits");
-    match credits {
-        Some(Value::String(text)) => return Current::Credits(text.clone()),
-        Some(Value::Number(number)) => return Current::Credits(number.to_string()),
-        _ => {}
-    }
-    let null = |field: &str| limit.get(field).is_some_and(Value::is_null);
-    if null("monthly_cap_credits") && null("monthly_cap") {
-        Current::Null
-    } else {
-        Current::Unknown
+/// The cap in force, from `monthly_cap_credits` only: `null` only when `monthly_cap` is `null` too,
+/// and unknown when a field is missing, since a server that leaves the field out says nothing of
+/// the cap. If this route follows the CDN cap, `monthly_cap` holds base units
+/// (`20000000000000000000` for 20 credits), and comparing credits against that would make every
+/// raise look like a cut. A JSON number is read as serde writes it, so one in exponent form, such
+/// as `1e+300`, is not a decimal amount and the cap counts as unknown on purpose: a cap hipc cannot
+/// compare exactly is never judged a lower one.
+fn current_cap(limit: &Value) -> InForce {
+    let limit: runners::Limit = view_of(limit);
+    match limit.monthly_cap_credits {
+        Slot::Value(TextOrNumber(text)) => InForce::Credits(text),
+        Slot::Null if limit.monthly_cap == Slot::Null => InForce::Null,
+        Slot::Missing | Slot::Null | Slot::Other => InForce::Unknown,
     }
 }
 
@@ -292,41 +217,42 @@ fn current_cap(limit: &Value) -> Current {
 /// and the question is asked only when [`may_spend_more`]; the dry run lists the read, then
 /// the write.
 fn update(ctx: &Context<'_>, args: &RunnerSettingsUpdate) -> Result<Printed> {
-    let mut body = Map::new();
-    let mut changes = Vec::new();
-    let mut set = |key: &str, value: Value, shown: String| {
-        changes.push(format!("`{key}` to {shown}"));
-        body.insert(key.to_owned(), value);
+    let sizes = if args.allowed_sizes.is_empty() {
+        None
+    } else {
+        Some(allowed_sizes(&args.allowed_sizes)?)
     };
-    if let Some(enabled) = args.enabled {
-        set("enabled", enabled.into(), format!("`{enabled}`"));
+    let body = runners::SettingsUpdateBody {
+        enabled: args.enabled,
+        max_concurrent: args.max_concurrent,
+        allowed_sizes: sizes.as_deref(),
+        default_region: args.default_region.as_deref(),
+        allow_public_repos: args.allow_public_repos,
+    };
+    let mut changes = Vec::new();
+    if let Some(enabled) = body.enabled {
+        changes.push(format!("`enabled` to `{enabled}`"));
     }
-    if let Some(max) = args.max_concurrent {
-        set("max_concurrent", max.into(), format!("`{max}`"));
+    if let Some(max) = body.max_concurrent {
+        changes.push(format!("`max_concurrent` to `{max}`"));
     }
-    if !args.allowed_sizes.is_empty() {
-        let sizes = allowed_sizes(&args.allowed_sizes)?;
+    if let Some(sizes) = body.allowed_sizes {
         let shown: Vec<String> = sizes.iter().map(|size| format!("`{size}`")).collect();
-        set("allowed_sizes", sizes.into(), phrase::join(&shown, "and"));
+        changes.push(format!(
+            "`allowed_sizes` to {}",
+            phrase::join(&shown, "and")
+        ));
     }
-    if let Some(region) = &args.default_region {
+    if let Some(region) = body.default_region {
         let shown = if region.is_empty() {
             "anywhere (`\"\"`)".to_owned()
         } else {
             format!("`{region}`")
         };
-        set("default_region", region.as_str().into(), shown);
+        changes.push(format!("`default_region` to {shown}"));
     }
-    if let Some(public) = args.allow_public_repos {
-        set("allow_public_repos", public.into(), format!("`{public}`"));
-    }
-    if body.is_empty() {
-        // An empty PUT changes nothing and only returns the settings.
-        return Err(Error::usage(
-            "`hipc compute runners settings update` was given nothing to change",
-            "pass `--enabled`, `--max-concurrent`, `--allowed-size`, `--default-region`, or \
-             `--allow-public-repos`",
-        ));
+    if let Some(public) = body.allow_public_repos {
+        changes.push(format!("`allow_public_repos` to `{public}`"));
     }
     let mut action = format!("set the runner settings {}", phrase::join(&changes, "and"));
     // Who can spend the balance is part of the action, so an agent's refusal names it too.
@@ -341,58 +267,49 @@ fn update(ctx: &Context<'_>, args: &RunnerSettingsUpdate) -> Result<Printed> {
     } else {
         "runners may then spend more of the balance"
     };
-    let request = Request::new(Method::Put, "/runners/settings/")
-        .json(&Value::Object(body))
+    let request = Request::to(&runners::SETTINGS_UPDATE, [])
+        .json(&body)
         .about(action);
-    let read = Request::get("/runners/settings/").about("get the runner settings");
+    let read = Request::to(&runners::SETTINGS, []).about("get the runner settings");
     let client = ctx.load_authed_client()?;
-    let checked = match ctx.check_write(&client, &request)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(&client, &[&read, &request])?;
-            return Ok(Printed::Document(doc));
-        }
-        Write::Checked(checked) => checked,
+    let decide = || {
+        let current = view_of(&ctx.send(&client, &read)?.document()?);
+        Ok(if may_spend_more(args, &current) {
+            Decided::asked(request.clone(), Some(consequence))
+        } else {
+            Decided::unasked(request.clone())
+        })
     };
-    let current = ctx.send(&client, &read)?.document()?;
-    if may_spend_more(args, &current) {
-        ctx.confirm_write(checked, &request.action(), Some(consequence))?;
-    }
-    ctx.send(&client, &request)?
-        .document()
-        .map(Printed::Document)
+    let plan = WritePlan::new(&[&read], &request);
+    read_then_write(ctx, &client, &plan, decide, |sent| sent?.document())
 }
 
 /// Whether the settings `args` sets may let runners spend more than the settings in force,
 /// `current`, do, so the update is confirmed (tenet 5), as every spend cap is. Turning runners
-/// on, a higher `max_concurrent`, a size the allowed list lacks, and opening public
-/// repositories may spend more; each value it cannot compare counts as one. A pure cut
-/// (turning runners off, a lower or equal `max_concurrent`, fewer sizes, closing public
-/// repositories), a repeat of the settings in force, a `max_concurrent` of `0`, and a new
-/// default region are sent unasked, by the owner's call: the region moves where a job runs,
-/// not how many run or on what size, and `0`, whose meaning the server does not document, is
-/// taken as no more at once than any other number.
-fn may_spend_more(args: &RunnerSettingsUpdate, current: &Value) -> bool {
-    let turns_on = |new: Option<bool>, key: &str| {
-        new == Some(true) && current.get(key) != Some(&Value::Bool(true))
-    };
+/// on, a higher `max_concurrent`, a `max_concurrent` of `0` where the setting is not `0`, a
+/// size the allowed list lacks, and opening public repositories may spend more; each value it
+/// cannot compare counts as one. The server does not document what `0` means, and it may mean
+/// no cap, so it is confirmed as a raise is, by the owner's call. A pure cut (turning runners
+/// off, a lower or equal non-zero `max_concurrent`, fewer sizes, closing public repositories),
+/// a repeat of the settings in force, and a new default region are sent unasked: the region
+/// moves where a job runs, not how many run or on what size.
+fn may_spend_more(args: &RunnerSettingsUpdate, current: &runners::Settings) -> bool {
+    let turns_on = |new: Option<bool>, old: Option<bool>| new == Some(true) && old != Some(true);
     let more_at_once = args.max_concurrent.is_some_and(|new| {
-        new != 0
-            && current
-                .get("max_concurrent")
-                .and_then(Value::as_u64)
-                .is_none_or(|old| u64::from(new) > old)
+        let old = current.max_concurrent;
+        match new {
+            0 => old != Some(0),
+            new => old.is_none_or(|old| u64::from(new) > old),
+        }
     });
-    let allowed: Option<Vec<&str>> = current
-        .get("allowed_sizes")
-        .and_then(Value::as_array)
-        .and_then(|sizes| sizes.iter().map(Value::as_str).collect());
     let new_size = args.allowed_sizes.iter().any(|size| {
-        allowed
+        current
+            .allowed_sizes
             .as_ref()
-            .is_none_or(|old| !old.contains(&size.code()))
+            .is_none_or(|old| !old.iter().any(|old| old == size))
     });
-    turns_on(args.enabled, "enabled")
-        || turns_on(args.allow_public_repos, "allow_public_repos")
+    turns_on(args.enabled, current.enabled)
+        || turns_on(args.allow_public_repos, current.allow_public_repos)
         || more_at_once
         || new_size
 }
@@ -403,10 +320,9 @@ fn may_spend_more(args: &RunnerSettingsUpdate, current: &Value) -> bool {
 ///
 /// `usage` for a size given twice, which would send a list with a repeat for the server to
 /// judge.
-fn allowed_sizes(given: &[RunnerSize]) -> Result<Vec<&'static str>> {
+fn allowed_sizes(given: &[String]) -> Result<Vec<&str>> {
     let mut sizes = Vec::new();
-    for size in given {
-        let code = size.code();
+    for code in given.iter().map(String::as_str) {
         if sizes.contains(&code) {
             return Err(Error::usage(
                 format!("`--allowed-size` names `{code}` more than once"),
@@ -421,8 +337,7 @@ fn allowed_sizes(given: &[RunnerSize]) -> Result<Vec<&'static str>> {
 /// `POST /api/runners/github/connect/` with no body. The answer is printed as sent, and
 /// text mode says what is left to do: the link needs the browser and the console.
 fn connect(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
-    let request = Request::new(Method::Post, "/runners/github/connect/")
-        .about("start the GitHub App installation");
+    let request = Request::to(&runners::CONNECT, []).about("start the GitHub App installation");
     print_with(ctx, client, &request, Gate::Open, |response| {
         let started = response.document()?;
         // The URL is not repeated here: it is on stdout, and a quoted URL would have its
@@ -437,3 +352,176 @@ fn connect(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
 
 /// What a GitHub App installation unlink ends, for its question and `hipc api`'s.
 pub(crate) const UNLINKED: &str = "its repositories stop getting Hippius runners";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A limit answer shaped as the CDN cap's: base units in `monthly_cap`, and `credits`, a
+    /// JSON value, in `monthly_cap_credits`; `null` makes both `null`.
+    fn limit(credits: &str) -> Value {
+        let base = if credits == "null" {
+            "null"
+        } else {
+            r#""20000000000000000000""#
+        };
+        let text = format!(
+            r#"{{"monthly_cap":{base},"monthly_cap_credits":{credits},"spent_this_month":"1.50"}}"#
+        );
+        serde_json::from_str(&text).expect("each limit is JSON")
+    }
+
+    /// The action `--monthly-cap <cap>` asks about over `limit`, or `None` when it is sent
+    /// unasked.
+    fn asked(limit: &Value, cap: &str) -> Option<String> {
+        let cap = if cap == "none" {
+            MonthlyCap::None
+        } else {
+            let credits = crate::units::credits(cap, "a cap");
+            assert!(credits.is_ok(), "{cap}: {credits:?}");
+            MonthlyCap::Credits(credits.expect("asserted above"))
+        };
+        limit_question(&cap, limit).map(|(action, _)| action)
+    }
+
+    /// A raise, or a removal of a cap in force, asks, naming the cap read from
+    /// `monthly_cap_credits` and the new one, compared as exact decimals: the base units in
+    /// `monthly_cap` are a far larger number, so a comparison with them would call each raise
+    /// a cut.
+    #[test]
+    fn a_raise_or_a_removal_asks() {
+        let raise = |from: &str, to: &str| {
+            Some(format!(
+                "raise the monthly runner spend cap from `{from}` to `{to}` credits"
+            ))
+        };
+        for (credits, cap, action) in [
+            (r#""20.000000""#, "50", raise("20.000000", "50")),
+            (r#""0.45""#, "0.5", raise("0.45", "0.5")),
+            ("9", "10", raise("9", "10")),
+            // A leading zero does not make a cap longer.
+            (r#""050""#, "60", raise("050", "60")),
+            (r#""0""#, "0.01", raise("0", "0.01")),
+            // The amount shown is the normal form of the one given.
+            (r#""20""#, "050.500", raise("20", "50.5")),
+            (
+                r#""20""#,
+                "none",
+                Some("remove the monthly runner spend cap of `20` credits".to_owned()),
+            ),
+            // A cap that is not an amount still asks before it is removed, quoted as the
+            // server's words.
+            (
+                r#""lots`""#,
+                "none",
+                Some(
+                    "remove the monthly runner spend cap, where `monthly_cap_credits` is \
+                     `lots\\u{60}`, which is not an amount of credits"
+                        .to_owned(),
+                ),
+            ),
+        ] {
+            assert_eq!(asked(&limit(credits), cap), action, "{credits} {cap}");
+        }
+    }
+
+    /// `null` is unconfirmed to mean no cap, and may be a server default, so a cap set over it
+    /// asks. Without an amount in `monthly_cap_credits` the cap in force is unknown, whatever
+    /// `monthly_cap` holds, so every change asks, `none` included.
+    #[test]
+    fn a_change_over_a_null_or_unknown_cap_asks() {
+        assert_eq!(
+            asked(&limit("null"), "50").as_deref(),
+            Some(
+                "set the monthly runner spend cap to `50` credits, where the limit shows \
+                 `null`, unset or a server default"
+            )
+        );
+        let set_unknown = "set the monthly runner spend cap to `50` credits, where the cap in \
+                           force is unknown: the limit has no amount in `monthly_cap_credits`";
+        let remove_unknown = "remove the monthly runner spend cap, whose current value is \
+                              unknown: the limit has no amount in `monthly_cap_credits`";
+        for answer in [
+            r#"{"monthly_cap":"20000000000000000000"}"#,
+            r#"{"monthly_cap":"20000000000000000000","monthly_cap_credits":null}"#,
+            r#"{"spent_this_month":"1.50"}"#,
+            r#"{"monthly_cap_credits":null}"#,
+            // A missing `monthly_cap_credits` is not `null`: the cap in force is unknown.
+            r#"{"monthly_cap":null}"#,
+            // A `null` beside credits hipc cannot read is no proof that no cap is set.
+            r#"{"monthly_cap":null,"monthly_cap_credits":true}"#,
+            "[]",
+        ] {
+            let answer: Value = serde_json::from_str(answer).expect("each answer is JSON");
+            assert_eq!(
+                asked(&answer, "50").as_deref(),
+                Some(set_unknown),
+                "{answer}"
+            );
+            assert_eq!(
+                asked(&answer, "none").as_deref(),
+                Some(remove_unknown),
+                "{answer}"
+            );
+        }
+        // A `monthly_cap_credits` that is not a decimal amount is no cap to compare with, and
+        // the question names it.
+        for (credits, shown) in [
+            (r#""-5""#, "`-5`"),
+            ("-5", "`-5`"),
+            (r#""5.""#, "`5.`"),
+            (r#"".5""#, "`.5`"),
+            (r#""5.x""#, "`5.x`"),
+            (r#""5e1""#, "`5e1`"),
+            ("1e300", "`1e+300`"),
+            (r#""""#, "``"),
+        ] {
+            let bad = format!(
+                "where `monthly_cap_credits` is {shown}, which is not an amount of credits"
+            );
+            assert_eq!(
+                asked(&limit(credits), "50"),
+                Some(format!(
+                    "set the monthly runner spend cap to `50` credits, {bad}"
+                )),
+                "{credits}"
+            );
+            assert_eq!(
+                asked(&limit(credits), "none"),
+                Some(format!("remove the monthly runner spend cap, {bad}")),
+                "{credits}"
+            );
+        }
+        // One that is not a string or a number is no amount at all.
+        for credits in ["true", r#"{"credits":"5"}"#, "[5]"] {
+            assert_eq!(
+                asked(&limit(credits), "50").as_deref(),
+                Some(set_unknown),
+                "{credits}"
+            );
+        }
+    }
+
+    /// A lower cap, the same cap, or `none` over a `null` cap allows no more spend, so it is
+    /// sent unasked.
+    #[test]
+    fn a_cut_or_the_same_cap_is_sent_unasked() {
+        for (credits, cap) in [
+            (r#""20.000000""#, "5"),
+            (r#""10""#, "9.99"),
+            ("20.5", "20.50"),
+            (r#""050""#, "50.0"),
+            (r#""50""#, "050.00"),
+            (r#""50""#, "50"),
+            (r#""0.5""#, "0.45"),
+            (r#""1""#, "000.000"),
+            (r#""1""#, "0.10"),
+            ("null", "none"),
+            // 18 decimals is a credit's smallest part; trailing zeros past it are dropped.
+            (r#""20""#, "0.000000000000000001"),
+            (r#""20""#, "5.000000000000000000000"),
+        ] {
+            assert_eq!(asked(&limit(credits), cap), None, "{credits} {cap}");
+        }
+    }
+}

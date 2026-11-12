@@ -3,9 +3,10 @@
 //! secret, which needs `--reveal` (tenet 9) and keeps every `docker login` command the server
 //! sends off stdout. Both need `--yes`, and `/api/registry/` refuses a membership.
 
+use hippius::routes::hub;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Server, docker_logins, draft, route_of};
 
 const PUBLICITY: &str = "/api/registry/me/publicity/";
 
@@ -15,11 +16,11 @@ const ROTATE: &str = "/api/registry/robot/rotate/";
 const ROTATED: &str = r#"{"robot_login":"robot$acme","robot_secret":"s3cr3t-rotated"}"#;
 
 fn publicity(reply: Reply) -> Server {
-    Server::start(vec![route("PATCH", PUBLICITY, reply)])
+    Server::start(vec![route_of(&hub::PUBLICITY_UPDATE, [], reply)])
 }
 
 fn rotate(reply: Reply) -> Server {
-    Server::start(vec![route("POST", ROTATE, reply)])
+    Server::start(vec![route_of(&hub::ROBOT_ROTATE, [], reply)])
 }
 
 #[test]
@@ -94,8 +95,7 @@ fn update_public_without_public_is_refused_and_sends_nothing() {
         );
         assert_eq!(error["side_effects"], "none");
         // Before the token check too.
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&home, &server)
             .run(args)
             .fails(2, "public_required");
     }
@@ -132,10 +132,7 @@ fn update_without_yes_is_refused_and_names_the_change() {
             error["message"].as_str().unwrap().contains(action),
             "{error}"
         );
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
-            .run(args)
-            .fails(1, "auth");
+        Hipc::tokenless(&home, &server).run(args).fails(1, "auth");
     }
     assert!(server.requests().is_empty());
 }
@@ -436,15 +433,11 @@ fn rotate_drops_every_command_field_the_server_sends() {
 /// names the rotate with the run's own flags. The secret is on neither stream.
 #[test]
 fn rotate_refuses_an_answer_with_any_other_docker_login_command() {
-    for body in [
-        json!({"robot_secret": "s3cr3t-rotated", "help": "docker login -p s3cr3t-rotated"}),
-        json!({"robot_secret": "s3cr3t-rotated", "argv": ["docker", "login", "-u", "r"]}),
-        json!({
-            "robot_secret": "s3cr3t-rotated",
-            "x": ["echo s3cr3t-rotated | docker\u{200B}login"],
-        }),
-        json!({"robot_secret": "s3cr3t-rotated", "secret": "DOCKER LOGIN"}),
-    ] {
+    let bodies = docker_logins("s3cr3t-rotated")
+        .into_iter()
+        .map(|login| json!({"robot_secret": "s3cr3t-rotated", "help": login}))
+        .chain([json!({"robot_secret": "s3cr3t-rotated", "secret": "DOCKER LOGIN"})]);
+    for body in bodies {
         let server = rotate(Reply::json(201, &body.to_string()));
         let run = Hipc::against(&Home::new(), &server)
             .env("HIPPIUS_PROFILE", "work")
@@ -472,8 +465,8 @@ fn rotate_refuses_an_answer_with_any_other_docker_login_command() {
             )
         );
     }
-    // A profile name clap would read as a flag cannot be repeated, so the hint names no
-    // command rather than one that fails.
+    // A profile name clap would read as a flag is joined to `--profile`, so it runs as a
+    // value.
     let body = json!({"robot_secret": "s3cr3t-rotated", "help": "docker login"});
     let server = rotate(Reply::json(201, &body.to_string()));
     let error = Hipc::against(&Home::new(), &server)
@@ -482,7 +475,12 @@ fn rotate_refuses_an_answer_with_any_other_docker_login_command() {
         .fails(1, "internal");
     assert_eq!(
         error["hint"],
-        "report the refused answer at `https://github.com/thenervelab/hippius-cli/issues`"
+        format!(
+            "run `hipc --profile=-work --api-url {} hub namespace robot rotate --reveal --yes` to \
+             issue a new secret, and if it is refused too, report the refused answer at `{}`",
+            server.url(),
+            "https://github.com/thenervelab/hippius-cli/issues"
+        )
     );
 }
 
@@ -503,8 +501,7 @@ fn rotate_without_reveal_is_refused_and_sends_nothing() {
             error["hint"].as_str().unwrap().contains("--reveal"),
             "{error}"
         );
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&home, &server)
             .run(args)
             .fails(2, "reveal_required");
     }
@@ -526,10 +523,7 @@ fn rotate_without_yes_is_refused_and_names_the_rotate() {
             .contains("rotate the Hub robot secret"),
         "{error}"
     );
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
-        .run(&args)
-        .fails(1, "auth");
+    Hipc::tokenless(&home, &server).run(&args).fails(1, "auth");
     assert!(server.requests().is_empty());
 }
 

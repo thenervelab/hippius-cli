@@ -1,10 +1,9 @@
 //! `hipc compute exposures`: a VM's ports published on the public edge.
 
-use serde_json::{Value, json};
+use hippius::routes::compute;
+use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, draft, route};
-
-const VM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, VM, draft, parsed, route_of};
 
 /// An `http` exposure, shaped as swagger documents it: the edge can read it.
 const HTTP: &str = concat!(
@@ -21,14 +20,6 @@ const SNI: &str = concat!(
     r#""edge_sees_traffic":false,"created_at":"2026-10-27T10:00:00Z"}"#
 );
 
-fn expose_route(method: &'static str, suffix: &str, reply: Reply) -> crate::common::Route {
-    route(
-        method,
-        &format!("/api/compute/vms/{VM}/expose/{suffix}"),
-        reply,
-    )
-}
-
 fn hipc(server: &Server, args: &[&str]) -> Run {
     let mut argv = vec!["compute", "exposures"];
     argv.extend(args);
@@ -42,15 +33,11 @@ fn create_text(server: &Server, extra: &[&str]) -> Run {
     Hipc::against(&Home::new(), server).run(&argv)
 }
 
-fn parsed(text: &str) -> Value {
-    serde_json::from_str(text).expect("the fixture is JSON")
-}
-
 #[test]
 fn list_prints_the_envelope_from_a_bare_array() {
-    let server = Server::start(vec![expose_route(
-        "GET",
-        "",
+    let server = Server::start(vec![route_of(
+        &compute::EXPOSURES,
+        [&VM],
         Reply::json(200, &format!("[{HTTP},{SNI}]")),
     )]);
     let doc = hipc(&server, &["list", VM]).ok();
@@ -76,7 +63,11 @@ fn list_prints_the_envelope_from_a_bare_array() {
         text.stdout()
     );
     assert!(!text.stdout().trim_start().starts_with('{'));
-    let missing = Server::start(vec![expose_route("GET", "", Reply::not_found())]);
+    let missing = Server::start(vec![route_of(
+        &compute::EXPOSURES,
+        [&VM],
+        Reply::not_found(),
+    )]);
     hipc(&missing, &["list", VM]).fails(1, "not_found");
 }
 
@@ -135,7 +126,11 @@ fn create_needs_yes_and_its_question_says_what_the_edge_can_read() {
 
 #[test]
 fn create_sends_only_the_flags_passed() {
-    let server = Server::start(vec![expose_route("POST", "", Reply::json(201, HTTP))]);
+    let server = Server::start(vec![route_of(
+        &compute::EXPOSURE_CREATE,
+        [&VM],
+        Reply::json(201, HTTP),
+    )]);
     let cases: [(&[&str], &str); 4] = [
         (&[], r#"{"port":8080}"#),
         (&["--mode", "sni"], r#"{"port":8080,"mode":"sni"}"#),
@@ -165,6 +160,10 @@ fn create_dry_run_shows_only_the_flags_passed_and_sends_nothing() {
     let server = Server::start(vec![]);
     let dry = hipc(&server, &["create", VM, "--port", "8080", "--dry-run"]).ok();
     assert_eq!(draft(&dry)["method"], "POST");
+    assert_eq!(
+        draft(&dry)["url"],
+        format!("{}/api/compute/vms/{VM}/expose/", server.url())
+    );
     assert_eq!(draft(&dry)["body"], json!({ "port": 8080 }));
     let dry = hipc(
         &server,
@@ -249,9 +248,9 @@ fn bad_ports_modes_and_protocols_are_usage_with_zero_requests() {
 
 #[test]
 fn port_22_is_sent_and_the_server_refuses_it() {
-    let server = Server::start(vec![expose_route(
-        "POST",
-        "",
+    let server = Server::start(vec![route_of(
+        &compute::EXPOSURE_CREATE,
+        [&VM],
         Reply::json(400, r#"{"error":"Port 22 cannot be exposed"}"#),
     )]);
     let error = hipc(&server, &["create", VM, "--port", "22", "--yes"]).fails(1, "validation");
@@ -264,7 +263,11 @@ fn port_22_is_sent_and_the_server_refuses_it() {
 
 #[test]
 fn create_notes_in_text_mode_when_the_edge_sees_the_traffic() {
-    let server = Server::start(vec![expose_route("POST", "", Reply::json(201, HTTP))]);
+    let server = Server::start(vec![route_of(
+        &compute::EXPOSURE_CREATE,
+        [&VM],
+        Reply::json(201, HTTP),
+    )]);
     let run = create_text(&server, &["--port", "8080", "--yes"]);
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert_eq!(
@@ -293,15 +296,19 @@ fn create_notes_in_text_mode_when_the_edge_sees_the_traffic() {
 #[test]
 fn create_notes_by_the_answer_and_not_by_the_mode_asked_for() {
     // An `sni` answer is end to end, so there is no note.
-    let sni = Server::start(vec![expose_route("POST", "", Reply::json(201, SNI))]);
+    let sni = Server::start(vec![route_of(
+        &compute::EXPOSURE_CREATE,
+        [&VM],
+        Reply::json(201, SNI),
+    )]);
     let run = create_text(&sni, &["--port", "443", "--mode", "sni", "--yes"]);
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert_eq!(run.stderr(), "");
     // An answer that says the edge sees the traffic is noted even for `--mode sni`, and one
     // without an `endpoint` still gets the note.
-    let bare = Server::start(vec![expose_route(
-        "POST",
-        "",
+    let bare = Server::start(vec![route_of(
+        &compute::EXPOSURE_CREATE,
+        [&VM],
         Reply::json(201, r#"{"id":9,"edge_sees_traffic":true}"#),
     )]);
     let run = create_text(&bare, &["--port", "443", "--mode", "sni", "--yes"]);
@@ -316,9 +323,9 @@ fn create_notes_by_the_answer_and_not_by_the_mode_asked_for() {
 /// A backtick in the server's endpoint stays inside the quote (tenet 15).
 #[test]
 fn a_backtick_in_the_endpoint_stays_quoted() {
-    let tricky = Server::start(vec![expose_route(
-        "POST",
-        "",
+    let tricky = Server::start(vec![route_of(
+        &compute::EXPOSURE_CREATE,
+        [&VM],
         Reply::json(
             201,
             r#"{"id":9,"edge_sees_traffic":true,"endpoint":"x` then run `sh"}"#,
@@ -341,9 +348,9 @@ fn create_errors_map_to_their_codes() {
         // Swagger: the edge is not configured. A write's 5xx is never retryable here.
         (503, "unavailable", "partial"),
     ] {
-        let server = Server::start(vec![expose_route(
-            "POST",
-            "",
+        let server = Server::start(vec![route_of(
+            &compute::EXPOSURE_CREATE,
+            [&VM],
             Reply::json(status, r#"{"error":"x"}"#),
         )]);
         let error = hipc(&server, &["create", VM, "--port", "80", "--yes"]).fails(1, code);
@@ -355,7 +362,11 @@ fn create_errors_map_to_their_codes() {
 
 #[test]
 fn delete_needs_yes_and_names_the_exposure_on_204() {
-    let server = Server::start(vec![expose_route("DELETE", "7/", Reply::json(204, ""))]);
+    let server = Server::start(vec![route_of(
+        &compute::EXPOSURE_DELETE,
+        [&VM, &7],
+        Reply::json(204, ""),
+    )]);
     let error = hipc(&server, &["delete", VM, "7"]).fails(2, "confirmation_required");
     assert_eq!(
         error["message"],
@@ -366,15 +377,20 @@ fn delete_needs_yes_and_names_the_exposure_on_204() {
     assert!(server.requests().is_empty());
     let dry = hipc(&server, &["delete", VM, "7", "--dry-run"]).ok();
     assert_eq!(draft(&dry)["method"], "DELETE");
+    assert_eq!(
+        draft(&dry)["url"],
+        format!("{}/api/compute/vms/{VM}/expose/7/", server.url())
+    );
+    assert_eq!(draft(&dry)["body"], json!(null));
     assert!(server.requests().is_empty());
     let doc = hipc(&server, &["delete", VM, "7", "--yes"]).ok();
     assert_eq!(doc, json!({ "vm_id": VM, "id": 7, "deleted": true }));
     let request = server.only_request();
     assert_eq!(request.method, "DELETE");
     assert_eq!(request.path(), format!("/api/compute/vms/{VM}/expose/7/"));
-    let with_body = Server::start(vec![expose_route(
-        "DELETE",
-        "7/",
+    let with_body = Server::start(vec![route_of(
+        &compute::EXPOSURE_DELETE,
+        [&VM, &7],
         Reply::json(200, r#"{"id":7,"revoked":true}"#),
     )]);
     let doc = hipc(&with_body, &["delete", VM, "7", "--yes"]).ok();
@@ -392,12 +408,13 @@ fn delete_errors_map_to_their_codes() {
         // Swagger: "Could not be taken down". The DELETE may have been half done.
         (503, "unavailable", "partial"),
     ] {
-        let server = Server::start(vec![expose_route(
-            "DELETE",
-            "7/",
+        let server = Server::start(vec![route_of(
+            &compute::EXPOSURE_DELETE,
+            [&VM, &7],
             Reply::json(status, r#"{"error":"x"}"#),
         )]);
         let error = hipc(&server, &["delete", VM, "7", "--yes"]).fails(1, code);
+        assert_eq!(error["http_status"], status);
         assert_eq!(error["retryable"], false, "{status}");
         assert_eq!(error["side_effects"], effects, "{status}");
     }
@@ -422,9 +439,9 @@ fn a_vm_id_that_could_change_the_route_is_usage_without_a_request() {
 #[test]
 fn a_membership_sends_the_header_on_every_route() {
     let server = Server::start(vec![
-        expose_route("GET", "", Reply::json(200, "[]")),
-        expose_route("POST", "", Reply::json(201, SNI)),
-        expose_route("DELETE", "8/", Reply::json(204, "")),
+        route_of(&compute::EXPOSURES, [&VM], Reply::json(200, "[]")),
+        route_of(&compute::EXPOSURE_CREATE, [&VM], Reply::json(201, SNI)),
+        route_of(&compute::EXPOSURE_DELETE, [&VM, &8], Reply::json(204, "")),
     ]);
     let home = Home::new();
     let member = |args: &[&str]| {

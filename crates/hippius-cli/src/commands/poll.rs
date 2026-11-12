@@ -2,7 +2,13 @@
 //! VM launch wait, the App Engine launch wait, and the hAlpha purchase follow. Each reads one
 //! route again and again until what it reads says the wait is over, its deadline passes, or
 //! a read fails for good.
+//!
+//! Every pause of the loop's own goes through [`paced`], so a debug build run by the test
+//! suite can shorten them all with [`TEST_POLL_INTERVAL_MS`]. A release build has no such
+//! variable: the code that reads it is not compiled in.
 
+#[cfg(debug_assertions)]
+use std::num::NonZeroU64;
 use std::time::{Duration, Instant};
 
 use hippius::{Client, Error, Request, Result};
@@ -17,7 +23,8 @@ use crate::context::Context;
 pub(crate) const MAX_POLL_FAILURES: u32 = 3;
 
 /// What a wait does next, from what it holds.
-pub(crate) enum Next<T> {
+#[derive(Debug)]
+pub(crate) enum Turn<T> {
     /// The wait is over, with this result.
     Stop(Result<T>),
     /// The wait goes on: read again.
@@ -31,7 +38,7 @@ pub(crate) trait Wait {
 
     /// Whether the wait is over, from what it holds: first what it starts from, then after
     /// each read.
-    fn next(&mut self) -> Next<Self::Output>;
+    fn next(&mut self) -> Turn<Self::Output>;
 
     /// Takes the document one read answered. An error ends the wait with it.
     ///
@@ -80,12 +87,12 @@ pub(crate) fn poll_until<W: Wait>(
     schedule: Schedule,
     mut wait: W,
 ) -> Result<W::Output> {
+    let interval = paced(schedule.interval);
     let mut failures = 0;
-    let mut pause = schedule.first;
-    // Whether the pause is one the server asked for (`Retry-After`).
-    let mut asked = false;
+    let mut pause = paced(schedule.first);
+    let mut pause_from_retry_after = false;
     loop {
-        if let Next::Stop(done) = wait.next() {
+        if let Turn::Stop(done) = wait.next() {
             return done;
         }
         if !pause.is_zero() {
@@ -94,7 +101,7 @@ pub(crate) fn poll_until<W: Wait>(
                 return wait.timed_out();
             }
             std::thread::sleep(pause.min(left));
-            if asked && pause > left {
+            if pause_from_retry_after && pause > left {
                 return wait.timed_out();
             }
         }
@@ -104,24 +111,75 @@ pub(crate) fn poll_until<W: Wait>(
         {
             Ok(answer) => {
                 failures = 0;
-                pause = schedule.interval;
-                asked = false;
+                pause = interval;
+                pause_from_retry_after = false;
                 wait.take(answer)?;
             }
             Err(error) if error.is_retryable() && failures < MAX_POLL_FAILURES => {
                 failures += 1;
-                pause = after(&error, schedule.interval);
-                asked = error.retry_after_ms().is_some();
+                (pause, pause_from_retry_after) = after(error.retry_after_ms(), interval);
             }
             Err(error) => return Err(wait.failed(error)),
         }
     }
 }
 
-/// The pause before the read after `error`, a retryable failure: the server's `Retry-After`
-/// when it asks for longer than `interval`, else `interval`.
-fn after(error: &Error, interval: Duration) -> Duration {
-    error
-        .retry_after_ms()
-        .map_or(interval, |ms| interval.max(Duration::from_millis(ms)))
+/// The pause `interval` stands for in this build: `interval` itself, except that a debug
+/// build run with [`TEST_POLL_INTERVAL_MS`] set waits that long instead. A zero pause stays
+/// zero, so a read sent at once still is.
+fn paced(interval: Duration) -> Duration {
+    if interval.is_zero() {
+        return interval;
+    }
+    test_poll_interval().unwrap_or(interval)
+}
+
+/// The variable a debug build reads for the pause of every wait, in milliseconds, so the test
+/// suite does not sleep through the real 2 or 3 seconds between two reads. Only debug builds
+/// have it: the release build (`.github/actions/release-build`) fails when its binary holds
+/// the name.
+#[cfg(debug_assertions)]
+const TEST_POLL_INTERVAL_MS: &str = "HIPC_TEST_POLL_INTERVAL_MS";
+
+/// The pause [`TEST_POLL_INTERVAL_MS`] asks for: none when it is unset or not a whole number
+/// of milliseconds above zero. Zero is refused because a zero pause skips the deadline check
+/// in [`poll_until`], so a wait that never ends would read for ever.
+#[cfg(debug_assertions)]
+fn test_poll_interval() -> Option<Duration> {
+    let ms = crate::context::env_os(TEST_POLL_INTERVAL_MS)?;
+    let ms: NonZeroU64 = ms.to_str()?.parse().ok()?;
+    Some(Duration::from_millis(ms.get()))
+}
+
+/// A release build has no test override: every wait keeps its real interval.
+#[cfg(not(debug_assertions))]
+const fn test_poll_interval() -> Option<Duration> {
+    None
+}
+
+/// The pause before the read after a retryable failure whose `Retry-After` was
+/// `retry_after_ms`, and whether the server asked for it: its `Retry-After` when that is at
+/// least `interval`, else `interval`, the loop's own pause, which a deadline cuts short
+/// without skipping the last read (tenet 4).
+fn after(retry_after_ms: Option<u64>, interval: Duration) -> (Duration, bool) {
+    match retry_after_ms.map(Duration::from_millis) {
+        Some(asked) if asked >= interval => (asked, true),
+        _ => (interval, false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only a `Retry-After` at least the interval is the server's pause; a shorter one leaves
+    /// the loop's own, so a deadline inside it still gets the last read.
+    #[test]
+    fn a_short_retry_after_is_the_loops_own_pause() {
+        let interval = Duration::from_secs(5);
+        assert_eq!(after(None, interval), (interval, false));
+        assert_eq!(after(Some(1_000), interval), (interval, false));
+        assert_eq!(after(Some(5_000), interval), (interval, true));
+        assert_eq!(after(Some(9_000), interval), (Duration::from_secs(9), true));
+    }
 }

@@ -1,0 +1,27 @@
+---
+source: crates/hippius-cli/tests/e2e/snapshots.rs
+expression: dry_run(args)
+---
+{
+  "dry_run": true,
+  "requests": [
+    {
+      "method": "POST",
+      "url": "[origin]/api/compute/vms/",
+      "account_header": null,
+      "project_header": null,
+      "billing_header": null,
+      "body": {
+        "flavor": "f1",
+        "name": "web",
+        "image": "ubuntu",
+        "region": "FR",
+        "ssh_key_ids": [
+          7
+        ]
+      }
+    }
+  ],
+  "confirmation": true,
+  "confirmation_when": null
+}

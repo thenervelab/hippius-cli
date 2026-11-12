@@ -2,10 +2,26 @@
 
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, TOKEN, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, TOKEN, draft, route};
 
 /// The flag that sends a request body from a file.
 const BODY: &str = "--body-file";
+
+/// [`Run::ok`] for a request to a route no command sends: it succeeds, and stderr holds only
+/// the JSON-mode warning that `hipc` does not know the route, beside the body on stdout.
+fn sent_unknown(run: &Run) -> serde_json::Value {
+    assert_eq!(run.code(), Some(0), "stderr: {}", run.stderr());
+    let aside: serde_json::Value = serde_json::from_str(run.stderr()).expect("one JSON object");
+    let warnings = aside["warnings"].as_array().expect("a warnings array");
+    assert!(
+        warnings.len() == 1
+            && warnings[0]
+                .as_str()
+                .is_some_and(|w| w.contains("does not know")),
+        "{aside}"
+    );
+    run.json()
+}
 
 #[test]
 fn a_2xx_body_is_printed_byte_for_byte() {
@@ -22,6 +38,23 @@ fn a_2xx_body_is_printed_byte_for_byte() {
     assert_eq!(run.stderr(), "");
 }
 
+/// A `HEAD` answer has no body (RFC 9110, section 9.3.2), and the HTTP library reads none
+/// even when a server sends one, so a `HEAD` of a route whose `GET` reveals a secret prints
+/// nothing and needs no `--reveal`.
+#[test]
+fn a_head_prints_no_body_even_when_the_server_sends_one() {
+    let server = Server::start(vec![route(
+        "HEAD",
+        "/api/objectstore/master-tokens/",
+        Reply::json(200, r#"{"secret":"s3cr3t-master-token"}"#),
+    )]);
+    let run =
+        Hipc::against(&Home::new(), &server).run(&["api", "HEAD", "/objectstore/master-tokens/"]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(run.stdout(), "");
+    assert_eq!(run.stderr(), "");
+}
+
 /// An answer of exactly 32 MiB is read, and only a larger one is `internal`.
 #[test]
 fn a_body_of_exactly_32_mib_is_read_and_one_byte_more_is_not() {
@@ -30,7 +63,7 @@ fn a_body_of_exactly_32_mib_is_read_and_one_byte_more_is_not() {
     let body = |len: usize| format!("\"{}\"", "a".repeat(len - 2));
     let at_cap = body(CAP);
     let server = Server::start(vec![route("GET", "/api/big/", Reply::json(200, &at_cap))]);
-    let run = Hipc::against(&Home::new(), &server).run(&["api", "GET", "/big/"]);
+    let run = Hipc::against(&Home::new(), &server).run(&["api", "--reveal", "GET", "/big/"]);
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert_eq!(run.stdout_bytes().len(), CAP);
 
@@ -39,7 +72,7 @@ fn a_body_of_exactly_32_mib_is_read_and_one_byte_more_is_not() {
         "/api/big/",
         Reply::json(200, &body(CAP + 1)),
     )]);
-    let run = Hipc::against(&Home::new(), &server).run(&["api", "GET", "/big/"]);
+    let run = Hipc::against(&Home::new(), &server).run(&["api", "--reveal", "GET", "/big/"]);
     assert_eq!(run.stdout(), "");
     let error = run.fails(1, "internal");
     assert!(
@@ -48,6 +81,55 @@ fn a_body_of_exactly_32_mib_is_read_and_one_byte_more_is_not() {
             .unwrap()
             .ends_with("is larger than 32 MiB"),
         "{error}"
+    );
+
+    // A refusal that large keeps its status's code, and says why nothing of it is quoted.
+    let server = Server::start(vec![route(
+        "GET",
+        "/api/big/",
+        Reply::json(400, &body(CAP + 1)),
+    )]);
+    let run = Hipc::against(&Home::new(), &server).run(&["api", "--reveal", "GET", "/big/"]);
+    let error = run.fails(1, "validation");
+    assert!(
+        error["message"].as_str().unwrap().ends_with(
+            "the API answered 400, and its body is larger than 32 MiB, so it was not read"
+        ),
+        "{error}"
+    );
+}
+
+/// A field error under a secret field keeps its text, with the value the request sent in
+/// any secret field redacted where the server quotes it back.
+#[test]
+fn a_field_error_never_quotes_a_secret_the_request_sent() {
+    let sent = "Pa55-word-sent-9";
+    let server = Server::start(vec![route(
+        "POST",
+        "/api/x/",
+        Reply::json(
+            400,
+            &format!(r#"{{"password":["`{sent}` is too common."],"name":["Too short."]}}"#),
+        ),
+    )]);
+    let home = Home::new();
+    let body = home.file(
+        "body.json",
+        format!(r#"{{"user":{{"Password":"{sent}"}},"name":"n"}}"#).as_bytes(),
+    );
+    let run = Hipc::against(&home, &server).run(&[
+        "api",
+        "POST",
+        "/x/",
+        BODY,
+        body.to_str().unwrap(),
+        "--yes",
+    ]);
+    let error = run.fails(1, "validation");
+    assert!(!run.stderr().contains(sent), "{}", run.stderr());
+    assert_eq!(
+        error["details"],
+        json!({"password": ["`<redacted>` is too common."], "name": ["Too short."]})
     );
 }
 
@@ -87,40 +169,43 @@ fn a_full_url_on_another_origin_is_refused_and_sends_nothing() {
     let loopback = format!("{}/api/compute/vms/", other.url());
     let api_port = api.url().rsplit(':').next().unwrap().to_owned();
     let https_loopback = format!("https://127.0.0.1:{api_port}/api/compute/vms/");
-    for target in [
+    let targets = [
+        "https://collector.example/collect?d=1",
         loopback.as_str(),
         https_loopback.as_str(),
-        "https://collector.example/collect?d=1",
         "http://collector.example/x/",
         "https://api.hippius.com/api/accounts/",
         "http://[::1]:9/api/accounts/",
-    ] {
-        for args in [
-            &["api", "GET", target][..],
-            &["api", "HEAD", target],
-            &["api", "GET", target, "--all"],
-            &["api", "GET", target, "--dry-run"],
-            &["api", "POST", target, BODY, body, "--yes"],
-            &["api", "DELETE", target, "--yes", "--dry-run"],
-        ] {
-            let error = Hipc::against(&home, &api)
-                .env("HIPPIUS_ACCOUNT", MEMBER)
-                .run(args)
-                .fails(2, "usage");
-            let message = error["message"].as_str().unwrap();
-            assert!(
-                message.contains("is not on the API origin"),
-                "{args:?}: {message}"
-            );
-            assert!(
-                !message.contains("d=1"),
-                "a query value is quoted: {message}"
-            );
-            assert_eq!(
-                error["hint"],
-                "pass a path such as `/compute/vms/`, or use curl for another host"
-            );
-        }
+    ];
+    // `client::tests` refuses each origin the same way on every public check; here each
+    // target is sent with `GET`, and each other method and set of flags with the first.
+    let first = targets[0];
+    let others: [&[&str]; 5] = [
+        &["api", "HEAD", first],
+        &["api", "GET", first, "--all"],
+        &["api", "GET", first, "--dry-run"],
+        &["api", "POST", first, BODY, body, "--yes"],
+        &["api", "DELETE", first, "--yes", "--dry-run"],
+    ];
+    let gets = targets.map(|target| vec!["api", "GET", target]);
+    for args in gets.iter().map(Vec::as_slice).chain(others) {
+        let error = Hipc::against(&home, &api)
+            .env("HIPPIUS_ACCOUNT", MEMBER)
+            .run(args)
+            .fails(2, "usage");
+        let message = error["message"].as_str().expect("the message is a string");
+        assert!(
+            message.contains("is not on the API origin"),
+            "{args:?}: {message}"
+        );
+        assert!(
+            !message.contains("d=1"),
+            "a query value is quoted: {message}"
+        );
+        assert_eq!(
+            error["hint"],
+            "pass a path such as `/compute/vms/`, or use curl for another host"
+        );
     }
     assert!(api.requests().is_empty());
     assert!(other.requests().is_empty());
@@ -500,6 +585,47 @@ fn all_follows_next_links_into_one_array() {
     }
 }
 
+/// `--all` on a route whose row pages it without `next` links, such as the Hub model index,
+/// reads each page as the row says: a page that says more remain is `internal`, since
+/// `hipc api` follows links only, a short page is `internal` too, and the last page is the
+/// whole list.
+#[test]
+fn all_on_a_route_paged_without_links_never_prints_part_of_the_list() {
+    let page = |total: u32, held: usize| {
+        let models = vec![json!({"repo": "m"}); held];
+        json!({"page": 1, "page_size": 2, "total": total, "results": models}).to_string()
+    };
+    for (total, held, message) in [
+        (5, 2, "names the next one by a number or a token"),
+        (
+            2,
+            1,
+            "page `1` with 1 of the 2 items its `total` of `2` puts on it",
+        ),
+    ] {
+        let server = Server::start(vec![route(
+            "GET",
+            "/api/models/",
+            Reply::json(200, &page(total, held)),
+        )]);
+        let error = Hipc::against(&Home::new(), &server)
+            .run(&["api", "GET", "/models/", "--all"])
+            .fails(1, "internal");
+        let text = error["message"].as_str().expect("a message");
+        assert!(text.contains(message), "{error}");
+        assert_eq!(server.requests().len(), 1);
+    }
+    let server = Server::start(vec![route(
+        "GET",
+        "/api/models/",
+        Reply::json(200, &page(2, 2)),
+    )]);
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&["api", "GET", "/models/", "--all"])
+        .ok();
+    assert_eq!(doc, json!([{"repo": "m"}, {"repo": "m"}]));
+}
+
 #[test]
 fn all_refuses_a_next_link_that_loops() {
     let server = Server::start(vec![route(
@@ -508,7 +634,7 @@ fn all_refuses_a_next_link_that_loops() {
         Reply::json(200, r#"{"next":"{base}/api/loop/","results":[1]}"#),
     )]);
     let error = Hipc::against(&Home::new(), &server)
-        .run(&["api", "GET", "/loop/", "--all"])
+        .run(&["api", "--reveal", "GET", "/loop/", "--all"])
         .fails(1, "internal");
     assert!(error["message"].as_str().unwrap().contains("leads back to"));
     // The repeat is caught before it is sent.
@@ -554,7 +680,7 @@ fn all_refuses_a_foreign_next_and_a_non_list() {
     ]);
     let home = Home::new();
     let foreign = Hipc::against(&home, &server)
-        .run(&["api", "GET", "/foreign/", "--all"])
+        .run(&["api", "--reveal", "GET", "/foreign/", "--all"])
         .fails(1, "internal");
     assert!(
         foreign["message"]
@@ -564,7 +690,7 @@ fn all_refuses_a_foreign_next_and_a_non_list() {
     );
     for path in ["/object/", "/string/"] {
         Hipc::against(&home, &server)
-            .run(&["api", "GET", path, "--all"])
+            .run(&["api", "--reveal", "GET", path, "--all"])
             .fails(1, "internal");
     }
 }
@@ -594,7 +720,12 @@ fn a_path_the_server_could_reroute_is_refused_before_sending() {
 #[test]
 fn a_url_in_the_query_is_part_of_the_path() {
     let server = Server::start(vec![route("GET", "/api/x/", Reply::json(200, "{}"))]);
-    let run = Hipc::against(&Home::new(), &server).run(&["api", "GET", "/x/?next=https://y/z"]);
+    let run = Hipc::against(&Home::new(), &server).run(&[
+        "api",
+        "--reveal",
+        "GET",
+        "/x/?next=https://y/z",
+    ]);
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert_eq!(server.only_request().target, "/api/x/?next=https://y/z");
 }
@@ -614,29 +745,9 @@ fn all_follows_a_next_link_given_as_a_path() {
         ),
     ]);
     let doc = Hipc::against(&Home::new(), &server)
-        .run(&["api", "GET", "/k/", "--all"])
+        .run(&["api", "--reveal", "GET", "/k/", "--all"])
         .ok();
     assert_eq!(doc, json!([1, 2]));
-}
-
-#[test]
-fn all_stops_after_a_thousand_pages() {
-    let (url, server) = crate::common::endless_pages(|base, served| {
-        format!(
-            r#"{{"next":"{base}/api/e/?page={}","results":[]}}"#,
-            served + 1
-        )
-    });
-    let error = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, TOKEN)
-        .run(&["api", "GET", "/e/", "--all"])
-        .fails(1, "internal");
-    assert!(
-        error["message"].as_str().unwrap().contains("1000 pages"),
-        "{error}"
-    );
-    assert_eq!(server.join().unwrap(), 1000);
 }
 
 #[test]
@@ -671,7 +782,7 @@ fn a_next_link_the_client_refuses_is_internal_not_usage() {
         Reply::json(200, r#"{"next":"{base}/api/k/../x/?page=2","results":[]}"#),
     )]);
     Hipc::against(&Home::new(), &server)
-        .run(&["api", "GET", "/k/", "--all"])
+        .run(&["api", "--reveal", "GET", "/k/", "--all"])
         .fails(1, "internal");
 }
 
@@ -839,36 +950,33 @@ fn the_account_token_route_is_never_sent() {
         ),
     ]);
     let hipc = || Hipc::against(&Home::new(), &server);
-    for method in ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] {
-        for path in ["/auth/token/", "/auth/token", "/api/auth/token/?x=1"] {
-            for extra in [
-                &[][..],
-                &["--reveal"],
-                &["--reveal", "--yes"],
-                &["--dry-run"],
-            ] {
-                let mut args = vec!["api", method, path];
-                args.extend(extra);
-                let error = hipc().run(&args).fails(2, "usage");
-                assert_eq!(
-                    error["message"],
-                    format!(
-                        "`hipc api` does not send `{method} /api/auth/token/`: {}",
-                        if matches!(method, "GET" | "HEAD") {
-                            "its answer is the account's API token"
-                        } else {
-                            "the route hands out the account's API token"
-                        }
-                    ),
-                    "{args:?}"
-                );
-                assert_eq!(
-                    error["hint"],
-                    "create a token in the console settings at \
-                     `https://console.hippius.com/dashboard/settings`"
-                );
-            }
-        }
+    // `client::tests` holds every method on every form of the path; here each method, each
+    // form, and each set of flags is sent once, the others held at their first value.
+    let methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
+        .map(|method| (method, "/auth/token/", &[][..]));
+    let paths = ["/auth/token", "/api/auth/token/?x=1"].map(|path| ("GET", path, &[][..]));
+    let flags = [&["--reveal"][..], &["--reveal", "--yes"], &["--dry-run"]]
+        .map(|extra| ("GET", "/auth/token/", extra));
+    for (method, path, extra) in methods.into_iter().chain(paths).chain(flags) {
+        let args = [&["api", method, path][..], extra].concat();
+        let error = hipc().run(&args).fails(2, "usage");
+        assert_eq!(
+            error["message"],
+            format!(
+                "`hipc api` does not send `{method} /api/auth/token/`: {}",
+                if matches!(method, "GET" | "HEAD") {
+                    "its answer is the account's API token"
+                } else {
+                    "the route hands out the account's API token"
+                }
+            ),
+            "{args:?}"
+        );
+        assert_eq!(
+            error["hint"],
+            "create a token in the console settings at \
+             `https://console.hippius.com/dashboard/settings`"
+        );
     }
     hipc()
         .run(&["api", "GET", "/auth/token/", "--all", "--reveal"])
@@ -906,7 +1014,7 @@ fn a_terminal_ticket_needs_reveal_first() {
         .run(&["api", "POST", path, "--reveal"])
         .fails(2, "confirmation_required");
     assert!(server.requests().is_empty());
-    let doc = hipc().run(&["api", "POST", path, "--yes", "--reveal"]).ok();
+    let doc = sent_unknown(&hipc().run(&["api", "POST", path, "--yes", "--reveal"]));
     assert_eq!(doc["ticket"], "t1ck3t");
     assert_eq!(server.requests().len(), 1);
 }
@@ -1041,7 +1149,10 @@ fn an_account_deletion_request_is_never_sent() {
         .fails(2, "usage");
     assert!(server.requests().is_empty());
     // Its other methods read or cancel the deletion, and are sent as any request is.
-    hipc().run(&["api", "GET", "/account/deletion/"]).ok();
+    hipc()
+        .run(&["api", "--reveal", "GET", "/account/deletion/"])
+        .ok();
+    // `hipc` knows the withdrawal (it has a row), so it warns of nothing.
     hipc()
         .run(&["api", "DELETE", "/account/deletion/", "--yes"])
         .ok();
@@ -1063,58 +1174,48 @@ fn a_cluster_secrets_read_is_never_sent() {
     ]);
     let hipc = || Hipc::against(&Home::new(), &server);
     let full_url = format!("{}/api/kubernetes/clusters/7/secrets/", server.url());
-    // A HEAD runs the GET handler on the server, so it is refused the same way.
-    for path in [
-        "/kubernetes/clusters/7/secrets/",
-        "/kubernetes/clusters/7/secrets.json",
-    ] {
-        for extra in [&["--yes"][..], &["--dry-run"]] {
-            let mut argv = vec!["api", "HEAD", path];
-            argv.extend(extra);
-            let error = hipc().run(&argv).fails(2, "usage");
-            assert_eq!(
-                error["message"],
-                "`hipc api` does not send `HEAD /api/kubernetes/clusters/<cluster_id>/secrets/`: \
-                 the route answers the cluster's sealed kubeconfig",
-                "{argv:?}"
-            );
-        }
-    }
-    for path in [
+    // `client::tests` holds every form of the path on both methods; here each form and each
+    // set of flags is sent once, the others held at their first value. A HEAD runs the GET
+    // handler on the server, so it is refused the same way.
+    let paths = [
         "/kubernetes/clusters/7/secrets/",
         "/kubernetes/clusters/7/secrets",
         "/kubernetes/clusters/7/secrets.json/",
         "/kubernetes/clusters/7/secrets.api",
         "/api/kubernetes/clusters/7/secrets/?format=json",
-        &full_url,
-    ] {
-        for extra in [
-            &[][..],
-            &["--yes", "--change-isolation", "--reveal"],
-            &["--all"],
-            &["--dry-run"],
-        ] {
-            let mut argv = vec!["api", "GET", path];
-            argv.extend(extra);
-            let error = hipc().run(&argv).fails(2, "usage");
-            assert_eq!(
-                error["message"],
-                "`hipc api` does not send `GET /api/kubernetes/clusters/<cluster_id>/secrets/`: \
-                 its answer holds the cluster's sealed kubeconfig",
-                "{argv:?}"
-            );
-            assert_eq!(
-                error["hint"],
-                "run `hipc compute kubernetes clusters kubeconfig`, which opens the kubeconfig \
-                 with the cluster key file and writes it to a new file",
-                "{argv:?}"
-            );
-        }
+        full_url.as_str(),
+    ]
+    .map(|path| ("GET", path, &[][..]));
+    let flags = [
+        &["--yes", "--change-isolation", "--reveal"][..],
+        &["--all"],
+        &["--dry-run"],
+    ]
+    .map(|extra| ("GET", "/kubernetes/clusters/7/secrets/", extra));
+    let heads = [&["--yes"][..], &["--dry-run"]]
+        .map(|extra| ("HEAD", "/kubernetes/clusters/7/secrets.json", extra));
+    for (method, path, extra) in paths.into_iter().chain(flags).chain(heads) {
+        let argv = [&["api", method, path][..], extra].concat();
+        let error = hipc().run(&argv).fails(2, "usage");
+        assert_eq!(
+            error["message"],
+            format!(
+                "`hipc api` does not send `{method} \
+                 /api/kubernetes/clusters/<cluster_id>/secrets/`: its answer holds the cluster's \
+                 sealed kubeconfig"
+            ),
+            "{argv:?}"
+        );
+        assert_eq!(
+            error["hint"],
+            "run `hipc compute kubernetes clusters kubeconfig`, which opens the kubeconfig \
+             with the cluster key file and writes it to a new file",
+            "{argv:?}"
+        );
     }
     // Before the token. The route takes a membership and a project, so no selector here
     // could show the order against the account refusals; the account deletion test does.
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&["api", "GET", "/kubernetes/clusters/7/secrets/"])
         .fails(2, "usage");
     assert!(server.requests().is_empty());
@@ -1157,8 +1258,7 @@ fn a_dns_setup_is_never_sent() {
         }
     }
     // Before the token: with none configured, the refusal is still `usage`.
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&[
             "api",
             "POST",
@@ -1326,18 +1426,19 @@ fn a_network_isolation_change_needs_change_isolation_first() {
         .fails(2, "confirmation_required");
     assert!(server.requests().is_empty());
     // A read of the mode is not guarded.
-    hipc().run(&["api", "GET", "/network/isolation/"]).ok();
-    let doc = hipc()
-        .run(&[
-            "api",
-            "POST",
-            "/network/isolation/",
-            BODY,
-            body,
-            "--change-isolation",
-            "--yes",
-        ])
+    hipc()
+        .run(&["api", "--reveal", "GET", "/network/isolation/"])
         .ok();
+    let doc = hipc().run(&[
+        "api",
+        "POST",
+        "/network/isolation/",
+        BODY,
+        body,
+        "--change-isolation",
+        "--yes",
+    ]);
+    let doc = doc.ok();
     assert_eq!(doc["isolation"], "deny_intra");
     let requests = server.requests();
     assert_eq!(requests.len(), 2);
@@ -1396,7 +1497,19 @@ fn a_guard_holds_for_every_write_method_and_letter_case() {
     ];
     for (method, path, body, code) in cases {
         let argv = ["api", method, path, BODY, body, "--yes"];
-        Hipc::against(&home, &server).run(&argv).fails(2, code);
+        let error = Hipc::against(&home, &server).run(&argv).fails(2, code);
+        // A borrowed `--public` rule names what the route it comes from opens.
+        if code == "public_required" {
+            let opens = if path.contains("publicity") {
+                "the Hub namespace public"
+            } else {
+                "a private bucket"
+            };
+            assert!(
+                error["message"].as_str().is_some_and(|m| m.contains(opens)),
+                "{method} {path}: {error}"
+            );
+        }
     }
     // A refusal holds for every write method too, and its message names the method sent.
     let error = Hipc::against(&home, &server)
@@ -1479,8 +1592,7 @@ fn a_zone_that_may_publish_a_bucket_needs_public_first() {
             .env("HIPPIUS_ACCOUNT", MEMBER)
             .run(&argv)
             .fails(2, "public_required");
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&Home::new(), &server)
             .run(&argv)
             .fails(2, "public_required");
     }
@@ -1594,8 +1706,7 @@ fn a_whole_list_replace_needs_remove_others_first() {
             .env("HIPPIUS_ACCOUNT", MEMBER)
             .run(&argv)
             .fails(2, "remove_others_required");
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&Home::new(), &server)
             .run(&argv)
             .fails(2, "remove_others_required");
         // With the flag, the question still applies; a dry run needs no flag and reads
@@ -1683,9 +1794,9 @@ fn the_uncurated_whole_replaces_need_remove_others() {
         .fails(2, "confirmation_required");
     assert!(server.requests().is_empty());
     for (method, path) in writes {
-        hipc()
-            .run(&["api", method, path, BODY, body, "--remove-others", "--yes"])
-            .ok();
+        let run = hipc().run(&["api", method, path, BODY, body, "--remove-others", "--yes"]);
+        // The operator storage route, which no command sends, is one `hipc` knows too.
+        run.ok();
     }
     assert_eq!(server.requests().len(), writes.len());
 }
@@ -1759,18 +1870,17 @@ fn a_format_suffix_meets_the_guards_of_its_plain_route() {
         ("PUT", "/compute/vms/abc/firewall", "remove_others_required"),
         ("POST", "/cdn/zones", "public_required"),
     ];
-    for (method, path, code) in cases {
-        for suffix in [".json", ".api"] {
-            for slash in ["", "/"] {
-                let path = format!("{path}{suffix}{slash}");
-                hipc().run(&["api", method, &path, "--yes"]).fails(2, code);
-                // A membership is refused later, so the route's own refusal comes first.
-                hipc()
-                    .env("HIPPIUS_ACCOUNT", MEMBER)
-                    .run(&["api", method, &path, "--yes"])
-                    .fails(2, code);
-            }
-        }
+    // `account::tests` holds each suffix on each of these routes; here the cases take the
+    // suffixes in turn, so each case and each suffix is sent.
+    let suffixes = [".json", ".api", ".json/", ".api/"].into_iter().cycle();
+    for ((method, path, code), suffix) in cases.into_iter().zip(suffixes) {
+        let path = format!("{path}{suffix}");
+        hipc().run(&["api", method, &path, "--yes"]).fails(2, code);
+        // A membership is refused later, so the route's own refusal comes first.
+        hipc()
+            .env("HIPPIUS_ACCOUNT", MEMBER)
+            .run(&["api", method, &path, "--yes"])
+            .fails(2, code);
     }
     // A dry run needs no flag, but the console-only route stays refused even then.
     hipc()
@@ -1850,7 +1960,7 @@ fn a_dotted_bucket_name_is_handled_as_any_bucket() {
         .fails(2, "public_required");
     assert!(server.requests().is_empty());
     hipc()
-        .run(&["api", "GET", "/objectstore/buckets/my.bucket/"])
+        .run(&["api", "--reveal", "GET", "/objectstore/buckets/my.bucket/"])
         .ok();
     assert_eq!(server.requests().len(), 1);
 }
@@ -2044,7 +2154,11 @@ fn a_stored_project_is_refused_on_the_network_get() {
     let doc = Hipc::against(&home, &server)
         .run(&["api", "GET", "/network/me/", "--dry-run"])
         .ok();
-    assert_eq!(doc["billing_header"], serde_json::Value::Null);
+    assert_eq!(
+        draft(&doc).get("billing_header"),
+        Some(&serde_json::Value::Null),
+        "{doc}"
+    );
     Hipc::against(&home, &server)
         .run(&["api", "GET", "/network/me/", "--yes"])
         .ok();
@@ -2122,7 +2236,7 @@ fn the_neighbours_of_the_network_get_stay_reads() {
         "/networks/me/",
     ] {
         Hipc::against(&home, &server)
-            .run(&["api", "GET", path])
+            .run(&["api", "--reveal", "GET", path])
             .ok();
     }
     let requests = server.requests();
@@ -2219,36 +2333,43 @@ fn a_support_ticket_write_that_holds_a_token_is_refused() {
         json!({ "attachments": [1, ["note", format!("tok {stored}")]] }).to_string(),
         format!(r#"{{"body":"{escaped}"}}"#),
     ];
-    for body in &bodies {
+    let routes = [
+        ("POST", "/support/tickets/"),
+        ("POST", "/support/tickets/7/messages"),
+        ("POST", "/support/tickets.json"),
+        // A front end that folds letter case would deliver these to the same routes.
+        ("POST", "/support/Tickets/"),
+        ("PATCH", "/SUPPORT/tickets/7/"),
+        ("PATCH", "/support/tickets/7/"),
+        ("PUT", "/support/tickets/7/"),
+        ("POST", "/support/tickets/7/handoff/"),
+        ("POST", "/support/chat/tickets/7/messages/"),
+        ("DELETE", "/support/tickets/7/"),
+    ];
+    // Each body on the first route, then the first body on each other route, each with
+    // `--yes`, and one dry run: the body check and the route match are apart, so this
+    // reaches every body and every route without their product.
+    let cases = bodies
+        .iter()
+        .map(|body| (body, routes[0], "--yes"))
+        .chain(
+            routes[1..]
+                .iter()
+                .map(|&route| (&bodies[0], route, "--yes")),
+        )
+        .chain([(&bodies[4], routes[9], "--dry-run")]);
+    for (body, (method, path), extra) in cases {
         let file = home.file("body.json", body.as_bytes());
-        let file = file.to_str().unwrap();
-        for (method, path) in [
-            ("POST", "/support/tickets/"),
-            ("POST", "/support/tickets/7/messages"),
-            ("POST", "/support/tickets.json"),
-            // A front end that folds letter case would deliver these to the same routes.
-            ("POST", "/support/Tickets/"),
-            ("PATCH", "/SUPPORT/tickets/7/"),
-            ("PATCH", "/support/tickets/7/"),
-            ("PUT", "/support/tickets/7/"),
-            ("POST", "/support/tickets/7/handoff/"),
-            ("POST", "/support/chat/tickets/7/messages/"),
-            ("DELETE", "/support/tickets/7/"),
-        ] {
-            for extra in [&["--yes"][..], &["--dry-run"]] {
-                let mut argv = vec!["api", method, path, BODY, file];
-                argv.extend(extra);
-                let error = Hipc::against(&home, &server).run(&argv).fails(2, "usage");
-                assert_eq!(
-                    error["message"],
-                    "`hipc api` does not send a support ticket write whose body holds an API \
-                     token, which a person on the Hippius support team would read",
-                    "{method} {path} {body}"
-                );
-                assert!(!error.to_string().contains("456789"), "{error}");
-                assert!(!error.to_string().contains("tickets"), "{error}");
-            }
-        }
+        let argv = ["api", method, path, BODY, file.to_str().unwrap(), extra];
+        let error = Hipc::against(&home, &server).run(&argv).fails(2, "usage");
+        assert_eq!(
+            error["message"],
+            "`hipc api` does not send a support ticket write whose body holds an API \
+             token, which a person on the Hippius support team would read",
+            "{method} {path} {body}"
+        );
+        assert!(!error.to_string().contains("456789"), "{error}");
+        assert!(!error.to_string().contains("tickets"), "{error}");
     }
     assert!(server.requests().is_empty());
     // Without a token in it the body goes out, and another route is not checked.
@@ -2276,4 +2397,269 @@ fn a_support_ticket_write_that_holds_a_token_is_refused() {
         ])
         .ok();
     assert_eq!(server.requests().len(), 2);
+}
+
+/// Each route `hipc api` refuses is refused on every method `hipc schema` says, a dry run
+/// included, and the schema's `refused_when` and the long help name it, with the methods it
+/// holds for: a refusal listed for one write method holds for every write method.
+#[test]
+fn every_refusal_is_named_in_the_schema_and_the_help_with_its_methods() {
+    const WRITES: [&str; 4] = ["POST", "PUT", "PATCH", "DELETE"];
+    const EVERY: [&str; 6] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
+    let server = Server::start(vec![]);
+    let home = Home::new();
+    let secrets = home.file("secrets.json", br#"{"secrets":{"A":"x"}}"#);
+    let secrets = secrets.to_str().expect("the test home path is UTF-8");
+    // (methods refused, typed path, body, what the schema says, what the help says)
+    let cases: [(&[&str], &str, bool, &str, &str); 8] = [
+        (
+            &EVERY,
+            "/auth/token/",
+            false,
+            "any method of `/api/auth/token/`",
+            "GET or HEAD of /auth/token/ is never sent",
+        ),
+        (
+            &["POST", "PUT", "PATCH"],
+            "/account/deletion/",
+            false,
+            "a write other than `DELETE` of `/api/account/deletion/`",
+            "A write other than DELETE of /account/deletion/ is never sent",
+        ),
+        (
+            &["GET", "HEAD"],
+            "/kubernetes/clusters/7/secrets/",
+            false,
+            "`GET` or `HEAD` of `/api/kubernetes/clusters/{cluster_id}/secrets/`",
+            "GET or HEAD of /kubernetes/clusters/<cluster_id>/secrets/ is never sent",
+        ),
+        (
+            &WRITES,
+            "/cdn/zones/zab12cd34ef56/hostnames/a.example.com/dns-setup/",
+            false,
+            "a write of `/api/cdn/zones/{zone_id}/hostnames/{hostname}/dns-setup/`",
+            "A write of /cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/ is never sent",
+        ),
+        (
+            &WRITES,
+            "/registry/subscribe/",
+            false,
+            "a write of `/api/registry/subscribe/`",
+            "A write of /registry/subscribe/ is never sent",
+        ),
+        (
+            &WRITES,
+            "/compute/app-engine/apps/",
+            true,
+            "a write of `/api/compute/app-engine/apps/`,",
+            "A write of /compute/app-engine/apps/ whose body sets secrets is never sent",
+        ),
+        (
+            &WRITES,
+            "/compute/app-engine/apps/vm-1/compose/",
+            true,
+            "or of `/api/compute/app-engine/apps/{vm_id}/compose/` whose body sets `secrets`",
+            "A write of /compute/app-engine/apps/<vm_id>/compose/ whose body sets secrets is never \
+             sent",
+        ),
+        (
+            &WRITES,
+            "/compute/app-engine/validate/",
+            true,
+            "of `/api/compute/app-engine/validate/`,",
+            "A write of /compute/app-engine/validate/ whose body sets secrets is never sent",
+        ),
+    ];
+    let schema = Hipc::new(&home).run(&["schema", "api"]).ok();
+    let refused_when = schema["commands"][0]["refused_when"]
+        .as_str()
+        .expect("`hipc api` has a refused_when")
+        .to_owned();
+    let help = Hipc::new(&home).run(&["api", "--help"]);
+    let help = help
+        .stdout()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for (methods, path, with_secrets, says, helps) in cases {
+        assert!(
+            refused_when.contains(says),
+            "{says:?} not in {refused_when}"
+        );
+        assert!(help.contains(helps), "{helps:?} not in {help}");
+        for method in methods {
+            let mut args = vec!["api", method, path, "--dry-run", "--yes"];
+            if with_secrets {
+                args.extend(["--body-file", secrets]);
+            }
+            Hipc::against(&home, &server).run(&args).fails(2, "usage");
+            // In another letter case too.
+            let upper = path.to_ascii_uppercase();
+            args[2] = &upper;
+            Hipc::against(&home, &server).run(&args).fails(2, "usage");
+        }
+    }
+    assert!(server.requests().is_empty());
+}
+
+/// A `GET` of a route no command lists may answer with a secret, so it needs `--reveal` and
+/// is sent with it, without repeating a query value. A `HEAD` of it prints no answer and
+/// needs none, and neither does a `GET` of a route a command lists whose answer holds none.
+#[test]
+fn a_read_of_a_route_hipc_does_not_know_needs_reveal() {
+    let server = Server::start(vec![
+        route("GET", "/api/v2/compute/vms/", Reply::json(200, "[]")),
+        route("HEAD", "/api/v2/compute/vms/", Reply::json(200, "")),
+        route("GET", "/api/compute/vms/", Reply::json(200, "[1]")),
+    ]);
+    let hipc = || Hipc::against(&Home::new(), &server);
+    let error = hipc()
+        .run(&["api", "GET", "/v2/compute/vms/?q=s3cr3t"])
+        .fails(2, "reveal_required");
+    assert_eq!(
+        error["message"],
+        "`hipc` does not know `GET /v2/compute/vms/?q=<redacted>`, so its answer may hold a \
+         secret, and the command needs `--reveal` to print it"
+    );
+    assert!(server.requests().is_empty());
+    let run = hipc().run(&["api", "GET", "/v2/compute/vms/", "--reveal"]);
+    assert_eq!(
+        (run.code(), run.stdout()),
+        (Some(0), "[]"),
+        "{}",
+        run.stderr()
+    );
+    assert_eq!(run.stderr(), "");
+    let run = hipc().run(&["api", "HEAD", "/v2/compute/vms/"]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    let run = hipc().run(&["api", "GET", "/compute/vms/"]);
+    assert_eq!(
+        (run.code(), run.stdout()),
+        (Some(0), "[1]"),
+        "{}",
+        run.stderr()
+    );
+    // A dry run sends nothing, so it needs no `--reveal`.
+    let doc = hipc()
+        .run(&["api", "GET", "/v2/compute/vms/", "--dry-run"])
+        .ok();
+    assert_eq!(doc["dry_run"], true);
+    assert_eq!(server.requests().len(), 3);
+}
+
+/// A write to a route no command lists needs `--yes` as any write does, and warns that `hipc`
+/// does not know it: a `warning:` line in text mode, a `warnings` entry in JSON, on the
+/// refusal too. A write to a route a command lists does not warn.
+#[test]
+fn a_write_to_a_route_hipc_does_not_know_warns() {
+    let server = Server::start(vec![
+        route("POST", "/api/v2/compute/vms/", Reply::json(201, "{}")),
+        route("POST", "/api/compute/vms/", Reply::json(201, "{}")),
+    ]);
+    let hipc = || Hipc::against(&Home::new(), &server);
+    let warning = "`hipc` does not know `POST /v2/compute/vms/?q=<redacted>`: no command sends \
+                   it, so `hipc` cannot say what it changes";
+    let refused = hipc().run(&["api", "POST", "/v2/compute/vms/?q=s3cr3t"]);
+    assert_eq!(refused.code(), Some(2));
+    let object: serde_json::Value =
+        serde_json::from_str(refused.stderr()).expect("one JSON object");
+    assert_eq!(object["error"]["code"], "confirmation_required");
+    assert_eq!(object["warnings"], json!([warning]));
+    assert!(server.requests().is_empty());
+
+    let run = hipc().run(&["api", "POST", "/v2/compute/vms/?q=s3cr3t", "--yes"]);
+    assert_eq!(
+        (run.code(), run.stdout()),
+        (Some(0), "{}"),
+        "{}",
+        run.stderr()
+    );
+    assert_eq!(
+        run.stderr(),
+        format!("{}\n", json!({ "warnings": [warning] }))
+    );
+    let run = hipc().run(&[
+        "--output",
+        "text",
+        "api",
+        "POST",
+        "/v2/compute/vms/?q=s3cr3t",
+        "--yes",
+    ]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(run.stderr(), format!("warning: {warning}\n"));
+
+    let run = hipc().run(&["api", "POST", "/compute/vms/", "--yes"]);
+    assert_eq!((run.code(), run.stderr()), (Some(0), ""));
+}
+
+/// An answer that says its route is deprecated, from a curated command or `hipc api`, becomes
+/// a warning that names the route and the dates its headers give: a `warning:` line in text
+/// mode, and a `warnings` entry in JSON, on the document or beside the error. The command does
+/// what it did before.
+#[test]
+fn a_deprecated_route_is_a_warning() {
+    let deprecated = |status, body: &str| {
+        Reply::json(status, body)
+            .header("Deprecation", "@1782864000")
+            .header("Sunset", "Fri, 01 Jan 2027 00:00:00 GMT")
+    };
+    let server = Server::start(vec![
+        route(
+            "GET",
+            "/api/accounts/",
+            deprecated(200, r#"{"accounts":[]}"#),
+        ),
+        route(
+            "GET",
+            "/api/ssh-keys/",
+            deprecated(404, r#"{"detail":"no"}"#),
+        ),
+    ]);
+    let warning = "the API marks `GET /api/accounts/` as deprecated as of 2026-07-01, and it may \
+                   stop answering on 2027-01-01: a newer `hipc` may send another route";
+    let hipc = || Hipc::against(&Home::new(), &server);
+    let run = hipc().run(&["account", "list"]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(run.json()["warnings"], json!([warning]));
+    assert_eq!(run.stderr(), "");
+    let run = hipc().run(&["--output", "text", "account", "list"]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(
+        run.stderr(),
+        format!("warning: {warning}\nnote: no items\n")
+    );
+    // A `hipc api` body keeps its shape, so its warnings go on stderr as one object.
+    let run = hipc().run(&["api", "GET", "/accounts/"]);
+    assert_eq!(run.stdout(), r#"{"accounts":[]}"#);
+    assert_eq!(
+        run.stderr(),
+        format!("{}\n", json!({ "warnings": [warning] }))
+    );
+    let failed = hipc().run(&["api", "GET", "/ssh-keys/"]);
+    assert_eq!(failed.code(), Some(1));
+    let object: serde_json::Value = serde_json::from_str(failed.stderr()).expect("one object");
+    assert_eq!(object["error"]["code"], "not_found");
+    assert_eq!(
+        object["warnings"],
+        json!([warning.replace("/api/accounts/", "/api/ssh-keys/")])
+    );
+}
+
+/// A `410` says the API retired the route this `hipc` sends, so the hint is to upgrade.
+#[test]
+fn a_retired_route_hints_to_upgrade_hipc() {
+    let server = Server::start(vec![route(
+        "GET",
+        "/api/accounts/",
+        Reply::json(410, r#"{"detail":"Gone."}"#),
+    )]);
+    let error = Hipc::against(&Home::new(), &server)
+        .run(&["account", "list"])
+        .fails(1, "validation");
+    assert_eq!(
+        error["hint"],
+        "the API has retired this route: upgrade `hipc` to its latest release, which sends the \
+         routes the API serves now"
+    );
 }

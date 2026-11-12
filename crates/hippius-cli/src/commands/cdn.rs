@@ -10,31 +10,32 @@
 //! the DNS records again, which `hipc schema` calls idempotent, not read-only, so it stays a
 //! write.
 
+mod rule_list;
 pub(crate) mod waf;
 
 use std::cmp::Ordering;
 
-use hippius::{Client, DnsCredentials, Error, Method, Request, Result, phrase};
+use hippius::routes::cdn::{self, Origin, ZoneUpdateBody};
+use hippius::{Client, DnsCredentials, Error, Request, Result, phrase, view_of};
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
     Cdn, CdnCap, CdnEstimate, CdnHostnames, CdnPurge, CdnPurges, CdnRules, CdnStats, CdnZones,
-    DnsSetup, StatsStep, ZoneCreate, ZoneSettings, ZoneUpdate,
+    DnsSetup, StatsStep, ZoneCreate, ZoneId, ZoneSettings, ZoneTarget, ZoneUpdate,
 };
-use crate::commands::credits::{DECIMALS, amount, compare};
-use crate::commands::replace::{self, Entry, Found, Replace, replace_list};
+use crate::commands::cdn::rule_list::{CACHE_RULES, ListUpdate, read_rules, update_rules};
+use crate::commands::spend_cap::{self, InForce, NewCap};
 use crate::commands::{
-    Input, Printed, print_body, print_body_or, print_keyed_list, print_with, require_public,
+    Decided, Input, Printed, print_body, print_body_or, print_keyed_list, print_with,
+    read_then_write, require_public,
 };
-use crate::context::{self, Context, Gate, Write};
+use crate::context::{self, Context, Gate, Write, WritePlan};
+use crate::units::{DECIMALS, Decimal, compare};
 
 /// The largest `--cors-file` read, in bytes. Arbitrary: swagger's limits (32 origins, and
 /// 32 headers each way) fit in a few kilobytes, and a wrong path is refused rather than sent.
 const MAX_CORS_BYTES: u64 = 64 * 1024;
-
-/// The largest `--rules-file` read, in bytes. Arbitrary: 50 rules, the server's limit, fit
-/// in a few kilobytes, and a wrong path is refused rather than sent.
-const MAX_RULES_BYTES: u64 = 1024 * 1024;
 
 pub(crate) fn run(ctx: &Context<'_>, command: &Cdn) -> Result<Printed> {
     match command {
@@ -43,13 +44,13 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Cdn) -> Result<Printed> {
         Cdn::Prices => print_body(
             ctx,
             &ctx.client(&context::config()?)?,
-            &Request::get("/cdn/prices/").about("get the CDN prices"),
+            &Request::to(&cdn::PRICES, []).about("get the CDN prices"),
             Gate::Open,
         ),
         Cdn::Regions => print_body(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/cdn/regions/").about("list the CDN regions"),
+            &Request::to(&cdn::REGIONS, []).about("list the CDN regions"),
             Gate::Open,
         ),
         Cdn::Estimate(args) => estimate(ctx, args),
@@ -64,23 +65,18 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Cdn) -> Result<Printed> {
     }
 }
 
-/// The command that lists the zone ids, for the hint of a 404 on a zone route.
-const ZONES: &str = "hipc cdn zones list";
-
-fn zone_path(zone_id: &str) -> String {
-    format!("/cdn/zones/{zone_id}/")
-}
+const ZONES_LIST_COMMAND: &str = "hipc cdn zones list";
 
 fn cap(ctx: &Context<'_>, client: &Client, command: &CdnCap) -> Result<Printed> {
     match command {
-        CdnCap::Get { zone_id } => {
-            let request = Request::get(format!("{}cap/", zone_path(zone_id)))
+        CdnCap::Get(ZoneTarget { zone_id }) => {
+            let request = Request::to(&cdn::CAP, [zone_id])
                 .about(format!("get the spend cap of the CDN zone `{zone_id}`"))
-                .listed_by(ZONES);
+                .listed_by(ZONES_LIST_COMMAND);
             print_body(ctx, client, &request, Gate::Open)
         }
         CdnCap::Update {
-            zone_id,
+            zone: ZoneTarget { zone_id },
             monthly_cap,
         } => cap_update(ctx, client, zone_id, monthly_cap),
     }
@@ -89,7 +85,7 @@ fn cap(ctx: &Context<'_>, client: &Client, command: &CdnCap) -> Result<Printed> 
 /// `credits`, an amount of credits, in base units (`10^18` per credit) as a decimal string
 /// without leading zeros, or `None` when it is not an amount or has more than 18 decimals.
 fn base_units(credits: &str) -> Option<String> {
-    let (whole, fraction) = amount(credits)?;
+    let (whole, fraction) = Decimal::parse(credits)?.significant();
     let places = DECIMALS as usize;
     if fraction.len() > places {
         return None;
@@ -107,83 +103,63 @@ fn base_units(credits: &str) -> Option<String> {
 fn cap_update(
     ctx: &Context<'_>,
     client: &Client,
-    zone_id: &str,
+    zone_id: &ZoneId,
     monthly_cap: &str,
 ) -> Result<Printed> {
-    let path = format!("{}cap/", zone_path(zone_id));
-    let set =
-        format!("set the monthly spend cap of the CDN zone `{zone_id}` to `{monthly_cap}` credits");
+    let named = format!("the monthly spend cap of the CDN zone `{zone_id}`");
     // The cap is the one writable field: the server refuses any other key.
     let patch = |about: &str| {
-        Request::new(Method::Patch, &path)
-            .listed_by(ZONES)
-            .json(&json!({ "monthly_cap": monthly_cap }))
+        Request::to(&cdn::CAP_UPDATE, [&zone_id])
+            .listed_by(ZONES_LIST_COMMAND)
+            .json(&cdn::CapUpdateBody { monthly_cap })
             .about(about)
     };
-    let read = Request::get(&path)
+    let read = Request::to(&cdn::CAP, [&zone_id])
         .about(format!("get the spend cap of the CDN zone `{zone_id}`"))
-        .listed_by(ZONES);
-    let draft = patch(&set);
-    let checked = match ctx.check_write(client, &draft)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(client, &[&read, &draft])?;
-            return Ok(Printed::Document(doc));
-        }
-        Write::Checked(checked) => checked,
+        .listed_by(ZONES_LIST_COMMAND);
+    let draft = patch(&format!("set {named} to `{monthly_cap}` credits"));
+    let decide = || {
+        let current: cdn::Cap = view_of(&ctx.send(client, &read)?.document()?);
+        let in_force = current
+            .monthly_cap_credits
+            .clone()
+            .map_or(InForce::Unknown, InForce::Credits);
+        let zone_cap = spend_cap::Cap {
+            named: &named,
+            read: "the cap",
+            spender: "the zone",
+        };
+        let order = cap_order(&current, monthly_cap);
+        let question =
+            spend_cap::question(zone_cap, NewCap::Credits(monthly_cap), &in_force, order);
+        Ok(match question {
+            Some((action, consequence)) => Decided::asked(patch(&action), Some(&consequence)),
+            None => Decided::unasked(draft.clone()),
+        })
     };
-    let current = ctx.send(client, &read)?.document()?;
-    let old = match current.get("monthly_cap_credits") {
-        Some(Value::String(text)) => Some(text.clone()),
-        Some(Value::Number(number)) => Some(number.to_string()),
-        _ => None,
-    };
+    let plan = WritePlan::new(&[&read], &draft);
+    read_then_write(ctx, client, &plan, decide, |sent| sent?.document())
+}
+
+/// How `monthly_cap`, a new cap in credits, compares with `current`, the cap in force; `None`
+/// when the read holds no amount to compare with.
+fn cap_order(current: &cdn::Cap, monthly_cap: &str) -> Option<Ordering> {
     // `monthly_cap_credits` is rounded to a few decimals, so a cap just above the one in force
     // could read as equal; `monthly_cap` holds it exactly, in base units, and decides when it
     // is a digit string. The parser refuses a new cap with more decimals than base units
     // hold, so the new cap always has base units, and the order is unknown only when the read
     // holds no amount to compare with.
     let base = current
-        .get("monthly_cap")
-        .and_then(Value::as_str)
+        .monthly_cap
+        .as_deref()
         .filter(|text| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()));
-    let order = match (base, base_units(monthly_cap)) {
+    match (base, base_units(monthly_cap)) {
         (Some(base), Some(new)) => compare(&new, base),
-        _ => old.as_deref().and_then(|old| compare(monthly_cap, old)),
-    };
-    let question = match (order, old.as_deref()) {
-        (Some(Ordering::Less | Ordering::Equal), _) => None,
-        (Some(Ordering::Greater), Some(old)) => Some(format!(
-            "raise the monthly spend cap of the CDN zone `{zone_id}` from {} to \
-             `{monthly_cap}` credits",
-            phrase::quote(old)
-        )),
-        (Some(Ordering::Greater), None) => Some(format!(
-            "raise the monthly spend cap of the CDN zone `{zone_id}` to `{monthly_cap}` credits"
-        )),
-        (None, Some(old)) => Some(format!(
-            "{set}, where `monthly_cap_credits` is {}, which is not an amount of credits",
-            phrase::quote(old)
-        )),
-        (None, None) => Some(format!(
-            "{set}, where the cap in force is unknown: the cap has no amount in \
-             `monthly_cap_credits`"
-        )),
-    };
-    let request = match question {
-        Some(action) => {
-            let request = patch(&action);
-            ctx.confirm_write(
-                checked,
-                &request.action(),
-                Some("the zone may then spend more of the balance each month"),
-            )?;
-            request
-        }
-        None => draft,
-    };
-    ctx.send(client, &request)?
-        .document()
-        .map(Printed::Document)
+        _ => current
+            .monthly_cap_credits
+            .as_deref()
+            .and_then(|old| compare(monthly_cap, old)),
+    }
 }
 
 fn purges(ctx: &Context<'_>, client: &Client, command: &CdnPurges) -> Result<Printed> {
@@ -191,15 +167,17 @@ fn purges(ctx: &Context<'_>, client: &Client, command: &CdnPurges) -> Result<Pri
         CdnPurges::Create(args) => purge(ctx, client, args),
         // Swagger gives this list no shape, and no zone was on the account to check it: a
         // bare array or an object holding `purges` is read.
-        CdnPurges::List { zone_id } => {
-            let path = format!("{}purges/", zone_path(zone_id));
-            let request = Request::get(path)
+        CdnPurges::List(ZoneTarget { zone_id }) => {
+            let request = Request::to(&cdn::PURGES, [zone_id])
                 .about(format!("list the purges of the CDN zone `{zone_id}`"))
-                .listed_by(ZONES);
+                .listed_by(ZONES_LIST_COMMAND);
             print_keyed_list(ctx, client, &request, "purges")
         }
-        CdnPurges::Get { zone_id, purge_id } => {
-            let request = Request::get(format!("{}purges/{purge_id}/", zone_path(zone_id)))
+        CdnPurges::Get {
+            zone: ZoneTarget { zone_id },
+            purge_id,
+        } => {
+            let request = Request::to(&cdn::PURGE, [zone_id, purge_id])
                 .about(format!(
                     "get the purge `{purge_id}` of the CDN zone `{zone_id}`"
                 ))
@@ -211,196 +189,31 @@ fn purges(ctx: &Context<'_>, client: &Client, command: &CdnPurges) -> Result<Pri
 
 fn rules(ctx: &Context<'_>, command: &CdnRules) -> Result<Printed> {
     match command {
-        CdnRules::Get { zone_id } => print_body(
-            ctx,
-            &ctx.load_authed_client()?,
-            &rules_get(zone_id),
-            Gate::Open,
-        ),
+        CdnRules::Get(ZoneTarget { zone_id }) => read_rules(ctx, zone_id, &CACHE_RULES),
         CdnRules::Update {
-            zone_id,
+            zone: ZoneTarget { zone_id },
             rules_file,
             remove_others,
         } => {
-            let rules = Input {
-                path: rules_file,
-                flag: "--rules-file",
-                what: "cache rules",
-            };
-            let (body, parsed) = rules.read_json(MAX_RULES_BYTES)?;
-            check_cache_rules(&parsed, &rules.name())?;
-            let Some(entries) = cache_rule_entries(&parsed) else {
-                return Err(Error::usage(
-                    format!(
-                        "the cache rules from {} are not a JSON object with a `rules` array, \
-                         or an array, of rules that each have a `match` object",
-                        rules.name()
-                    ),
-                    "write the rules as `{\"rules\": [...]}`, the shape `hipc cdn rules get` \
-                     prints",
-                ));
-            };
-            let read = rules_get(zone_id);
-            let read_action = read.action();
-            let replace = Replace {
-                write: Request::new(Method::Put, format!("{}rules/", zone_path(zone_id)))
-                    .listed_by(ZONES)
-                    .raw_json(body)
-                    .about(format!(
-                        "replace every cache rule of the CDN zone `{zone_id}` with the rules \
-                         from {}",
-                        rules.name()
-                    )),
-                consequence: None,
-                entries,
+            let update = ListUpdate {
+                zone_id,
+                rules_file,
                 remove_others: *remove_others,
-                read,
-                draft_body: None,
-                // The rules route has no version: swagger gives `If-Match` only for a zone's
-                // WAF version, so this PUT cannot be made conditional, and a rule another
-                // client saves between the read and the PUT is written over unseen. The help
-                // says so; send `If-Match` here once the route takes one.
-                draft_if_match: None,
-                noun: "cache rule",
-                owner: format!("the CDN zone `{zone_id}`"),
+                check: false,
             };
-            let current = |answer: Value| {
-                cache_rule_entries(&answer)
-                    .map(Found::new)
-                    .ok_or_else(|| crate::commands::unreadable(&read_action))
-            };
-            replace_list(ctx, &ctx.load_authed_client()?, &replace, current)
+            update_rules(ctx, &update, &CACHE_RULES)
         }
     }
-}
-
-fn rules_get(zone_id: &str) -> Request {
-    Request::get(format!("{}rules/", zone_path(zone_id)))
-        .about(format!("get the cache rules of the CDN zone `{zone_id}`"))
-        .listed_by(ZONES)
-}
-
-/// The keys swagger lists for a cache rule (`PUT /api/cdn/zones/{zone_id}/rules/`).
-const CACHE_RULE_KEYS: [&str; 2] = ["match", "actions"];
-
-/// The keys swagger lists for a cache rule's `match`.
-const MATCH_KEYS: [&str; 3] = ["path_prefix", "glob", "extensions"];
-
-/// The keys swagger lists for a cache rule's `actions`.
-const ACTION_KEYS: [&str; 5] = [
-    "edge_ttl",
-    "browser_ttl",
-    "query_string",
-    "bypass",
-    "ignore_set_cookie",
-];
-
-/// Refuses a rule of the file that has a key swagger does not list, in the rule, its
-/// `match`, or its `actions`, so a misspelled key cannot make the rule do something other
-/// than what was written. The values, and the shape of the list itself, are left to
-/// [`cache_rule_entries`] and the server.
-fn check_cache_rules(list: &Value, file: &str) -> Result<()> {
-    let Some(rules) = cache_rules(list) else {
-        return Ok(());
-    };
-    for (index, rule) in rules.iter().enumerate() {
-        if let Some(problem) = unknown_cache_key(rule) {
-            return Err(Error::usage(
-                format!("`rules[{index}]` from {file} {problem}"),
-                format!("fix `rules[{index}]`; the zone keeps its rules until then"),
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// The first key of `rule` that swagger does not list, as the end of a sentence that starts
-/// with the rule's place in the file; `None` when every key is listed.
-fn unknown_cache_key(rule: &Value) -> Option<String> {
-    let listed = |keys: &[&str]| phrase::ticked(keys, "and");
-    let unknown = |object: &Value, keys: &[&str]| {
-        object
-            .as_object()?
-            .keys()
-            .find(|key| !keys.contains(&key.as_str()))
-            .cloned()
-    };
-    if let Some(key) = unknown(rule, &CACHE_RULE_KEYS) {
-        return Some(format!(
-            "has the key `{key}`, which a cache rule does not have: a rule has only {}",
-            listed(&CACHE_RULE_KEYS)
-        ));
-    }
-    for (part, keys, noun) in [
-        ("match", &MATCH_KEYS[..], "a `match`"),
-        ("actions", &ACTION_KEYS[..], "`actions`"),
-    ] {
-        if let Some(key) = rule.get(part).and_then(|object| unknown(object, keys)) {
-            return Some(format!(
-                "has the key `{key}` in its `{part}`: {noun} has only {}",
-                listed(keys)
-            ));
-        }
-    }
-    None
-}
-
-/// The rules of a cache rule list: `{"rules": [...]}`, or a bare array, which swagger says
-/// the PUT accepts too; `None` for any other shape.
-fn cache_rules(list: &Value) -> Option<&Vec<Value>> {
-    match list {
-        Value::Array(rules) => Some(rules),
-        list => list.get("rules")?.as_array(),
-    }
-}
-
-/// The entries of a cache rule list: `{"rules": [...]}`, or a bare array, which swagger
-/// says the PUT accepts too; `None` for any other shape, or for a rule without a `match`
-/// object.
-///
-/// The list is ordered and the first match wins (swagger), so a rule is one entry by its
-/// place and its `match`: `{"position", "match"}`. Moving a rule, or putting a new one ahead
-/// of it, changes which rule a path meets first, so it counts as removing the rule from its
-/// old place. Changing a rule's `actions` in place edits it. Of two rules that share a
-/// `match` only the first ever applies, so the place tells them apart and their `actions`
-/// need not. Swagger says a leading dot of an extension is dropped, so `extensions` is
-/// compared without one, as a set. A rule without a `match` makes the list unreadable
-/// rather than a shared `null` key.
-fn cache_rule_entries(list: &Value) -> Option<Vec<Entry>> {
-    let rules = cache_rules(list)?;
-    let matches = rules
-        .iter()
-        .map(|rule| cache_match(rule.get("match")?))
-        .collect::<Option<Vec<Value>>>()?;
-    let entries = matches
-        .into_iter()
-        .enumerate()
-        .map(|(position, key)| Entry::new(json!({ "position": position, "match": key })))
-        .collect();
-    Some(entries)
-}
-
-/// A rule's `match` as a key: the object with `extensions` as a set without leading dots;
-/// `None` for a `match` that is not an object.
-fn cache_match(found: &Value) -> Option<Value> {
-    let mut key = found.as_object()?.clone();
-    if let Some(Value::Array(extensions)) = key.get("extensions") {
-        let bare = extensions
-            .iter()
-            .map(|e| match e.as_str() {
-                Some(text) => text.strip_prefix('.').unwrap_or(text).into(),
-                None => e.clone(),
-            })
-            .collect();
-        key.insert("extensions".to_owned(), replace::set(bare));
-    }
-    Some(Value::Object(key))
 }
 
 /// `POST /api/cdn/estimate/` with only the keys given. It changes nothing, so it is not
 /// confirmed.
 fn estimate(ctx: &Context<'_>, args: &CdnEstimate) -> Result<Printed> {
-    let mut body = Map::new();
+    let mut body = cdn::EstimateBody {
+        requests: args.requests,
+        custom_domains: args.custom_hostnames,
+        ..cdn::EstimateBody::default()
+    };
     if !args.traffic.is_empty() {
         let mut gb = Map::new();
         for entry in &args.traffic {
@@ -417,15 +230,7 @@ fn estimate(ctx: &Context<'_>, args: &CdnEstimate) -> Result<Printed> {
                 ));
             }
         }
-        body.insert("gb".to_owned(), Value::Object(gb));
-    }
-    for (key, value) in [
-        ("requests", args.requests),
-        ("custom_domains", args.custom_hostnames),
-    ] {
-        if let Some(value) = value {
-            body.insert(key.to_owned(), value.into());
-        }
+        body.gb = Some(gb);
     }
     if !args.waf.is_empty() {
         let mut waf = Map::new();
@@ -438,10 +243,10 @@ fn estimate(ctx: &Context<'_>, args: &CdnEstimate) -> Result<Printed> {
                 ));
             }
         }
-        body.insert("waf".to_owned(), Value::Object(waf));
+        body.waf = Some(waf);
     }
-    let request = Request::new(Method::Post, "/cdn/estimate/")
-        .json(&Value::Object(body))
+    let request = Request::to(&cdn::ESTIMATE, [])
+        .json(&body)
         .about("estimate the CDN cost")
         .changes_nothing();
     print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
@@ -453,20 +258,20 @@ fn zones(ctx: &Context<'_>, command: &CdnZones) -> Result<Printed> {
         CdnZones::List => print_keyed_list(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/cdn/zones/").about("list the CDN zones"),
+            &Request::to(&cdn::ZONES, []).about("list the CDN zones"),
             "zones",
         ),
-        CdnZones::Get { zone_id } => {
-            let request = Request::get(zone_path(zone_id))
+        CdnZones::Get(ZoneTarget { zone_id }) => {
+            let request = Request::to(&cdn::ZONE, [zone_id])
                 .about(format!("get the CDN zone `{zone_id}`"))
-                .listed_by(ZONES);
+                .listed_by(ZONES_LIST_COMMAND);
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         CdnZones::Create(args) => create_zone(ctx, args),
         CdnZones::Update(args) => update_zone(ctx, args),
-        CdnZones::Delete { zone_id } => {
-            let request = Request::new(Method::Delete, zone_path(zone_id))
-                .listed_by(ZONES)
+        CdnZones::Delete(ZoneTarget { zone_id }) => {
+            let request = Request::to(&cdn::ZONE_DELETE, [zone_id])
+                .listed_by(ZONES_LIST_COMMAND)
                 .about(format!("delete the CDN zone `{zone_id}`"));
             let gate = Gate::Confirm {
                 consequence: Some(ZONE_DELETED),
@@ -498,34 +303,30 @@ fn create_zone(ctx: &Context<'_>, args: &ZoneCreate) -> Result<Printed> {
         ),
     )?;
     let client = &ctx.load_authed_client()?;
-    let mut origin = Map::new();
-    origin.insert("kind".to_owned(), "s3".into());
-    origin.insert("bucket".to_owned(), args.bucket.as_str().into());
-    let mut settings = Map::new();
-    settings_into(&args.settings, &mut origin, &mut settings);
-    let mut body = Map::new();
-    body.insert("name".to_owned(), args.name.as_str().into());
-    body.insert("origin".to_owned(), Value::Object(origin));
-    body.extend(settings);
-    if let Some(cap) = &args.monthly_cap {
-        body.insert("monthly_cap".to_owned(), cap.as_str().into());
-    }
-    let with_cors = match cors {
-        Some(Cors { policy, file }) => {
-            let with = if policy.is_null() {
-                ", with no CORS policy".to_owned()
-            } else {
-                format!(", with the whole CORS policy in {file}")
-            };
-            body.insert("cors".to_owned(), policy);
-            with
-        }
+    let settings = &args.settings;
+    let body = cdn::ZoneCreateBody {
+        name: &args.name,
+        origin: Origin {
+            kind: Some("s3"),
+            bucket: Some(&args.bucket),
+            prefix: settings.prefix.as_deref(),
+        },
+        shield_region: settings.shield_region.as_deref(),
+        index_document: settings.index_document.as_deref(),
+        spa_fallback: settings.spa_fallback,
+        spa_fallback_exclude: exclusions(settings),
+        monthly_cap: args.monthly_cap.as_deref(),
+        cors: cors.as_ref().map(|cors| &cors.policy),
+    };
+    let with_cors = match &cors {
+        Some(Cors { policy, .. }) if policy.is_null() => ", with no CORS policy".to_owned(),
+        Some(Cors { file, .. }) => format!(", with the whole CORS policy in {file}"),
         None => String::new(),
     };
     // That a private bucket's prefix becomes public is part of the action, so the refusal an
     // agent reads says it too, not only the prompt.
-    let request = Request::new(Method::Post, "/cdn/zones/")
-        .json(&Value::Object(body))
+    let request = Request::to(&cdn::ZONE_CREATE, [])
+        .json(&body)
         .about(format!(
             "create the CDN zone `{}` serving `{published}`, which makes that prefix public if \
              the bucket is private{with_cors}",
@@ -536,7 +337,8 @@ fn create_zone(ctx: &Context<'_>, args: &ZoneCreate) -> Result<Printed> {
     };
     print_with(ctx, client, &request, gate, |response| {
         let zone = response.document()?;
-        if zone.pointer("/origin/private") == Some(&Value::Bool(true)) {
+        let origin = view_of::<cdn::Zone>(&zone).origin;
+        if origin.is_some_and(|origin| origin.private == Some(true)) {
             ctx.warning(&format!(
                 "this zone makes the prefix `{published}` public: anyone can read it through the \
                  zone's hostnames"
@@ -553,91 +355,180 @@ fn create_zone(ctx: &Context<'_>, args: &ZoneCreate) -> Result<Printed> {
 /// A new origin also needs `--public`, as a create does ([`create_zone`]): whether the
 /// bucket is private is known only from the answer. A change that keeps the origin
 /// publishes nothing new.
+///
+/// `--prefix` without `--bucket` reads the zone first and sends the whole origin, its `kind`
+/// and `bucket` with the new prefix: swagger does not say whether the PATCH merges a nested
+/// `origin` or replaces it, and the whole origin is right either way. The dry run lists the
+/// read, then the PATCH with the bucket as a placeholder.
 fn update_zone(ctx: &Context<'_>, args: &ZoneUpdate) -> Result<Printed> {
     check_settings(&args.settings)?;
     let cors = read_cors(&args.settings)?;
-    let mut origin = Map::new();
-    if let Some(bucket) = &args.bucket {
-        origin.insert("bucket".to_owned(), bucket.as_str().into());
-    }
-    let mut body = Map::new();
-    if let Some(name) = &args.name {
-        body.insert("name".to_owned(), name.as_str().into());
-    }
-    if let Some(redirect) = args.redirect_https {
-        body.insert("redirect_https".to_owned(), redirect.into());
-    }
-    settings_into(&args.settings, &mut origin, &mut body);
-    if body.is_empty() && origin.is_empty() && cors.is_none() {
+    let settings = &args.settings;
+    let body = ZoneUpdateBody {
+        name: args.name.as_deref(),
+        redirect_https: args.redirect_https,
+        shield_region: settings.shield_region.as_deref(),
+        index_document: settings.index_document.as_deref(),
+        spa_fallback: settings.spa_fallback,
+        spa_fallback_exclude: exclusions(settings),
+        ..ZoneUpdateBody::default()
+    };
+    let prefix = settings.prefix.as_deref();
+    let origin = (args.bucket.is_some() || prefix.is_some()).then_some(Origin {
+        kind: None,
+        bucket: args.bucket.as_deref(),
+        prefix,
+    });
+    let set = fields_set(&body, "");
+    if set.is_empty() && origin.is_none() && cors.is_none() {
         // An empty PATCH changes nothing and only returns the zone.
         return Err(Error::usage(
             "`hipc cdn zones update` was given nothing to change",
             "pass at least one field to change, such as `--name`",
         ));
     }
-    // The question names every change, so the refusal an agent reads says what would change
-    // and which bucket and prefix would be published.
-    let set: Vec<String> = body
-        .iter()
-        .map(|(key, value)| format!("`{key}` to {}", shown(value)))
-        .collect();
-    let set = match set.as_slice() {
+    let set = zone_changes(&set, cors.as_ref());
+    let body = ZoneUpdateBody {
+        cors: cors.as_ref().map(|cors| &cors.policy),
+        ..body
+    };
+    let patch = |origin: Option<Origin<'_>>| zone_patch(ctx, args, &body, &set, origin);
+    let client = ctx.load_authed_client()?;
+    let gate = Gate::Confirm { consequence: None };
+    if args.bucket.is_some() || prefix.is_none() {
+        return print_body(ctx, &client, &patch(origin)?, gate);
+    }
+    let read = Request::to(&cdn::ZONE, [&args.zone.zone_id])
+        .listed_by(ZONES_LIST_COMMAND)
+        .about(format!("get the CDN zone `{}`", args.zone.zone_id));
+    let draft = patch(Some(Origin {
+        kind: Some("<the zone's origin kind>"),
+        bucket: Some("<the zone's bucket>"),
+        prefix,
+    }))?;
+    let decide = || {
+        let zone = ctx.send(&client, &read)?.document()?;
+        let (kind, bucket) = zone_origin(&zone, &args.zone.zone_id)?;
+        let request = patch(Some(Origin {
+            kind: kind.as_deref(),
+            bucket: Some(&bucket),
+            prefix,
+        }))?;
+        Ok(Decided::asked(request, None))
+    };
+    let plan = WritePlan::new(&[&read], &draft);
+    read_then_write(ctx, &client, &plan, decide, |sent| sent?.document())
+}
+
+/// The `kind`, when it is text, and the `bucket` of the `origin` of `zone`, a zone read, which
+/// a PATCH of the prefix alone sends with it.
+///
+/// # Errors
+///
+/// `internal` when the origin has no `bucket` string: the PATCH would then send a partial
+/// origin.
+fn zone_origin(zone: &Value, zone_id: &ZoneId) -> Result<(Option<String>, String)> {
+    let origin = view_of::<cdn::Zone>(zone).origin.unwrap_or_default();
+    let Some(bucket) = origin.bucket else {
+        return Err(Error::internal(format!(
+            "the CDN zone `{zone_id}` has no `origin.bucket`, so its prefix cannot be changed \
+             alone"
+        ))
+        .with_hint("pass `--bucket` with `--prefix`"));
+    };
+    Ok((origin.kind, bucket))
+}
+
+/// Each field `body` sends, as a question names it, in the order it is sent: `` `name` to
+/// `site` ``, with `within` before each key, such as `block_response.`.
+fn fields_set(body: &impl Serialize, within: &str) -> Vec<String> {
+    let body = serde_json::to_value(body).expect("a request body is plain JSON data");
+    body.as_object()
+        .into_iter()
+        .flatten()
+        .map(|(key, value)| format!("`{within}{key}` to {}", shown(value)))
+        .collect()
+}
+
+/// The changes of a zone update other than its origin, as its question names them: `set`, the
+/// fields ([`fields_set`]), then the CORS policy. The policy is named by its file, not by its
+/// keys: it replaces the whole policy, which is what `--yes` agrees to.
+fn zone_changes(set: &[String], cors: Option<&Cors>) -> String {
+    let set = match set {
         [] => String::new(),
         set => format!("set {}", phrase::join(set, "and")),
     };
-    // The policy is named by its file, not by its keys: it replaces the whole policy, which
-    // is what `--yes` agrees to.
-    let set = match cors {
-        Some(Cors { policy, file }) => {
-            let cors = if policy.is_null() {
-                "remove its CORS policy".to_owned()
-            } else {
-                format!("replace its whole CORS policy with the one in {file}")
-            };
-            body.insert("cors".to_owned(), policy);
-            if set.is_empty() {
-                cors
-            } else {
-                format!("{set}, and {cors}")
-            }
-        }
-        None => set,
+    let Some(Cors { policy, file }) = cors else {
+        return set;
     };
-    let action = if origin.is_empty() {
-        format!("update the CDN zone `{}`: {set}", args.zone_id)
+    let cors = if policy.is_null() {
+        "remove its CORS policy".to_owned()
     } else {
-        require_public(
-            ctx,
-            args.public,
-            &format!(
-                "the new origin of the CDN zone `{}` would be readable by anyone if its bucket is \
-                 private",
-                args.zone_id
-            ),
-        )?;
-        let to: Vec<String> = origin
-            .iter()
-            .map(|(key, value)| format!("the {key} {}", shown(value)))
-            .collect();
-        let and_set = if set.is_empty() {
-            String::new()
-        } else {
-            format!(", and {set}")
-        };
-        body.insert("origin".to_owned(), Value::Object(origin));
-        format!(
-            "move the CDN zone `{}` to {}, which purges the whole zone and makes what it then \
-             serves public if the bucket is private{and_set}",
-            args.zone_id,
-            phrase::join(&to, "and")
-        )
+        format!("replace its whole CORS policy with the one in {file}")
     };
-    let request = Request::new(Method::Patch, zone_path(&args.zone_id))
-        .listed_by(ZONES)
-        .json(&Value::Object(body))
-        .about(action);
-    let client = ctx.load_authed_client()?;
-    print_body(ctx, &client, &request, Gate::Confirm { consequence: None })
+    if set.is_empty() {
+        cors
+    } else {
+        format!("{set}, and {cors}")
+    }
+}
+
+/// The PATCH of a zone update: `body`, with `origin` when there is one, and a question that
+/// names `set` and every key of the origin, so the refusal an agent reads says what would
+/// change and which bucket and prefix would be published.
+fn zone_patch(
+    ctx: &Context<'_>,
+    args: &ZoneUpdate,
+    body: &ZoneUpdateBody<'_>,
+    set: &str,
+    origin: Option<Origin<'_>>,
+) -> Result<Request> {
+    let action = match &origin {
+        None => format!("update the CDN zone `{}`: {set}", args.zone.zone_id),
+        Some(origin) => {
+            require_public(
+                ctx,
+                args.public,
+                &format!(
+                    "the new origin of the CDN zone `{}` would be readable by anyone if its \
+                     bucket is private",
+                    args.zone.zone_id
+                ),
+            )?;
+            // The kind a read adds is the zone's own, not a change, and so is a bucket read
+            // for a prefix given alone: the question names it as the zone's own.
+            let bucket = if args.bucket.is_some() {
+                "the bucket"
+            } else {
+                "its bucket"
+            };
+            let to: Vec<String> = [(bucket, origin.bucket), ("the prefix", origin.prefix)]
+                .into_iter()
+                .filter_map(|(key, value)| {
+                    value.map(|value| format!("{key} {}", shown(&Value::from(value))))
+                })
+                .collect();
+            let and_set = if set.is_empty() {
+                String::new()
+            } else {
+                format!(", and {set}")
+            };
+            format!(
+                "move the CDN zone `{}` to {}, which purges the whole zone and makes what it \
+                 then serves public if the bucket is private{and_set}",
+                args.zone.zone_id,
+                phrase::join(&to, "and")
+            )
+        }
+    };
+    let body = ZoneUpdateBody {
+        origin,
+        ..body.clone()
+    };
+    Ok(Request::to(&cdn::ZONE_UPDATE, [&args.zone.zone_id])
+        .listed_by(ZONES_LIST_COMMAND)
+        .json(&body)
+        .about(action))
 }
 
 /// The CORS policy `--cors-file` holds, and the file as a question names it.
@@ -707,33 +598,10 @@ fn check_count(flag: &str, given: usize, max: usize, holder: &str) -> Result<()>
     ))
 }
 
-/// Adds the fields `create` and `update` share: `prefix` into the origin, the rest into
-/// the body, each only when given.
-fn settings_into(
-    settings: &ZoneSettings,
-    origin: &mut Map<String, Value>,
-    body: &mut Map<String, Value>,
-) {
-    if let Some(prefix) = &settings.prefix {
-        origin.insert("prefix".to_owned(), prefix.as_str().into());
-    }
-    for (key, value) in [
-        ("shield_region", &settings.shield_region),
-        ("index_document", &settings.index_document),
-    ] {
-        if let Some(value) = value {
-            body.insert(key.to_owned(), value.as_str().into());
-        }
-    }
-    if let Some(fallback) = settings.spa_fallback {
-        body.insert("spa_fallback".to_owned(), fallback.into());
-    }
-    if !settings.spa_fallback_exclude.is_empty() {
-        body.insert(
-            "spa_fallback_exclude".to_owned(),
-            settings.spa_fallback_exclude.clone().into(),
-        );
-    }
+/// The `--spa-fallback-exclude` paths, or `None` when none is given, so the key is left out.
+fn exclusions(settings: &ZoneSettings) -> Option<&[String]> {
+    let excluded = settings.spa_fallback_exclude.as_slice();
+    (!excluded.is_empty()).then_some(excluded)
 }
 
 /// A field's new value as a question names it: in backticks, `""` for an empty string,
@@ -759,23 +627,24 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
     // Built in each arm, so `dns-setup` checks its credential file before the config file is
     // read (tenet 5).
     let client = || ctx.load_authed_client();
-    let hostname_path =
-        |zone_id: &str, hostname: &str| format!("{}hostnames/{hostname}/", zone_path(zone_id));
     match command {
         // Swagger gives this list no shape, and no zone was on the account to check it: a
         // bare array or an object holding `hostnames` is read.
-        CdnHostnames::List { zone_id } => print_keyed_list(
+        CdnHostnames::List(ZoneTarget { zone_id }) => print_keyed_list(
             ctx,
             &client()?,
-            &Request::get(format!("{}hostnames/", zone_path(zone_id)))
+            &Request::to(&cdn::HOSTNAMES, [zone_id])
                 .about(format!("list the hostnames of the CDN zone `{zone_id}`"))
-                .listed_by(ZONES),
+                .listed_by(ZONES_LIST_COMMAND),
             "hostnames",
         ),
-        CdnHostnames::Create { zone_id, hostname } => {
-            let request = Request::new(Method::Post, format!("{}hostnames/", zone_path(zone_id)))
-                .listed_by(ZONES)
-                .json(&json!({ "hostname": hostname }))
+        CdnHostnames::Create {
+            zone: ZoneTarget { zone_id },
+            hostname,
+        } => {
+            let request = Request::to(&cdn::HOSTNAME_CREATE, [zone_id])
+                .listed_by(ZONES_LIST_COMMAND)
+                .json(&cdn::HostnameCreateBody { hostname })
                 .about(format!(
                     "add the custom hostname `{hostname}` to the CDN zone `{zone_id}`"
                 ));
@@ -785,9 +654,11 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
             print_body(ctx, &client()?, &request, gate)
         }
         // A check of the DNS records: a repeat changes nothing, so it is not confirmed.
-        CdnHostnames::Verify { zone_id, hostname } => {
-            let path = format!("{}verify/", hostname_path(zone_id, hostname));
-            let request = Request::new(Method::Post, path)
+        CdnHostnames::Verify {
+            zone: ZoneTarget { zone_id },
+            hostname,
+        } => {
+            let request = Request::to(&cdn::HOSTNAME_VERIFY, [zone_id, hostname])
                 .about(format!("verify the custom hostname `{hostname}`"))
                 .listed_by(format!("hipc cdn hostnames list {zone_id}"));
             print_body(ctx, &client()?, &request, Gate::Open)
@@ -798,9 +669,11 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
         // published: hipc does not wait for a person in a browser, as with a card checkout
         // (tenet 3). Swagger: a 404 while the feature flag is off, and the console offers the
         // link only when the provider has the template, so a 404 says both.
-        CdnHostnames::DomainConnect { zone_id, hostname } => {
-            let path = format!("{}domain-connect/", hostname_path(zone_id, hostname));
-            let request = Request::get(path)
+        CdnHostnames::DomainConnect {
+            zone: ZoneTarget { zone_id },
+            hostname,
+        } => {
+            let request = Request::to(&cdn::HOSTNAME_DOMAIN_CONNECT, [zone_id, hostname])
                 .about(format!(
                     "get the Domain Connect link of the custom hostname `{hostname}`"
                 ))
@@ -813,8 +686,8 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
                 {
                     // The URL is not quoted in the note: it is on stdout, and a quoted URL
                     // would lose its query values (tenet 9). The next command carries this
-                    // run's origin and selectors, and is left out when one of them is not a
-                    // plain word a shell would keep whole.
+                    // run's origin and selectors, and is left out when one of them is not
+                    // printable ASCII.
                     let open = "open the `url` in the output to publish the records";
                     match ctx.next_command(&format!("cdn hostnames list {zone_id}")) {
                         Some(next) => {
@@ -838,8 +711,11 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
                 }
             })
         }
-        CdnHostnames::Delete { zone_id, hostname } => {
-            let request = Request::new(Method::Delete, hostname_path(zone_id, hostname))
+        CdnHostnames::Delete {
+            zone: ZoneTarget { zone_id },
+            hostname,
+        } => {
+            let request = Request::to(&cdn::HOSTNAME_DELETE, [zone_id, hostname])
                 .listed_by(format!("hipc cdn hostnames list {zone_id}"))
                 .about(format!(
                     "remove the custom hostname `{hostname}` from the CDN zone `{zone_id}`"
@@ -868,17 +744,19 @@ fn hostnames(ctx: &Context<'_>, command: &CdnHostnames) -> Result<Printed> {
 /// ([`dns_setup_error`]). `--debug` prints no body.
 fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
     let DnsSetup {
-        zone_id,
+        zone: ZoneTarget { zone_id },
         hostname,
         provider,
         credentials_file,
     } = args;
     let provider = provider.provider();
     let credentials = DnsCredentials::load(credentials_file, "--credentials-file", provider)?;
-    let path = format!("{}hostnames/{hostname}/dns-setup/", zone_path(zone_id));
-    let request = |credentials: Value| {
-        Request::new(Method::Post, path.as_str())
-            .json(&json!({ "provider": provider.code(), "credentials": credentials }))
+    let request = |credentials: &Value| {
+        Request::to(&cdn::HOSTNAME_DNS_SETUP, [zone_id, hostname])
+            .json(&cdn::DnsSetupBody {
+                provider: provider.code(),
+                credentials,
+            })
             .listed_by(format!("hipc cdn hostnames list {zone_id}"))
             .about(format!(
                 "write the DNS records of the custom hostname `{hostname}` at `{}`",
@@ -886,15 +764,19 @@ fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
             ))
     };
     let client = ctx.load_authed_client()?;
-    let draft = request(credentials.placeholder_body());
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(doc) => return Ok(Printed::Document(doc)),
+    let draft = request(&credentials.placeholder_body());
+    let checked = match ctx.check_write(&client, &WritePlan::new(&[], &draft))? {
+        Write::DryRun(doc) => return Ok(doc.into()),
         Write::Checked(checked) => checked,
     };
     let consequence = "it adds or changes records in the domain's DNS zone at the provider";
-    ctx.confirm_write(checked, &draft.action(), Some(consequence))?;
+    let confirmed = ctx.confirm_write(checked, &draft.action(), Some(consequence))?;
     let action = draft.action();
-    ctx.send(&client, &request(credentials.body()))
+    // The credential is put in a body only once the write is confirmed. The body's copies of
+    // it are cleared once it is serialized, and the request's bytes when it is dropped
+    // (tenet 8).
+    let request = request(credentials.body().as_value());
+    ctx.send_confirmed(&client, &request, &confirmed)
         .and_then(|response| response.document())
         .map(|done| Printed::Document(dns_setup_answer(done, provider.code())))
         .map_err(|error| dns_setup_error(error, &credentials, &action))
@@ -958,22 +840,22 @@ fn purge(ctx: &Context<'_>, client: &Client, args: &CdnPurge) -> Result<Printed>
         "a purge takes",
     )?;
     let body = if args.everything {
-        json!({ "all": true })
+        cdn::PurgeBody::All(true)
     } else if args.paths.is_empty() {
-        json!({ "prefixes": args.prefixes })
+        cdn::PurgeBody::Prefixes(&args.prefixes)
     } else {
-        json!({ "paths": args.paths })
+        cdn::PurgeBody::Paths(&args.paths)
     };
-    let request = Request::new(Method::Post, format!("{}purge/", zone_path(&args.zone_id)))
+    let request = Request::to(&cdn::PURGE_CREATE, [&args.zone.zone_id])
         .json(&body)
-        .about(format!("purge the CDN zone `{}`", args.zone_id))
-        .listed_by(ZONES);
+        .about(format!("purge the CDN zone `{}`", args.zone.zone_id))
+        .listed_by(ZONES_LIST_COMMAND);
     print_with(ctx, client, &request, Gate::Open, |response| {
         let body = response.document()?;
         // A zone id starts with `z`, so the printed command cannot read it as a flag.
-        if let Some(id) = body.get("id").and_then(Value::as_u64)
+        if let Some(id) = view_of::<cdn::Purge>(&body).id
             && let Some(command) =
-                ctx.next_command(&format!("cdn purges get {} {id}", args.zone_id))
+                ctx.next_command(&format!("cdn purges get {} {id}", args.zone.zone_id))
         {
             ctx.note(&format!("`{command}` shows its progress"));
         }
@@ -985,12 +867,12 @@ fn purge(ctx: &Context<'_>, client: &Client, args: &CdnPurge) -> Result<Printed>
 /// `to`, `step`, `region`), each only when given. Swagger names none, and no zone was on
 /// the account to check them.
 fn stats(ctx: &Context<'_>, client: &Client, args: &CdnStats) -> Result<Printed> {
-    let request = Request::get(format!("{}stats/", zone_path(&args.zone_id)))
+    let request = Request::to(&cdn::STATS, [&args.zone.zone_id])
         .about(format!(
             "get the traffic of the CDN zone `{}`",
-            args.zone_id
+            args.zone.zone_id
         ))
-        .listed_by(ZONES);
+        .listed_by(ZONES_LIST_COMMAND);
     let query = [
         ("from", args.from.as_deref()),
         ("to", args.to.as_deref()),

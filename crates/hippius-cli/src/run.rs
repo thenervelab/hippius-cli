@@ -3,13 +3,13 @@
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use clap::{CommandFactory, FromArgMatches as _};
+use clap::{CommandFactory as _, FromArgMatches as _};
 use hippius::Result;
 use serde_json::{Value, json};
 
 use crate::cli::{
-    Account, Auth, AutoReload, Billing, Cdn, CdnHostnames, Cli, Command, Drive, DriveSubscription,
-    S3, S3Subscription,
+    AutoReload, Billing, Cdn, CdnHostnames, Cli, Command, Drive, DriveSubscription, S3,
+    S3Subscription,
 };
 use crate::commands::{self, Printed};
 use crate::context::Context;
@@ -20,6 +20,11 @@ use crate::spec;
 pub(crate) fn run(args: &[OsString]) -> ExitCode {
     disable_core_dumps();
     let terminal = Terminal::detect();
+    // Before anything parses or checks a value, so no message can quote a secret given as one,
+    // whether clap takes the value or a later check refuses it (tenet 9).
+    if let Some(refusal) = secret_in_argv(args) {
+        return output::failure(terminal.resolve_from_args(args), &refusal);
+    }
     let parsed = crate::cli::parse_command()
         .try_get_matches_from(args)
         .and_then(|matches| {
@@ -27,59 +32,34 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         });
     let (cli, path) = match parsed {
         Ok(parsed) => parsed,
-        Err(error) => {
-            let mode = terminal.resolve_from_args(args);
-            // A seed phrase typed on the command line is refused without the words: clap's
-            // message would quote them.
-            let line = args
-                .iter()
-                .map(|arg| arg.to_string_lossy())
-                .collect::<Vec<_>>()
-                .join(" ");
-            if hippius::holds_phrase(&line) {
-                return output::failure(mode, &hippius::phrase_in_argv());
-            }
-            // So is an API token the run knows: `HIPPIUS_TOKEN`, or one the config file stores.
-            if holds_a_known_token(&line) {
-                return output::failure(mode, &token_in_argv());
-            }
-            return output::clap_error(mode, &error, args);
-        }
+        Err(error) => return output::clap_error(terminal.resolve_from_args(args), &error, args),
     };
     let mode = terminal.resolve(&cli.global);
-    if let Some(name) = crate::cli::repeated_global(args) {
-        let flag = if name == "output" {
-            "`--output` or `--json`".to_owned()
-        } else {
-            format!("`--{name}`")
-        };
-        let error = hippius::Error::usage(
-            format!("{flag} is given more than once"),
-            format!("pass {flag} once"),
-        );
-        return output::failure(mode, &error);
+    // A command the parser ran with no schema row is a bug that `spec`'s walking test keeps
+    // from shipping; should one ship, it runs nothing and ends in the `internal` error object
+    // of `spec::row`, never a panic.
+    let row = spec::row(&path);
+    if let Some(refusal) = repeated_global(args) {
+        return output::failure(mode, &refusal);
     }
     let words: Vec<String> = args
         .iter()
         .skip(1)
         .map(|word| word.to_string_lossy().into_owned())
         .collect();
-    let ctx = Context::new(&cli.global, &terminal, mode, &words);
+    let asks = row
+        .as_ref()
+        .map_or(spec::Asks::Always, spec::Spec::confirmation);
+    let ctx = Context::new(&cli.global, &terminal, mode, &words, asks);
     // A wait for another run's lock of the config or an AWS file is a note, so a run that
     // waits for another one's question does not seem to hang.
     if matches!(mode, output::Mode::Text) && !cli.global.quiet {
         hippius::on_lock_wait(|waiting| output::note(&format!("note: {waiting}\n")));
     }
-    let ran = guarded(&ctx, || execute(&ctx, &cli.command));
-    // Also after a failure: a command can write the config and then fail at a later step.
-    // Text mode warns on stderr; JSON mode, which writes no warning lines, adds the text to a
-    // `warnings` array beside the document or the error, so an agent sees it too.
-    let mut warnings = Vec::new();
-    if let Some(path) = hippius::take_split_link() {
-        let warning = split_link_warning(&path);
-        ctx.warning(&warning);
-        warnings.push(warning);
-    }
+    let ran = guarded(&ctx, || {
+        spec::row(&path).and_then(|_| execute(&ctx, &cli.command))
+    });
+    let warnings = run_warnings(&ctx);
     let print = |mut document: Value, layout: Layout| {
         if !sets_next_step(&cli.command) {
             commands::drop_next_step(&mut document);
@@ -87,8 +67,8 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         if let Some(note) = output::empty_note(&document, layout) {
             ctx.note(note);
         }
-        if layout == Layout::DryRun {
-            spec::add_confirmation(&path, &mut document);
+        if let (Layout::DryRun, Ok(row)) = (layout, &row) {
+            spec::add_confirmation(row, &mut document);
         }
         output::add_warnings(mode, &mut document, &warnings);
         output::document(mode, &document, ctx.side_effects(), layout)
@@ -101,9 +81,75 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
         // Only a command that prints a list envelope prints a list: a `get` whose answer holds
         // `items` and `next_page_token` is one object, with no page hint.
         Ok(Printed::List(document)) => print(document, Layout::List),
-        Ok(Printed::Raw(bytes)) => output::raw(mode, &bytes, ctx.side_effects()),
-        Ok(Printed::Body(bytes)) => output::body(&terminal, mode, &bytes, ctx.side_effects()),
+        Ok(Printed::Raw(bytes)) => {
+            output::warnings_aside(mode, &warnings);
+            output::raw(mode, &bytes, ctx.side_effects())
+        }
+        Ok(Printed::Body(bytes)) => {
+            output::warnings_aside(mode, &warnings);
+            output::body(&terminal, mode, &bytes, ctx.side_effects())
+        }
         Err(error) => output::failure_warned(mode, &error, &warnings),
+    }
+}
+
+/// The refusal of a global flag given more than once, which would leave unsaid which value
+/// counts.
+fn repeated_global(args: &[OsString]) -> Option<hippius::Error> {
+    let name = crate::cli::repeated_global(args)?;
+    let flag = if name == "output" {
+        "`--output` or `--json`".to_owned()
+    } else {
+        format!("`--{name}`")
+    };
+    Some(hippius::Error::usage(
+        format!("{flag} is given more than once"),
+        format!("pass {flag} once"),
+    ))
+}
+
+/// The warnings of the whole run, for JSON's `warnings`: the command's own run warnings and
+/// those of answers that marked their route deprecated, which were printed as they came, then
+/// those of the config file, printed here in text mode. Also after a failure: a command can
+/// write the config and then fail at a later step, and an answer that failed can say its route
+/// is deprecated. JSON mode writes no
+/// warning lines, so the `warnings` array beside the document or the error is where an agent
+/// sees them.
+fn run_warnings(ctx: &Context<'_>) -> Vec<String> {
+    let mut warnings = ctx.take_warnings();
+    let split_link = hippius::take_split_link().map(|path| split_link_warning(&path));
+    for warning in split_link
+        .into_iter()
+        .chain(hippius::take_unknown_keys_warning())
+    {
+        ctx.warning(&warning);
+        warnings.push(warning);
+    }
+    warnings
+}
+
+/// The refusal of a command line that holds a seed phrase or an API token the run knows, which
+/// an error that quoted a word of it would copy into a log or a transcript.
+///
+/// The phrase is looked for with anything that is not a letter read as a space, so a value
+/// joined to its flag (`--name=abandon ...`), or a numbered or comma-separated paste of the
+/// words, is found, as in a support text.
+fn secret_in_argv(args: &[OsString]) -> Option<hippius::Error> {
+    let line = args
+        .iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let words: String = line
+        .chars()
+        .map(|c| if c.is_alphabetic() { c } else { ' ' })
+        .collect();
+    if hippius::holds_phrase(&words) {
+        Some(hippius::phrase_in_argv())
+    } else if holds_a_known_token(&line) {
+        Some(token_in_argv())
+    } else {
+        None
     }
 }
 
@@ -111,14 +157,22 @@ pub(crate) fn run(args: &[OsString]) -> ExitCode {
 /// file stores, in any spelling an error would redact it in. Best effort: a config file that
 /// cannot be read holds no token here, and the error that follows names that file, not the
 /// command line.
+///
+/// The read is silent: it runs before the command is known, so a warning about the file (a key
+/// this `hipc` does not know) is left to a command that reads the file itself, and `hipc
+/// version`, `schema`, and `completions` give none.
 fn holds_a_known_token(line: &str) -> bool {
     let variable = crate::context::env_os("HIPPIUS_TOKEN")
         .and_then(|value| value.into_string().ok())
         .and_then(|value| {
             hippius::Token::new(&value, &hippius::Source::Variable("HIPPIUS_TOKEN")).ok()
         });
-    variable.is_some_and(|token| token.is_in(line))
-        || crate::context::config().is_ok_and(|config| config.holds_a_stored_token(line))
+    if variable.is_some_and(|token| token.is_in(line)) {
+        return true;
+    }
+    let stored = crate::context::config().is_ok_and(|config| config.holds_a_stored_token(line));
+    let _left_to_the_command = hippius::take_unknown_keys_warning();
+    stored
 }
 
 /// The refusal of a command line that holds an API token ([`holds_a_known_token`]): `usage`,
@@ -171,10 +225,16 @@ fn split_link_warning(path: &std::path::Path) -> String {
     )
 }
 
+#[cfg(not(panic = "unwind"))]
+compile_error!(
+    "hipc must be built with `panic = \"unwind\"`: `run::guarded` turns a panic into one error \
+     object (tenet 4), and an abort would print nothing"
+);
+
 /// Runs `command`, turning a panic into an `internal` error with what the run has done to
 /// the server so far, so a bug after a write still says `side_effects: partial` (tenet 4)
-/// and the output stays one error object, without the default panic message beside it. The panic's own text is not shown:
-/// it can quote a value from the server or a file.
+/// and the output stays one error object, without the default panic message beside it. The
+/// panic's own text is not shown: it can quote a value from the server or a file.
 fn guarded(ctx: &Context<'_>, command: impl FnOnce() -> Result<Printed>) -> Result<Printed> {
     // The default message is silenced for the command alone: a panic outside it, such as
     // in printing the result, still says what it was.
@@ -197,7 +257,7 @@ fn guarded(ctx: &Context<'_>, command: impl FnOnce() -> Result<Printed>) -> Resu
     })
 }
 
-/// Whether `command` is one of the three flows that add their own `next_step` (tenet 3),
+/// Whether `command` is one of the flows tenet 3 lets add their own `next_step`,
 /// each after dropping the server's ([`commands::drop_next_step`]). Every other document
 /// loses a top-level `next_step` before it is printed.
 fn sets_next_step(command: &Command) -> bool {
@@ -225,30 +285,8 @@ fn execute(ctx: &Context<'_>, command: &Command) -> Result<Printed> {
             clap_complete::generate(*shell, &mut Cli::command(), "hipc", &mut script);
             Ok(Printed::Raw(script))
         }
-        Command::Auth(Auth::Login { token_file }) => {
-            commands::auth::login(ctx, token_file.as_deref())
-        }
-        Command::Auth(Auth::Status) => commands::auth::status(ctx),
-        Command::Auth(Auth::Logout) => commands::auth::logout(ctx),
-        Command::Account(Account::List) => commands::account::list(ctx),
-        Command::Account(Account::Get) => commands::account::get(ctx),
-        Command::Account(Account::Notifications(command)) => {
-            commands::account::notifications(ctx, command)
-        }
-        Command::Account(Account::MarketingConsent(command)) => {
-            commands::account::marketing_consent(ctx, command)
-        }
-        Command::Account(Account::Use { account_id }) => commands::account::select(ctx, account_id),
-        Command::Account(Account::Members(command)) => commands::account::members(ctx, command),
-        Command::Account(Account::Invites(command)) => commands::account::invites(ctx, command),
-        Command::Account(Account::Projects(command)) => commands::projects::projects(ctx, command),
-        Command::Account(Account::ProjectTransfers(command)) => {
-            commands::projects::project_transfers(ctx, command)
-        }
-        Command::Account(Account::BillingAccounts(command)) => {
-            commands::projects::billing_accounts(ctx, command)
-        }
-        Command::Account(Account::Referrals(command)) => commands::referrals::run(ctx, command),
+        Command::Auth(auth) => commands::auth::run(ctx, auth),
+        Command::Account(account) => commands::account::run(ctx, account),
         Command::Billing(billing) => commands::billing::run(ctx, billing),
         Command::Drive(drive) => commands::drive::run(ctx, drive),
         Command::S3(s3) => commands::s3::run(ctx, s3),
@@ -303,7 +341,7 @@ mod tests {
         let cli = Cli::try_parse_from(["hipc", "version"]).unwrap();
         let terminal = Terminal::detect();
         let mode = terminal.resolve(&cli.global);
-        let ctx = Context::new(&cli.global, &terminal, mode, &[]);
+        let ctx = Context::new(&cli.global, &terminal, mode, &[], spec::Asks::Never);
         let error = guarded(&ctx, || panic!("a bug")).unwrap_err();
         assert_eq!(error.code(), Code::Internal);
         assert_eq!(error.message(), "the command stopped on a bug in `hipc`");

@@ -9,14 +9,12 @@
 //! membership is refused before anything is sent (tenet 12) rather than answered with the
 //! caller's own private models.
 
+use hippius::routes::hub;
 use hippius::{Request, Result};
 
 use crate::cli::{HubEvents, HubModels};
 use crate::commands::{Printed, list, print_body, print_envelope};
 use crate::context::{self, Context, Gate};
-
-/// The model index (swagger `models_list`).
-const MODELS: &str = "/models/";
 
 /// `GET /api/registry/events/` (swagger `registry_events_list`). Swagger lists no page
 /// parameter, and the `hippius-hub` client sends none, so it is read whole: a `next` link is
@@ -26,7 +24,7 @@ pub(super) fn events(ctx: &Context<'_>, command: &HubEvents) -> Result<Printed> 
         HubEvents::List => print_envelope(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/registry/events/").about("list the Hub audit events"),
+            &Request::to(&hub::EVENTS, []).about("list the Hub audit events"),
         ),
     }
 }
@@ -37,19 +35,18 @@ pub(super) fn run(ctx: &Context<'_>, command: &HubModels) -> Result<Printed> {
         // Swagger lists no parameter, but the index pages by `page` and `page_size` and
         // answers `{page, page_size, total, results}` with no `next` link (the `hippius-hub`
         // client and the Hub's model pages), so the next page comes from `total`.
-        HubModels::List(args) => list::run_by_total(
+        HubModels::List(args) => list::run(
             ctx,
             &client,
-            &Request::get(MODELS).about("list the Hub models"),
+            &Request::to(&hub::MODELS, []).about("list the Hub models"),
             args,
-            list::RESULTS,
         ),
         // An object of three lists (`formats`, `architectures`, `quantizations`), the
         // filters of the index, printed as sent.
         HubModels::Formats => print_body(
             ctx,
             &client,
-            &Request::get("/models/formats/").about("get the Hub model formats"),
+            &Request::to(&hub::MODEL_FORMATS, []).about("get the Hub model formats"),
             Gate::Open,
         ),
         // Both names were checked when argv was parsed, so neither can change the route.
@@ -60,19 +57,18 @@ pub(super) fn run(ctx: &Context<'_>, command: &HubModels) -> Result<Printed> {
         } => match reference {
             // The versions page as the index does, `{page, page_size, total, artifacts}`
             // with no `next` link, so they are listed as the index is.
-            None => list::run_by_total(
+            None => list::run(
                 ctx,
                 &client,
-                &Request::get(format!("{MODELS}{model}/"))
+                &Request::to(&hub::MODEL, [model])
                     .listed_by("hipc hub models list")
                     .about(format!("get the Hub model `{model}`")),
                 page,
-                "artifacts",
             ),
             Some(reference) => print_body(
                 ctx,
                 &client,
-                &Request::get(format!("{MODELS}{model}/{reference}/"))
+                &Request::to(&hub::MODEL_VERSION, [model, reference])
                     .listed_by(format!("hipc hub models get {model}"))
                     .about(format!(
                         "get the version `{reference}` of the Hub model `{model}`"

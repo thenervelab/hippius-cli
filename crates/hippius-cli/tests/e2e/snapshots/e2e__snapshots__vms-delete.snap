@@ -1,0 +1,27 @@
+---
+source: crates/hippius-cli/tests/e2e/snapshots.rs
+expression: dry_run(args)
+---
+{
+  "dry_run": true,
+  "requests": [
+    {
+      "method": "GET",
+      "url": "[origin]/api/compute/vms/0f8fad5b-d9cb-469f-a165-70867728950e/",
+      "account_header": null,
+      "project_header": null,
+      "billing_header": null,
+      "body": null
+    },
+    {
+      "method": "DELETE",
+      "url": "[origin]/api/compute/vms/0f8fad5b-d9cb-469f-a165-70867728950e/",
+      "account_header": null,
+      "project_header": null,
+      "billing_header": null,
+      "body": null
+    }
+  ],
+  "confirmation": true,
+  "confirmation_when": null
+}

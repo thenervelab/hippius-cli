@@ -11,13 +11,13 @@
 use std::fmt;
 use std::fs;
 use std::os::unix::fs::MetadataExt as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
-use crate::phrase::{quote, quote_path};
-use crate::private_file::{Guarded, NamedBy, PrivateFile};
+use crate::phrase::quote_path;
+use crate::private_file::{Guarded, NamedBy, PrivateFile, utf8_text};
 use crate::source::Source;
 
 /// The Hippius S3 endpoint.
@@ -179,17 +179,15 @@ impl AwsProfile {
     /// # Errors
     ///
     /// `usage` for an empty, too long, or otherwise unsafe name. A `]` or a newline would
-    /// let the name end its section header and start another.
+    /// let the name end its section header and start another. The message does not repeat
+    /// the name, which may be a secret given in its place (tenet 9).
     pub fn new(name: &str) -> Result<Self> {
         if crate::config::is_new_profile_name(name) {
             Ok(Self(name.to_owned()))
         } else {
             Err(Error::usage(
-                format!(
-                    "{} is not an AWS profile name: a name is 1 to 64 letters, digits, `.`, \
-                     `_`, and `-`",
-                    quote(name)
-                ),
+                "the AWS profile name breaks the name rules: a name is 1 to 64 letters, digits, \
+                 `.`, `_`, and `-`; it is not repeated here, in case it is a secret",
                 "pass an `--aws-profile` of 1 to 64 letters, digits, `.`, `_`, and `-`",
             ))
         }
@@ -236,11 +234,10 @@ impl AccessKeyId {
         if valid {
             Ok(Self(text.to_owned()))
         } else {
+            // Not repeated: the secret key is the value most likely to be given in its place.
             Err(Error::usage(
-                format!(
-                    "{} is not an S3 access key id: an id is `hip_` and letters or digits",
-                    quote(text)
-                ),
+                "the S3 access key id is not one: an id is `hip_` and letters or digits; it is \
+                 not repeated here, in case it is the secret key",
                 "run `hipc s3 tokens list` to see the access key ids",
             ))
         }
@@ -289,11 +286,10 @@ impl fmt::Debug for SecretKey {
 /// concurrent `hipc s3 configure` that shares either file cannot be lost, and the answer is
 /// about the files as they are written. Each lock is `flock` on `.<name>.lock` beside its
 /// file, created on the first run and never removed (`PrivateFile::lock_all`). A new file gets
-/// mode `0600` and a file
-/// that exists keeps its owner bits (`PrivateFile::write`), through a temporary file and a
-/// rename. Both directories are checked, since
-/// `AWS_CONFIG_FILE` can name a different one than the credentials file, and someone who can
-/// replace the config file can point the endpoint at their own host.
+/// mode `0600` and a file that exists keeps its owner bits (`PrivateFile::write`), through a
+/// temporary file and a rename. Both directories are checked, since `AWS_CONFIG_FILE` can name
+/// a different one than the credentials file, and someone who can replace the config file can
+/// point the endpoint at their own host.
 ///
 /// The config file is written first. If the credentials write then fails, a new profile
 /// names an endpoint but no key, which fails loudly rather than reaching AWS; a profile
@@ -316,13 +312,9 @@ pub fn configure(
 ) -> Result<()> {
     let config_file = PrivateFile::ensure(&files.config, AWS_CONFIG)?;
     let credentials_file = PrivateFile::ensure(&files.credentials, AWS_CREDENTIALS)?;
-    // Both texts are read before either is written, so one file named by both variables
-    // would be written twice, and the second write would drop the endpoint section. Files
-    // that exist are compared now, before any question; a missing one only once the write
-    // is certain, so declining the question creates neither file. It does not leave the
-    // disk as it was: `ensure` above has already created a missing directory, and the lock
-    // below create `.<config name>.lock` and `.<credentials name>.lock` beside the two
-    // files, which stay, as every lock file does. A refusal at that later point leaves the empty file it created.
+    // One file named by both variables would be written twice, and the second write would
+    // drop the endpoint section. Files that exist are compared before any question; a missing
+    // one once it is created (`refuse_or_take_back`), so declining creates neither file.
     refuse_one_file(files)?;
     // Both files are locked, so two runs that share only one of them cannot lose each
     // other's section. The locks also remove each file's leftover temporary files, which for
@@ -365,10 +357,7 @@ pub fn configure(
         &profile.credentials_header(),
         &[id_line.as_str(), secret_line.as_str()],
     );
-    let created = [
-        (&config_file, config_file.create_if_missing()?),
-        (&credentials_file, credentials_file.create_if_missing()?),
-    ];
+    let created = create_both([&config_file, &credentials_file])?;
     refuse_or_take_back(files, created)?;
     config_file.write(config.as_bytes())?;
     credentials_file.write(credentials.as_bytes())
@@ -405,7 +394,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
     // A bare name is in the working directory, as the real run's open finds it.
     let place = |path: &Path| {
         let dir = crate::private_file::directory(path);
-        Some((fs::canonicalize(dir).ok()?, path.file_name()?.to_owned()))
+        Some((resolved(dir)?, path.file_name()?.to_owned()))
     };
     if let (Some((dir_a, name_a)), Some((dir_b, name_b))) = (place(a), place(b))
         && dir_a == dir_b
@@ -418,6 +407,47 @@ fn same_file(a: &Path, b: &Path) -> bool {
     match (fs::symlink_metadata(a), fs::symlink_metadata(b)) {
         (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
         _ => false,
+    }
+}
+
+/// `dir` resolved as the real run finds it once `ensure` has created what is missing: its
+/// deepest existing ancestor canonicalized, then the missing parts applied as written, so a
+/// dry run and a real run compare the same directories. A missing part is a real directory
+/// once created, never a symlink, so a `..` after it goes back to its parent. `None` when no
+/// ancestor resolves.
+fn resolved(dir: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut at = dir;
+    loop {
+        if let Ok(mut path) = fs::canonicalize(at) {
+            for part in missing.into_iter().rev() {
+                if part == Component::ParentDir {
+                    path.pop();
+                } else {
+                    path.push(part);
+                }
+            }
+            return Some(path);
+        }
+        missing.push(at.components().next_back()?);
+        at = crate::private_file::directory(at);
+    }
+}
+
+/// Creates each of `files` that is missing ([`PrivateFile::create_if_missing`]) and returns
+/// each with whether this run created it. When the second cannot be created, the first is
+/// taken back if this run created it, so a failed run leaves nothing behind.
+fn create_both(files: [&PrivateFile; 2]) -> Result<[(&PrivateFile, bool); 2]> {
+    let [first, second] = files;
+    let first_made = first.create_if_missing()?;
+    match second.create_if_missing() {
+        Ok(second_made) => Ok([(first, first_made), (second, second_made)]),
+        Err(error) => {
+            if first_made {
+                first.remove();
+            }
+            Err(error)
+        }
     }
 }
 
@@ -445,16 +475,12 @@ fn read(file: &PrivateFile) -> Result<Zeroizing<String>> {
         return Ok(Zeroizing::default());
     };
     let path = file.path();
-    String::from_utf8(bytes)
-        .map(Zeroizing::new)
-        .map_err(|refused| {
-            // The bytes the error holds are the file's, keys included.
-            drop(Zeroizing::new(refused.into_bytes()));
-            Error::usage(
-                format!("the AWS file {} is not UTF-8 text", quote_path(path)),
-                format!("save {} as UTF-8 text", quote_path(path)),
-            )
-        })
+    utf8_text(bytes).ok_or_else(|| {
+        Error::usage(
+            format!("the AWS file {} is not UTF-8 text", quote_path(path)),
+            format!("save {} as UTF-8 text", quote_path(path)),
+        )
+    })
 }
 
 /// Which AWS file a text is: botocore names a profile's section differently in each.
@@ -473,21 +499,19 @@ enum Kind {
 /// option's value, as `addressing_style` continues `s3 =`, so it is never a header, however
 /// it looks; blank lines and comments in between do not end the value.
 fn lines_and_headers(text: &str) -> impl Iterator<Item = (&str, Option<&str>)> {
-    // Whether a section has started, whether its last option line named an option, and the
-    // indent of the last line that was not a continuation.
     let mut in_section = false;
-    let mut option = false;
-    let mut indent = 0;
+    let mut after_named_option = false;
+    let mut indent_of_last_entry = 0;
     text.split_inclusive('\n').map(move |line| {
+        if is_blank_or_comment(line) {
+            return (line, None);
+        }
         let value = line.trim();
-        if value.is_empty() || value.starts_with(['#', ';']) {
-            return (line, None);
-        }
         let this_indent = line.chars().take_while(|c| c.is_whitespace()).count();
-        if in_section && option && this_indent > indent {
+        if in_section && after_named_option && this_indent > indent_of_last_entry {
             return (line, None);
         }
-        indent = this_indent;
+        indent_of_last_entry = this_indent;
         let header = value
             .strip_prefix('[')
             .and_then(|rest| rest.rsplit_once(']'))
@@ -495,14 +519,20 @@ fn lines_and_headers(text: &str) -> impl Iterator<Item = (&str, Option<&str>)> {
             .filter(|header| !header.is_empty());
         if header.is_some() {
             in_section = true;
-            option = false;
+            after_named_option = false;
         } else if let Some(at) = value.find(['=', ':']) {
             // `configparser` takes `=` or `:` as the separator; a line with no name before it
             // is an error that names no option. A line with neither leaves the option as it was.
-            option = !value[..at].trim_end().is_empty();
+            after_named_option = !value[..at].trim_end().is_empty();
         }
         (line, header)
     })
+}
+
+/// Whether `line` is blank or a comment, which ends no option's value ([`lines_and_headers`]).
+fn is_blank_or_comment(line: &str) -> bool {
+    let value = line.trim();
+    value.is_empty() || value.starts_with(['#', ';'])
 }
 
 /// The profile the section `header` holds in a file of `kind`, as botocore reads it, or `None`
@@ -581,8 +611,9 @@ fn has_section(text: &str, kind: Kind, name: &str) -> bool {
 /// The first section of that profile is replaced in place, and any later section of it is
 /// removed, so the AWS CLI cannot read a stale duplicate or refuse the file for holding one.
 /// Without such a section, it is appended after a blank line. Every other line is kept as it
-/// was, line endings included. Each string is built at its final size, so no growth leaves a
-/// copy of a key in freed memory.
+/// was, line endings included, and so are the blank and comment lines that end a section this
+/// replaces or removes, which by convention describe the section after them. Each string is
+/// built at its final size, so no growth leaves a copy of a key in freed memory.
 fn set_section(
     text: &str,
     kind: Kind,
@@ -602,21 +633,38 @@ fn set_section(
     let mut out = Zeroizing::new(String::with_capacity(text.len() + 2 + section.len()));
     let mut skipping = false;
     let mut replaced = false;
+    // The blank and comment lines at the end of a section this skips, so far: by convention
+    // they belong to the section after them (`# work account` above `[profile work]`), so
+    // they are kept when the next header comes, or the file ends.
+    let mut trailing: Vec<&str> = Vec::new();
     for (line, found) in lines_and_headers(text) {
         // The header that ends a section this replaced or removed follows an option of the
         // new body, at column 0; indented, it would read as that option's continuation, so
         // its indent is dropped. A header resets the option, so nothing after it changes.
         let ended = skipping;
         if let Some(found) = found {
+            for kept in trailing.drain(..) {
+                out.push_str(kept);
+            }
             skipping = profile_named(kind, found).as_deref() == Some(name);
             if skipping && !replaced {
                 out.push_str(&section);
                 replaced = true;
             }
+        } else if skipping {
+            if is_blank_or_comment(line) {
+                trailing.push(line);
+            } else {
+                trailing.clear();
+            }
+            continue;
         }
         if !skipping {
             out.push_str(if ended { line.trim_start() } else { line });
         }
+    }
+    for kept in trailing {
+        out.push_str(kept);
     }
     if !replaced {
         if !out.is_empty() && !out.ends_with('\n') {
@@ -667,7 +715,7 @@ mod tests {
         let text = "# top comment\r\n[b]\r\ny = 2\r\n[a]\nold = 1\n; note\n[c]\nz = 3 \n";
         assert_eq!(
             set(text, "a", "[a]", &lines(&["x = 1"])),
-            "# top comment\r\n[b]\r\ny = 2\r\n[a]\nx = 1\n[c]\nz = 3 \n"
+            "# top comment\r\n[b]\r\ny = 2\r\n[a]\nx = 1\n; note\n[c]\nz = 3 \n"
         );
     }
 
@@ -677,6 +725,17 @@ mod tests {
         assert_eq!(
             set(text, "a", "[a]", &lines(&["x = 1"])),
             "[a]\nx = 1\n[b]\ny = 2\n[c]\n"
+        );
+    }
+
+    /// The blank and comment lines that end a replaced section describe the next one, so
+    /// they stay; a comment inside the section, before one of its options, goes with it.
+    #[test]
+    fn the_comments_before_the_next_section_are_kept() {
+        let text = "[a]\n# old note\nold = 1\n\n# work account\n[b]\ny = 2\n[a]\nz = 1\n; end\n";
+        assert_eq!(
+            set(text, "a", "[a]", &lines(&["x = 1"])),
+            "[a]\nx = 1\n\n# work account\n[b]\ny = 2\n; end\n"
         );
     }
 
@@ -700,7 +759,17 @@ mod tests {
             assert!(AwsProfile::new(good).is_ok(), "{good}");
         }
         for bad in ["", "a b", "a]", "a\n[x]", "a/b", &"a".repeat(65)] {
-            assert!(AwsProfile::new(bad).is_err(), "{bad:?}");
+            let error = AwsProfile::new(bad).unwrap_err();
+            // The refused value may be a secret given in place of the name.
+            assert!(
+                error
+                    .message()
+                    .ends_with("it is not repeated here, in case it is a secret"),
+                "{error:?}"
+            );
+            if !bad.is_empty() {
+                assert!(!error.message().contains(bad), "{bad:?}");
+            }
         }
         assert_eq!(
             AwsProfile::new("default").unwrap().config_header(),
@@ -714,8 +783,20 @@ mod tests {
     #[test]
     fn key_ids_and_secrets_are_checked_and_secrets_never_printed() {
         assert!(AccessKeyId::new("hip_AbC123").is_ok());
-        for bad in ["", "hip_", "AKIA123", "hip_a b", "hip_a\nx", "hip_a=b"] {
-            assert!(AccessKeyId::new(bad).is_err(), "{bad:?}");
+        for bad in [
+            "",
+            "hip_",
+            "AKIA123",
+            "hip_a b",
+            "hip_a\nx",
+            "hip_a=b",
+            "s3cr3t+/=",
+        ] {
+            let error = AccessKeyId::new(bad).unwrap_err();
+            // The secret key is the value most likely to be given in place of the id.
+            if bad.len() > "hip_".len() {
+                assert!(!error.message().contains(bad), "{bad:?}");
+            }
         }
         let secret = SecretKey::new("  s3cr3t+/=\n", &Source::Argument).unwrap();
         assert_eq!(format!("{secret:?}"), "SecretKey(redacted)");
@@ -798,18 +879,39 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    /// The lines outside any section named `name`, joined, as the AWS CLI would read them.
+    /// The lines outside any section named `name`, joined, as the AWS CLI would read them,
+    /// with the blank and comment lines that end such a section, which belong to the next.
     fn outside(text: &str, name: &str) -> String {
         let mut inside = false;
-        lines_and_headers(text)
-            .filter(|(_, header)| {
+        let marked: Vec<(&str, bool, bool)> = lines_and_headers(text)
+            .map(|(line, header)| {
                 if let Some(found) = header {
-                    inside = *found == name;
+                    inside = found == name;
                 }
-                !inside
+                (line, header.is_some(), inside)
             })
-            .map(|(line, _)| line)
-            .collect()
+            .collect();
+        // From the end, a line inside is kept while only blank and comment lines separate it
+        // from the next header or the end of the file.
+        let mut trailing = true;
+        let mut kept: Vec<&str> = marked
+            .iter()
+            .rev()
+            .filter(|&&(line, header, inside)| {
+                if header {
+                    trailing = true;
+                    return !inside;
+                }
+                if !inside {
+                    return true;
+                }
+                trailing &= is_blank_or_comment(line);
+                trailing
+            })
+            .map(|&(line, _, _)| line)
+            .collect();
+        kept.reverse();
+        kept.concat()
     }
 
     /// Every file of up to four lines from a small alphabet, each line ending in `\n`,
@@ -989,6 +1091,7 @@ mod tests {
 
     #[test]
     fn a_file_that_cannot_be_created_is_usage() {
+        skip_if_root!();
         let dir = temp_dir("read-only-dir");
         let (locked, writable) = (dir.join("ro"), dir.join("rw"));
         fs::create_dir_all(&locked).unwrap();
@@ -1071,6 +1174,54 @@ mod tests {
         };
         assert!(other.check().is_ok());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Both variables naming one file in a directory that does not exist yet is refused by
+    /// the dry run's check, as the real run refuses it once `ensure` made the directory, and
+    /// the check creates nothing.
+    #[test]
+    fn one_file_in_a_missing_directory_is_the_same_file_before_it_exists() {
+        let dir = temp_dir("missing-dir");
+        let both = dir.join("new").join("deeper").join("x");
+        assert!(same_file(&both, &both));
+        assert!(same_file(&both, &dir.join("new/./deeper/x")));
+        assert!(!same_file(&both, &dir.join("new").join("deeper").join("y")));
+        assert!(same_file(&dir.join("new/../x"), &dir.join("x")));
+        let files = AwsFiles {
+            config: both.clone(),
+            credentials: both,
+        };
+        assert_eq!(files.check().unwrap_err().code(), crate::Code::Usage);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// When the second file cannot be created, the first one this run created is taken back.
+    #[test]
+    fn a_failed_create_takes_back_the_file_made_before_it() {
+        let dir = temp_dir("create-both");
+        let (open, shut) = (dir.join("open"), dir.join("shut"));
+        for sub in [&open, &shut] {
+            fs::DirBuilder::new().mode(0o700).create(sub).unwrap();
+        }
+        let config = PrivateFile::ensure(&open.join("config"), AWS_CONFIG).unwrap();
+        let credentials = PrivateFile::ensure(&shut.join("credentials"), AWS_CREDENTIALS).unwrap();
+        fs::set_permissions(&shut, fs::Permissions::from_mode(0o500)).unwrap();
+        let created = create_both([&config, &credentials]);
+        fs::set_permissions(&shut, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(created.is_err());
+        assert!(
+            !open.join("config").exists(),
+            "the config file was taken back"
+        );
+        // A file that was there before is not this run's to remove.
+        fs::write(open.join("config"), "").unwrap();
+        fs::set_permissions(&shut, fs::Permissions::from_mode(0o500)).unwrap();
+        let created = create_both([&config, &credentials]);
+        fs::set_permissions(&shut, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(created.is_err());
+        assert!(open.join("config").exists());
         fs::remove_dir_all(dir).unwrap();
     }
 

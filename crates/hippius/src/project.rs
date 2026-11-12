@@ -1,5 +1,5 @@
 //! Which project and billing account a request acts in, and whether `X-Hippius-Project` and
-//! `X-Hippius-Billing` go on it (`TENETS.md` tenet 12).
+//! `X-Hippius-Billing` go on it (tenet 12).
 //!
 //! A project holds resources (VMs, databases, clusters, runners, S3 buckets and keys, CDN
 //! zones), and a billing account is a wallet that pays for projects. Without a header, a
@@ -22,250 +22,19 @@
 //! every project and billing account, so it goes out without the header, as it goes out
 //! without the account header.
 //!
-//! The tables compare a path with its trailing `/` added, so the exclusions match a slashless
+//! A route a command sends has a row in `routes`, which says how it takes each selector; the
+//! tables below decide only a path no row matches. They compare a path with its trailing `/`
+//! added, so the exclusions match a slashless
 //! path too: `/api/compute/usage` is refused a project, as `/api/compute/usage/` is.
 
-use crate::account::{
-    RouteClass, classify, listed_class, matches_pattern, with_trailing_slash,
-    without_format_suffix, without_query,
-};
-use crate::client::{Access, Method, without_query_values};
-use crate::error::{Error, Result};
+use crate::account::{BILLING_NAMED_ONLY_PATHS, classify, listed_class, matches_pattern};
+use crate::error::Result;
+use crate::method::{Access, Method};
 use crate::phrase::quote;
+use crate::routes::{self, Endpoint, RouteClass, Take};
+use crate::selector::{BillingId, ProjectId, Selected, Selector, is_id};
 use crate::source::Source;
-
-/// A project id: `proj_` and 20 lowercase hex characters, and where it came from.
-#[derive(Debug, Clone)]
-pub struct ProjectId(Selected);
-
-impl ProjectId {
-    /// Parses `default`, the Default project (`None`), or a project id, from `source`.
-    ///
-    /// # Errors
-    ///
-    /// `usage` when the text is neither; the message names the source, and the hint the fix
-    /// that belongs to it.
-    pub fn parse(text: &str, source: &Source) -> Result<Option<Self>> {
-        parse_id(Selector::Project, text, source).map(|id| id.map(Self))
-    }
-
-    /// The id as sent in `X-Hippius-Project`.
-    pub fn as_str(&self) -> &str {
-        &self.0.id
-    }
-
-    /// Whether the id is the one stored in the profile, not one given for this run.
-    pub fn is_stored(&self) -> bool {
-        matches!(self.0.source, Source::Profile { .. })
-    }
-}
-
-/// Two ids are equal when they name the same project, wherever each came from.
-impl PartialEq for ProjectId {
-    fn eq(&self, other: &Self) -> bool {
-        self.as_str() == other.as_str()
-    }
-}
-
-impl Eq for ProjectId {}
-
-/// A billing account id: `bill_` and 20 lowercase hex characters, and where it came from.
-#[derive(Debug, Clone)]
-pub struct BillingId(Selected);
-
-impl BillingId {
-    /// Parses `default`, the Default billing account (`None`), or a billing account id,
-    /// from `source`.
-    ///
-    /// # Errors
-    ///
-    /// `usage` when the text is neither; the message names the source, and the hint the fix
-    /// that belongs to it.
-    pub fn parse(text: &str, source: &Source) -> Result<Option<Self>> {
-        parse_id(Selector::Billing, text, source).map(|id| id.map(Self))
-    }
-
-    /// The id as sent in `X-Hippius-Billing`.
-    pub fn as_str(&self) -> &str {
-        &self.0.id
-    }
-}
-
-/// Two ids are equal when they name the same billing account, wherever each came from.
-impl PartialEq for BillingId {
-    fn eq(&self, other: &Self) -> bool {
-        self.as_str() == other.as_str()
-    }
-}
-
-impl Eq for BillingId {}
-
-/// The text that selects the Default project or billing account: the console's own word
-/// for it in the costs path.
-pub const DEFAULT: &str = "default";
-
-/// Which of the three selectors a value is for: `--account`, `--project`, or `--billing`.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum Selector {
-    Account,
-    Project,
-    Billing,
-}
-
-impl Selector {
-    /// The id prefix. The project and billing ones are the prefixes the console uses for
-    /// those ids.
-    fn prefix(self) -> &'static str {
-        match self {
-            Self::Account => "acct_",
-            Self::Project => "proj_",
-            Self::Billing => "bill_",
-        }
-    }
-
-    fn noun(self) -> &'static str {
-        match self {
-            Self::Account => "account",
-            Self::Project => "project",
-            Self::Billing => "billing account",
-        }
-    }
-
-    /// The noun with its article: `an account`.
-    fn a_noun(self) -> &'static str {
-        match self {
-            Self::Account => "an account",
-            Self::Project => "a project",
-            Self::Billing => "a billing account",
-        }
-    }
-
-    /// The text that clears the selection.
-    fn reset(self) -> &'static str {
-        match self {
-            Self::Account => "self",
-            Self::Project | Self::Billing => DEFAULT,
-        }
-    }
-
-    /// The `hipc` group that lists and stores the ids.
-    fn group(self) -> &'static str {
-        match self {
-            Self::Account => "hipc account",
-            Self::Project => "hipc account projects",
-            Self::Billing => "hipc account billing-accounts",
-        }
-    }
-
-    /// The refusal of a route that cannot use the selector, with `message`.
-    fn refusal(self, message: String) -> Error {
-        match self {
-            Self::Account => Error::account_scope_unsupported(message),
-            Self::Project => Error::project_scope_unsupported(message),
-            Self::Billing => Error::billing_scope_unsupported(message),
-        }
-    }
-}
-
-/// A valid id of one selector, and where it came from, which a refusal names (tenet 15).
-#[derive(Debug, Clone)]
-pub(crate) struct Selected {
-    selector: Selector,
-    pub(crate) id: String,
-    source: Source,
-}
-
-impl Selected {
-    /// The refusal of a route that cannot use this selection. `route` says what the route
-    /// cannot do; the message goes on to name the selection and where it came from.
-    pub(crate) fn refusal(&self, route: &str) -> Error {
-        let noun = self.selector.noun();
-        // A stored value outlives the run, so the message names the command that clears it;
-        // the hint stays the flag value that fixes this run (tenet 4).
-        let clear = match &self.source {
-            Source::Profile { .. } => format!(
-                "; `{} use {}` clears it",
-                self.selector.group(),
-                self.selector.reset()
-            ),
-            Source::Argument
-            | Source::Flag(_)
-            | Source::Variable(_)
-            | Source::File { .. }
-            | Source::Default => String::new(),
-        };
-        self.selector.refusal(format!(
-            "{route}, and the selected {noun} is {}{}{clear}",
-            quote(&self.id),
-            self.source.suffix()
-        ))
-    }
-}
-
-/// Whether `text` is an id of `selector`: its prefix and 20 lowercase hex characters.
-fn is_id(selector: Selector, text: &str) -> bool {
-    text.strip_prefix(selector.prefix()).is_some_and(|hex| {
-        hex.len() == 20 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-    })
-}
-
-/// Parses `text`, from `source`, as an id of `selector`, or `None` for the word that clears
-/// the selection.
-pub(crate) fn parse_id(
-    selector: Selector,
-    text: &str,
-    source: &Source,
-) -> Result<Option<Selected>> {
-    let (reset, prefix) = (selector.reset(), selector.prefix());
-    if text == reset {
-        return Ok(None);
-    }
-    if is_id(selector, text) {
-        return Ok(Some(Selected {
-            selector,
-            id: text.to_owned(),
-            source: source.clone(),
-        }));
-    }
-    let (noun, a_noun, group) = (selector.noun(), selector.a_noun(), selector.group());
-    let hint = match source {
-        Source::Flag(flag) => format!("pass `{flag} {reset}`, or an id from `{group} list`"),
-        Source::Variable(name) => {
-            format!("unset `{name}`, or set it to `{reset}` or an id from `{group} list`")
-        }
-        Source::Profile { .. } => format!("run `{group} use {reset}` to clear the stored {noun}"),
-        Source::Argument | Source::File { .. } | Source::Default => {
-            format!("run `{group} list` to see the {noun} ids the token can act in")
-        }
-    };
-    Err(Error::usage(
-        format!(
-            "{}{} is not {a_noun} id: {a_noun} is `{reset}`, or `{prefix}` and 20 lowercase \
-             hex characters",
-            quote(text),
-            source.suffix()
-        ),
-        hint,
-    ))
-}
-
-/// What a route does with a selector header.
-///
-/// The variants are declared from the least to the most strict, and [`classify`] keeps the
-/// greater of two, for the reason [`RouteClass`] gives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Take {
-    /// A personal route: it acts as the signed-in user, and the header is not sent.
-    Skip,
-    /// The route acts in the selected project or billing account.
-    Send,
-    /// The route refuses the header but names a project or a billing account in its path, so
-    /// a stored selection is left off it, writes included; one from a flag or a variable is
-    /// refused. Either selector: a route that names one of them takes the other neither.
-    Named,
-    /// The route refuses the header.
-    Refuse,
-}
+use crate::url::{with_trailing_slash, without_query_values};
 
 /// The prefixes of the routes that take a project: compute, managed databases, Kubernetes,
 /// runners, S3 buckets and keys, and the CDN. The S3 plan (`/api/s3/`) stays the account's,
@@ -280,7 +49,8 @@ const PROJECT_PREFIXES: &[&str] = &[
 ];
 
 /// Inside those prefixes, the compute billing reads, which take a billing account instead.
-const PROJECT_EXCLUDED_PATHS: &[&str] = &["/api/compute/usage/", "/api/compute/billing/summary/"];
+pub(crate) const PROJECT_EXCLUDED_PATHS: &[&str] =
+    &["/api/compute/usage/", "/api/compute/billing/summary/"];
 
 /// Inside those prefixes, the S3 master keys, which only the Default project has: a
 /// project's master key is held by the backend.
@@ -311,23 +81,9 @@ fn names_one(form: &str) -> bool {
         || names_in_path(Selector::Billing, BILLING_IN_PATH, form)
 }
 
-/// The S3 plan reads: in a project they show the account's plan to whoever may read the
-/// project's S3. Their writes stay the owner's on the account, so only a `GET` takes the
-/// project.
-const PROJECT_ON_GET_PATHS: &[&str] = &["/api/s3/plans/", "/api/s3/subscription/"];
-
-/// The recurring card routes. They act in the selected account only beside a billing
-/// account; elsewhere they stay the user's own, so without `X-Hippius-Billing` they keep the
-/// account header's class.
-const BILLING_NAMED_ONLY_PATHS: &[&str] = &[
-    "/api/billing/stripe/active-subscription/",
-    "/api/billing/stripe/create-subscription/",
-    "/api/billing/stripe/customer-portal/",
-];
-
 /// The other routes that take a billing account, whole paths in the pattern language of
-/// [`crate::SECRET_ROUTES`].
-const BILLING_PATHS: &[&str] = &[
+/// [`matches_pattern`].
+pub(crate) const BILLING_PATHS: &[&str] = &[
     "/api/billing/credits/balance/",
     "/api/billing/invoices/",
     "/api/billing/invoices/{n}/pdf/",
@@ -343,29 +99,35 @@ const BILLING_PATHS: &[&str] = &[
     "/api/billing/auto-reload/card-setup/",
 ];
 
-/// What `method` to `path` (a request path, its query ignored) does with a project. A path
-/// with a format suffix takes the stricter answer of its two forms ([`classify`]); a route
-/// the tables do not list refuses.
-fn project_take(method: Method, path: &str) -> Take {
+/// What `method` to `path` (a request path, its query ignored) does with a project: its
+/// row's answer, else the tables'. A path with a format suffix takes the stricter answer of
+/// its two forms ([`classify`]); a route neither lists refuses.
+pub(crate) fn project_take(method: Method, path: &str) -> Take {
     classify(path, Take::Refuse, |form| {
-        if listed_class(method, form) == Some(RouteClass::Personal) {
-            return Some(Take::Skip);
-        }
-        let form = with_trailing_slash(form);
-        let excluded =
-            PROJECT_EXCLUDED_PATHS.contains(&&*form) || form.starts_with(PROJECT_EXCLUDED_PREFIX);
-        let scoped = PROJECT_PREFIXES.iter().any(|p| form.starts_with(p));
-        let named = names_one(&form);
-        if excluded {
-            Some(Take::Refuse)
-        } else if named {
-            Some(Take::Named)
-        } else if scoped || (method == Method::Get && PROJECT_ON_GET_PATHS.contains(&&*form)) {
-            Some(Take::Send)
-        } else {
-            None
-        }
+        routes::row(method, form)
+            .map(Endpoint::project)
+            .or_else(|| listed_project(method, form))
     })
+}
+
+/// What the tables say `method` to `form` (one form, no query) does with a project, or
+/// `None` when they do not list it. Only a path no row matches reaches them.
+pub(crate) fn listed_project(method: Method, form: &str) -> Option<Take> {
+    if listed_class(method, form) == Some(RouteClass::Personal) {
+        return Some(Take::Skip);
+    }
+    let form = with_trailing_slash(form);
+    let excluded =
+        PROJECT_EXCLUDED_PATHS.contains(&&*form) || form.starts_with(PROJECT_EXCLUDED_PREFIX);
+    if excluded {
+        Some(Take::Refuse)
+    } else if names_one(&form) {
+        Some(Take::Named)
+    } else if PROJECT_PREFIXES.iter().any(|p| form.starts_with(p)) {
+        Some(Take::Send)
+    } else {
+        None
+    }
 }
 
 /// Whether `form` (with its trailing `/`) is one of `patterns` with an id of `selector` in
@@ -378,35 +140,34 @@ fn names_in_path(selector: Selector, patterns: &[&str], form: &str) -> bool {
 
 /// What `method` to `path` (a request path, its query ignored) does with a billing account,
 /// by the same rules as [`project_take`].
-fn billing_take(method: Method, path: &str) -> Take {
+pub(crate) fn billing_take(method: Method, path: &str) -> Take {
     classify(path, Take::Refuse, |form| {
-        if listed_class(method, form) == Some(RouteClass::Personal) {
-            return Some(Take::Skip);
-        }
-        let form = with_trailing_slash(form);
-        if names_one(&form) {
-            return Some(Take::Named);
-        }
-        BILLING_NAMED_ONLY_PATHS
-            .iter()
-            .chain(BILLING_PATHS)
-            .any(|pattern| matches_pattern(pattern, &form))
-            .then_some(Take::Send)
+        routes::row(method, form)
+            .map(Endpoint::billing)
+            .or_else(|| listed_billing(method, form))
     })
 }
 
-/// Whether `path` (a request path, its query ignored) is a recurring card route, which
-/// acts in the selected account only beside `X-Hippius-Billing`. A path with a format
-/// suffix is one only when its plain form is one: no entry holds a dot, so the written form
-/// can never name one, and the plain form decides ([`classify`]).
-pub(crate) fn names_billing_only(path: &str) -> bool {
-    let path = without_query(path);
-    let plain = without_format_suffix(path);
-    BILLING_NAMED_ONLY_PATHS.contains(&&*with_trailing_slash(plain.as_deref().unwrap_or(path)))
+/// What the tables say `method` to `form` does with a billing account, as
+/// [`listed_project`] says it of a project.
+pub(crate) fn listed_billing(method: Method, form: &str) -> Option<Take> {
+    if listed_class(method, form) == Some(RouteClass::Personal) {
+        return Some(Take::Skip);
+    }
+    let form = with_trailing_slash(form);
+    if names_one(&form) {
+        return Some(Take::Named);
+    }
+    BILLING_NAMED_ONLY_PATHS
+        .iter()
+        .chain(BILLING_PATHS)
+        .any(|pattern| matches_pattern(pattern, &form))
+        .then_some(Take::Send)
 }
 
 /// The `X-Hippius-Project` value for a `method` request to `path`, or `None` when no
-/// header goes on it. `project` is the selected project, `None` for the Default one. `access` says whether the request may change state.
+/// header goes on it. `project` is the selected project, `None` for the Default one. `access`
+/// says whether the request may change state.
 ///
 /// # Errors
 ///
@@ -505,6 +266,7 @@ fn header<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account::names_billing_only;
     use crate::account::tests::{SUFFIXES, slashless, suffixed};
     use crate::error::Code;
 
@@ -757,12 +519,6 @@ mod tests {
                 Refuse,
             ),
             (
-                "/api/accounts/projects/default/budget/",
-                Refuse,
-                Refuse,
-                Refuse,
-            ),
-            (
                 "/api/accounts/projects/proj_0A1B2C3D4E5F60718293/",
                 Refuse,
                 Refuse,
@@ -907,6 +663,31 @@ mod tests {
         }
     }
 
+    /// A route whose row names the project in its path names it only by its id or `default`:
+    /// a path with another word there, such as `bulk`, reaches no row, and the tables, which
+    /// name a project by its id alone, refuse a selection on it, writes included.
+    #[test]
+    fn a_row_names_its_project_only_by_its_id() {
+        let named = "/api/accounts/projects/proj_0a1b2c3d4e5f60718293/budget/";
+        for method in [Method::Get, Method::Post, Method::Put, Method::Delete] {
+            assert_eq!(project_take(method, named), Take::Named, "{method}");
+            assert_eq!(billing_take(method, named), Take::Named, "{method}");
+        }
+        let default = "/api/accounts/projects/default/budget/";
+        assert_eq!(project_take(Method::Get, default), Take::Named);
+        for path in [
+            "/api/accounts/projects/Default/budget/",
+            "/api/accounts/projects/bulk/",
+            "/api/accounts/projects/proj_x/",
+            "/api/accounts/billing-accounts/bill_x/",
+        ] {
+            for method in [Method::Get, Method::Put, Method::Patch, Method::Delete] {
+                assert_eq!(project_take(method, path), Take::Refuse, "{method} {path}");
+                assert_eq!(billing_take(method, path), Take::Refuse, "{method} {path}");
+            }
+        }
+    }
+
     /// `classify` keeps the greater take, so failing closed rests on this order.
     #[test]
     fn the_takes_are_ordered_from_least_to_most_strict() {
@@ -957,7 +738,16 @@ mod tests {
                 for suffix in SUFFIXES {
                     let form = suffixed(&plain, suffix);
                     for method in [Method::Get, Method::Post, Method::Put, Method::Delete] {
-                        let project = project_take(method, &plain);
+                        // The invite revoke's `{invite_id}` takes `accept.json` as an id, so
+                        // a `DELETE` there is the revoke's, a scoped route: the stricter
+                        // answer of the two forms.
+                        let revoke =
+                            method == Method::Delete && path == "/api/accounts/invites/accept/";
+                        let (project, billing) = if revoke {
+                            (Take::Refuse, Take::Refuse)
+                        } else {
+                            (project_take(method, &plain), billing_take(method, &plain))
+                        };
                         let expected = if personal_under_the_prefix.contains(&path) {
                             Take::Send
                         } else {
@@ -966,7 +756,7 @@ mod tests {
                         assert_eq!(project_take(method, &form), expected, "{method} {form}");
                         assert_eq!(
                             billing_take(method, &form),
-                            billing_take(method, &plain),
+                            billing,
                             "billing {method} {form}"
                         );
                     }
@@ -1007,31 +797,35 @@ mod tests {
         );
         for path in BILLING_NAMED_ONLY_PATHS {
             for suffix in SUFFIXES {
-                assert!(names_billing_only(&suffixed(path, suffix)), "{path}");
                 assert!(
-                    names_billing_only(&suffixed(&slashless(path), suffix)),
+                    names_billing_only(Method::Get, &suffixed(path, suffix)),
+                    "{path}"
+                );
+                assert!(
+                    names_billing_only(Method::Get, &suffixed(&slashless(path), suffix)),
                     "{path}"
                 );
             }
         }
-        assert!(!names_billing_only("/api/billing/stripe.json/"));
         assert!(!names_billing_only(
+            Method::Get,
+            "/api/billing/stripe.json/"
+        ));
+        assert!(!names_billing_only(
+            Method::Get,
             "/api/billing/stripe/active-subscription/x.json/"
         ));
     }
 
-    /// Only a `GET` names the project on the S3 plan reads: a `HEAD`, which the console
-    /// never sends there, and every write are refused.
+    /// Only a read names the project on the S3 plan reads: a `GET`, and a `HEAD`, which
+    /// reaches the `GET` row, while every write is refused.
     #[test]
-    fn the_s3_plan_reads_take_a_project_on_get_only() {
-        for method in [
-            Method::Head,
-            Method::Post,
-            Method::Put,
-            Method::Patch,
-            Method::Delete,
-        ] {
-            for path in ["/api/s3/plans/", "/api/s3/subscription/"] {
+    fn the_s3_plan_reads_take_a_project_on_reads_only() {
+        for path in ["/api/s3/plans/", "/api/s3/subscription/"] {
+            for method in [Method::Get, Method::Head] {
+                assert_eq!(project_take(method, path), Take::Send, "{method} {path}");
+            }
+            for method in [Method::Post, Method::Put, Method::Patch, Method::Delete] {
                 assert_eq!(project_take(method, path), Take::Refuse, "{method} {path}");
             }
         }
@@ -1040,9 +834,10 @@ mod tests {
     #[test]
     fn the_recurring_card_routes_name_a_billing_account_only() {
         for path in BILLING_NAMED_ONLY_PATHS {
-            assert!(names_billing_only(path), "{path}");
+            assert!(names_billing_only(Method::Get, path), "{path}");
         }
         assert!(names_billing_only(
+            Method::Get,
             "/api/billing/stripe/active-subscription?x=1"
         ));
         for path in [
@@ -1050,7 +845,7 @@ mod tests {
             "/api/billing/credits/balance/",
             "/api/billing/stripe/active-subscription/x/",
         ] {
-            assert!(!names_billing_only(path), "{path}");
+            assert!(!names_billing_only(Method::Get, path), "{path}");
         }
     }
 

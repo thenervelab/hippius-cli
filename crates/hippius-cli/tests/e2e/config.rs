@@ -2,7 +2,13 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 
-use crate::common::{Hipc, Home, Reply, Server, TOKEN, no_server, route, status_routes};
+use serde_json::json;
+
+use hippius::routes::billing;
+
+use crate::common::{
+    self, Hipc, Home, Reply, Server, TOKEN, no_server, route, route_of, status_routes,
+};
 
 fn chmod(path: &std::path::Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
@@ -27,8 +33,7 @@ fn a_config_others_can_read_is_refused_with_the_chmod_that_fixes_it() {
     let home = Home::new();
     login(&home);
     chmod(&home.config(), 0o644);
-    let error = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    let error = Hipc::tokenless(&home, &server)
         .run(&["auth", "status"])
         .fails(2, "usage");
     assert_eq!(
@@ -56,6 +61,9 @@ fn a_config_directory_others_can_write_is_refused() {
 /// `usage` with a hint, not `internal` with a report-a-bug hint.
 #[test]
 fn a_config_directory_the_user_cannot_open_is_usage() {
+    if !common::permission_bits_apply() {
+        return;
+    }
     let home = Home::new();
     login(&home);
     let dir = home.config().parent().unwrap().to_owned();
@@ -88,11 +96,138 @@ fn a_broken_config_names_the_path_and_never_quotes_it() {
         .run(&["account", "use", "self"])
         .fails(2, "usage");
     assert!(error["message"].as_str().unwrap().contains("config.toml"));
-    let unknown = home.file("unknown.toml", b"[profiles.default]\nsurprise = 1\n");
-    Hipc::new(&home)
-        .env("HIPPIUS_CONFIG", unknown.to_str().unwrap())
-        .run(&["account", "use", "self"])
-        .fails(2, "usage");
+}
+
+/// A key this `hipc` does not know, such as one a newer `hipc` wrote, is accepted and kept
+/// when the file is rewritten, and a warning names where it is, once per run, never its name
+/// or value: in text mode on stderr, in JSON mode in `warnings`.
+#[test]
+fn a_config_key_this_hipc_does_not_know_is_kept_and_warned_about_once() {
+    let home = Home::new();
+    home.write_config(&format!(
+        "[profiles.default]\ntoken = \"{TOKEN}\"\nsurprise = \"s3cr3t-value\"\n"
+    ));
+    let warning = format!(
+        "the config file `{}` holds keys this hipc does not know, in the profile `default`; \
+         they are kept as they are, and a newer hipc may use them",
+        home.config().display()
+    );
+    let doc = Hipc::new(&home).run(&["account", "use", "self"]).ok();
+    assert_eq!(doc["warnings"], json!([warning]));
+    assert!(
+        home.config_text().contains("surprise = \"s3cr3t-value\""),
+        "{}",
+        home.config_text()
+    );
+    let run = Hipc::new(&home).run(&["--output", "text", "account", "use", "self"]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(
+        run.stderr()
+            .matches("holds keys this hipc does not know")
+            .count(),
+        1,
+        "{}",
+        run.stderr()
+    );
+    assert!(
+        !run.stderr().contains("s3cr3t") && !run.stderr().contains("surprise"),
+        "{}",
+        run.stderr()
+    );
+}
+
+/// A command that never reads the config file, such as `version`, `schema`, or `completions`,
+/// does not warn about a key in it: the scan of the command line for a stored token reads the
+/// file before the command is known, and keeps quiet.
+#[test]
+fn a_command_that_does_not_read_the_config_does_not_warn_about_it() {
+    let home = Home::new();
+    home.write_config("[profiles.default]\nsurprise = \"s3cr3t-value\"\n");
+    for args in [
+        &["version"][..],
+        &["schema"],
+        &["completions", "bash"],
+        &["--output", "text", "version"],
+    ] {
+        let run = Hipc::new(&home).run(args);
+        assert_eq!(run.code(), Some(0), "{args:?}: {}", run.stderr());
+        assert_eq!(run.stderr(), "", "{args:?}");
+        assert!(
+            !run.stdout().contains("holds keys this hipc does not know"),
+            "{args:?}"
+        );
+    }
+}
+
+/// A result with no place for a `warnings` field, the array `--all` prints or a body printed
+/// as the server sent it, keeps its shape, and JSON mode prints the warnings beside it on
+/// stderr as one `{"warnings": [...]}` object.
+#[test]
+fn a_result_with_no_place_for_warnings_keeps_its_shape_and_warns_on_stderr() {
+    let home = Home::new();
+    home.write_config("[profiles.default]\nsurprise = \"s3cr3t-value\"\n");
+    let server = Server::start(vec![route(
+        "GET",
+        "/api/ssh-keys/",
+        Reply::json(200, r#"{"next":null,"results":[{"id":1}]}"#),
+    )]);
+    for (args, stdout) in [
+        (&["api", "GET", "/ssh-keys/", "--all"][..], "[{\"id\":1}]\n"),
+        (
+            &["api", "GET", "/ssh-keys/"],
+            r#"{"next":null,"results":[{"id":1}]}"#,
+        ),
+    ] {
+        let run = Hipc::against(&home, &server).run(args);
+        assert_eq!(run.code(), Some(0), "{}", run.stderr());
+        assert_eq!(run.stdout(), stdout, "{args:?}");
+        let warned: serde_json::Value = serde_json::from_str(run.stderr()).unwrap();
+        let texts = warned["warnings"].as_array().unwrap();
+        assert_eq!(texts.len(), 1, "{warned}");
+        assert!(
+            texts[0]
+                .as_str()
+                .unwrap()
+                .contains("holds keys this hipc does not know"),
+            "{warned}"
+        );
+        assert!(!run.stderr().contains("s3cr3t"), "{}", run.stderr());
+    }
+}
+
+/// A document whose own `warnings` field the server sent keeps it as it came: the run's
+/// warnings go beside it on stderr, never over it. A document without one gains `warnings`.
+#[test]
+fn a_server_warnings_field_is_kept_and_the_runs_warnings_go_to_stderr() {
+    let home = Home::new();
+    home.write_config("[profiles.default]\nsurprise = \"s3cr3t-value\"\n");
+    let answer = r#"{"balance":"1","warnings":["port 22 exposed"]}"#;
+    let server = Server::start(vec![route_of(
+        &billing::BALANCE,
+        [],
+        Reply::json(200, answer),
+    )]);
+    let run = Hipc::against(&home, &server).run(&["billing", "balance"]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(run.stdout(), format!("{answer}\n"));
+    let warned: serde_json::Value = serde_json::from_str(run.stderr()).unwrap();
+    let texts = warned["warnings"].as_array().unwrap();
+    assert_eq!(texts.len(), 1, "{warned}");
+    assert!(
+        texts[0]
+            .as_str()
+            .unwrap()
+            .contains("holds keys this hipc does not know"),
+        "{warned}"
+    );
+    let server = Server::start(vec![route_of(
+        &billing::BALANCE,
+        [],
+        Reply::json(200, r#"{"balance":"1"}"#),
+    )]);
+    let run = Hipc::against(&home, &server).run(&["billing", "balance"]);
+    assert_eq!(run.stderr(), "");
+    assert_eq!(run.json()["warnings"], json!([texts[0]]));
 }
 
 #[test]
@@ -180,14 +315,11 @@ fn a_profile_name_outside_the_name_rules_is_usage_and_writes_nothing() {
         let error = Hipc::new(&home)
             .run(&["--profile", bad, "account", "use", "self"])
             .fails(2, "usage");
+        // The name is not repeated: it may be a secret given in its place.
         assert_eq!(
             error["message"],
-            format!(
-                "{} from `--profile` is not a profile name: a name is 1 to 64 letters, digits, \
-                 `.`, `_`, or `-`",
-                // The message escapes the line break, as text mode does.
-                hippius::phrase::quote(bad).replace('\n', "\\n")
-            ),
+            "the profile name from `--profile` breaks the name rules: a name is 1 to 64 \
+             letters, digits, `.`, `_`, or `-`; it is not repeated here, in case it is a secret",
             "{bad:?}"
         );
         assert_eq!(error["hint"], "pass a `--profile` such as `default`");
@@ -196,6 +328,12 @@ fn a_profile_name_outside_the_name_rules_is_usage_and_writes_nothing() {
         .env("HIPPIUS_PROFILE", "a b")
         .run(&["account", "use", "self"])
         .fails(2, "usage");
+    assert!(
+        error["message"].as_str().is_some_and(
+            |message| message.starts_with("the profile name from `HIPPIUS_PROFILE` breaks")
+        ),
+        "{error}"
+    );
     assert_eq!(
         error["hint"],
         "unset `HIPPIUS_PROFILE`, or set it to a profile name such as `default`"
@@ -209,7 +347,7 @@ fn a_profile_name_outside_the_name_rules_is_usage_and_writes_nothing() {
     }
 }
 
-/// A profile an older `hip` stored under a name outside today's rules stays usable: a name
+/// A profile an earlier release stored under a name outside today's rules stays usable: a name
 /// the file already has, as a profile or as `default_profile`, is taken as it is.
 #[test]
 fn a_stored_profile_with_an_old_style_name_can_still_be_selected() {
@@ -226,28 +364,20 @@ fn a_stored_profile_with_an_old_style_name_can_still_be_selected() {
     }
     home.write_config(&format!("default_profile = \"new one\"\n{config}"));
     for name in names {
-        let by_variable = Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        let by_variable = Hipc::tokenless(&home, &server)
             .env("HIPPIUS_PROFILE", name)
             .run(&["auth", "status"])
             .ok();
         assert_eq!(by_variable["profile"], name);
-        let by_flag = Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        let by_flag = Hipc::tokenless(&home, &server)
             .run(&["--profile", name, "auth", "status"])
             .ok();
         assert_eq!(by_flag["profile"], name);
     }
     // `default_profile` names a profile not written yet; it is the file's own choice.
-    let doc = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
-        .with_env_token(server.url(), TOKEN)
-        .run(&["auth", "status"])
-        .ok();
+    let doc = Hipc::against(&home, &server).run(&["auth", "status"]).ok();
     assert_eq!(doc["profile"], "new one");
-    let doc = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
-        .with_env_token(server.url(), TOKEN)
+    let doc = Hipc::against(&home, &server)
         .run(&["--profile", "new one", "auth", "status"])
         .ok();
     assert_eq!(doc["profile"], "new one");
@@ -449,8 +579,7 @@ fn concurrent_logins_to_different_profiles_keep_both_tokens() {
 #[test]
 fn a_whitespace_hippius_token_is_usage() {
     let server = Server::start(vec![]);
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .with_env_token(server.url(), "   ")
         .run(&["auth", "status"])
         .fails(2, "usage");
@@ -482,12 +611,12 @@ const REFUSED_BEFORE_THE_CONFIG: &[(&[&str], &str, &str)] = &[
     (
         &["s3", "buckets", "create", "AB"],
         "usage",
-        "is not a bucket name",
+        "a bucket name is",
     ),
     (
         &["s3", "buckets", "delete", "AB"],
         "usage",
-        "is not a bucket name",
+        "a bucket name is",
     ),
     (
         &[
@@ -504,12 +633,12 @@ const REFUSED_BEFORE_THE_CONFIG: &[(&[&str], &str, &str)] = &[
     (
         &["s3", "tokens", "revoke", "--kind", "sub", "x"],
         "usage",
-        "is not a token id",
+        "a token id is a UUID",
     ),
     (
         &["s3", "tokens", "rotate", "--kind", "sub", "x", "--reveal"],
         "usage",
-        "is not a token id",
+        "a token id is a UUID",
     ),
     (
         &["s3", "tokens", "rotate", "--kind", "sub", KEY],
@@ -519,12 +648,12 @@ const REFUSED_BEFORE_THE_CONFIG: &[(&[&str], &str, &str)] = &[
     (
         &["hub", "namespace", "availability", "A"],
         "usage",
-        "is not a namespace name",
+        "a namespace name is",
     ),
     (
         &["hub", "namespace", "create", "A", "--reveal"],
         "usage",
-        "is not a namespace name",
+        "a namespace name is",
     ),
     (&["hub", "namespace", "create", "ok"], "reveal_required", ""),
     (
@@ -629,7 +758,7 @@ const REFUSED_BEFORE_THE_CONFIG: &[(&[&str], &str, &str)] = &[
     (
         &["compute", "runners", "settings", "update"],
         "usage",
-        "nothing to change",
+        "--max-concurrent",
     ),
     (
         &[
@@ -669,7 +798,7 @@ const REFUSED_BEFORE_THE_CONFIG: &[(&[&str], &str, &str)] = &[
     ),
 ];
 
-/// An S3 key id, which `check_uuid` accepts, and a VM id.
+/// An S3 key id, which the token id parser accepts, and a VM id.
 const KEY: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
 /// A file that does not exist.

@@ -7,11 +7,12 @@ use std::path::{Path, PathBuf};
 
 use base64ct::{Base64, Encoding as _};
 use ed25519_dalek::{Signature, VerifyingKey};
+use hippius::routes::kubernetes;
 use serde_json::{Value, json};
 
 use crate::common::{
-    CLUSTER_KEY, CLUSTER_SECRETS, Hipc, Home, MEMBER, OTHER_KEY, Recorded, Reply, Route, Run,
-    Server, route, route_each,
+    self, CLUSTER_KEY, CLUSTER_SECRETS, Hipc, Home, MEMBER, OTHER_KEY, Recorded, Reply, Route, Run,
+    Server, route, route_each_of, route_of,
 };
 
 /// The list of test secrets holds every secret key of both key files, so the leak checks
@@ -115,18 +116,26 @@ fn cluster_route(method: &'static str, suffix: &str, reply: Reply) -> Route {
 /// The routes of the three commands, with `operations` as the cluster's operations.
 fn routes(operations: &Value) -> Vec<Route> {
     vec![
-        cluster_route("GET", "", answer(200, &cluster(Some(GUEST)))),
-        cluster_route("GET", "secrets/", answer(200, &secrets(GUEST))),
-        cluster_route("GET", "node-pools/", answer(200, &pools())),
-        cluster_route("GET", "operations/", answer(200, operations)),
-        cluster_route(
-            "POST",
-            "node-pools/3/scale/",
+        route_of(
+            &kubernetes::CLUSTER,
+            [&42],
+            answer(200, &cluster(Some(GUEST))),
+        ),
+        route_of(
+            &kubernetes::CLUSTER_SECRETS,
+            [&42],
+            answer(200, &secrets(GUEST)),
+        ),
+        route_of(&kubernetes::NODE_POOLS, [&42], answer(200, &pools())),
+        route_of(&kubernetes::OPERATIONS, [&42], answer(200, operations)),
+        route_of(
+            &kubernetes::NODE_POOL_SCALE,
+            [&42, &3],
             answer(200, &json!({ "pool": { "id": 3 }, "operations": [] })),
         ),
-        cluster_route(
-            "POST",
-            "nodes/work-1/replace/",
+        route_of(
+            &kubernetes::NODE_REPLACE,
+            [&42, &"work-1"],
             answer(
                 202,
                 &json!({ "id": 20, "kind": "add_node", "state": "queued" }),
@@ -166,14 +175,6 @@ fn kubeconfig_args<'a>(key: &'a str, output: &'a str) -> Vec<&'a str> {
         "--output-file",
         output,
     ]
-}
-
-fn sent(server: &Server) -> Vec<String> {
-    server
-        .requests()
-        .iter()
-        .map(|r| format!("{} {}", r.method, r.path()))
-        .collect()
 }
 
 fn message(error: &Value) -> &str {
@@ -228,7 +229,7 @@ fn kubeconfig_is_verified_opened_and_written_to_a_new_private_file() {
     let mode = std::fs::metadata(&output).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
     assert_eq!(
-        sent(&server),
+        server.calls(),
         [
             "GET /api/kubernetes/clusters/42/",
             "GET /api/kubernetes/clusters/42/secrets/"
@@ -436,7 +437,8 @@ fn another_clusters_key_file_is_usage_after_the_cluster_read() {
         );
     }
     assert!(
-        sent(&server)
+        server
+            .calls()
             .iter()
             .all(|r| r == "GET /api/kubernetes/clusters/42/")
     );
@@ -452,8 +454,12 @@ fn a_drop_that_does_not_verify_writes_nothing() {
     let mut other = cluster(Some(OTHER_GUEST));
     other["name"] = json!("prod");
     let server = Server::start(vec![
-        cluster_route("GET", "", answer(200, &other)),
-        cluster_route("GET", "secrets/", answer(200, &secrets(OTHER_GUEST))),
+        route_of(&kubernetes::CLUSTER, [&42], answer(200, &other)),
+        route_of(
+            &kubernetes::CLUSTER_SECRETS,
+            [&42],
+            answer(200, &secrets(OTHER_GUEST)),
+        ),
     ]);
     let out = home.path().join("k").to_string_lossy().into_owned();
     let error = hipc(&home, &server, &kubeconfig_args(&key_path(&home), &out)).fails(1, "internal");
@@ -465,8 +471,12 @@ fn a_drop_that_does_not_verify_writes_nothing() {
     assert_eq!(error["side_effects"], "none");
     assert!(!Path::new(&out).exists());
     let server = Server::start(vec![
-        cluster_route("GET", "", answer(200, &cluster(None))),
-        cluster_route("GET", "secrets/", answer(200, &json!({ "drops": [] }))),
+        route_of(&kubernetes::CLUSTER, [&42], answer(200, &cluster(None))),
+        route_of(
+            &kubernetes::CLUSTER_SECRETS,
+            [&42],
+            answer(200, &json!({ "drops": [] })),
+        ),
     ]);
     let error =
         hipc(&home, &server, &kubeconfig_args(&key_path(&home), &out)).fails(1, "not_found");
@@ -484,12 +494,24 @@ fn owner_only_passes_through() {
     let owner = r#"{"code":"owner_only","error":"Only the owner can do this."}"#;
     let home = home();
     let server = Server::start(vec![
-        cluster_route("GET", "", answer(200, &cluster(Some(GUEST)))),
-        cluster_route("GET", "secrets/", Reply::json(403, owner)),
-        cluster_route("GET", "node-pools/", answer(200, &pools())),
-        cluster_route("GET", "operations/", answer(200, &json!([]))),
-        cluster_route("POST", "node-pools/3/scale/", Reply::json(403, owner)),
-        cluster_route("POST", "nodes/work-1/replace/", Reply::json(403, owner)),
+        route_of(
+            &kubernetes::CLUSTER,
+            [&42],
+            answer(200, &cluster(Some(GUEST))),
+        ),
+        route_of(&kubernetes::CLUSTER_SECRETS, [&42], Reply::json(403, owner)),
+        route_of(&kubernetes::NODE_POOLS, [&42], answer(200, &pools())),
+        route_of(&kubernetes::OPERATIONS, [&42], answer(200, &json!([]))),
+        route_of(
+            &kubernetes::NODE_POOL_SCALE,
+            [&42, &3],
+            Reply::json(403, owner),
+        ),
+        route_of(
+            &kubernetes::NODE_REPLACE,
+            [&42, &"work-1"],
+            Reply::json(403, owner),
+        ),
     ]);
     let key = key_path(&home);
     let out = home.path().join("k").to_string_lossy().into_owned();
@@ -551,7 +573,7 @@ fn scale_args<'a>(count: &'a str, key: Option<&'a str>, extra: &[&'a str]) -> Ve
 fn scale_body(server: &Server) -> Value {
     let requests = server.requests();
     let post: Vec<&Recorded> = requests.iter().filter(|r| r.method == "POST").collect();
-    assert_eq!(post.len(), 1, "{:?}", sent(server));
+    assert_eq!(post.len(), 1, "{:?}", server.calls());
     assert_eq!(
         post[0].path(),
         "/api/kubernetes/clusters/42/node-pools/3/scale/"
@@ -569,7 +591,7 @@ fn a_scale_up_signs_one_add_node_per_node_added() {
     assert_eq!(run.ok(), json!({ "pool": { "id": 3 }, "operations": [] }));
     // The pools and the operations are read again after the question, then signed.
     assert_eq!(
-        sent(&server),
+        server.calls(),
         [
             "GET /api/kubernetes/clusters/42/",
             "GET /api/kubernetes/clusters/42/node-pools/",
@@ -607,7 +629,7 @@ fn a_scale_down_signs_nothing_and_needs_no_key_file() {
     let (home, server) = (home(), Server::start(routes(&json!([]))));
     hipc(&home, &server, &scale_args("1", None, &["--yes"])).ok();
     assert_eq!(
-        sent(&server),
+        server.calls(),
         [
             "GET /api/kubernetes/clusters/42/",
             "GET /api/kubernetes/clusters/42/node-pools/",
@@ -633,9 +655,9 @@ fn a_scale_down_signs_nothing_and_needs_no_key_file() {
     gpu[1]["signing_params"]["flavor"] = json!("gpu");
     gpu[1]["flavor"] = json!("gpu");
     let mut with_post = changing_routes([pools(), gpu], [json!([]), json!([])]);
-    with_post.push(cluster_route(
-        "POST",
-        "node-pools/3/scale/",
+    with_post.push(route_of(
+        &kubernetes::NODE_POOL_SCALE,
+        [&42, &3],
         answer(200, &json!({ "pool": { "id": 3 }, "operations": [] })),
     ));
     let server = Server::start(with_post);
@@ -694,7 +716,7 @@ fn a_scale_or_replace_without_yes_sends_only_its_reads_and_names_the_cost() {
             "{args:?}"
         );
     }
-    assert!(sent(&server).iter().all(|r| r.starts_with("GET ")));
+    assert!(server.calls().iter().all(|r| r.starts_with("GET ")));
 }
 
 #[test]
@@ -740,7 +762,7 @@ fn a_scale_that_cannot_be_signed_or_changes_nothing_is_refused_after_the_reads()
         error["hint"],
         "run `hipc compute kubernetes node-pools list 42` to see what exists"
     );
-    assert!(sent(&server).iter().all(|r| r.starts_with("GET ")));
+    assert!(server.calls().iter().all(|r| r.starts_with("GET ")));
 }
 
 #[test]
@@ -765,7 +787,7 @@ fn a_replacement_signs_an_add_node_that_names_the_node_it_replaces() {
         json!({ "id": 20, "kind": "add_node", "state": "queued" })
     );
     assert_eq!(
-        sent(&server),
+        server.calls(),
         [
             "GET /api/kubernetes/clusters/42/",
             "GET /api/kubernetes/clusters/42/node-pools/",
@@ -802,9 +824,13 @@ fn a_replacement_signs_an_add_node_that_names_the_node_it_replaces() {
     let mut removed = pools();
     removed[1]["nodes"][0]["state"] = json!("removed");
     let gone = Server::start(vec![
-        cluster_route("GET", "", answer(200, &cluster(Some(GUEST)))),
-        cluster_route("GET", "node-pools/", answer(200, &removed)),
-        cluster_route("GET", "operations/", answer(200, &json!([]))),
+        route_of(
+            &kubernetes::CLUSTER,
+            [&42],
+            answer(200, &cluster(Some(GUEST))),
+        ),
+        route_of(&kubernetes::NODE_POOLS, [&42], answer(200, &removed)),
+        route_of(&kubernetes::OPERATIONS, [&42], answer(200, &json!([]))),
     ]);
     let error = hipc(&home, &gone, &replace_args(&key)).fails(1, "not_found");
     assert_eq!(
@@ -951,6 +977,9 @@ fn a_bad_count_or_node_name_is_usage_with_zero_requests() {
 /// reads: it is still usage, since the caller must name another path, and no file is left.
 #[test]
 fn a_kubeconfig_directory_that_cannot_be_written_is_usage() {
+    if !common::permission_bits_apply() {
+        return;
+    }
     let (home, server) = (home(), Server::start(routes(&json!([]))));
     let locked = home.path().join("locked");
     std::fs::create_dir(&locked).expect("create the directory");
@@ -986,9 +1015,9 @@ fn a_cluster_and_a_pool_are_named_by_what_the_answer_gives() {
     let key = key_path(&home);
     let replace = |pool: Value| {
         let server = Server::start(vec![
-            cluster_route("GET", "", answer(200, &cluster)),
-            cluster_route("GET", "node-pools/", answer(200, &json!([pool]))),
-            cluster_route("GET", "operations/", answer(200, &json!([]))),
+            route_of(&kubernetes::CLUSTER, [&42], answer(200, &cluster)),
+            route_of(&kubernetes::NODE_POOLS, [&42], answer(200, &json!([pool]))),
+            route_of(&kubernetes::OPERATIONS, [&42], answer(200, &json!([]))),
         ]);
         hipc(
             &home,
@@ -1043,15 +1072,19 @@ fn changing_routes(pools: [Value; 2], operations: [Value; 2]) -> Vec<Route> {
     let [pools_first, pools_then] = pools;
     let [operations_first, operations_then] = operations;
     vec![
-        cluster_route("GET", "", answer(200, &cluster(Some(GUEST)))),
-        route_each(
-            "GET",
-            "/api/kubernetes/clusters/42/node-pools/",
+        route_of(
+            &kubernetes::CLUSTER,
+            [&42],
+            answer(200, &cluster(Some(GUEST))),
+        ),
+        route_each_of(
+            &kubernetes::NODE_POOLS,
+            [&42],
             vec![answer(200, &pools_first), answer(200, &pools_then)],
         ),
-        route_each(
-            "GET",
-            "/api/kubernetes/clusters/42/operations/",
+        route_each_of(
+            &kubernetes::OPERATIONS,
+            [&42],
             vec![
                 answer(200, &operations_first),
                 answer(200, &operations_then),
@@ -1089,8 +1122,8 @@ fn assert_changed(home: &Home, server: &Server, args: &[&str]) {
         "{error}"
     );
     assert_eq!(error["side_effects"], "none");
-    assert_eq!(server.requests().len(), 5, "{:?}", sent(server));
-    assert!(sent(server).iter().all(|r| r.starts_with("GET ")));
+    assert_eq!(server.requests().len(), 5, "{:?}", server.calls());
+    assert!(server.calls().iter().all(|r| r.starts_with("GET ")));
 }
 
 /// Another add queued between the read for the question and the read before signing changes
@@ -1266,9 +1299,13 @@ fn a_pool_whose_flavor_is_not_the_signed_one_is_refused() {
 /// route: a POST would be answered 404, and fail the run.
 fn reads_only(pools: &Value) -> Server {
     Server::start(vec![
-        cluster_route("GET", "", answer(200, &cluster(Some(GUEST)))),
-        cluster_route("GET", "node-pools/", answer(200, pools)),
-        cluster_route("GET", "operations/", answer(200, &json!([]))),
+        route_of(
+            &kubernetes::CLUSTER,
+            [&42],
+            answer(200, &cluster(Some(GUEST))),
+        ),
+        route_of(&kubernetes::NODE_POOLS, [&42], answer(200, pools)),
+        route_of(&kubernetes::OPERATIONS, [&42], answer(200, &json!([]))),
     ])
 }
 
@@ -1388,7 +1425,7 @@ fn assert_refused_before_the_question(home: &Home, servers: &[(Server, String)])
             assert_eq!(error["side_effects"], "none");
         }
         assert_eq!(server.requests().len(), 6, "{says}");
-        assert!(sent(server).iter().all(|r| r.starts_with("GET ")));
+        assert!(server.calls().iter().all(|r| r.starts_with("GET ")));
     }
 }
 
@@ -1568,20 +1605,20 @@ fn a_signature_is_dated_by_the_server_clock_when_it_agrees_with_the_local_one() 
     let dated = |date: &str| answer(200, &json!([])).header("Date", date);
     let routes = |then: &str| {
         vec![
-            cluster_route(
-                "GET",
-                "",
+            route_of(
+                &kubernetes::CLUSTER,
+                [&42],
                 answer(200, &cluster(Some(GUEST))).header("Date", "Thu, 01 Jan 1970 00:00:09 GMT"),
             ),
-            cluster_route("GET", "node-pools/", answer(200, &pools())),
-            route_each(
-                "GET",
-                "/api/kubernetes/clusters/42/operations/",
+            route_of(&kubernetes::NODE_POOLS, [&42], answer(200, &pools())),
+            route_each_of(
+                &kubernetes::OPERATIONS,
+                [&42],
                 vec![dated(&imf_fixdate(now - 200)), dated(then)],
             ),
-            cluster_route(
-                "POST",
-                "node-pools/3/scale/",
+            route_of(
+                &kubernetes::NODE_POOL_SCALE,
+                [&42, &3],
                 answer(200, &json!({ "pool": { "id": 3 } })),
             ),
         ]
@@ -1614,7 +1651,7 @@ fn a_signature_is_dated_by_the_server_clock_when_it_agrees_with_the_local_one() 
         );
         assert_eq!(error["side_effects"], "none");
         assert_eq!(server.requests().len(), 5);
-        assert!(sent(&server).iter().all(|r| r.starts_with("GET ")));
+        assert!(server.calls().iter().all(|r| r.starts_with("GET ")));
     }
 }
 
@@ -1648,9 +1685,9 @@ fn a_kubeconfig_directory_others_can_write_is_usage() {
     std::fs::set_permissions(&later, std::fs::Permissions::from_mode(0o700)).expect("chmod");
     let opened = later.clone();
     let mut routes = routes(&json!([]));
-    routes[0] = cluster_route(
-        "GET",
-        "",
+    routes[0] = route_of(
+        &kubernetes::CLUSTER,
+        [&42],
         answer(200, &cluster(Some(GUEST))).before(move || {
             drop(std::fs::set_permissions(
                 &opened,
@@ -1715,7 +1752,8 @@ fn a_signed_post_answered_5xx_or_unreadable_is_partial_with_the_check_first_hint
                 error["hint"], "check whether the change was made before running the command again",
                 "{suffix}: {error}"
             );
-            let posts = sent(&server)
+            let posts = server
+                .calls()
                 .into_iter()
                 .filter(|r| r.starts_with("POST "))
                 .count();

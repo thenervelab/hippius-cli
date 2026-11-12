@@ -12,10 +12,10 @@ pub(crate) enum Auth {
     /// replace a stored token
     ///
     /// Create the token in the console at https://console.hippius.com/dashboard/settings; an
-    /// account that signs in with a 12-word access key gets its token from the access-key
-    /// sign-in described at https://docs.hippius.com/use/wallet-login, and hipc never takes the
-    /// 12 words. At a terminal, run hipc auth login and paste the token at the prompt, which does not show it.
-    /// Otherwise put it in a file, or pipe it in with --token-file -; without --token-file, the
+    /// account that signs in with a 12-word access key gets its token from the access-key sign-in
+    /// described at https://docs.hippius.com/use/wallet-login, and hipc never takes the 12 words.
+    /// At a terminal, run hipc auth login and paste the token at the prompt, which does not show
+    /// it. Otherwise put it in a file, or pipe it in with --token-file -; without --token-file, the
     /// command asks only when stdin, stdout, and stderr are terminals, the output is text, and
     /// neither CI, AI_AGENT (unless it is off), nor --no-input is set. A login sends nothing.
     ///

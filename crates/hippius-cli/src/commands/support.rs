@@ -8,15 +8,15 @@
 //! of a create or a reply is read from `--body-file`, never from argv. Attachments (a file
 //! upload) and the chat handoff stay on `hipc api`.
 
-use hippius::{Code, Error, Method, Request, Result, phrase};
-use serde_json::{Map, Value, json};
+use hippius::routes::support;
+use hippius::{Error, Failure, Request, Result, phrase, view_of};
 use zeroize::Zeroizing;
 
 use crate::cli::{
     Support, TicketBody, TicketCreate, TicketList, TicketMessages, TicketUpdateStatus, Tickets,
 };
-use crate::commands::{Input, Printed, list, print_body};
-use crate::context::{self, Context, Gate, Write};
+use crate::commands::{Decided, Input, Printed, list, print_body, read_then_write};
+use crate::context::{self, Context, Gate, WritePlan};
 
 /// The largest message read, in bytes. Swagger sets no maximum on a ticket's `description`
 /// or a message's `body`; the limit is arbitrary, far above a written message, and stops a
@@ -28,7 +28,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Support) -> Result<Printed> {
     match command {
         Tickets::List(args) => list_tickets(ctx, args),
         Tickets::Get { ticket_id } => {
-            let request = Request::get(format!("/support/tickets/{ticket_id}/"))
+            let request = Request::to(&support::TICKET, [ticket_id])
                 .listed_by("hipc support tickets list")
                 .about(format!("get the ticket `{ticket_id}`"));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
@@ -45,13 +45,10 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Support) -> Result<Printed> {
         Tickets::Reply { ticket_id, body } => {
             let text = message(body)?;
             let client = client_without_token_in(ctx, &[&text])?;
-            let request = Request::new(
-                Method::Post,
-                format!("/support/tickets/{ticket_id}/messages/"),
-            )
-            .json(&json!({ "body": text }))
-            .listed_by("hipc support tickets list")
-            .about(format!("reply to the ticket `{ticket_id}`"));
+            let request = Request::to(&support::MESSAGE_CREATE, [ticket_id])
+                .json(&support::MessageCreateBody { body: &text })
+                .listed_by("hipc support tickets list")
+                .about(format!("reply to the ticket `{ticket_id}`"));
             print_body(ctx, &client, &request, Gate::Open)
         }
         Tickets::Update { ticket_id, status } => close(ctx, *ticket_id, *status),
@@ -59,7 +56,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Support) -> Result<Printed> {
             // Swagger pages this route (`page`, `page_size`) and documents a bare array; the
             // list reads both. A message body is the user's or the support team's own text,
             // which text mode escapes like every string from the server.
-            let request = Request::get(format!("/support/tickets/{ticket_id}/messages/"))
+            let request = Request::to(&support::MESSAGES, [ticket_id])
                 .listed_by("hipc support tickets list")
                 .about(format!("list the messages of the ticket `{ticket_id}`"));
             list::run(ctx, &ctx.load_authed_client()?, &request, list)
@@ -75,41 +72,39 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Support) -> Result<Printed> {
 /// `PATCH`, and its `requests` lists the read, then the `PATCH`.
 fn close(ctx: &Context<'_>, ticket_id: u64, status: TicketUpdateStatus) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
-    let read = Request::get(format!("/support/tickets/{ticket_id}/"))
+    let read = Request::to(&support::TICKET, [&ticket_id])
         .listed_by("hipc support tickets list")
         .about(format!("get the ticket `{ticket_id}`"));
-    let draft = Request::new(Method::Patch, format!("/support/tickets/{ticket_id}/"))
-        .json(&json!({ "status": status.code() }))
+    let draft = Request::to(&support::TICKET_UPDATE, [&ticket_id])
+        .json(&support::TicketUpdateBody {
+            status: status.code(),
+        })
         .listed_by("hipc support tickets list")
         .about(format!("close the ticket `{ticket_id}`"));
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(&client, &[&read, &draft])?;
-            return Ok(Printed::Document(doc));
+    let decide = || {
+        let ticket: support::Ticket = view_of(&ctx.send(&client, &read)?.document()?);
+        if ticket.status.as_deref() == Some(status.code()) {
+            return Err(Error::new(
+                Failure::Conflict,
+                format!("the ticket `{ticket_id}` is already closed"),
+            ));
         }
-        Write::Checked(checked) => checked,
+        // Swagger requires a subject; a ticket without one is still closed, named by its id.
+        let action = match ticket.subject {
+            Some(subject) => format!("close the ticket `{ticket_id}`, {}", phrase::quote(subject)),
+            None => format!("close the ticket `{ticket_id}`"),
+        };
+        let consequence = "the support team stops working on it";
+        Ok(Decided::asked_as(draft.clone(), action, Some(consequence)))
     };
-    let ticket = ctx.send(&client, &read)?.document()?;
-    if ticket.get("status").and_then(Value::as_str) == Some(status.code()) {
-        return Err(Error::new(
-            Code::Conflict,
-            format!("the ticket `{ticket_id}` is already closed"),
-        ));
-    }
-    // Swagger requires a subject; a ticket without one is still closed, named by its id.
-    let action = match ticket.get("subject").and_then(Value::as_str) {
-        Some(subject) => format!("close the ticket `{ticket_id}`, {}", phrase::quote(subject)),
-        None => format!("close the ticket `{ticket_id}`"),
-    };
-    let consequence = "the support team stops working on it";
-    ctx.confirm_write(checked, &action, Some(consequence))?;
     // Swagger answers the whole ticket, printed as sent.
-    ctx.send(&client, &draft)?.document().map(Printed::Document)
+    let plan = WritePlan::new(&[&read], &draft);
+    read_then_write(ctx, &client, &plan, decide, |sent| sent?.document())
 }
 
 /// `GET /api/support/tickets/`, with `status` only when `--status` is given.
 fn list_tickets(ctx: &Context<'_>, args: &TicketList) -> Result<Printed> {
-    let request = Request::get("/support/tickets/");
+    let request = Request::to(&support::TICKETS, []);
     let request = match args.status {
         Some(status) => request
             .query("status", status.code())
@@ -121,14 +116,13 @@ fn list_tickets(ctx: &Context<'_>, args: &TicketList) -> Result<Printed> {
 
 /// `POST /api/support/tickets/ {"subject", "description", "priority"?}`.
 fn create_request(args: &TicketCreate, description: &str) -> Request {
-    let mut body = Map::new();
-    body.insert("subject".to_owned(), args.subject.as_str().into());
-    body.insert("description".to_owned(), description.into());
-    if let Some(priority) = args.priority {
-        body.insert("priority".to_owned(), priority.code().into());
-    }
-    Request::new(Method::Post, "/support/tickets/")
-        .json(&Value::Object(body))
+    let body = support::TicketCreateBody {
+        subject: &args.subject,
+        description,
+        priority: args.priority.map(crate::cli::TicketPriority::code),
+    };
+    Request::to(&support::TICKET_CREATE, [])
+        .json(&body)
         .about(format!(
             "open the support ticket {}",
             phrase::quote(&args.subject)

@@ -16,7 +16,7 @@ pub(crate) use crate::cli::values::number;
 use crate::cli::values::{Charset, Dash, word};
 
 mod account;
-mod api;
+pub(crate) mod api;
 mod app_engine;
 mod auth;
 mod backups;
@@ -30,6 +30,7 @@ mod firewall;
 mod hub;
 mod hub_keys;
 mod hub_models;
+mod ids;
 mod kubernetes;
 mod network;
 mod projects;
@@ -39,9 +40,15 @@ mod support;
 pub(crate) mod values;
 mod waf;
 
-pub(crate) use crate::cli::app_engine::{AppCreate, AppEngine, AppEngineApps, GuestComponents};
+pub(crate) use crate::cli::app_engine::{
+    AppCreate, AppEngine, AppEngineApps, GuestComponents, MAX_COMPOSE_BYTES,
+};
 pub(crate) use crate::cli::hub_keys::{HubKeys, KeyCreate};
 pub(crate) use crate::cli::hub_models::{HubEvents, HubModels};
+pub(crate) use crate::cli::ids::{
+    AppTarget, BillingAccount, BucketName, ClusterTarget, DatabaseTarget, Namespace, ProjectTarget,
+    TokenId, VmId, VmTarget, ZoneId, ZoneTarget,
+};
 pub(crate) use crate::cli::kubernetes::{
     ClusterKubeconfig, Clusters, Kubernetes, KubernetesBackups, NodePoolCreate, NodePoolScale,
     NodePools, NodeReplace, Nodes, OperationTarget, Operations,
@@ -54,38 +61,38 @@ pub(crate) use crate::cli::projects::{
     QuotaLimit, QuotaUpdate,
 };
 pub(crate) use waf::{
-    CdnLists, CdnWaf, GroupBy, ListItems, RuleAction, TierZones, WafAnalytics, WafEvents, WafMode,
-    WafRateLimits, WafRules, WafTest, WafUpdate, WafVersions,
+    BlockContentType, BlockStatus, CdnLists, CdnWaf, GroupBy, ListItems, RuleAction, TierZones,
+    WafAnalytics, WafEvents, WafMode, WafRateLimits, WafRules, WafTest, WafTier, WafUpdate,
+    WafVersions,
 };
 
 pub(crate) use crate::cli::account::{
-    Access, Account, BillingAccounts, Costs, Grant, GrantArg, InviteCreate, Invites,
+    Account, BillingAccounts, Costs, Grant, GrantArg, GrantTarget, InviteCreate, Invites,
     MarketingConsent, MemberUpdate, Members, Notifications, Projects, Referrals,
 };
 pub(crate) use crate::cli::api::Api;
 pub(crate) use crate::cli::auth::Auth;
 pub(crate) use crate::cli::backups::{
-    BackupInterval, BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, FailoverMode,
+    BackupPolicy, BackupPolicyUpdate, BackupRestore, Backups, FailoverMode, backup_interval,
 };
 pub(crate) use crate::cli::billing::{
     AutoReload, AutoReloadUpdate, Billing, BillingProfile, CHAIN_MINIMUM, Gamma, GammaConversions,
-    GammaHotkeys, Invoices, ONE, Planck, ProfileUpdate, ReloadCap, TopUp, TopUpMethod, Usd,
-    conversion_id, usd,
+    GammaHotkeys, Invoices, ProfileUpdate, ReloadCap, TopUp, TopUpMethod, conversion_id,
 };
 pub(crate) use crate::cli::cdn::{
     Cdn, CdnCap, CdnEstimate, CdnHostnames, CdnPurge, CdnPurges, CdnRules, CdnStats, CdnZones,
     DnsSetup, StatsStep, ZoneCreate, ZoneSettings, ZoneUpdate,
 };
 pub(crate) use crate::cli::compute::{
-    Compute, DedicatedDisk, DiskTier, GuestPoweroff, PowerPolicy, PublicIp, SshKeys, VmCreate, Vms,
-    flavor, placement_group,
+    Compute, DedicatedDisk, DiskTier, GuestPoweroff, LaunchFlags, PowerPolicy, PublicIp, SshKeys,
+    VmCreate, Vms, flavor,
 };
 pub(crate) use crate::cli::databases::{
     CREDENTIALS_JSON, DatabaseCreate, DatabaseExposure, DatabaseRestore, Databases, ENV_FILE,
     TLS_FILES,
 };
 pub(crate) use crate::cli::drive::{
-    Drive, DriveChange, DriveSubscribe, DriveSubscription, PayFrom,
+    Drive, DriveChange, DriveSubscribe, DriveSubscription, PayFrom, Period,
 };
 pub(crate) use crate::cli::exposures::{ExposeMode, ExposeProtocol, ExposureCreate, Exposures};
 pub(crate) use crate::cli::firewall::{Firewall, FirewallUpdate};
@@ -94,16 +101,16 @@ pub(crate) use crate::cli::hub::{
     Visibility,
 };
 pub(crate) use crate::cli::runners::{
-    MonthlyCap, RunnerInstallations, RunnerLimit, RunnerSettings, RunnerSettingsUpdate, RunnerSize,
-    Runners,
+    MonthlyCap, RunnerInstallations, RunnerLimit, RunnerSettings, RunnerSettingsUpdate, Runners,
 };
 pub(crate) use crate::cli::s3::{
     AclUpdate, BucketAcl, BucketObjects, Buckets, Configure, Funding, MAX_CONTINUATION_TOKEN_BYTES,
-    ObjectsList, PlanSetting, Presign, S3, S3Subscription, StorageCap, TokenCreate, TokenKind,
-    TokenRotate, TokenTarget, Tokens, continuation_token,
+    ObjectsList, PlanSetting, Presign, S3, S3Subscription, ScopeType, StorageCap, TokenCreate,
+    TokenKind, TokenRotate, TokenTarget, Tokens, continuation_token,
 };
 pub(crate) use crate::cli::support::{
-    Support, TicketBody, TicketCreate, TicketList, TicketMessages, TicketUpdateStatus, Tickets,
+    Support, TicketBody, TicketCreate, TicketList, TicketMessages, TicketPriority,
+    TicketUpdateStatus, Tickets,
 };
 
 /// `hipc`: the Hippius console control plane.
@@ -348,7 +355,10 @@ pub(crate) enum Command {
     /// whole command path, such as s3 buckets create, lists that command alone. schema_version,
     /// global_flags, and errors are printed as without a path: the path filters commands and
     /// changes nothing else. A name that is not a command at its place is a usage error, exit 2,
-    /// that lists the commands there, and whose hint runs the nearest one.
+    /// that lists the commands there, and whose hint runs the nearest one. Each command lists
+    /// the routes it may send to in routes, each a method and a path template such as
+    /// GET /api/compute/vms/{vm_id}/. api sends to the route it is given, so it lists only the
+    /// guarded routes no other command sends to.
     #[command(after_help = examples(&[
         "hipc schema",
         "hipc schema compute app-engine",
@@ -605,20 +615,6 @@ fn reference(value: &str) -> Result<String, String> {
     }
 }
 
-/// A `vm_id`: it goes into the URL path, so only the characters an id has are accepted.
-/// The swagger types it as a string; 1 to 64 letters, digits, `-`, and `_` is a guess
-/// wide enough for the UUIDs and slugs seen, and narrow enough that no `/` or `?` can
-/// change the route.
-pub(crate) fn vm_id(value: &str) -> Result<String, String> {
-    word(
-        value,
-        1..=64,
-        Charset::Slug,
-        Dash::Taken,
-        "a VM id is 1 to 64 letters, digits, `-`, and `_`",
-    )
-}
-
 // The refusal of each numeric id: what it is, and which command prints it.
 const SUBSCRIPTION_ID: &str =
     "a subscription id is a whole number, from `hipc hub subscription get`";
@@ -626,7 +622,6 @@ const RESIZE_ID: &str =
     "a resize id is a whole number, from the answer of `hipc compute vms resize`";
 const SSH_KEY_ID: &str = "an SSH key id is a whole number, from `hipc compute ssh-keys list`";
 const EXPOSURE_ID: &str = "an exposure id is a whole number, from `hipc compute exposures list`";
-const DATABASE_ID: &str = "a database id is a whole number, from `hipc compute databases list`";
 const INSTALLATION_ID: &str =
     "an installation id is a whole number, from `hipc compute runners installations list`";
 const PURGE_ID: &str = "a purge id is a whole number, from the answer of `hipc cdn purges create`";
@@ -653,50 +648,6 @@ pub(crate) fn region(value: &str) -> Result<String, String> {
 fn country_code(value: &str) -> Option<String> {
     (value.len() == 2 && value.bytes().all(|b| b.is_ascii_alphabetic()))
         .then(|| value.to_ascii_uppercase())
-}
-
-/// A zone id: `z` and 12 characters. It goes into the URL path. Any ASCII letter or digit
-/// is accepted for the 12, because the API does not document the alphabet or its case;
-/// the check exists so that no `/`, `?`, or `..` can change the route.
-fn zone_id(value: &str) -> Result<String, String> {
-    let valid = value.len() == 13
-        && value.starts_with('z')
-        && value.bytes().all(|b| b.is_ascii_alphanumeric());
-    if valid {
-        Ok(value.to_owned())
-    } else {
-        Err("a zone id is `z` and 12 letters or digits, such as `zab12cd34ef56`".to_owned())
-    }
-}
-
-/// A credit amount: a decimal number such as `20` or `20.5`, sent as the string the caller
-/// wrote.
-fn credits(value: &str) -> Result<String, String> {
-    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
-    let valid = match value.split_once('.') {
-        Some((whole, fraction)) => digits(whole) && digits(fraction),
-        None => digits(value),
-    };
-    if valid {
-        Ok(value.to_owned())
-    } else {
-        Err("a credit amount is a decimal number, such as `20` or `20.5`".to_owned())
-    }
-}
-
-/// A credit amount [`credits`] accepted, in its normal form: no leading zeros before the
-/// point and no trailing zeros after it, so the question and the body show `50` for
-/// `050.00`, and the decimals counted against a credit's 18 are the ones that hold value.
-fn normal_credits(credits: &str) -> String {
-    let (whole, fraction) = credits.split_once('.').unwrap_or((credits, ""));
-    let whole = match whole.trim_start_matches('0') {
-        "" => "0",
-        digits => digits,
-    };
-    match fraction.trim_end_matches('0') {
-        "" => whole.to_owned(),
-        fraction => format!("{whole}.{fraction}"),
-    }
 }
 
 /// `--limit`, `--page-token`, and `--all` on a paginated list (tenet 6).
@@ -737,7 +688,7 @@ pub(crate) struct CursorArgs {
 /// cannot read it as a flag. A hint or `next_step` built from server text names a value only
 /// through this, because an agent runs those commands as written (tenet 15) and a `;`, a
 /// `$(`, or a line break in the value would become part of the command.
-pub(crate) fn as_argument(value: &str, parse: fn(&str) -> Result<String, String>) -> Option<&str> {
+pub(crate) fn as_argument<T>(value: &str, parse: fn(&str) -> Result<T, String>) -> Option<&str> {
     (parse(value).is_ok() && !value.starts_with('-')).then_some(value)
 }
 
@@ -793,10 +744,7 @@ fn cursor_token(text: &str) -> Result<String, String> {
 
 /// `text` as a `u64` in plain digits, written back without leading zeros.
 fn decimal(text: &str) -> Option<String> {
-    if !text.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    text.parse::<u64>().ok().map(|number| number.to_string())
+    crate::units::whole_number(text).map(|number| number.to_string())
 }
 
 /// The file `what` goes to, such as an invoice PDF or a kubeconfig: a path, not `-`, at which
@@ -829,7 +777,7 @@ fn new_file(text: &str, what: &str) -> Result<PathBuf, String> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
+        .unwrap_or_else(|| Path::new("."));
     match std::fs::metadata(parent) {
         Ok(metadata) if metadata.is_dir() => {
             crate::commands::files::private_dir_refusal(parent, &metadata)?;
@@ -851,10 +799,14 @@ fn secret_file(text: &str) -> Result<PathBuf, String> {
     new_file(text, "the secret")
 }
 
-/// `--secret-file`, on every command that issues a one-time secret but a database's, whose
-/// several secrets go to `--credentials-dir`.
+/// `--reveal` and `--secret-file`, on every command that issues a one-time secret but a
+/// database's, whose several secrets go to `--credentials-dir`: one of them is required before
+/// anything is sent (tenet 9).
 #[derive(Debug, Args)]
-pub(crate) struct SecretFile {
+pub(crate) struct OneTimeSecret {
+    /// Print the one-time secret on stdout; without it or --secret-file nothing is sent
+    #[arg(long)]
+    pub(crate) reveal: bool,
     /// Write the one-time secret to a new file of mode 0600 at this path instead of stdout; in
     /// place of --reveal
     ///
@@ -869,19 +821,24 @@ pub(crate) struct SecretFile {
     pub(crate) path: Option<PathBuf>,
 }
 
-/// The long help of `hipc api --reveal`: the short help, then every route of the library's
-/// secret table except [`UNLISTED_SECRET_ROUTES`], written as `hipc api` takes the path. It is
-/// built from the table, so a route added there is listed here without a second edit.
+/// The long help of `hipc api --reveal`: the short help, then every route the library knows
+/// to return a secret except [`UNLISTED_SECRET_ROUTES`], written as `hipc api` takes the
+/// path, then the rule for a route `hipc` does not know. It is built from the routes and the
+/// table, so a route added there is listed here without a second edit.
 fn reveal_long_help() -> String {
     let mut text = "Print a secret; required for the requests that return one, or nothing is \
-                    sent\n\nThe requests that return one, where <id> is one path segment and \
-                    <n> a number:\n"
+                    sent\n\nThe requests that return one, where each <name> is one path \
+                    segment and <n> a number:\n"
         .to_owned();
-    for (method, route) in hippius::SECRET_ROUTES {
-        if !UNLISTED_SECRET_ROUTES.contains(&(*method, *route)) {
+    for (method, route) in hippius::secret_routes() {
+        if !UNLISTED_SECRET_ROUTES.contains(&(method, route)) {
             text.push_str(&format!("  {method} {}\n", typed_route(route)));
         }
     }
+    text.push_str(
+        "\nA GET of a route no command sends (one that no command of hipc schema lists in its \
+         routes) needs --reveal too: hipc does not know what its answer holds.\n",
+    );
     text
 }
 
@@ -891,17 +848,10 @@ fn reveal_long_help() -> String {
 /// route are joined on its line: `GET or HEAD /network/me/`. It is the line `hipc --help`
 /// shows for the command, so it stays short; the auth and account rules go in the long help.
 fn api_about() -> String {
-    let mut reads: Vec<(String, Vec<String>)> = Vec::new();
-    for (method, route) in hippius::PROVISIONING_ROUTES {
-        let typed = typed_route(route);
-        match reads.iter_mut().find(|(known, _)| *known == typed) {
-            Some((_, methods)) => methods.push(method.to_string()),
-            None => reads.push((typed, vec![method.to_string()])),
-        }
-    }
-    let reads: Vec<String> = reads
-        .into_iter()
-        .map(|(route, methods)| format!("{} {route}", methods.join(" or ")))
+    // A `HEAD` reaches the `GET` row of its route, so it provisions as the `GET` does.
+    let reads: Vec<String> = hippius::routes::all()
+        .filter(|row| row.provisions())
+        .map(|row| format!("{} or HEAD {}", row.method(), typed_route(row.template())))
         .collect();
     format!(
         "Call any console API endpoint; a method other than GET or HEAD needs --yes, as does \
@@ -911,49 +861,45 @@ fn api_about() -> String {
 }
 
 /// The long help of `hipc api`: the short help, as clap takes it from a doc comment, then
-/// what the short help has no room for.
+/// what the short help has no room for. Each route it never sends is named from its row, with
+/// the row's reason and the one path to its effect (`api::rules::refusals_explained`).
 fn api_long_about() -> String {
     format!(
         "{}\n\nThe request carries the same auth, account, project, and billing rules as every \
          command. It goes only to the configured API origin: a full URL on any other origin, \
-         plain http to a loopback port included, exits 2 usage; use curl for another host. An \
-         account deletion request is never sent: request it in the console. No request to the \
-         account token route (/auth/token/, any method) is sent: create a token in the console \
-         settings. A read \
-         of a Kubernetes cluster's secrets (GET or HEAD \
-         /kubernetes/clusters/<cluster_id>/secrets/) is never sent either: hipc compute \
-         kubernetes clusters kubeconfig opens the kubeconfig. A CDN hostname's DNS setup (POST \
-         /cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/) is never sent: hipc cdn hostnames \
-         dns-setup reads the provider credential from a private file. A Hub subscribe (POST \
-         /registry/subscribe/) is never sent: hipc hub subscription subscribe reads the current \
-         plans first and refuses a second paid one. An App Engine launch, \
-         compose update, or compose check whose body sets secrets (POST \
-         /compute/app-engine/apps/, any write of /compute/app-engine/apps/<vm_id>/compose/, POST \
-         /compute/app-engine/validate/) is never sent: hipc compute app-engine apps create \
-         launches an app with secrets read from a private file, and a compose update with \
-         secrets is not in this version; without secrets they are sent as usual. A POST, PUT, \
-         PATCH, or DELETE under /support/, such as a new ticket, a reply, or a chat handoff, \
-         whose body holds HIPPIUS_TOKEN or a token a profile of the config file stores, as it \
-         is, quoted, percent-encoded, or behind a JSON escape, is never sent: a person on the \
-         support team may read it. Without a token, a PATCH of one support ticket (PATCH \
-         /support/tickets/<ticket_id>/) is sent with the body given: the server decides which \
-         fields a customer may change, and hipc support tickets update sends only the close. \
-         A resume of a Kubernetes operation blocked on data loss is sent: the \
-         server is the guard, and the refusal of hipc compute kubernetes operations resume is a \
-         courtesy. hipc api sends no If-Match, so a PUT of a zone's WAF rules or rate limits \
-         (/cdn/zones/<zone_id>/waf/rules/, /cdn/zones/<zone_id>/waf/rate-limits/) is not \
-         conditional and writes over a version another client published since it was read; hipc \
-         cdn waf rules update and hipc cdn waf rate-limits update send the version they read and \
-         stop on a conflict. A 2xx answer larger than 32 MiB is not printed: it exits 1 internal. On an \
-         error status a body that large is dropped, and the status decides the error.",
-        api_about()
+         plain http to a loopback port included, exits 2 usage; use curl for another host. A \
+         refusal listed for one write method (POST, PUT, PATCH, or DELETE) holds for every \
+         write method of the route that has no rule of its own, and every path counts in any \
+         letter case, with or without the trailing slash or a format suffix, and under any API \
+         version (/v2/...). {} A write \
+         under /support/, such as a new ticket, a reply, or a chat handoff, whose body holds \
+         HIPPIUS_TOKEN or a token a profile of the config file stores, as it is, quoted, \
+         percent-encoded, or behind a JSON escape, also when whitespace or an invisible joining \
+         character splits it, or an access key (12 to 24 BIP-39 words in a row whose checksum \
+         holds), is never sent: a person on the support team may read it. Without a token, a \
+         PATCH of one support ticket (PATCH /support/tickets/<ticket_id>/) is sent with the \
+         body given: the server decides which fields a customer may change, and hipc support \
+         tickets update sends only the close. A resume of a Kubernetes operation blocked on \
+         data loss is sent: the server is the guard, and the refusal of hipc compute \
+         kubernetes operations resume is a courtesy. hipc api sends no If-Match, so a PUT of a \
+         zone's WAF rules or rate limits (/cdn/zones/<zone_id>/waf/rules/, \
+         /cdn/zones/<zone_id>/waf/rate-limits/) is not conditional and writes over a version \
+         another client published since it was read; hipc cdn waf rules update and hipc cdn \
+         waf rate-limits update send the version they read and stop on a conflict. A route no \
+         command sends (one no command of hipc schema lists in its routes) is one hipc does \
+         not know: a GET of it needs --reveal, since its answer may hold a secret, and a write \
+         needs --yes, as any write does, and warns. A 2xx answer larger than 32 MiB is not \
+         printed: it exits 1 internal. On an error status a body that large is not read: the \
+         status decides the error, and its message says the body was not read.",
+        api_about(),
+        api::rules::refusals_explained().join(" ")
     )
 }
 
 /// Secret-table routes the `--reveal` help leaves out: staff and operator routes that no `hipc`
-/// command sends. The guard still applies to them; customer-facing help lists only customer
-/// routes.
-const UNLISTED_SECRET_ROUTES: [(hippius::Method, &str); 8] = [
+/// command sends, and `GET /auth/token/`, which `hipc api` refuses outright. The guard still
+/// applies to them.
+const UNLISTED_SECRET_ROUTES: &[(hippius::Method, &str)] = &[
     (
         hippius::Method::Post,
         "/api/infrastructure/compute-miners/prepare/",
@@ -961,9 +907,12 @@ const UNLISTED_SECRET_ROUTES: [(hippius::Method, &str); 8] = [
     (hippius::Method::Post, "/api/network/infra/enroll/"),
     (
         hippius::Method::Get,
-        "/api/support/chat/tickets/{id}/attachments/{id}/",
+        "/api/support/chat/tickets/{ticket_id}/attachments/{attachment_id}/",
     ),
-    (hippius::Method::Post, "/api/chat/workspaces/{id}/invites/"),
+    (
+        hippius::Method::Post,
+        "/api/chat/workspaces/{workspace_id}/invites/",
+    ),
     (hippius::Method::Post, "/api/chat/visitors/"),
     (hippius::Method::Post, "/api/chat/transfer/"),
     (hippius::Method::Post, "/api/chat/transfer/redeem/"),
@@ -982,9 +931,66 @@ fn typed_route(route: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
+    use clap::CommandFactory as _;
+    use clap::error::ErrorKind;
 
     use super::*;
+
+    /// How `parser` refuses `hipc` with `argv`: the kind of refusal, and clap's message, which
+    /// holds a validator's refusal as it is. One parser serves a whole table, since building it
+    /// costs about 90 ms in a debug build.
+    pub(super) fn refusal(parser: &mut clap::Command, argv: &[&str]) -> (ErrorKind, String) {
+        let parsed =
+            parser.try_get_matches_from_mut(std::iter::once("hipc").chain(argv.iter().copied()));
+        assert!(parsed.is_err(), "{argv:?} parses");
+        let error = parsed.expect_err("asserted above");
+        (error.kind(), error.to_string())
+    }
+
+    /// Every value of every enum whose `code` the API receives goes on the wire as the word the
+    /// command line takes for it, so a renamed variant cannot send a word the help does not
+    /// show. A new enum with a `code` joins this list. `ScopeType` is the one whose wire word
+    /// differs (`single-bucket` is sent as `single_bucket`), which
+    /// `e2e::s3::every_scope_type_has_its_wire_name` checks.
+    #[test]
+    fn every_value_enum_is_sent_as_it_is_typed() {
+        fn typed<T: ValueEnum>(value: &T) -> String {
+            let possible = value.to_possible_value().expect("no value is skipped");
+            possible.get_name().to_owned()
+        }
+        macro_rules! sent_as_typed {
+            ($($enum:ty),+ $(,)?) => {$(
+                for value in <$enum>::value_variants() {
+                    assert_eq!(value.code().to_string(), typed(value), stringify!($enum));
+                }
+            )+};
+        }
+        sent_as_typed!(
+            account::CostGroup,
+            FailoverMode,
+            StatsStep,
+            GuestPoweroff,
+            DiskTier,
+            compute::UsageRange,
+            drive::DrivePlan,
+            drive::Period,
+            PayFrom,
+            ExposeMode,
+            ExposeProtocol,
+            Funding,
+            TokenKind,
+            TicketUpdateStatus,
+            support::TicketStatus,
+            TicketPriority,
+            WafMode,
+            WafTier,
+            BlockStatus,
+            BlockContentType,
+            GroupBy,
+            RuleAction,
+            waf::ListKind,
+        );
+    }
 
     /// An id that reads as a flag goes last, after `--`, and the printed command parses with
     /// the id as the positional; any other id stays in place.
@@ -1153,8 +1159,8 @@ mod tests {
         // `hipc --help` wraps the line at the width of the other commands'; a longer one
         // would take a third line where every other command takes one or two.
         assert!(about.chars().count() <= 140, "{about}");
-        for (_, route) in hippius::PROVISIONING_ROUTES {
-            assert!(route.starts_with("/api/"), "{route}");
+        for row in hippius::routes::all().filter(|row| row.provisions()) {
+            let route = row.template();
             assert!(
                 about.contains(&typed_route(route)),
                 "{route} missing from: {about}"
@@ -1171,14 +1177,29 @@ mod tests {
             .expect("hipc api is a command");
         let long = api.render_long_help().to_string();
         assert!(long.contains("GET or HEAD /network/me/"), "{long}");
+        // Each refused route is named from its row, with the row's reason and hint.
         assert!(
-            long.contains("An account deletion request is never sent"),
+            long.contains(
+                "A write other than DELETE of /account/deletion/ is never sent: an account \
+                 deletion locks the account and revokes every token at once; request the \
+                 deletion in the console, under Settings, Delete Account."
+            ),
             "{long}"
         );
         assert!(
             long.contains(
-                "GET or HEAD /kubernetes/clusters/<cluster_id>/secrets/) is never sent either: \
-                 hipc compute kubernetes clusters kubeconfig opens the kubeconfig"
+                "GET or HEAD of /kubernetes/clusters/<cluster_id>/secrets/ is never sent: its \
+                 answer holds the cluster's sealed kubeconfig; run hipc compute kubernetes \
+                 clusters kubeconfig, which opens"
+            ),
+            "{long}"
+        );
+        assert!(
+            long.contains(
+                "A write of /compute/app-engine/apps/ whose body sets secrets is never sent: \
+                 the body holds the app's secret values; run hipc compute app-engine apps \
+                 create --secrets-file, which reads the values from a private file and keeps \
+                 them out of every output; without secrets it is sent as usual."
             ),
             "{long}"
         );
@@ -1218,11 +1239,19 @@ mod tests {
             reveal_long_help().starts_with(&format!("{short}\n\n")),
             "{short}"
         );
-        assert!(help.contains("  POST /databases/<n>/restore/\n"), "{help}");
-        for (method, route) in hippius::SECRET_ROUTES {
+        assert!(
+            help.contains("  POST /databases/<database_id>/restore/\n"),
+            "{help}"
+        );
+        assert!(
+            help.contains("  GET /databases/<n>/backup-token/\n"),
+            "{help}"
+        );
+        assert!(help.contains("A GET of a route no command sends"), "{help}");
+        for (method, route) in hippius::secret_routes() {
             assert!(route.starts_with("/api/"), "{route}");
             let line = format!("  {method} {}\n", typed_route(route));
-            if UNLISTED_SECRET_ROUTES.contains(&(*method, *route)) {
+            if UNLISTED_SECRET_ROUTES.contains(&(method, route)) {
                 assert!(!help.contains(&line), "{line:?} listed in:\n{help}");
             } else {
                 assert!(help.contains(&line), "{line:?} missing from:\n{help}");
@@ -1230,7 +1259,10 @@ mod tests {
         }
         // An unlisted route that left the secret table would hide nothing and go stale.
         for unlisted in UNLISTED_SECRET_ROUTES {
-            assert!(hippius::SECRET_ROUTES.contains(&unlisted), "{unlisted:?}");
+            assert!(
+                hippius::secret_routes().any(|route| route == *unlisted),
+                "{unlisted:?}"
+            );
         }
         // The --remove-others help names customer routes only; the guard still covers the
         // operator storage route.
@@ -1307,6 +1339,36 @@ mod tests {
         }
         for sub in command.get_subcommands() {
             walk(sub, &format!("{path} {}", sub.get_name()), problems);
+        }
+    }
+
+    /// A read-then-write whose route takes no version says, in its help, that the read and
+    /// the write are separate requests, so a caller knows a change made between them is not
+    /// seen.
+    #[test]
+    fn an_unversioned_read_then_write_says_its_read_and_write_are_separate() {
+        let mut root = Cli::command();
+        root.build();
+        let paths: [&[&str]; 3] = [
+            &["compute", "runners", "settings", "update"],
+            &["compute", "runners", "limit", "update"],
+            &["billing", "auto-reload", "update"],
+        ];
+        for path in paths {
+            let command = path.iter().fold(&mut root, |command, name| {
+                command
+                    .find_subcommand_mut(name)
+                    .expect("the command exists")
+            });
+            let help = command.render_long_help().to_string();
+            let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                help.contains(
+                    "The read and the write are separate requests, since the route takes no \
+                     version"
+                ),
+                "{path:?}: {help}"
+            );
         }
     }
 

@@ -1,0 +1,10 @@
+# Stable options only: the toolchain is stable (rust-toolchain.toml), which ignores an
+# unstable option with a warning, so one would format differently on different machines.
+# The editions repeat Cargo.toml's because `rustfmt` run outside cargo, as editors do,
+# otherwise formats as the 2015 edition; change them together. Imports are grouped by hand:
+# std, then other crates, then `crate`.
+style_edition = "2024"
+edition = "2024"
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand = true

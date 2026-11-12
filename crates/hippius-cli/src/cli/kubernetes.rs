@@ -9,10 +9,8 @@ use std::path::PathBuf;
 use clap::{Args, Subcommand};
 
 use crate::cli::values::{Charset, Dash, word};
-use crate::cli::{examples, flavor, new_file, number};
+use crate::cli::{ClusterTarget, examples, flavor, new_file, number};
 
-const CLUSTER_ID: &str =
-    "a cluster id is a whole number, from `hipc compute kubernetes clusters list`";
 const OPERATION_ID: &str =
     "an operation id is a whole number, from `hipc compute kubernetes operations list`";
 const POOL_ID: &str = "a pool id is a whole number, from `hipc compute kubernetes node-pools list`";
@@ -67,9 +65,8 @@ pub(crate) enum KubernetesBackups {
     /// in the console.
     #[command(after_help = examples(&["hipc compute kubernetes backups list 7 --reveal"]))]
     List {
-        /// The cluster id from hipc compute kubernetes clusters list
-        #[arg(value_parser = number(CLUSTER_ID))]
-        cluster_id: u64,
+        #[command(flatten)]
+        cluster: ClusterTarget,
         /// Print the download links and sealed keys; required: without it nothing is sent
         #[arg(long)]
         reveal: bool,
@@ -83,11 +80,7 @@ pub(crate) enum Clusters {
     List,
     /// One cluster
     #[command(after_help = examples(&["hipc compute kubernetes clusters get 7"]))]
-    Get {
-        /// The cluster id from hipc compute kubernetes clusters list
-        #[arg(value_parser = number(CLUSTER_ID))]
-        cluster_id: u64,
-    },
+    Get(ClusterTarget),
     /// Delete a cluster: every VM in it stops and is decommissioned, with the workloads and the
     /// data on it; needs --yes
     ///
@@ -96,18 +89,10 @@ pub(crate) enum Clusters {
     /// returns once the teardown has started. The cluster is closed only after every VM is
     /// decommissioned; hipc compute kubernetes clusters get shows its status.
     #[command(after_help = examples(&["hipc compute kubernetes clusters delete 7 --yes"]))]
-    Delete {
-        /// The cluster id from hipc compute kubernetes clusters list
-        #[arg(value_parser = number(CLUSTER_ID))]
-        cluster_id: u64,
-    },
+    Delete(ClusterTarget),
     /// The cluster's journal: what each node reported, and when
     #[command(after_help = examples(&["hipc compute kubernetes clusters events 7"]))]
-    Events {
-        /// The cluster id from hipc compute kubernetes clusters list
-        #[arg(value_parser = number(CLUSTER_ID))]
-        cluster_id: u64,
-    },
+    Events(ClusterTarget),
     /// The cluster launches the platform refused in the last 7 days
     ///
     /// A refused launch leaves no cluster, only an entry here.
@@ -129,18 +114,29 @@ pub(crate) enum Clusters {
     Kubeconfig(ClusterKubeconfig),
 }
 
+/// `--cluster-key-file`, which the kubeconfig and a node replacement need and read the same
+/// way, so its help is written once.
 #[derive(Debug, Args)]
-pub(crate) struct ClusterKubeconfig {
-    /// The cluster id from hipc compute kubernetes clusters list
-    #[arg(value_parser = number(CLUSTER_ID))]
-    pub(crate) cluster_id: u64,
+pub(crate) struct ClusterKeyFile {
     /// The key file the console saved when it created the cluster, hippius-cluster-<name>.key;
     /// it must be a regular file only its owner can read (chmod 600)
     ///
     /// It is read only as a regular file of the current user, never through a symlink, with
     /// no bits for the group or others; there is no stdin form.
-    #[arg(long, value_name = "PATH")]
-    pub(crate) cluster_key_file: PathBuf,
+    #[arg(
+        id = "cluster_key_file",
+        long = "cluster-key-file",
+        value_name = "PATH"
+    )]
+    pub(crate) path: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ClusterKubeconfig {
+    #[command(flatten)]
+    pub(crate) cluster: ClusterTarget,
+    #[command(flatten)]
+    pub(crate) key: ClusterKeyFile,
     /// The file to create for the kubeconfig; it must not exist yet
     #[arg(long, value_name = "PATH", value_parser = new_kubeconfig_file)]
     pub(crate) output_file: PathBuf,
@@ -155,11 +151,7 @@ fn new_kubeconfig_file(text: &str) -> Result<PathBuf, String> {
 pub(crate) enum NodePools {
     /// The cluster's node pools, the masters' control-plane pool included, each with its nodes
     #[command(after_help = examples(&["hipc compute kubernetes node-pools list 7"]))]
-    List {
-        /// The cluster id from hipc compute kubernetes clusters list
-        #[arg(value_parser = number(CLUSTER_ID))]
-        cluster_id: u64,
-    },
+    List(ClusterTarget),
     /// Create an empty worker node pool
     ///
     /// The pool has no node, and costs nothing, until hipc compute kubernetes node-pools scale
@@ -196,9 +188,8 @@ pub(crate) enum NodePools {
 
 #[derive(Debug, Args)]
 pub(crate) struct NodePoolScale {
-    /// The cluster id from hipc compute kubernetes clusters list
-    #[arg(value_parser = number(CLUSTER_ID))]
-    pub(crate) cluster_id: u64,
+    #[command(flatten)]
+    pub(crate) cluster: ClusterTarget,
     /// The node pool id from hipc compute kubernetes node-pools list
     #[arg(value_parser = number(POOL_ID))]
     pub(crate) pool_id: u64,
@@ -221,17 +212,15 @@ const MAX_POOL_SIZE: u64 = 1000;
 
 /// A `--count`: a whole number from 0 to [`MAX_POOL_SIZE`].
 fn pool_size(text: &str) -> Result<u64, String> {
-    text.parse()
-        .ok()
+    crate::units::whole_number(text)
         .filter(|count| *count <= MAX_POOL_SIZE)
         .ok_or_else(|| format!("a pool size is a whole number from 0 to {MAX_POOL_SIZE}"))
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct NodePoolCreate {
-    /// The cluster id from hipc compute kubernetes clusters list
-    #[arg(value_parser = number(CLUSTER_ID))]
-    pub(crate) cluster_id: u64,
+    #[command(flatten)]
+    pub(crate) cluster: ClusterTarget,
     /// The pool's name: lowercase letters, digits, and -, at most 20 characters, not starting
     /// with -
     #[arg(long, value_parser = pool_name)]
@@ -265,12 +254,14 @@ fn pool_name(text: &str) -> Result<String, String> {
 /// The effects a Kubernetes taint takes.
 const TAINT_EFFECTS: [&str; 3] = ["NoSchedule", "PreferNoSchedule", "NoExecute"];
 
-/// A `--taint`: `KEY[=VALUE]:EFFECT`, a key before any `=` and an effect after the last `:`
-/// that Kubernetes knows. The server judges the key and value against the Kubernetes rules.
+/// A `--taint`: `KEY[=VALUE]:EFFECT`, a key before any `=` and an effect after the `:` that
+/// Kubernetes knows. Neither a key nor a value may hold `:` in Kubernetes, so `a:b:NoSchedule`
+/// is refused here; the server judges the rest of the key and value against the Kubernetes
+/// rules.
 fn taint(text: &str) -> Result<String, String> {
     let valid = text.rsplit_once(':').is_some_and(|(pair, effect)| {
         let key = pair.split_once('=').map_or(pair, |(key, _)| key);
-        !key.is_empty() && TAINT_EFFECTS.contains(&effect)
+        !key.is_empty() && !pair.contains(':') && TAINT_EFFECTS.contains(&effect)
     });
     if valid {
         Ok(text.to_owned())
@@ -306,11 +297,7 @@ fn label(text: &str) -> Result<Label, String> {
 pub(crate) enum Operations {
     /// The cluster's node operations, each with its kind, state, and step
     #[command(after_help = examples(&["hipc compute kubernetes operations list 7"]))]
-    List {
-        /// The cluster id from hipc compute kubernetes clusters list
-        #[arg(value_parser = number(CLUSTER_ID))]
-        cluster_id: u64,
-    },
+    List(ClusterTarget),
     /// Cancel a queued, running, or blocked operation; needs --yes
     ///
     /// Before the question, hipc reads the cluster's operations, so the question names the
@@ -335,9 +322,8 @@ pub(crate) enum Operations {
 
 #[derive(Debug, Args)]
 pub(crate) struct OperationTarget {
-    /// The cluster id from hipc compute kubernetes clusters list
-    #[arg(value_parser = number(CLUSTER_ID))]
-    pub(crate) cluster_id: u64,
+    #[command(flatten)]
+    pub(crate) cluster: ClusterTarget,
     /// The operation id from hipc compute kubernetes operations list
     #[arg(value_parser = number(OPERATION_ID))]
     pub(crate) operation_id: u64,
@@ -355,9 +341,8 @@ pub(crate) enum Nodes {
         "hipc compute kubernetes nodes delete 7 work-3a5bf1ed --yes",
     ]))]
     Delete {
-        /// The cluster id from hipc compute kubernetes clusters list
-        #[arg(value_parser = number(CLUSTER_ID))]
-        cluster_id: u64,
+        #[command(flatten)]
+        cluster: ClusterTarget,
         /// The node's name from hipc compute kubernetes node-pools list
         #[arg(value_parser = node_name)]
         node_name: String,
@@ -382,19 +367,13 @@ pub(crate) enum Nodes {
 
 #[derive(Debug, Args)]
 pub(crate) struct NodeReplace {
-    /// The cluster id from hipc compute kubernetes clusters list
-    #[arg(value_parser = number(CLUSTER_ID))]
-    pub(crate) cluster_id: u64,
+    #[command(flatten)]
+    pub(crate) cluster: ClusterTarget,
     /// The node's name from hipc compute kubernetes node-pools list
     #[arg(value_parser = node_name)]
     pub(crate) node_name: String,
-    /// The key file the console saved when it created the cluster, hippius-cluster-<name>.key;
-    /// it must be a regular file only its owner can read (chmod 600)
-    ///
-    /// It is read only as a regular file of the current user, never through a symlink, with
-    /// no bits for the group or others; there is no stdin form.
-    #[arg(long, value_name = "PATH")]
-    pub(crate) cluster_key_file: PathBuf,
+    #[command(flatten)]
+    pub(crate) key: ClusterKeyFile,
 }
 
 /// A node name: it goes into the URL path, so only the characters a name has are accepted.

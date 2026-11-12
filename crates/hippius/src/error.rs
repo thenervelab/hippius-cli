@@ -99,6 +99,15 @@ codes! {
     }
 }
 
+/// The flags that get past the exit-2 refusals other than `usage`, one per code: the code
+/// table names each, and the constructor of its refusal puts it in the hint.
+const YES: &str = "--yes";
+const REVEAL: &str = "--reveal";
+const REPLACE: &str = "--replace";
+const REMOVE_OTHERS: &str = "--remove-others";
+const PUBLIC: &str = "--public";
+const CHANGE_ISOLATION: &str = "--change-isolation";
+
 impl Code {
     /// This code's row of the code table: its name, exit code, meaning, and the flag an
     /// exit-2 code names. The match has no catch-all arm, so a new variant does not compile
@@ -115,8 +124,7 @@ impl Code {
             meaning,
             flag: None,
         };
-        // An exit-2 code that names the flag which gets past it.
-        let flagged = |name, flag, meaning| Row {
+        let exit_2_naming = |name, flag, meaning| Row {
             flag: Some(flag),
             ..row(name, 2, meaning)
         };
@@ -127,38 +135,38 @@ impl Code {
                 "the invocation is wrong: a flag, an argument, a variable, or a local file it \
                  reads",
             ),
-            Self::ConfirmationRequired => flagged(
+            Self::ConfirmationRequired => exit_2_naming(
                 "confirmation_required",
-                "--yes",
+                YES,
                 "the command needs a confirmation, and `--yes` was not passed",
             ),
-            Self::RevealRequired => flagged(
+            Self::RevealRequired => exit_2_naming(
                 "reveal_required",
-                "--reveal",
+                REVEAL,
                 "the call returns a secret, and `--reveal` was not passed",
             ),
-            Self::ReplaceRequired => flagged(
+            Self::ReplaceRequired => exit_2_naming(
                 "replace_required",
-                "--replace",
+                REPLACE,
                 "a paid Hub plan is active and `--replace` was not passed, or a Hub subscribe \
                  was sent in the last 10 minutes and no paid plan is listed that it did not \
                  cancel",
             ),
-            Self::RemoveOthersRequired => flagged(
+            Self::RemoveOthersRequired => exit_2_naming(
                 "remove_others_required",
-                "--remove-others",
+                REMOVE_OTHERS,
                 "the new list leaves out entries the list has now, and `--remove-others` was not \
                  passed",
             ),
-            Self::PublicRequired => flagged(
+            Self::PublicRequired => exit_2_naming(
                 "public_required",
-                "--public",
+                PUBLIC,
                 "the write may publish a private bucket or open the Hub namespace to anyone, \
                  and `--public` was not passed",
             ),
-            Self::ChangeIsolationRequired => flagged(
+            Self::ChangeIsolationRequired => exit_2_naming(
                 "change_isolation_required",
-                "--change-isolation",
+                CHANGE_ISOLATION,
                 "the call changes which peers of the network can reach each other, and \
                  `--change-isolation` was not passed",
             ),
@@ -204,21 +212,18 @@ impl Code {
                 1,
                 "the caller is not a member of the selected account",
             ),
-            // Exit 2: nothing was done, and the fix is a flag, `--account self`.
-            Self::AccountScopeUnsupported => flagged(
+            Self::AccountScopeUnsupported => exit_2_naming(
                 "account_scope_unsupported",
                 "--account",
                 "the route cannot be used in another account, so `--account` must select the \
                  token's own",
             ),
-            // Exit 2 like the account code: nothing was done, and the fix is a flag value,
-            // `--project default` or `--billing default`.
-            Self::ProjectScopeUnsupported => flagged(
+            Self::ProjectScopeUnsupported => exit_2_naming(
                 "project_scope_unsupported",
                 "--project",
                 "the route does not take a project, so `--project` must select the Default one",
             ),
-            Self::BillingScopeUnsupported => flagged(
+            Self::BillingScopeUnsupported => exit_2_naming(
                 "billing_scope_unsupported",
                 "--billing",
                 "the route does not take a billing account, so `--billing` must select the \
@@ -262,19 +267,70 @@ impl Code {
     pub fn flag(self) -> Option<&'static str> {
         self.row().flag
     }
+}
 
-    /// The account and grant codes a 403 body may carry, which pass through unchanged.
-    pub(crate) fn from_account_refusal(code: &str) -> Option<Self> {
-        match code {
-            "not_a_member" => Some(Self::NotAMember),
-            "account_scope_unsupported" => Some(Self::AccountScopeUnsupported),
-            "project_scope_unsupported" => Some(Self::ProjectScopeUnsupported),
-            "billing_scope_unsupported" => Some(Self::BillingScopeUnsupported),
-            "owner_only" => Some(Self::OwnerOnly),
-            "insufficient_grant" => Some(Self::InsufficientGrant),
-            "team_management_required" => Some(Self::TeamManagementRequired),
-            "billing_required" => Some(Self::BillingRequired),
-            _ => None,
+/// The codes of a failure that exits 1, which [`Error::new`] takes. An exit-2 code is not
+/// one: each has a constructor of its own that takes the hint it must carry (tenet 4), so an
+/// exit-2 error without one cannot be built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "each variant is named as the code it is, `partial_failure` included"
+)]
+pub enum Failure {
+    /// [`Code::Auth`].
+    Auth,
+    /// [`Code::Permission`].
+    Permission,
+    /// [`Code::NotFound`].
+    NotFound,
+    /// [`Code::Conflict`].
+    Conflict,
+    /// [`Code::PaymentRequired`].
+    PaymentRequired,
+    /// [`Code::Validation`].
+    Validation,
+    /// [`Code::RateLimited`].
+    RateLimited,
+    /// [`Code::Timeout`].
+    Timeout,
+    /// [`Code::Unavailable`].
+    Unavailable,
+    /// [`Code::PartialFailure`].
+    PartialFailure,
+    /// [`Code::Internal`].
+    Internal,
+    /// [`Code::NotAMember`].
+    NotAMember,
+    /// [`Code::OwnerOnly`].
+    OwnerOnly,
+    /// [`Code::InsufficientGrant`].
+    InsufficientGrant,
+    /// [`Code::TeamManagementRequired`].
+    TeamManagementRequired,
+    /// [`Code::BillingRequired`].
+    BillingRequired,
+}
+
+impl From<Failure> for Code {
+    fn from(failure: Failure) -> Self {
+        match failure {
+            Failure::Auth => Self::Auth,
+            Failure::Permission => Self::Permission,
+            Failure::NotFound => Self::NotFound,
+            Failure::Conflict => Self::Conflict,
+            Failure::PaymentRequired => Self::PaymentRequired,
+            Failure::Validation => Self::Validation,
+            Failure::RateLimited => Self::RateLimited,
+            Failure::Timeout => Self::Timeout,
+            Failure::Unavailable => Self::Unavailable,
+            Failure::PartialFailure => Self::PartialFailure,
+            Failure::Internal => Self::Internal,
+            Failure::NotAMember => Self::NotAMember,
+            Failure::OwnerOnly => Self::OwnerOnly,
+            Failure::InsufficientGrant => Self::InsufficientGrant,
+            Failure::TeamManagementRequired => Self::TeamManagementRequired,
+            Failure::BillingRequired => Self::BillingRequired,
         }
     }
 }
@@ -364,23 +420,9 @@ enum Retry {
 }
 
 impl Error {
-    /// A failure with no HTTP status, not retryable, with no side effects.
-    ///
-    /// # Panics
-    ///
-    /// For an exit-2 code: every exit-2 failure has a hint (tenet 4), so those are built
-    /// with [`Error::usage`], [`Error::confirmation_required`], [`Error::reveal_required`],
-    /// [`Error::replace_required`], [`Error::remove_others_required`],
-    /// [`Error::public_required`], [`Error::account_scope_unsupported`],
-    /// `Error::project_scope_unsupported`, or `Error::billing_scope_unsupported`, which take
-    /// it.
-    pub fn new(code: Code, message: impl Into<String>) -> Self {
-        assert_eq!(
-            code.exit_code(),
-            1,
-            "an exit-2 error is built by the constructor that takes its hint"
-        );
-        Self::without_hint(code, message)
+    /// A failure that exits 1, with no HTTP status, not retryable, with no side effects.
+    pub fn new(failure: Failure, message: impl Into<String>) -> Self {
+        Self::without_hint(failure.into(), message)
     }
 
     fn without_hint(code: Code, message: impl Into<String>) -> Self {
@@ -408,24 +450,22 @@ impl Error {
     /// 2). `action` is what it would have done, as the prompt names it, such as "delete
     /// the VM `vm_1`".
     pub fn confirmation_required(action: &str) -> Self {
-        let flag = flag_of(Code::ConfirmationRequired);
         Self::without_hint(
             Code::ConfirmationRequired,
-            format!("this would {action}, and `{flag}` was not passed"),
+            format!("this would {action}, and `{YES}` was not passed"),
         )
-        .with_hint(format!("pass `{flag}` to confirm"))
+        .with_hint(format!("pass `{YES}` to confirm"))
     }
 
     /// A person was asked to confirm `action` and did not answer yes
     /// (`confirmation_required`, exit 2). It reads differently from
     /// [`Error::confirmation_required`], where nobody could be asked.
     pub fn confirmation_declined(action: &str) -> Self {
-        let flag = flag_of(Code::ConfirmationRequired);
         Self::without_hint(
             Code::ConfirmationRequired,
             format!("the prompt to {action} was not answered yes"),
         )
-        .with_hint(format!("pass `{flag}` to confirm"))
+        .with_hint(format!("pass `{YES}` to confirm"))
     }
 
     /// The call returns a secret, and `--reveal` was not passed (`reveal_required`,
@@ -435,7 +475,7 @@ impl Error {
             Code::RevealRequired,
             "the answer holds a secret, so the command needs `--reveal` to print it",
         )
-        .with_hint(rerun_hint(flag_of(Code::RevealRequired), argv))
+        .with_hint(rerun_hint(REVEAL, argv))
     }
 
     /// Subscribing to Hub again would charge twice (`replace_required`, exit 2). `argv` is
@@ -443,8 +483,7 @@ impl Error {
     /// cannot get past (the double-subscribe window) replaces that hint with
     /// [`Error::with_hint`].
     pub fn replace_required(message: impl Into<String>, argv: &[String]) -> Self {
-        let flag = flag_of(Code::ReplaceRequired);
-        Self::without_hint(Code::ReplaceRequired, message).with_hint(rerun_hint(flag, argv))
+        Self::without_hint(Code::ReplaceRequired, message).with_hint(rerun_hint(REPLACE, argv))
     }
 
     /// A write that replaces a whole list would remove the entries `removed`, each a literal
@@ -458,7 +497,7 @@ impl Error {
     ) -> Self {
         let hint = format!(
             "{} to remove {}",
-            rerun_hint(flag_of(Code::RemoveOthersRequired), argv),
+            rerun_hint(REMOVE_OTHERS, argv),
             crate::phrase::join(removed, "and")
         );
         Self::without_hint(Code::RemoveOthersRequired, message).with_hint(hint)
@@ -470,10 +509,7 @@ impl Error {
     /// [`Error::remove_others_required`] the hint cannot name what the write removes; it repeats
     /// the command line with the flag.
     pub fn remove_others_unread(message: impl Into<String>, argv: &[String]) -> Self {
-        let hint = format!(
-            "{} to replace it whole",
-            rerun_hint(flag_of(Code::RemoveOthersRequired), argv)
-        );
+        let hint = format!("{} to replace it whole", rerun_hint(REMOVE_OTHERS, argv));
         Self::without_hint(Code::RemoveOthersRequired, message).with_hint(hint)
     }
 
@@ -482,8 +518,7 @@ impl Error {
     /// (`public_required`, exit 2). `argv` is the command line as given, which the hint
     /// repeats with the flag.
     pub fn public_required(message: impl Into<String>, argv: &[String]) -> Self {
-        Self::without_hint(Code::PublicRequired, message)
-            .with_hint(rerun_hint(flag_of(Code::PublicRequired), argv))
+        Self::without_hint(Code::PublicRequired, message).with_hint(rerun_hint(PUBLIC, argv))
     }
 
     /// The route cannot act in another account, and one is selected
@@ -513,17 +548,17 @@ impl Error {
     /// `--change-isolation` was not passed (`change_isolation_required`, exit 2). `argv` is
     /// the command line as given, which the hint repeats with the flag.
     pub fn change_isolation_required(argv: &[String]) -> Self {
-        let flag = flag_of(Code::ChangeIsolationRequired);
         let message = format!(
-            "this would change which peers of the network can reach each other, and `{flag}` \
-             was not passed"
+            "this would change which peers of the network can reach each other, and \
+             `{CHANGE_ISOLATION}` was not passed"
         );
-        Self::without_hint(Code::ChangeIsolationRequired, message).with_hint(rerun_hint(flag, argv))
+        Self::without_hint(Code::ChangeIsolationRequired, message)
+            .with_hint(rerun_hint(CHANGE_ISOLATION, argv))
     }
 
     /// A failure inside `hipc` (`internal`, exit 1).
     pub fn internal(message: impl Into<String>) -> Self {
-        Self::new(Code::Internal, message)
+        Self::new(Failure::Internal, message)
     }
 
     /// Part of a multi-call command failed (`partial_failure`, exit 1). `stdout` is the
@@ -536,7 +571,7 @@ impl Error {
         details: Value,
         side_effects: SideEffects,
     ) -> Self {
-        let mut error = Self::new(Code::PartialFailure, message).with_side_effects(side_effects);
+        let mut error = Self::new(Failure::PartialFailure, message).with_side_effects(side_effects);
         error.0.stdout = Some(stdout);
         error.0.details = Some(details);
         error
@@ -544,7 +579,7 @@ impl Error {
 
     /// Marks a failure that came after a write went through: `side_effects` becomes
     /// `partial`, and `done` is printed on stdout so what was created is not lost
-    /// (`TENETS.md` tenet 3; the VM launch whose wait ended without `running`). It is never
+    /// (tenet 3; the VM launch whose wait ended without `running`). It is never
     /// retryable, whatever the failed step was: a retry would repeat the write.
     #[must_use]
     pub fn after_write(mut self, done: Value) -> Self {
@@ -592,7 +627,7 @@ impl Error {
     }
 
     /// [`Error::redacted`] of each of `secrets` at once: each text gets one marker per span of
-    /// overlapping matches ([`crate::json::redact_all`]), so a shorter secret never cuts a
+    /// overlapping matches ([`crate::redact::redact_all`]), so a shorter secret never cuts a
     /// longer one or a marker an earlier one wrote.
     ///
     /// # Panics
@@ -600,18 +635,18 @@ impl Error {
     /// When a secret is empty.
     #[must_use]
     pub fn redacted_all<S: AsRef<str>>(mut self, secrets: &[S]) -> Self {
-        let clean = |text: String| crate::json::redact_all(text, secrets);
+        let clean = |text: String| crate::redact::redact_all(text, secrets);
         let inner = &mut *self.0;
         inner.message = clean(std::mem::take(&mut inner.message));
         inner.hint = inner.hint.take().map(clean);
         inner.details = inner
             .details
             .take()
-            .map(|details| crate::json::redact_value_all(details, secrets));
+            .map(|details| crate::redact::redact_value_all(details, secrets));
         inner.stdout = inner
             .stdout
             .take()
-            .map(|done| crate::json::redact_value_all(done, secrets));
+            .map(|done| crate::redact::redact_value_all(done, secrets));
         inner.request_id = inner.request_id.take().map(clean);
         self
     }
@@ -778,12 +813,6 @@ impl Error {
 /// A `Result` whose error is [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// The flag an exit-2 code other than `usage` names.
-fn flag_of(code: Code) -> &'static str {
-    code.flag()
-        .expect("an exit-2 code other than usage names a flag")
-}
-
 /// The hint of an exit-2 refusal that names a flag of the command, not a global one: the
 /// whole command line to run, with `flag` added (tenet 15). A command line with a query in
 /// it (a `hipc api` path) is not repeated, because a quoted URL never shows query values
@@ -847,25 +876,34 @@ mod tests {
         }
     }
 
+    /// The failures are the exit-1 codes, in order, so [`Error::new`] builds every one and no
+    /// exit-2 code.
     #[test]
-    fn account_refusals_pass_through_and_nothing_else_does() {
-        let refusals = [
-            Code::NotAMember,
-            Code::AccountScopeUnsupported,
-            Code::ProjectScopeUnsupported,
-            Code::BillingScopeUnsupported,
-            Code::OwnerOnly,
-            Code::InsufficientGrant,
-            Code::TeamManagementRequired,
-            Code::BillingRequired,
+    fn the_failures_are_the_exit_1_codes() {
+        let failures = [
+            Failure::Auth,
+            Failure::Permission,
+            Failure::NotFound,
+            Failure::Conflict,
+            Failure::PaymentRequired,
+            Failure::Validation,
+            Failure::RateLimited,
+            Failure::Timeout,
+            Failure::Unavailable,
+            Failure::PartialFailure,
+            Failure::Internal,
+            Failure::NotAMember,
+            Failure::OwnerOnly,
+            Failure::InsufficientGrant,
+            Failure::TeamManagementRequired,
+            Failure::BillingRequired,
         ];
-        for code in &refusals {
-            let name = code.as_str();
-            assert_eq!(Code::from_account_refusal(name), Some(*code), "{name}");
-        }
-        for other in ["usage", "permission", "project_not_found", ""] {
-            assert_eq!(Code::from_account_refusal(other), None, "{other}");
-        }
+        let codes: Vec<Code> = failures.into_iter().map(Code::from).collect();
+        let exit_1: Vec<Code> = Code::ALL
+            .into_iter()
+            .filter(|code| code.exit_code() == 1)
+            .collect();
+        assert_eq!(codes, exit_1);
     }
 
     #[test]
@@ -909,7 +947,7 @@ mod tests {
 
     #[test]
     fn http_error_carries_status_retry_side_effects_and_details_last() {
-        let error = Error::new(Code::Unavailable, "chain unreachable")
+        let error = Error::new(Failure::Unavailable, "chain unreachable")
             .with_http(503, Some("req-1".into()))
             .with_details(json!({"error": "x"}))
             .retryable(Some(5000))
@@ -945,7 +983,7 @@ mod tests {
     /// the server's words loses none of what the server sent.
     #[test]
     fn with_message_replaces_only_the_message() {
-        let error = Error::new(Code::Conflict, "the API answered 409")
+        let error = Error::new(Failure::Conflict, "the API answered 409")
             .with_http(409, Some("req-2".into()))
             .with_details(json!({"code": "project_not_empty"}))
             .retryable(Some(250))
@@ -990,7 +1028,7 @@ mod tests {
 
     #[test]
     fn an_error_after_a_write_keeps_its_code_and_prints_what_was_done() {
-        let error = Error::new(Code::Unavailable, "bad gateway")
+        let error = Error::new(Failure::Unavailable, "bad gateway")
             .retryable(Some(1000))
             .after_write(json!({"vm_id": "v"}));
         assert_eq!(error.code(), Code::Unavailable);
@@ -999,7 +1037,7 @@ mod tests {
         assert_eq!(error.to_json()["error"]["retry_after_ms"], Value::Null);
         assert!(!error.is_retryable());
         assert!(
-            Error::new(Code::Unavailable, "x")
+            Error::new(Failure::Unavailable, "x")
                 .retryable(None)
                 .is_retryable()
         );
@@ -1023,7 +1061,7 @@ mod tests {
         assert_eq!(error.details(), Some(&json!({"error": "bad <redacted>"})));
         assert_eq!(error.stdout(), Some(&json!({"echo": "<redacted>"})));
         assert!(!error.to_json().to_string().contains("s3cr3t"));
-        let plain = Error::new(Code::NotFound, "x").redacted("s3cr3t");
+        let plain = Error::new(Failure::NotFound, "x").redacted("s3cr3t");
         assert_eq!(plain.hint(), None);
         assert_eq!(plain.details(), None);
     }
@@ -1032,7 +1070,7 @@ mod tests {
     /// a longer one that holds it nor a marker already written, whatever their order.
     #[test]
     fn several_secrets_are_redacted_in_one_pass() {
-        let error = Error::new(Code::NotFound, "x acted y d")
+        let error = Error::new(Failure::NotFound, "x acted y d")
             .with_hint("acted")
             .with_http(404, Some("acted-d".into()))
             .redacted_all(&["d", "acted"]);
@@ -1078,7 +1116,7 @@ mod tests {
         );
         assert_eq!(internal.to_json()["error"]["hint"], hint);
         assert_eq!(Error::internal("x").with_hint("y").hint(), Some("y"));
-        assert_eq!(Error::new(Code::NotFound, "x").hint(), None);
+        assert_eq!(Error::new(Failure::NotFound, "x").hint(), None);
         assert_eq!(Error::internal("x").code(), Code::Internal);
         assert_eq!(Error::usage("x", "y").http_status(), None);
     }

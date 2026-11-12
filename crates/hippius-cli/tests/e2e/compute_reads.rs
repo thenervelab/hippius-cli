@@ -1,11 +1,10 @@
 //! The small compute reads: the ready-made apps, a launch's feasibility, the owner's
 //! SSH keys, one stored SSH key, and a VM's failovers.
 
+use hippius::routes::compute;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, draft, route};
-
-const VM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, VM, draft, parsed, route, route_of};
 
 /// Swagger's `{failovers}`: one done by itself, newest first.
 const FAILOVERS: &str = concat!(
@@ -44,10 +43,6 @@ fn hipc(server: &Server, args: &[&str]) -> Run {
     Hipc::against(&Home::new(), server).run(&argv)
 }
 
-fn parsed(text: &str) -> Value {
-    serde_json::from_str(text).expect("a JSON fixture")
-}
-
 fn failovers_path() -> String {
     format!("/api/compute/vms/{VM}/failovers/")
 }
@@ -66,21 +61,18 @@ const PUBLIC_PRICES: &str = concat!(
 /// and prints it as sent. `prices` still reads the account's prices, which need one.
 #[test]
 fn public_prices_need_no_token() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/compute/public-prices/",
+    let server = Server::start(vec![route_of(
+        &compute::PUBLIC_PRICES,
+        [],
         Reply::json(200, PUBLIC_PRICES),
     )]);
     let home = Home::new();
-    let run = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
-        .run(&["compute", "public-prices"]);
+    let run = Hipc::tokenless(&home, &server).run(&["compute", "public-prices"]);
     assert_eq!(run.ok(), parsed(PUBLIC_PRICES));
     let request = server.only_request();
     assert_eq!(request.target, "/api/compute/public-prices/");
     assert_eq!(request.header("authorization"), None);
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&home, &server)
         .run(&["compute", "prices"])
         .fails(1, "auth");
     assert_eq!(server.requests().len(), 1);
@@ -96,19 +88,15 @@ fn public_prices_need_no_token() {
 #[test]
 fn text_mode_notes_an_empty_list_or_object_on_stderr() {
     let server = Server::start(vec![
-        route(
-            "GET",
-            "/api/compute/vms/",
+        route_of(
+            &compute::VMS,
+            [],
             Reply::json(
                 200,
                 r#"{"count":0,"next":null,"previous":null,"results":[]}"#,
             ),
         ),
-        route(
-            "GET",
-            &format!("/api/compute/vms/{VM}/"),
-            Reply::json(200, "{}"),
-        ),
+        route_of(&compute::VM, [&VM], Reply::json(200, "{}")),
     ]);
     let home = Home::new();
     let text = |args: &[&str]| {
@@ -136,12 +124,8 @@ fn a_get_that_holds_items_and_a_page_token_is_not_a_list() {
     let paged = r#"{"items":[{"id":"a"}],"next_page_token":"2"}"#;
     let empty = r#"{"items":[],"next_page_token":null}"#;
     let server = Server::start(vec![
-        route(
-            "GET",
-            &format!("/api/compute/vms/{VM}/"),
-            Reply::json(200, paged),
-        ),
-        route("GET", "/api/compute/vms/vm-2/", Reply::json(200, empty)),
+        route_of(&compute::VM, [&VM], Reply::json(200, paged)),
+        route_of(&compute::VM, [&"vm-2"], Reply::json(200, empty)),
     ]);
     let home = Home::new();
     let text = |args: &[&str]| {
@@ -168,10 +152,10 @@ fn a_get_that_holds_items_and_a_page_token_is_not_a_list() {
 #[test]
 fn objects_print_as_sent_and_lists_are_envelopes() {
     let server = Server::start(vec![
-        route("GET", "/api/compute/apps/", Reply::json(200, APPS)),
-        route(
-            "GET",
-            "/api/compute/account-ssh-keys/",
+        route_of(&compute::APPS, [], Reply::json(200, APPS)),
+        route_of(
+            &compute::ACCOUNT_SSH_KEYS,
+            [],
             Reply::json(200, &format!("[{KEY}]")),
         ),
         route(
@@ -184,8 +168,8 @@ fn objects_print_as_sent_and_lists_are_envelopes() {
             "/api/compute/feasibility/?flavor=small",
             Reply::json(200, NOT_NOW),
         ),
-        route("GET", "/api/ssh-keys/3/", Reply::json(200, KEY)),
-        route("GET", &failovers_path(), Reply::json(200, FAILOVERS)),
+        route_of(&compute::SSH_KEY, [&3], Reply::json(200, KEY)),
+        route_of(&compute::VM_FAILOVERS, [&VM], Reply::json(200, FAILOVERS)),
     ]);
     let envelope = |items: Value| json!({ "items": items, "next_page_token": null });
     assert_eq!(hipc(&server, &["apps"]).ok(), envelope(parsed(APPS)));
@@ -334,21 +318,25 @@ fn feasibility_errors_map_to_their_codes() {
 
 #[test]
 fn failovers_errors_map_to_their_codes() {
-    let server = Server::start(vec![route("GET", &failovers_path(), Reply::not_found())]);
+    let server = Server::start(vec![route_of(
+        &compute::VM_FAILOVERS,
+        [&VM],
+        Reply::not_found(),
+    )]);
     let error = hipc(&server, &["vms", "failovers", VM]).fails(1, "not_found");
     assert_eq!(
         error["hint"],
         "run `hipc compute vms list` to see what exists"
     );
-    let down = Server::start(vec![route(
-        "GET",
-        &failovers_path(),
+    let down = Server::start(vec![route_of(
+        &compute::VM_FAILOVERS,
+        [&VM],
         Reply::json(503, r#"{"error":"Not available"}"#),
     )]);
     hipc(&down, &["vms", "failovers", VM]).fails(1, "unavailable");
-    let shapeless = Server::start(vec![route(
-        "GET",
-        &failovers_path(),
+    let shapeless = Server::start(vec![route_of(
+        &compute::VM_FAILOVERS,
+        [&VM],
         Reply::json(200, r#"{"items":[]}"#),
     )]);
     let error = hipc(&shapeless, &["vms", "failovers", VM]).fails(1, "internal");
@@ -363,7 +351,7 @@ fn failovers_errors_map_to_their_codes() {
 
 #[test]
 fn ssh_key_get_a_missing_key_hints_at_the_list() {
-    let server = Server::start(vec![route("GET", "/api/ssh-keys/9/", Reply::not_found())]);
+    let server = Server::start(vec![route_of(&compute::SSH_KEY, [&9], Reply::not_found())]);
     let error = hipc(&server, &["ssh-keys", "get", "9"]).fails(1, "not_found");
     assert_eq!(
         error["hint"],
@@ -374,18 +362,18 @@ fn ssh_key_get_a_missing_key_hints_at_the_list() {
 #[test]
 fn catalog_reads_map_their_errors() {
     let server = Server::start(vec![
-        route("GET", "/api/compute/apps/", Reply::not_found()),
-        route(
-            "GET",
-            "/api/compute/account-ssh-keys/",
+        route_of(&compute::APPS, [], Reply::not_found()),
+        route_of(
+            &compute::ACCOUNT_SSH_KEYS,
+            [],
             Reply::json(403, r#"{"detail":"Compute is in private beta."}"#),
         ),
     ]);
     hipc(&server, &["apps"]).fails(1, "not_found");
     hipc(&server, &["account-ssh-keys"]).fails(1, "permission");
-    let paged = Server::start(vec![route(
-        "GET",
-        "/api/compute/apps/",
+    let paged = Server::start(vec![route_of(
+        &compute::APPS,
+        [],
         Reply::json(
             200,
             r#"{"count":2,"next":"{base}/api/compute/apps/?page=2","previous":null,"results":[]}"#,
@@ -397,19 +385,15 @@ fn catalog_reads_map_their_errors() {
 #[test]
 fn a_membership_sends_the_header_on_compute_reads_but_not_on_one_ssh_key() {
     let server = Server::start(vec![
-        route("GET", "/api/compute/apps/", Reply::json(200, "[]")),
-        route(
-            "GET",
-            "/api/compute/account-ssh-keys/",
-            Reply::json(200, "[]"),
-        ),
+        route_of(&compute::APPS, [], Reply::json(200, "[]")),
+        route_of(&compute::ACCOUNT_SSH_KEYS, [], Reply::json(200, "[]")),
         route(
             "GET",
             "/api/compute/feasibility/?flavor=small",
             Reply::json(200, NOT_NOW),
         ),
-        route("GET", &failovers_path(), Reply::json(200, FAILOVERS)),
-        route("GET", "/api/ssh-keys/3/", Reply::json(200, KEY)),
+        route_of(&compute::VM_FAILOVERS, [&VM], Reply::json(200, FAILOVERS)),
+        route_of(&compute::SSH_KEY, [&3], Reply::json(200, KEY)),
     ]);
     let home = Home::new();
     for args in [
@@ -443,9 +427,9 @@ fn a_membership_sends_the_header_on_compute_reads_but_not_on_one_ssh_key() {
 /// account.
 #[test]
 fn a_member_without_the_grant_is_told_to_act_as_self() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/compute/account-ssh-keys/",
+    let server = Server::start(vec![route_of(
+        &compute::ACCOUNT_SSH_KEYS,
+        [],
         Reply::json(
             403,
             r#"{"code":"insufficient_grant","detail":"vms admin required"}"#,
@@ -469,14 +453,10 @@ fn debug_names_each_url_with_no_query_value() {
             "/api/compute/feasibility/?flavor=small&region=FR",
             Reply::json(200, FEASIBLE),
         ),
-        route("GET", &failovers_path(), Reply::json(200, FAILOVERS)),
-        route("GET", "/api/ssh-keys/3/", Reply::json(200, KEY)),
-        route("GET", "/api/compute/apps/", Reply::json(200, "[]")),
-        route(
-            "GET",
-            "/api/compute/account-ssh-keys/",
-            Reply::json(200, "[]"),
-        ),
+        route_of(&compute::VM_FAILOVERS, [&VM], Reply::json(200, FAILOVERS)),
+        route_of(&compute::SSH_KEY, [&3], Reply::json(200, KEY)),
+        route_of(&compute::APPS, [], Reply::json(200, "[]")),
+        route_of(&compute::ACCOUNT_SSH_KEYS, [], Reply::json(200, "[]")),
     ]);
     let url = server.url();
     for (args, target) in [

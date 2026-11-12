@@ -3,9 +3,10 @@
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
+use hippius::routes::databases;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, draft, route};
+use crate::common::{self, Hipc, Home, MEMBER, Reply, Run, Server, draft, route, route_of};
 
 const PASSWORD: &str = "pw-0n3-t1me-9f2c";
 const CLIENT_KEY: &str = "MIIclientkey0f3a";
@@ -65,10 +66,6 @@ fn created(status: &str) -> String {
     with_credentials(database(status)).to_string()
 }
 
-fn db_route(method: &'static str, suffix: &str, reply: Reply) -> crate::common::Route {
-    route(method, &format!("/api/databases/7/{suffix}"), reply)
-}
-
 fn hipc(server: &Server, args: &[&str]) -> Run {
     let mut argv = vec!["compute", "databases"];
     argv.extend(args);
@@ -115,14 +112,14 @@ fn no_secret(run: &Run) {
 #[test]
 fn list_and_get_print_the_documents_and_never_a_credential() {
     let server = Server::start(vec![
-        route(
-            "GET",
-            "/api/databases/",
+        route_of(
+            &databases::DATABASES,
+            [],
             Reply::json(200, &format!("[{}]", created("running"))),
         ),
-        db_route(
-            "GET",
-            "",
+        route_of(
+            &databases::DATABASE,
+            [&7],
             Reply::json(
                 200,
                 &json!({ "id": 7, "nested": [with_credentials(json!({}))] }).to_string(),
@@ -160,17 +157,17 @@ fn list_and_get_print_the_documents_and_never_a_credential() {
 #[test]
 fn reads_map_their_errors() {
     let server = Server::start(vec![
-        route(
-            "GET",
-            "/api/databases/",
+        route_of(
+            &databases::DATABASES,
+            [],
             Reply::json(503, r#"{"error":"down"}"#),
         ),
-        route("GET", "/api/databases/7/", Reply::not_found()),
-        route("GET", "/api/databases/7/events/", Reply::not_found()),
-        route("GET", "/api/databases/7/metrics/", Reply::not_found()),
-        route(
-            "GET",
-            "/api/databases/8/metrics/",
+        route_of(&databases::DATABASE, [&7], Reply::not_found()),
+        route_of(&databases::DATABASE_EVENTS, [&7], Reply::not_found()),
+        route_of(&databases::DATABASE_METRICS, [&7], Reply::not_found()),
+        route_of(
+            &databases::DATABASE_METRICS,
+            [&8],
             Reply::json(503, r#"{"error":"down"}"#),
         ),
     ]);
@@ -196,7 +193,11 @@ fn metrics_print_the_series_as_sent_without_credentials() {
         r#""memory_used_mb":512,"memory_total_mb":null}],"latest":null,"#,
         r#""agent_last_seen":"2026-10-27T10:01:00Z"}"#
     );
-    let server = Server::start(vec![db_route("GET", "metrics/", Reply::json(200, metrics))]);
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_METRICS,
+        [&7],
+        Reply::json(200, metrics),
+    )]);
     let parsed: Value = serde_json::from_str(metrics).expect("a JSON fixture");
     assert_eq!(hipc(&server, &["metrics", "7"]).ok(), parsed);
     let run = hipc(&server, &["metrics", "7", "--debug"]);
@@ -208,9 +209,9 @@ fn metrics_print_the_series_as_sent_without_credentials() {
             server.url()
         )
     );
-    let stripped = Server::start(vec![db_route(
-        "GET",
-        "metrics/",
+    let stripped = Server::start(vec![route_of(
+        &databases::DATABASE_METRICS,
+        [&7],
         Reply::json(200, &created("running")),
     )]);
     let run = hipc(&stripped, &["metrics", "7"]);
@@ -231,10 +232,10 @@ fn events_and_refusals_print_the_list_envelope_without_credentials() {
         r#""reason":"no capacity","at":"2026-10-27T10:00:00Z"}]}"#
     );
     let server = Server::start(vec![
-        db_route("GET", "events/", Reply::json(200, events)),
-        route(
-            "GET",
-            "/api/databases/refusals/",
+        route_of(&databases::DATABASE_EVENTS, [&7], Reply::json(200, events)),
+        route_of(
+            &databases::DATABASE_REFUSALS,
+            [],
             Reply::json(200, refusals),
         ),
     ]);
@@ -257,18 +258,22 @@ fn events_and_refusals_print_the_list_envelope_without_credentials() {
     );
     // A bare array or a page of events is the list too; a `next` link is not printed as data.
     let pages = Server::start(vec![
-        db_route("GET", "events/", Reply::json(200, r#"[{"kind":"boot"}]"#)),
-        route(
-            "GET",
-            "/api/databases/8/events/",
+        route_of(
+            &databases::DATABASE_EVENTS,
+            [&7],
+            Reply::json(200, r#"[{"kind":"boot"}]"#),
+        ),
+        route_of(
+            &databases::DATABASE_EVENTS,
+            [&8],
             Reply::json(
                 200,
                 r#"{"results":[],"next":"https://api.hippius.com/api/databases/8/events/?page=2"}"#,
             ),
         ),
-        route(
-            "GET",
-            "/api/databases/refusals/",
+        route_of(
+            &databases::DATABASE_REFUSALS,
+            [],
             Reply::json(200, r#"{"refused":[]}"#),
         ),
     ]);
@@ -279,9 +284,9 @@ fn events_and_refusals_print_the_list_envelope_without_credentials() {
     hipc(&pages, &["events", "8"]).fails(1, "internal");
     hipc(&pages, &["refusals"]).fails(1, "internal");
     // A `credentials` field at any depth is removed.
-    let stripped = Server::start(vec![route(
-        "GET",
-        "/api/databases/refusals/",
+    let stripped = Server::start(vec![route_of(
+        &databases::DATABASE_REFUSALS,
+        [],
         Reply::json(200, &format!(r#"{{"refusals":[{}]}}"#, created("failed"))),
     )]);
     let run = hipc(&stripped, &["refusals"]);
@@ -298,7 +303,7 @@ fn create_checks_usage_then_reveal_then_the_token_then_confirmation_with_zero_re
         "databases",
         "create",
         "--tier",
-        "gold",
+        "Gold",
         "--size",
         "s",
         "--engine-version",
@@ -317,11 +322,7 @@ fn create_checks_usage_then_reveal_then_the_token_then_confirmation_with_zero_re
     );
     assert!(server.requests().is_empty());
     // With no token, `--reveal` is still checked first, and the token before the question.
-    let no_token = |extra: &[&str]| {
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
-            .run(&create_args(extra))
-    };
+    let no_token = |extra: &[&str]| Hipc::tokenless(&Home::new(), &server).run(&create_args(extra));
     no_token(&[]).fails(2, "reveal_required");
     no_token(&["--reveal"]).fails(1, "auth");
     assert!(server.requests().is_empty());
@@ -346,12 +347,13 @@ fn bad_tiers_sizes_versions_and_wait_flags_are_usage_with_zero_requests() {
         ]
     };
     for argv in [
+        // The codes are the server's (owner decision D5), so only a value that is not one
+        // lowercase code is refused here.
         base("Starter", "s", "18"),
-        base("enterprise", "s", "18"),
-        base("starter", "xxl", "18"),
+        base("a b", "s", "18"),
         base("starter", "S", "18"),
-        base("starter", "s", "15"),
-        base("starter", "s", "18.1"),
+        base("starter", "x_l", "18"),
+        base("starter", "s", "-18"),
         base("starter", "s", ""),
     ] {
         Hipc::against(&Home::new(), &server)
@@ -440,9 +442,9 @@ fn every_tier_size_and_version_is_sent_as_its_api_code() {
 
 #[test]
 fn create_sends_exactly_the_flags_and_prints_the_credentials_on_stdout_only() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/databases/",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
         Reply::json(202, &created("running")),
     )]);
     let run = create(&server, &["--reveal", "--yes"]);
@@ -479,9 +481,9 @@ fn create_sends_exactly_the_flags_and_prints_the_credentials_on_stdout_only() {
 
 #[test]
 fn a_refused_create_prints_nothing_and_never_a_credential_in_the_error() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/databases/",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
         Reply::json(400, &created("failed")),
     )]);
     let run = create(&server, &["--reveal", "--yes"]);
@@ -493,9 +495,9 @@ fn a_refused_create_prints_nothing_and_never_a_credential_in_the_error() {
 
 #[test]
 fn delete_needs_yes_and_prints_the_decommissioning_database() {
-    let server = Server::start(vec![db_route(
-        "DELETE",
-        "",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_DELETE,
+        [&7],
         Reply::json(202, &created("decommissioning")),
     )]);
     let error = hipc(&server, &["delete", "7"]).fails(2, "confirmation_required");
@@ -512,9 +514,9 @@ fn delete_needs_yes_and_prints_the_decommissioning_database() {
     assert_eq!(request.method, "DELETE");
     assert_eq!(request.path(), "/api/databases/7/");
     for (status, code) in [(404, "not_found"), (409, "conflict")] {
-        let server = Server::start(vec![db_route(
-            "DELETE",
-            "",
+        let server = Server::start(vec![route_of(
+            &databases::DATABASE_DELETE,
+            [&7],
             Reply::json(status, r#"{"error":"Already decommissioned"}"#),
         )]);
         let error = hipc(&server, &["delete", "7", "--yes"]).fails(1, code);
@@ -522,9 +524,9 @@ fn delete_needs_yes_and_prints_the_decommissioning_database() {
         assert_eq!(error["http_status"], status);
     }
     // In text mode the delete names what the server keeps, and how to remove it.
-    let server = Server::start(vec![db_route(
-        "DELETE",
-        "",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_DELETE,
+        [&7],
         Reply::json(202, &created("decommissioning")),
     )]);
     let run = Hipc::against(&Home::new(), &server).run(&[
@@ -549,7 +551,11 @@ fn delete_needs_yes_and_prints_the_decommissioning_database() {
 #[test]
 fn restart_needs_yes_sends_no_body_and_notes_that_it_is_queued() {
     let answer = r#"{"restart":{"pending":true,"requested_at":"2026-10-27T10:00:00Z"}}"#;
-    let server = Server::start(vec![db_route("POST", "restart/", Reply::json(201, answer))]);
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_RESTART,
+        [&7],
+        Reply::json(201, answer),
+    )]);
     let error = hipc(&server, &["restart", "7"]).fails(2, "confirmation_required");
     assert_eq!(
         error["message"],
@@ -592,9 +598,9 @@ fn restart_needs_yes_sends_no_body_and_notes_that_it_is_queued() {
 
 #[test]
 fn restore_checks_reveal_then_confirmation_and_sends_the_target_time() {
-    let server = Server::start(vec![db_route(
-        "POST",
-        "restore/",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_RESTORE,
+        [&7],
         Reply::json(
             201,
             &json!({ "id": 8, "credentials": credentials() }).to_string(),
@@ -670,15 +676,12 @@ fn an_unreadable_create_or_restore_answer_is_printed_as_unparsed_answer() {
             run.json(),
             json!({ "unparsed_answer": "password=pg-secret-1 \u{fffd}<html>" })
         );
-        let error: Value = serde_json::from_str(run.stderr()).unwrap();
-        assert_eq!(error["error"]["code"], "internal");
-        assert_eq!(error["error"]["side_effects"], "partial");
+        let error = run.error();
+        assert_eq!(error["code"], "internal");
+        assert_eq!(error["side_effects"], "partial");
         assert!(!run.stderr().contains("pg-secret-1"), "{}", run.stderr());
         assert!(
-            error["error"]["hint"]
-                .as_str()
-                .unwrap()
-                .contains("unparsed_answer"),
+            error["hint"].as_str().unwrap().contains("unparsed_answer"),
             "{error}"
         );
 
@@ -703,9 +706,9 @@ fn an_unreadable_create_or_restore_answer_is_printed_as_unparsed_answer() {
 #[test]
 fn restore_errors_map_to_their_codes_without_a_credential() {
     for (status, code) in [(400, "validation"), (404, "not_found"), (409, "conflict")] {
-        let server = Server::start(vec![db_route(
-            "POST",
-            "restore/",
+        let server = Server::start(vec![route_of(
+            &databases::DATABASE_RESTORE,
+            [&7],
             Reply::json(status, &created("running")),
         )]);
         let run = hipc(&server, &["restore", "7", "--reveal", "--yes"]);
@@ -719,8 +722,12 @@ fn restore_errors_map_to_their_codes_without_a_credential() {
 fn exposure_create_and_delete_need_yes_and_print_what_was_done() {
     let exposed = r#"{"id":7,"exposed":true,"host":"db-7.edge.example","port":5432}"#;
     let server = Server::start(vec![
-        db_route("POST", "expose/", Reply::json(201, exposed)),
-        db_route("DELETE", "expose/", Reply::json(204, "")),
+        route_of(&databases::DATABASE_EXPOSE, [&7], Reply::json(201, exposed)),
+        route_of(
+            &databases::DATABASE_EXPOSURE_DELETE,
+            [&7],
+            Reply::json(204, ""),
+        ),
     ]);
     let error = hipc(&server, &["exposure", "create", "7"]).fails(2, "confirmation_required");
     assert_eq!(
@@ -751,9 +758,9 @@ fn exposure_create_and_delete_need_yes_and_print_what_was_done() {
             "DELETE /api/databases/7/expose/"
         ]
     );
-    let with_body = Server::start(vec![db_route(
-        "DELETE",
-        "expose/",
+    let with_body = Server::start(vec![route_of(
+        &databases::DATABASE_EXPOSURE_DELETE,
+        [&7],
         Reply::json(200, &created("running")),
     )]);
     let run = hipc(&with_body, &["exposure", "delete", "7", "--yes"]);
@@ -784,33 +791,45 @@ fn an_id_that_is_not_a_number_is_usage_with_zero_requests() {
 #[test]
 fn a_membership_sends_the_header_on_every_route() {
     let server = Server::start(vec![
-        route("GET", "/api/databases/", Reply::json(200, "[]")),
-        route(
-            "POST",
-            "/api/databases/",
+        route_of(&databases::DATABASES, [], Reply::json(200, "[]")),
+        route_of(
+            &databases::DATABASE_CREATE,
+            [],
             Reply::json(202, &created("running")),
         ),
-        route(
-            "GET",
-            "/api/databases/refusals/",
+        route_of(
+            &databases::DATABASE_REFUSALS,
+            [],
             Reply::json(200, r#"{"refusals":[]}"#),
         ),
-        db_route(
-            "GET",
-            "",
+        route_of(
+            &databases::DATABASE,
+            [&7],
             Reply::json(200, &database("running").to_string()),
         ),
-        db_route(
-            "DELETE",
-            "",
+        route_of(
+            &databases::DATABASE_DELETE,
+            [&7],
             Reply::json(202, &database("decommissioning").to_string()),
         ),
-        db_route("POST", "restart/", Reply::json(201, "{}")),
-        db_route("POST", "restore/", Reply::json(201, r#"{"id":8}"#)),
-        db_route("POST", "expose/", Reply::json(201, "{}")),
-        db_route("DELETE", "expose/", Reply::json(204, "")),
-        db_route("GET", "events/", Reply::json(200, "[]")),
-        db_route("GET", "metrics/", Reply::json(200, r#"{"samples":[]}"#)),
+        route_of(&databases::DATABASE_RESTART, [&7], Reply::json(201, "{}")),
+        route_of(
+            &databases::DATABASE_RESTORE,
+            [&7],
+            Reply::json(201, r#"{"id":8}"#),
+        ),
+        route_of(&databases::DATABASE_EXPOSE, [&7], Reply::json(201, "{}")),
+        route_of(
+            &databases::DATABASE_EXPOSURE_DELETE,
+            [&7],
+            Reply::json(204, ""),
+        ),
+        route_of(&databases::DATABASE_EVENTS, [&7], Reply::json(200, "[]")),
+        route_of(
+            &databases::DATABASE_METRICS,
+            [&7],
+            Reply::json(200, r#"{"samples":[]}"#),
+        ),
     ]);
     let home = Home::new();
     let member = |args: &[&str]| {
@@ -873,14 +892,14 @@ fn a_membership_sends_the_header_on_every_route() {
 #[test]
 fn create_sends_one_post_and_prints_the_credentials_without_waiting() {
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/databases/",
+        route_of(
+            &databases::DATABASE_CREATE,
+            [],
             Reply::json(202, &created("provisioning")),
         ),
-        db_route(
-            "GET",
-            "",
+        route_of(
+            &databases::DATABASE,
+            [&7],
             Reply::json(200, &database("running").to_string()),
         ),
     ]);
@@ -896,9 +915,9 @@ fn create_sends_one_post_and_prints_the_credentials_without_waiting() {
 
 #[test]
 fn debug_lines_never_carry_a_credential() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/databases/",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
         Reply::json(202, &created("provisioning")),
     )]);
     let run = create(&server, &["--reveal", "--yes", "--debug"]);
@@ -917,9 +936,9 @@ fn text_mode_says_the_credentials_are_shown_only_now_and_how_to_follow_the_creat
     let mut argv = vec!["--output", "text"];
     argv.extend(create_args(&["--reveal", "--yes"]));
     let text = |answer: &str| {
-        let server = Server::start(vec![route(
-            "POST",
-            "/api/databases/",
+        let server = Server::start(vec![route_of(
+            &databases::DATABASE_CREATE,
+            [],
             Reply::json(202, answer),
         )]);
         Hipc::against(&Home::new(), &server).run(&argv)
@@ -947,9 +966,9 @@ fn text_mode_says_the_credentials_are_shown_only_now_and_how_to_follow_the_creat
     );
     secrets_on_stdout_only(&run);
     argv.push("--quiet");
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/databases/",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
         Reply::json(202, &created("provisioning")),
     )]);
     let quiet = Hipc::against(&Home::new(), &server).run(&argv);
@@ -1071,9 +1090,9 @@ fn files_written(dir: &Path) {
 /// place of the secrets: the TLS three, `credentials.json`, and `.env`.
 #[test]
 fn credentials_dir_writes_the_tls_files_and_the_document_names_them() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/databases/",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
         Reply::json(202, &created("provisioning")),
     )]);
     let home = Home::new();
@@ -1090,14 +1109,14 @@ fn credentials_dir_writes_the_tls_files_and_the_document_names_them() {
 #[test]
 fn credentials_dir_needs_no_reveal() {
     let server = Server::start(vec![
-        route(
-            "POST",
-            "/api/databases/",
+        route_of(
+            &databases::DATABASE_CREATE,
+            [],
             Reply::json(202, &created("provisioning")),
         ),
-        db_route(
-            "POST",
-            "restore/",
+        route_of(
+            &databases::DATABASE_RESTORE,
+            [&7],
             Reply::json(202, &created("provisioning")),
         ),
     ]);
@@ -1132,9 +1151,9 @@ fn credentials_dir_needs_no_reveal() {
 fn credentials_dir_env_paths_are_absolute_and_name_a_known_host() {
     let mut answer = with_credentials(database("running"));
     answer["connection"]["host"] = "db-7.example.net".into();
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/databases/",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
         Reply::json(202, &answer.to_string()),
     )]);
     let home = Home::new();
@@ -1176,9 +1195,9 @@ fn a_value_env_cannot_quote_writes_nothing_and_keeps_the_answer_on_stdout() {
     ] {
         let mut answer = with_credentials(database("provisioning"));
         answer["credentials"][field] = value.into();
-        let server = Server::start(vec![route(
-            "POST",
-            "/api/databases/",
+        let server = Server::start(vec![route_of(
+            &databases::DATABASE_CREATE,
+            [],
             Reply::json(202, &answer.to_string()),
         )]);
         let home = Home::new();
@@ -1186,10 +1205,10 @@ fn a_value_env_cannot_quote_writes_nothing_and_keeps_the_answer_on_stdout() {
         let run = create_into(&home, &server, &dir, &[]);
         assert_eq!(run.code(), Some(1), "{}", run.stderr());
         assert_eq!(run.json(), answer);
-        let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-        assert_eq!(error["error"]["code"], "internal");
-        assert_eq!(error["error"]["side_effects"], "partial");
-        let message = error["error"]["message"].as_str().unwrap();
+        let error = run.error();
+        assert_eq!(error["code"], "internal");
+        assert_eq!(error["side_effects"], "partial");
+        let message = error["message"].as_str().unwrap();
         assert!(
             message.contains("single quote, a backslash, or a control character"),
             "{message}"
@@ -1208,9 +1227,9 @@ fn the_env_file_takes_the_answers_sslmode() {
         .as_object_mut()
         .unwrap()
         .shift_remove("port");
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/databases/",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
         Reply::json(202, &answer.to_string()),
     )]);
     let home = Home::new();
@@ -1224,9 +1243,9 @@ fn the_env_file_takes_the_answers_sslmode() {
 /// A trailing `/` or `/.` names the same directory, and the files go into it.
 #[test]
 fn credentials_dir_with_a_trailing_slash_writes_into_the_directory() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/databases/",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
         Reply::json(202, &created("provisioning")),
     )]);
     let home = Home::new();
@@ -1308,9 +1327,12 @@ fn a_bad_credentials_dir_is_usage_with_zero_requests() {
 /// database.
 #[test]
 fn a_write_failure_after_the_create_keeps_the_answer_on_stdout() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/databases/",
+    if !common::permission_bits_apply() {
+        return;
+    }
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
         Reply::json(202, &created("provisioning")),
     )]);
     let home = Home::new();
@@ -1382,17 +1404,17 @@ fn a_file_made_during_the_create_is_kept_and_the_answer_stays_on_stdout() {
         let at = dir.join(planted);
         // The server thread must not panic, so a failure to plant the file is left to the
         // assertions below.
-        let server = Server::start(vec![route(
-            "POST",
-            "/api/databases/",
+        let server = Server::start(vec![route_of(
+            &databases::DATABASE_CREATE,
+            [],
             Reply::json(202, &created("provisioning"))
                 .before(move || drop(std::fs::write(&at, "someone else's"))),
         )]);
         let run = create_into(&home, &server, &dir, &[]);
         assert_eq!(run.code(), Some(1), "{}", run.stderr());
         assert_eq!(run.json(), with_credentials(database("provisioning")));
-        let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-        let message = error["error"]["message"].as_str().unwrap();
+        let error = run.error();
+        let message = error["message"].as_str().unwrap();
         assert!(
             message.contains(&format!("{planted}`: the system says `File exists")),
             "{message}"
@@ -1417,9 +1439,12 @@ fn a_file_made_during_the_create_is_kept_and_the_answer_stays_on_stdout() {
 /// opened (mode 0300) fails before any file is written, with the whole answer on stdout.
 #[test]
 fn a_directory_that_cannot_be_opened_keeps_the_answer_on_stdout() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/databases/",
+    if !common::permission_bits_apply() {
+        return;
+    }
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
         Reply::json(202, &created("provisioning")),
     )]);
     let home = Home::new();
@@ -1429,11 +1454,11 @@ fn a_directory_that_cannot_be_opened_keeps_the_answer_on_stdout() {
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
     assert_eq!(run.json(), with_credentials(database("provisioning")));
-    let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-    assert_eq!(error["error"]["code"], "internal");
-    assert_eq!(error["error"]["side_effects"], "partial");
+    let error = run.error();
+    assert_eq!(error["code"], "internal");
+    assert_eq!(error["side_effects"], "partial");
     assert_eq!(
-        error["error"]["message"],
+        error["message"],
         format!(
             "cannot create `{}`: its directory cannot be opened: permission is denied; every \
              credential is in the answer on stdout",
@@ -1443,15 +1468,15 @@ fn a_directory_that_cannot_be_opened_keeps_the_answer_on_stdout() {
     no_tls_file(&dir);
 }
 
-/// A directory another user can write lets them swap `ca.crt` (which `sslmode=verify-ca`
-/// trusts) or delete `client.key`, so one that is world-writable, or group-writable by a group
-/// other than the user's private group, is usage before anything is sent. A sticky one, such as `/tmp`,
-/// passes: no one else may rename or delete a file in it.
+/// A directory another user can write lets them swap `ca.crt` (which `sslmode=verify-ca` trusts) or
+/// delete `client.key`, so one that is world-writable, or group-writable by a group other than the
+/// user's private group, is usage before anything is sent. A sticky one, such as `/tmp`, passes: no
+/// one else may rename or delete a file in it.
 #[test]
 fn a_credentials_dir_others_can_write_is_usage_with_zero_requests() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/databases/",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
         Reply::json(202, &created("provisioning")),
     )]);
     let home = Home::new();
@@ -1492,6 +1517,9 @@ fn a_credentials_dir_others_can_write_is_usage_with_zero_requests() {
 /// A directory whose parent cannot be searched cannot be checked, so it is usage too.
 #[test]
 fn a_credentials_dir_that_cannot_be_read_is_usage() {
+    if !common::permission_bits_apply() {
+        return;
+    }
     let server = Server::start(vec![]);
     let home = Home::new();
     let parent = empty_dir(&home, "closed");
@@ -1517,9 +1545,9 @@ fn an_answer_without_tls_files_writes_nothing() {
     let mut partial = with_credentials(database("provisioning"));
     partial["credentials"]["tls"]["ca_cert"] = Value::Null;
     for answer in [database("provisioning"), partial] {
-        let server = Server::start(vec![route(
-            "POST",
-            "/api/databases/",
+        let server = Server::start(vec![route_of(
+            &databases::DATABASE_CREATE,
+            [],
             Reply::json(202, &answer.to_string()),
         )]);
         let home = Home::new();
@@ -1527,9 +1555,9 @@ fn an_answer_without_tls_files_writes_nothing() {
         let run = create_into(&home, &server, &dir, &[]);
         assert_eq!(run.code(), Some(1), "{}", run.stderr());
         assert_eq!(run.json(), answer);
-        let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-        assert_eq!(error["error"]["code"], "internal");
-        assert_eq!(error["error"]["side_effects"], "partial");
+        let error = run.error();
+        assert_eq!(error["code"], "internal");
+        assert_eq!(error["side_effects"], "partial");
         no_tls_file(&dir);
     }
 }
@@ -1537,9 +1565,9 @@ fn an_answer_without_tls_files_writes_nothing() {
 /// Text mode names the five files; no secret is in any output.
 #[test]
 fn text_mode_names_the_tls_files() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/databases/",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
         Reply::json(202, &created("provisioning")),
     )]);
     let home = Home::new();
@@ -1584,7 +1612,11 @@ fn restore_into(home: &Home, server: &Server, dir: &Path, extra: &[&str]) -> Run
 
 /// A server whose restore of the database `7` answers `answer`, the new database.
 fn restore_server(answer: &str) -> Server {
-    Server::start(vec![db_route("POST", "restore/", Reply::json(202, answer))])
+    Server::start(vec![route_of(
+        &databases::DATABASE_RESTORE,
+        [&7],
+        Reply::json(202, answer),
+    )])
 }
 
 /// A restore makes a new database with its own credentials, so `--credentials-dir` writes
@@ -1656,9 +1688,9 @@ fn a_restore_whose_files_cannot_be_written_keeps_the_answer_on_stdout() {
     let home = Home::new();
     let dir = empty_dir(&home, "raced");
     let at = dir.join("client.key");
-    let server = Server::start(vec![db_route(
-        "POST",
-        "restore/",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_RESTORE,
+        [&7],
         Reply::json(202, &created("provisioning"))
             .before(move || drop(std::fs::write(&at, "someone else's"))),
     )]);
@@ -1692,9 +1724,9 @@ fn a_restore_whose_files_cannot_be_written_keeps_the_answer_on_stdout() {
     let run = restore_into(&home, &server, &empty, &[]);
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
     assert_eq!(run.json(), database("provisioning"));
-    let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-    assert_eq!(error["error"]["code"], "internal");
-    assert_eq!(error["error"]["side_effects"], "partial");
+    let error = run.error();
+    assert_eq!(error["code"], "internal");
+    assert_eq!(error["side_effects"], "partial");
     no_tls_file(&empty);
 }
 
@@ -1709,9 +1741,9 @@ fn credentials_dir_redacts_a_secret_repeated_outside_credentials() {
     // A field the fixture does not know, a list, is withheld and redacted too.
     answer["credentials"]["extra"] = json!(["xtra-secret-41", 7, ""]);
     answer["hosts"] = json!(["h xtra-secret-41", 7]);
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/databases/",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
         Reply::json(202, &answer.to_string()),
     )]);
     let home = Home::new();
@@ -1727,6 +1759,73 @@ fn credentials_dir_redacts_a_secret_repeated_outside_credentials() {
     assert_eq!(doc["hosts"], json!(["h <redacted>", 7]));
     assert!(doc["credentials"].get("extra").is_none(), "{doc}");
     assert_eq!(doc["credentials"]["username"], "app");
+}
+
+/// A number that is a withheld value becomes the string `<redacted>`, and a field name that is
+/// one, or holds one of eight characters or more, becomes `<redacted>` (tenet 9); a field name
+/// that holds only a shorter one is kept.
+#[test]
+fn credentials_dir_redacts_a_withheld_value_in_a_number_or_a_field_name() {
+    let mut answer = with_credentials(database("provisioning"));
+    answer["credentials"]["pin"] = json!("48151623");
+    answer["credentials"]["tag"] = json!("ab");
+    answer["pin_echo"] = json!(48_151_623);
+    answer["echoes"] = Value::Object(serde_json::Map::from_iter([
+        (PASSWORD.to_owned(), json!(1)),
+        (format!("user {PASSPHRASE}"), json!(2)),
+        ("label".to_owned(), json!(3)),
+    ]));
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
+        Reply::json(202, &answer.to_string()),
+    )]);
+    let home = Home::new();
+    let dir = empty_dir(&home, "creds");
+    let run = create_into(&home, &server, &dir, &[]);
+    let doc = run.ok();
+    no_secret(&run);
+    assert!(!run.stdout().contains("48151623"), "{}", run.stdout());
+    assert_eq!(doc["pin_echo"], "<redacted>");
+    assert_eq!(
+        doc["echoes"],
+        json!({"<redacted>": 1, "<redacted> (2)": 2, "label": 3})
+    );
+}
+
+/// A withheld value repeated in another spelling, percent-encoded in a URL or escaped in a
+/// JSON string, is redacted too; and a short withheld value does not rewrite the file paths
+/// `hipc` names, nor a marker.
+#[test]
+fn credentials_dir_redacts_every_spelling_and_keeps_its_own_paths() {
+    let mut answer = with_credentials(database("provisioning"));
+    answer["credentials"]["password"] = json!("p@ss/w\"rd-Q81");
+    answer["credentials"]["sslmode"] = json!("creds");
+    answer["connection"]["connection_string"] =
+        json!("postgresql://app:p%40ss%2Fw%22rd-Q81@db-7.example.net/app");
+    answer["note"] = json!(r#"quoted "p@ss/w\"rd-Q81" here"#);
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
+        Reply::json(202, &answer.to_string()),
+    )]);
+    let home = Home::new();
+    let dir = empty_dir(&home, "creds");
+    let run = create_into(&home, &server, &dir, &[]);
+    let doc = run.ok();
+    assert!(!run.stdout().contains("Q81"), "{}", run.stdout());
+    assert_eq!(
+        doc["connection"]["connection_string"],
+        "postgresql://app:<redacted>@db-7.example.net/app"
+    );
+    assert_eq!(doc["note"], "quoted \"<redacted>\" here");
+    let env_file = doc["credentials"]["env_file"].as_str().expect("a path");
+    assert_eq!(
+        std::path::Path::new(env_file).file_name(),
+        Some(".env".as_ref()),
+        "{env_file}"
+    );
+    assert!(!env_file.contains("<redacted>"), "{env_file}");
 }
 
 /// A directory whose path `.env` cannot hold single-quoted is usage before anything is sent.
@@ -1750,9 +1849,9 @@ fn a_credentials_dir_path_env_cannot_quote_is_usage_with_zero_requests() {
 /// A create the API refuses for the balance names the reads that tell how much it needs.
 #[test]
 fn a_create_refused_for_the_balance_names_the_reads_that_size_it() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/databases/",
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
         Reply::json(402, r#"{"detail":"Balance does not cover 24 hours"}"#),
     )]);
     let error = create(&server, &["--reveal", "--yes"]).fails(1, "payment_required");

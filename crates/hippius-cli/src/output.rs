@@ -221,9 +221,8 @@ pub(crate) fn body(terminal: &Terminal, mode: Mode, bytes: &[u8], done: SideEffe
 /// A server body as a person may read it, ending in a line break unless it is empty. Text
 /// mode writes Rust escapes (`\u{1b}`), as every text-mode value does. JSON mode writes
 /// `\uXXXX`, the escape a JSON string accepts: inside a string it reads back as the same
-/// character.
-/// Outside one, the only such character valid JSON can hold is a carriage return between
-/// tokens, which shows as `\u000d` rather than move the cursor back over the line.
+/// character. Outside one, the only such character valid JSON can hold is a carriage return
+/// between tokens, which shows as `\u000d` rather than move the cursor back over the line.
 fn escape_body(mode: Mode, bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let mut escaped = String::with_capacity(text.len() + 1);
@@ -258,32 +257,65 @@ pub(crate) fn failure(mode: Mode, error: &Error) -> ExitCode {
 
 /// [`failure`], with the run's `warnings`, which JSON mode adds to the error object as a
 /// `warnings` array of their texts ([`add_warnings`]); text mode has printed them already.
+///
+/// A failure with a record of what was done prints it on stdout first, so no id or row is
+/// lost (tenet 3). When that write fails, as [`stdout`] treats a document it cannot write,
+/// the failure printed is `internal` (tenet 15), naming the failure it replaces, so the
+/// caller knows the record is lost; a closed pipe is the reader's choice and changes nothing.
 pub(crate) fn failure_warned(mode: Mode, error: &Error, warnings: &[String]) -> ExitCode {
-    // A partial failure still prints what succeeded, so no id or row is lost (tenet 3).
-    // A failure to write it does not change the exit code, which already says failure.
-    if let Some(done) = done_on_failure(error) {
+    let lost = done_on_failure(error).and_then(|done| {
         let layout = if error.stdout_is_list() {
             Layout::List
         } else {
             Layout::Document
         };
-        drop(write_stdout(render(mode, &done, layout).as_bytes()));
-    }
-    stderr(&render_failure(mode, error, warnings));
-    ExitCode::from(error.code().exit_code())
+        write_stdout(render(mode, &done, layout).as_bytes())
+            .err()
+            .filter(|lost| lost.kind() != io::ErrorKind::BrokenPipe)
+    });
+    let replacement = lost.map(|lost| {
+        Error::internal(format!(
+            "cannot write to stdout the record of what was done: {}; the command had failed: {}",
+            phrase::io_reason(&lost),
+            error.message()
+        ))
+        .with_side_effects(error.side_effects())
+    });
+    let printed = replacement.as_ref().unwrap_or(error);
+    stderr(&render_failure(mode, printed, warnings));
+    ExitCode::from(printed.code().exit_code())
 }
 
 /// Adds the run's `warnings` to a JSON-mode document as a top-level `warnings` array of their
 /// texts, the `warning:` lines text mode writes on stderr. A document only gains fields
-/// (tenet 15), and the array is there only when there is a warning. A document that is not
-/// an object, such as an `--all` array, has no place for it; no command that can warn prints
-/// one.
+/// (tenet 15), and the array is there only when there is a warning. A document with no place
+/// for the field keeps its shape (tenet 3), and its warnings go to stderr
+/// ([`warnings_aside`]): one that is not an object, such as the array `--all` prints, and one
+/// that holds a `warnings` field of its own, such as a server answer's, which is never
+/// overwritten.
 pub(crate) fn add_warnings(mode: Mode, document: &mut Value, warnings: &[String]) {
-    if matches!(mode, Mode::Json)
-        && !warnings.is_empty()
-        && let Value::Object(fields) = document
-    {
-        fields.insert("warnings".to_owned(), warnings.into());
+    match document {
+        Value::Object(fields)
+            if matches!(mode, Mode::Json)
+                && !warnings.is_empty()
+                && !fields.contains_key("warnings") =>
+        {
+            fields.insert("warnings".to_owned(), warnings.into());
+        }
+        _ => warnings_aside(mode, warnings),
+    }
+}
+
+/// Prints the run's `warnings` for a JSON-mode result that has no place for a field (an
+/// array, or a body printed as the server sent it) on stderr, as one object, `{"warnings":
+/// [...]}`, the form they take beside `error` on a failure. A config warning applies to every
+/// command, so any result can carry one. Text mode has printed them already.
+pub(crate) fn warnings_aside(mode: Mode, warnings: &[String]) {
+    if matches!(mode, Mode::Json) && !warnings.is_empty() {
+        stderr(&format!(
+            "{}\n",
+            json_text(&serde_json::json!({ "warnings": warnings }))
+        ));
     }
 }
 
@@ -294,6 +326,16 @@ fn done_on_failure(error: &Error) -> Option<Value> {
     let mut done = error.stdout()?.clone();
     crate::commands::drop_next_step(&mut done);
     Some(done)
+}
+
+/// The length, in characters, from which a word a usage error would quote is not repeated:
+/// a console token is 40 characters and no command name is 20, so the cut sits between them.
+const TOKEN_SHAPED_CHARS: usize = 20;
+
+/// Whether `word`, the caller's, is long enough to be a token pasted in the wrong place
+/// ([`TOKEN_SHAPED_CHARS`]); clap's own name for an argument starts with `-` or `<`.
+fn token_shaped(word: &str) -> bool {
+    !word.starts_with(['-', '<']) && word.chars().count() >= TOKEN_SHAPED_CHARS
 }
 
 /// Prints a clap parse result that is not a successful parse: help and version go to
@@ -311,31 +353,35 @@ pub(crate) fn clap_error(mode: Mode, error: &clap::Error, args: &[OsString]) -> 
         return raw(mode, rendered.as_bytes(), SideEffects::None);
     }
     let (path, mut command) = typed_command(args);
-    // No `hipc auth` command takes an argument, and a word given to one, or as any command's
-    // name, that is too long to be a command name is likely the token pasted in the wrong
-    // place, so it is not repeated: clap's message would quote it. A mistyped command name
-    // still gets the usual message and its nearest command.
-    let auth = path == "hipc auth" || path.starts_with("hipc auth ");
-    // Only the errors that quote a word the caller gave; a missing subcommand's context names
-    // the command instead.
+    // A word the caller gave that is too long to be a command name or a value from a fixed
+    // list may be a token pasted in the wrong place, so a refusal of it as unknown never
+    // repeats it: clap's message, and `usage_message`, would quote it (tenet 9). A shorter
+    // word, such as a mistyped command name, still gets the usual message and its nearest
+    // command. clap's own name for an argument (`--name <NAME>`, `<VM_ID>`) is not the
+    // caller's word. A validator's refusal keeps its reason and drops such a value
+    // ([`usage_message`]).
     let refuses_a_word = matches!(
         error.kind(),
         ErrorKind::UnknownArgument | ErrorKind::InvalidValue | ErrorKind::InvalidSubcommand
     );
-    let quoted = [
+    let quotes_a_token = [
         ContextKind::InvalidArg,
         ContextKind::InvalidValue,
         ContextKind::InvalidSubcommand,
     ]
     .into_iter()
-    .filter(|&kind| auth || kind == ContextKind::InvalidSubcommand)
-    .filter_map(|kind| match error.get(kind) {
-        Some(ContextValue::String(word)) => Some(word.as_str()),
-        _ => None,
-    });
-    // A console token is 40 characters; no command name is 20.
-    let token_shaped = |word: &str| !word.starts_with('-') && word.chars().count() >= 20;
-    if refuses_a_word && quoted.into_iter().any(token_shaped) {
+    .any(|kind| matches!(error.get(kind), Some(ContextValue::String(word)) if token_shaped(word)));
+    if refuses_a_word && quotes_a_token {
+        // No `hipc auth` command takes a word, so the token goes to a login there; elsewhere
+        // the word may be a value the command takes, whose form its help gives.
+        let auth = path == "hipc auth" || path.starts_with("hipc auth ");
+        let hint = if auth {
+            "pass the token with `hipc auth login --token-file <path>` or at its prompt, never \
+             on the command line"
+                .to_owned()
+        } else {
+            format!("run `{path} --help`")
+        };
         return failure(
             mode,
             &Error::usage(
@@ -344,8 +390,7 @@ pub(crate) fn clap_error(mode: Mode, error: &clap::Error, args: &[OsString]) -> 
                      repeated here; if it is a token, treat it as exposed to anyone who can \
                      read this machine's process list or shell history"
                 ),
-                "pass the token with `hipc auth login --token-file <path>` or at its \
-                 prompt, never on the command line",
+                hint,
             ),
         );
     }
@@ -423,9 +468,11 @@ fn is_missing_subcommand(error: &clap::Error) -> bool {
 /// set aside before the cut and put back through `phrase::quote`, so a blank line, a line
 /// break, or a `'` inside one cannot end the message or change it. `quote` writes its line
 /// breaks as `\n`, the form `render_failure` gives every other control character, so they
-/// cannot forge a line of their own.
-/// Elsewhere an apostrophe inside a word stays, and a numeric range clap names bare
-/// outside a literal (`0 is not in 1..=500`) is a literal too, so it gains backticks.
+/// cannot forge a line of their own. Elsewhere an apostrophe inside a word stays, and a
+/// numeric range clap names bare outside a literal (`0 is not in 1..=500`) is a literal too,
+/// so it gains backticks. A value a validator refused that is [`token_shaped`] is left out,
+/// and the validator's reason kept (``invalid value for `--name <NAME>`: ...``): it may be a
+/// secret given to the wrong flag (tenet 9).
 fn usage_message(error: &clap::Error) -> String {
     let quoted: Vec<&str> = [
         ContextKind::InvalidValue,
@@ -441,6 +488,12 @@ fn usage_message(error: &clap::Error) -> String {
     // Each quoted word becomes a marker of NUL, its index, and NUL. A NUL cannot occur in
     // argv on Unix, nor in clap's own text, so a marker cannot collide with either.
     let mut rendered = error.render().to_string();
+    if error.kind() == ErrorKind::ValueValidation
+        && let Some(ContextValue::String(value)) = error.get(ContextKind::InvalidValue)
+        && token_shaped(value)
+    {
+        rendered = rendered.replacen(&format!("'{value}' "), "", 1);
+    }
     for (i, text) in quoted.iter().enumerate() {
         rendered = rendered.replace(&format!("'{text}'"), &format!("\0{i}\0"));
     }
@@ -912,6 +965,11 @@ mod text {
     /// can reverse an id or URL a person copies, zero-width and tag characters), the
     /// Unicode line and paragraph separators, and the invisible fillers and variation
     /// selectors that make `prod` and `prod` plus a filler look the same.
+    ///
+    /// The Cf rows come from `DerivedGeneralCategory.txt` of Unicode 15; the rest are the
+    /// assigned `Default_Ignorable_Code_Point` characters of `DerivedCoreProperties.txt` that
+    /// are not Cf, and the Braille blank. A Unicode release that adds a Cf or default-ignorable
+    /// character needs a row here.
     pub(crate) fn changes_how_text_reads(c: char) -> bool {
         matches!(
             c,
@@ -942,11 +1000,16 @@ mod text {
                 // Invisible fillers and the combining grapheme joiner.
                 | '\u{034F}'
                 | '\u{115F}'..='\u{1160}'
+                | '\u{17B4}'..='\u{17B5}'
                 | '\u{3164}'
                 | '\u{FFA0}'
-                // Variation selectors.
+                // Variation selectors, the Mongolian free ones included (Mn, Unicode 14).
+                | '\u{180B}'..='\u{180D}'
+                | '\u{180F}'
                 | '\u{FE00}'..='\u{FE0F}'
                 | '\u{E0100}'..='\u{E01EF}'
+                // The Braille blank (So), a common invisible filler.
+                | '\u{2800}'
         )
     }
 
@@ -967,6 +1030,7 @@ mod text {
 #[cfg(test)]
 mod tests {
     use clap::Parser as _;
+    use hippius::Failure;
     use serde_json::json;
 
     use super::*;
@@ -1134,8 +1198,14 @@ mod tests {
 
     /// Every command line of up to four words from this vocabulary that clap accepts gets
     /// the same mode from the raw scan as from the parse.
+    ///
+    /// The parser is built once and reused: `Cli::try_parse_from` builds the whole command
+    /// tree afresh for each of the 10,000 lines, which is most of a parse's cost and took
+    /// about 12 minutes in a debug build.
     #[test]
     fn raw_argv_scan_agrees_with_clap_on_every_accepted_command_line() {
+        use clap::{CommandFactory as _, FromArgMatches as _};
+
         const WORDS: [&str; 9] = [
             "version",
             "--json",
@@ -1161,11 +1231,15 @@ mod tests {
                 .collect();
             lines.extend(longer);
         }
+        let mut parser = Cli::command();
         let mut accepted = 0;
         for line in &lines {
             let mut argv = vec!["hipc"];
             argv.extend(line);
-            let Ok(cli) = Cli::try_parse_from(&argv) else {
+            let parsed = parser
+                .try_get_matches_from_mut(&argv)
+                .and_then(|mut matches| Cli::from_arg_matches_mut(&mut matches));
+            let Ok(cli) = parsed else {
                 continue;
             };
             accepted += 1;
@@ -1226,16 +1300,9 @@ mod tests {
                  [possible values: `bash`, `elvish`, `fish`, `powershell`, `zsh`]",
             ),
             (
-                &[
-                    "hipc",
-                    "compute",
-                    "runners",
-                    "settings",
-                    "update",
-                    "--allowed-size",
-                ],
-                "a value is required for `--allowed-size <SIZE>` but none was supplied \
-                 [possible values: `small`, `medium`, `large`]",
+                &["hipc", "compute", "vms", "create", "--os-disk-tier"],
+                "a value is required for `--os-disk-tier <TIER>` but none was supplied \
+                 [possible values: `nvme`, `ssd`, `hdd`]",
             ),
             (&["hipc", "--bogus"], "unexpected argument `--bogus` found"),
             (
@@ -1353,7 +1420,7 @@ mod tests {
         assert_eq!(
             render_failure(
                 Mode::Text,
-                &Error::new(Code::NotFound, "no such thing"),
+                &Error::new(Failure::NotFound, "no such thing"),
                 &[]
             ),
             "error: no such thing\n"
@@ -1556,6 +1623,12 @@ mod tests {
         );
         for c in ['\u{3164}', '\u{E0041}', '\u{E0100}'] {
             assert!(!filler.contains(c), "{c:?} in {filler:?}");
+        }
+        // So do the Mongolian free variation selectors, the Khmer inherent vowels, and the
+        // Braille blank, which are not format characters.
+        for c in ['\u{180B}', '\u{180D}', '\u{180F}', '\u{17B4}', '\u{2800}'] {
+            let rendered = text::render(&json!({ "name": format!("prod{c}") }), Layout::Document);
+            assert!(!rendered.contains(c), "{c:?} in {rendered:?}");
         }
         // JSON mode writes the same characters, and DEL, as \u escapes: still the same value.
         let json = json_text(&json!({"name": "a\u{202E}b\u{7f}c"}));

@@ -4,9 +4,10 @@
 # version from Cargo.toml. The package is `hippius` and the command is `hipc`; `hipc` on PyPI
 # is an unrelated project.
 
-# One exact maturin, the one release.yml builds the wheels with (`maturin-version`), so
-# Dependabot (the `pip` entry in .github/dependabot.yml) proposes each new release here, and a
-# test fails until release.yml names the same version.
+# One exact maturin, the one the release builds the wheels with (`maturin-version` in
+# .github/actions/release-build/action.yml), so Dependabot (the `pip` entry in
+# .github/dependabot.yml) proposes each new release here, and a test fails until the action
+# names the same version.
 [build-system]
 requires = ["maturin==1.16.0"]
 build-backend = "maturin"

@@ -1,8 +1,13 @@
-//! `hipc account members` and `hipc account invites`: the team of the selected account.
+//! `hipc account members` and `hipc account invites` as the team's admin sees them: the
+//! members, and the invites the selected account sends. The invitee's side, `invites preview`
+//! and `accept`, is `invites.rs`.
 
+use hippius::routes::account;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Route, Run, Server, draft, route};
+use crate::common::{
+    BILLING, Hipc, Home, MEMBER, PROJECT, Recorded, Reply, Route, Run, Server, draft, route_of,
+};
 
 const MEMBERS: &str = concat!(
     r#"{"owner":{"id":"u1","email":"owner@example.com","username":"owner"},"#,
@@ -30,20 +35,12 @@ const ONE_INVITE: &str = concat!(
 /// Every team route, answering as the console documents it.
 fn team_routes() -> Vec<Route> {
     vec![
-        route("GET", "/api/accounts/members/", Reply::json(200, MEMBERS)),
-        route(
-            "PATCH",
-            "/api/accounts/members/7/",
-            Reply::json(200, ONE_MEMBER),
-        ),
-        route("DELETE", "/api/accounts/members/7/", Reply::json(204, "")),
-        route("GET", "/api/accounts/invites/", Reply::json(200, INVITES)),
-        route(
-            "POST",
-            "/api/accounts/invites/",
-            Reply::json(201, ONE_INVITE),
-        ),
-        route("DELETE", "/api/accounts/invites/3/", Reply::json(204, "")),
+        route_of(&account::MEMBERS, [], Reply::json(200, MEMBERS)),
+        route_of(&account::MEMBER_UPDATE, [&7], Reply::json(200, ONE_MEMBER)),
+        route_of(&account::MEMBER_DELETE, [&7], Reply::json(204, "")),
+        route_of(&account::INVITES, [], Reply::json(200, INVITES)),
+        route_of(&account::INVITE_CREATE, [], Reply::json(201, ONE_INVITE)),
+        route_of(&account::INVITE_REVOKE, [&3], Reply::json(204, "")),
     ]
 }
 
@@ -60,7 +57,7 @@ fn text(server: &Server, args: &[&str]) -> Run {
     Hipc::against(&Home::new(), server).run(&argv)
 }
 
-/// One invocation of every command, each confirmed where it needs it.
+/// One invocation of every team command, without `--yes`: each caller adds what it needs.
 const EVERY_COMMAND: [&[&str]; 6] = [
     &["members", "list"],
     &[
@@ -113,16 +110,8 @@ fn invites_list_is_an_envelope() {
 #[test]
 fn a_list_answer_without_its_key_is_internal() {
     let server = Server::start(vec![
-        route(
-            "GET",
-            "/api/accounts/members/",
-            Reply::json(200, r#"{"owner":{}}"#),
-        ),
-        route(
-            "GET",
-            "/api/accounts/invites/",
-            Reply::json(200, r#"{"items":[]}"#),
-        ),
+        route_of(&account::MEMBERS, [], Reply::json(200, r#"{"owner":{}}"#)),
+        route_of(&account::INVITES, [], Reply::json(200, r#"{"items":[]}"#)),
     ]);
     hipc(&server, &["members", "list"]).fails(1, "internal");
     hipc(&server, &["invites", "list"]).fails(1, "internal");
@@ -257,23 +246,24 @@ fn a_permission_alone_sends_no_grants_key() {
     );
 }
 
+/// `cli::account::tests` holds every refused value; this pins the `usage` it becomes.
 #[test]
 fn a_permission_takes_only_true_or_false() {
     let server = Server::start(team_routes());
-    for value in ["yes", "1", "", "TRUE"] {
-        hipc(
-            &server,
-            &[
-                "members",
-                "update",
-                "7",
-                "--billing-permission",
-                value,
-                "--yes",
-            ],
-        )
-        .fails(2, "usage");
-    }
+    let argv = [
+        "members",
+        "update",
+        "7",
+        "--billing-permission",
+        "yes",
+        "--yes",
+    ];
+    let error = hipc(&server, &argv).fails(2, "usage");
+    assert_eq!(
+        error["message"],
+        "invalid value `yes` for `--billing-permission <BOOL>` \
+         [possible values: `true`, `false`]"
+    );
     assert!(server.requests().is_empty());
 }
 
@@ -362,64 +352,24 @@ fn an_update_with_nothing_to_change_is_usage_without_a_request() {
     assert!(server.requests().is_empty());
 }
 
+/// `cli::account::tests` holds every refused grant, id, and address, in both commands that take
+/// each; these pin the `usage` a refusal becomes and that nothing is sent.
 #[test]
 fn a_bad_grant_is_usage_without_a_request_and_lists_the_valid_values() {
     let server = Server::start(team_routes());
-    let scopes = concat!(
-        "use `vms`, `databases`, `kubernetes`, `runners`, `s3`, `cdn`, `network`, ",
-        "`compute:*`, `storage:*`, or `billing`"
-    );
-    let shape = "a grant is `SCOPE=LEVEL`, such as `vms=operator`, `SCOPE=LEVEL@ID`, or `none`";
-    let project_id = concat!(
-        "`proj_x` is not a project id: a grant on `vms` names a project, `proj_` and 20 ",
-        "lowercase hex characters, from `hipc account projects list`"
-    );
-    let cases = [
-        ("vms", shape),
-        ("", shape),
-        ("NONE", shape),
-        ("drive=admin", "`drive` is not a grant scope"),
-        ("project=admin", "`project` is not a grant scope"),
-        ("Billing=viewer", "`Billing` is not a grant scope"),
-        (
-            "billing=operator",
-            "`operator` is not a billing level: use `viewer` or `admin`",
-        ),
-        ("vms=admin@proj_x", project_id),
-        ("vms=admin@", "`` is not a project id"),
-        ("vms=admin@bill_9f8e7d6c5b4a39281706", "is not a project id"),
-        ("vms=admin@default", "`default` is not a project id"),
-        (
-            "billing=admin@proj_0a1b2c3d4e5f60718293",
-            "is not a billing account id: a grant on `billing` names a billing account",
-        ),
-        (
-            "network=admin@proj_0a1b2c3d4e5f60718293",
-            "a grant on `network` is account-wide, so it names no project or billing account",
-        ),
-        ("VMS=admin", "`VMS` is not a grant scope"),
-        ("compute=admin", "`compute` is not a grant scope"),
-        (
-            "vms=owner",
-            "`owner` is not a grant level: use `viewer`, `operator`, or `admin`",
-        ),
-        ("vms=Admin", "`Admin` is not a grant level"),
-        ("vms=", "`` is not a grant level"),
-    ];
-    for (grant, expected) in cases {
-        for command in [
-            &["members", "update", "7"][..],
-            &["invites", "create", "--email", "a@b.co"],
-        ] {
-            let mut argv = command.to_vec();
-            argv.extend(["--grant", grant, "--yes"]);
-            let error = hipc(&server, &argv).fails(2, "usage");
-            let message = error["message"].as_str().unwrap();
-            assert!(message.contains(expected), "{grant}: {message}");
-            if expected.ends_with("scope") {
-                assert!(message.contains(scopes), "{grant}: {message}");
-            }
-        }
+    for command in [
+        &["members", "update", "7"][..],
+        &["invites", "create", "--email", "a@b.co"],
+    ] {
+        let argv = [command, &["--grant", "drive=admin", "--yes"]].concat();
+        let error = hipc(&server, &argv).fails(2, "usage");
+        assert_eq!(
+            error["message"],
+            "invalid value `drive=admin` for `--grant <SCOPE=LEVEL>`: `drive` is not a grant \
+             scope: use `vms`, `databases`, `kubernetes`, `runners`, `s3`, `cdn`, `network`, \
+             `compute:*`, `storage:*`, or `billing`",
+            "{argv:?}"
+        );
     }
     assert!(server.requests().is_empty());
 }
@@ -427,16 +377,24 @@ fn a_bad_grant_is_usage_without_a_request_and_lists_the_valid_values() {
 #[test]
 fn a_bad_id_is_usage_without_a_request() {
     let server = Server::start(team_routes());
-    for id in ["x", "-1", "7/", "1.5", "", "7?x=1", "../8"] {
-        for command in [
-            &["members", "update", id, "--billing-permission", "true"][..],
-            &["members", "delete", id],
-            &["invites", "revoke", id],
-        ] {
-            let mut argv = command.to_vec();
-            argv.push("--yes");
-            hipc(&server, &argv).fails(2, "usage");
-        }
+    for (command, says) in [
+        (
+            &["members", "update", "7/", "--billing-permission", "true"][..],
+            "a member id is a whole number, from `hipc account members list`",
+        ),
+        (
+            &["members", "delete", "7/"],
+            "a member id is a whole number, from `hipc account members list`",
+        ),
+        (
+            &["invites", "revoke", "7/"],
+            "an invite id is a whole number, from `hipc account invites list`",
+        ),
+    ] {
+        let argv = [command, &["--yes"]].concat();
+        let error = hipc(&server, &argv).fails(2, "usage");
+        let message = error["message"].as_str().expect("the message is a string");
+        assert!(message.ends_with(says), "{argv:?}: {message}");
     }
     assert!(server.requests().is_empty());
 }
@@ -445,28 +403,12 @@ fn a_bad_id_is_usage_without_a_request() {
 fn a_bad_email_is_usage_without_a_request() {
     let server = Server::start(team_routes());
     let long = format!("{}@example.com", "a".repeat(243));
-    for email in [
-        "",
-        "ana",
-        "@example.com",
-        "ana@",
-        "ana@example",
-        "ana@.com",
-        "ana@example.",
-        "ana@b@example.com",
-        "ana bo@example.com",
-        "ana@exa\tmple.com",
-        "ana@example.com\n",
-        &long,
-    ] {
-        let argv = ["invites", "create", "--email", email, "--yes"];
-        let error = hipc(&server, &argv).fails(2, "usage");
-        let message = error["message"].as_str().unwrap();
-        assert!(
-            message.contains("an email address is `name@domain`"),
-            "{message}"
-        );
-    }
+    let error = hipc(&server, &["invites", "create", "--email", &long, "--yes"]).fails(2, "usage");
+    let message = error["message"].as_str().expect("the message is a string");
+    assert!(
+        message.ends_with("an email address is `name@domain`, such as `ana@example.com`"),
+        "{message}"
+    );
     assert!(server.requests().is_empty());
     let longest = format!("{}@example.com", "a".repeat(242));
     hipc(
@@ -660,10 +602,7 @@ fn these_team_commands_dry_run_without_a_token_or_a_request() {
         let mut argv = vec!["account"];
         argv.extend(args);
         argv.push("--dry-run");
-        let doc = Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
-            .run(&argv)
-            .ok();
+        let doc = Hipc::tokenless(&Home::new(), &server).run(&argv).ok();
         assert_eq!(doc["dry_run"], true, "{args:?}");
     }
     assert!(server.requests().is_empty());
@@ -732,9 +671,9 @@ fn a_204_prints_the_document_the_plan_names() {
 
 #[test]
 fn a_delete_that_answers_a_body_prints_it() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/accounts/members/7/",
+    let server = Server::start(vec![route_of(
+        &account::MEMBER_DELETE,
+        [&7],
         Reply::json(200, r#"{"detail":"removed"}"#),
     )]);
     assert_eq!(
@@ -782,12 +721,12 @@ fn a_team_refusal_passes_through_by_its_code() {
         )
     };
     let server = Server::start(vec![
-        route(
-            "PATCH",
-            "/api/accounts/members/7/",
+        route_of(
+            &account::MEMBER_UPDATE,
+            [&7],
             refusal("team_management_required"),
         ),
-        route("DELETE", "/api/accounts/members/7/", refusal("owner_only")),
+        route_of(&account::MEMBER_DELETE, [&7], refusal("owner_only")),
     ]);
     let error = hipc(
         &server,
@@ -811,9 +750,9 @@ fn a_team_refusal_passes_through_by_its_code() {
 fn an_invite_refusal_keeps_the_server_body_in_details() {
     for (status, code) in [(400, "validation"), (409, "conflict")] {
         let body = r#"{"error":"the team is full","detail":{"limit":50}}"#;
-        let server = Server::start(vec![route(
-            "POST",
-            "/api/accounts/invites/",
+        let server = Server::start(vec![route_of(
+            &account::INVITE_CREATE,
+            [],
             Reply::json(status, body),
         )]);
         let error = hipc(
@@ -836,22 +775,12 @@ fn team_commands_need_a_token() {
         let mut argv = vec!["account"];
         argv.extend(args);
         argv.push("--yes");
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&Home::new(), &server)
             .run(&argv)
             .fails(1, "auth");
     }
     assert!(server.requests().is_empty());
 }
-/// The method and path of every request the server received.
-fn targets(server: &Server) -> Vec<String> {
-    server
-        .requests()
-        .iter()
-        .map(|r| format!("{} {}", r.method, r.target))
-        .collect()
-}
-
 /// The whole-list guard: the member has `vms=viewer`, so `--grant`s that leave it out, or give
 /// `vms` another level, are refused without `--remove-others` after the read, and the
 /// PATCH is never sent.
@@ -879,7 +808,7 @@ fn update_that_drops_a_grant_is_refused_without_remove_others() {
                 argv.join(" ")
             )
         );
-        assert_eq!(targets(&server), ["GET /api/accounts/members/"]);
+        assert_eq!(server.targets(), ["GET /api/accounts/members/"]);
         argv.push("--remove-others");
         hipc(&server, &argv).ok();
         assert_eq!(server.requests().len(), 2, "{grants:?}");
@@ -908,7 +837,7 @@ fn update_that_keeps_every_grant_reads_then_patches() {
         .run(&argv)
         .ok();
     assert_eq!(
-        targets(&server),
+        server.targets(),
         [
             "GET /api/accounts/members/",
             "PATCH /api/accounts/members/7/"
@@ -924,9 +853,9 @@ fn update_that_keeps_every_grant_reads_then_patches() {
 #[test]
 fn update_of_a_member_not_in_the_list_is_not_found_without_a_patch() {
     let mut routes = team_routes();
-    routes.push(route(
-        "PATCH",
-        "/api/accounts/members/8/",
+    routes.push(route_of(
+        &account::MEMBER_UPDATE,
+        [&8],
         Reply::json(200, ONE_MEMBER),
     ));
     let server = Server::start(routes);
@@ -940,7 +869,7 @@ fn update_of_a_member_not_in_the_list_is_not_found_without_a_patch() {
         error["hint"],
         "run `hipc account members list` to see what exists"
     );
-    assert_eq!(targets(&server), ["GET /api/accounts/members/"]);
+    assert_eq!(server.targets(), ["GET /api/accounts/members/"]);
 }
 
 /// A members answer without the shape the guard reads ends the update before the PATCH.
@@ -963,12 +892,8 @@ fn update_whose_read_has_another_shape_is_internal_without_a_patch() {
         r#"{"members":[{"id":7,"grants":[{"scope":"vms","level":"viewer","project":"p","billing":"b"}]}]}"#,
     ] {
         let server = Server::start(vec![
-            route("GET", "/api/accounts/members/", Reply::json(200, answer)),
-            route(
-                "PATCH",
-                "/api/accounts/members/7/",
-                Reply::json(200, ONE_MEMBER),
-            ),
+            route_of(&account::MEMBERS, [], Reply::json(200, answer)),
+            route_of(&account::MEMBER_UPDATE, [&7], Reply::json(200, ONE_MEMBER)),
         ]);
         let error = hipc(
             &server,
@@ -980,7 +905,7 @@ fn update_whose_read_has_another_shape_is_internal_without_a_patch() {
             "cannot list the team members: the API answered with a shape `hipc` does not read",
             "{answer}"
         );
-        assert_eq!(targets(&server), ["GET /api/accounts/members/"], "{answer}");
+        assert_eq!(server.targets(), ["GET /api/accounts/members/"], "{answer}");
     }
 }
 
@@ -1034,8 +959,6 @@ fn remove_others_needs_a_grant_and_its_dry_run_reads_nothing() {
     assert_eq!(doc["requests"].as_array().map(Vec::len), Some(1), "{doc}");
     assert!(server.requests().is_empty());
 }
-const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
-const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
 
 /// A grant names one project or billing account with `@ID`, and goes out with the key the
 /// console sends; one scope may be given once per project.
@@ -1094,12 +1017,8 @@ fn the_guard_tells_a_grant_on_a_project_from_one_on_the_account() {
         PROJECT
     );
     let server = Server::start(vec![
-        route("GET", "/api/accounts/members/", Reply::json(200, &members)),
-        route(
-            "PATCH",
-            "/api/accounts/members/7/",
-            Reply::json(200, ONE_MEMBER),
-        ),
+        route_of(&account::MEMBERS, [], Reply::json(200, &members)),
+        route_of(&account::MEMBER_UPDATE, [&7], Reply::json(200, ONE_MEMBER)),
     ]);
     let error = hipc(
         &server,
@@ -1113,7 +1032,7 @@ fn the_guard_tells_a_grant_on_a_project_from_one_on_the_account() {
             .ends_with(&format!("to remove `vms=operator@{PROJECT}`")),
         "{error}"
     );
-    assert_eq!(targets(&server), ["GET /api/accounts/members/"]);
+    assert_eq!(server.targets(), ["GET /api/accounts/members/"]);
     let kept = format!("vms=operator@{PROJECT}");
     let doc = hipc(
         &server,

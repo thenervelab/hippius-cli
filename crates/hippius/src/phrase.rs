@@ -1,4 +1,4 @@
-//! The pieces of a message that recur, built one way (`TENETS.md` tenet 15, "Phrasing"):
+//! The pieces of a message that recur, built one way (tenet 15, "Phrasing"):
 //! a literal in backticks, the reason a file operation failed, a number with its noun, and a
 //! list with the serial comma.
 
@@ -9,23 +9,16 @@ use std::path::Path;
 use serde_json::Value;
 
 /// `text` as a literal in a message: in backticks, as every flag, command, variable, id,
-/// path, URL, and value is quoted.
+/// path, URL, and value is quoted (tenet 15).
 ///
-/// A backtick inside `text` is written `\u{60}`, so text from the server cannot close the
-/// literal early and have the rest read as `hipc`'s own words, and a control character is
-/// written as Rust escapes it (`\r`, `\n`, `\u{1b}`), the form the output layer writes on
-/// every stderr line, so the message holds the escaped text itself: a name the server
-/// chose cannot redraw the one-line confirmation prompt with `\r` or split an `error:`
-/// line in two with `\n`, in the JSON `message` and `hint` and for a library caller as much
-/// as on a terminal (tenet 15). Every message that quotes server text goes through here
-/// for that reason. The escape is not reversible: text that already holds the characters
-/// `\u{60}`, `\n`, or `\u{1b}` reads the same as a backtick or a control; the server's own
-/// words stay whole in `error.details`.
-///
-/// Only the control characters (C0, DEL, C1) are escaped: those are what a terminal acts
-/// on. A format character (a bidi override, a zero-width joiner, the Unicode line and
-/// paragraph separators) is only drawn, inside the backticks, and `hipc`'s output layer
-/// escapes it on every stderr line, so this stays without a Unicode table.
+/// A backtick inside `text` is written `\u{60}`, so server text cannot close the literal
+/// early and pass as `hipc`'s own words. A control character (C0, DEL, C1), which is what a
+/// terminal acts on, is written as Rust escapes it (`\r`, `\n`, `\u{1b}`), so a name the
+/// server chose cannot redraw the confirmation prompt or split an `error:` line, in the JSON
+/// `message` as much as on a terminal. The escape is not reversible; the server's own words
+/// stay whole in `error.details`. A format character (a bidi override, a line separator) is
+/// left to the output layer, which escapes it on every stderr line, so this needs no Unicode
+/// table.
 pub fn quote(text: impl Display) -> String {
     let mut quoted = String::from("`");
     for c in text.to_string().chars() {
@@ -117,9 +110,9 @@ pub fn command(args: &[String]) -> String {
 }
 
 /// The command line `hipc` followed by `args` (the words after the program name), with
-/// `flag` added after the last option, ready to paste into a POSIX shell: a word with
-/// anything but letters, digits, and `-_./:=@%+,` is single-quoted. The flag goes before a
-/// `--`, where a later word would be read as a value, not a flag.
+/// `flag` added at the end of the arguments, or before a `--`, after which it would be read as
+/// a value, not a flag. It is ready to paste into a POSIX shell: a word with anything but
+/// letters, digits, and `-_./:=@%+,` is single-quoted.
 pub fn command_line(args: &[String], flag: &str) -> String {
     let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
     let mut args = args.to_vec();

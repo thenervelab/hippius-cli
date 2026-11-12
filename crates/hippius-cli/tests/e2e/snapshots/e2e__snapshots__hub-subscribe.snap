@@ -1,0 +1,37 @@
+---
+source: crates/hippius-cli/tests/e2e/snapshots.rs
+expression: dry_run(args)
+---
+{
+  "dry_run": true,
+  "requests": [
+    {
+      "method": "GET",
+      "url": "[origin]/api/registry/plans/",
+      "account_header": null,
+      "project_header": null,
+      "billing_header": null,
+      "body": null
+    },
+    {
+      "method": "GET",
+      "url": "[origin]/api/registry/subscriptions/",
+      "account_header": null,
+      "project_header": null,
+      "billing_header": null,
+      "body": null
+    },
+    {
+      "method": "POST",
+      "url": "[origin]/api/registry/subscribe/",
+      "account_header": null,
+      "project_header": null,
+      "billing_header": null,
+      "body": {
+        "plan_id": "<looked up from pro>"
+      }
+    }
+  ],
+  "confirmation": true,
+  "confirmation_when": null
+}

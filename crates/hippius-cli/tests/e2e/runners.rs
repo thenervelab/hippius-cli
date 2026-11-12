@@ -1,9 +1,12 @@
 //! `hipc compute runners`: GitHub Actions runner settings, installations, jobs, and the
 //! connect URL.
 
+use hippius::routes::runners;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Route, Run, Server, TOKEN, draft, route};
+use crate::common::{
+    Hipc, Home, MEMBER, PROJECT, Reply, Route, Run, Server, draft, parsed, route, route_of,
+};
 
 /// The settings, shaped as the live answer was on 2026-10-27 (values made up).
 const SETTINGS: &str = concat!(
@@ -51,10 +54,6 @@ fn runners<'a>(args: &[&'a str]) -> Vec<&'a str> {
     argv
 }
 
-fn parsed(text: &str) -> Value {
-    serde_json::from_str(text).expect("the fixture is JSON")
-}
-
 /// A jobs route. One without a query answers every query, so the test server, which takes
 /// the first route that matches, lists it after the routes with one.
 fn jobs(query: &str, body: &str) -> Route {
@@ -67,9 +66,9 @@ fn jobs(query: &str, body: &str) -> Route {
 
 #[test]
 fn settings_get_prints_the_settings_as_sent() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/runners/settings/",
+    let server = Server::start(vec![route_of(
+        &runners::SETTINGS,
+        [],
         Reply::json(200, SETTINGS),
     )]);
     assert_eq!(hipc(&server, &["settings", "get"]).ok(), parsed(SETTINGS));
@@ -85,8 +84,8 @@ fn settings_get_prints_the_settings_as_sent() {
 #[test]
 fn settings_update_sends_only_the_flags_given() {
     let server = Server::start(vec![
-        route("GET", "/api/runners/settings/", Reply::json(200, SETTINGS)),
-        route("PUT", "/api/runners/settings/", Reply::json(200, SETTINGS)),
+        route_of(&runners::SETTINGS, [], Reply::json(200, SETTINGS)),
+        route_of(&runners::SETTINGS_UPDATE, [], Reply::json(200, SETTINGS)),
     ]);
     let cases: [(&[&str], Value); 6] = [
         (&["--max-concurrent", "4"], json!({"max_concurrent": 4})),
@@ -144,9 +143,9 @@ fn settings_update_sends_only_the_flags_given() {
 #[test]
 fn settings_update_needs_yes_and_its_question_names_every_change() {
     // The settings in force: off, at most 2 at once, `small` only, anywhere, no public repos.
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/runners/settings/",
+    let server = Server::start(vec![route_of(
+        &runners::SETTINGS,
+        [],
         Reply::json(200, SETTINGS),
     )]);
     let cases: [(&[&str], &str); 5] = [
@@ -195,8 +194,8 @@ fn settings_update_needs_yes_and_its_question_names_every_change() {
 fn settings_update_sends_a_cut_unasked() {
     let on = r#"{"enabled":true,"max_concurrent":4,"allowed_sizes":["small","large"],"default_region":"FR","allow_public_repos":true}"#;
     let server = Server::start(vec![
-        route("GET", "/api/runners/settings/", Reply::json(200, on)),
-        route("PUT", "/api/runners/settings/", Reply::json(200, on)),
+        route_of(&runners::SETTINGS, [], Reply::json(200, on)),
+        route_of(&runners::SETTINGS_UPDATE, [], Reply::json(200, on)),
     ]);
     for flags in [
         &["--enabled", "false"][..],
@@ -225,10 +224,9 @@ fn settings_update_sends_a_cut_unasked() {
         assert_eq!(put.method, "PUT", "{flags:?}");
     }
     assert_eq!(server.requests().len(), 18);
-    // `0` at once and a new default region spend no more, so neither asks.
+    // A new default region spends no more, so it does not ask.
     for flags in [
-        &["--max-concurrent", "0"][..],
-        &["--default-region", "de"],
+        &["--default-region", "de"][..],
         &["--default-region", "anywhere"],
     ] {
         let mut argv = vec!["settings", "update"];
@@ -236,12 +234,22 @@ fn settings_update_sends_a_cut_unasked() {
         hipc(&server, &argv).ok();
         assert_eq!(server.requests().pop().unwrap().method, "PUT", "{flags:?}");
     }
-    assert_eq!(server.requests().len(), 24);
+    assert_eq!(server.requests().len(), 22);
+    // `0` at once may mean no cap, so it asks as a raise does, unless the setting is `0`.
+    hipc(&server, &["settings", "update", "--max-concurrent", "0"])
+        .fails(2, "confirmation_required");
+    let zero = r#"{"enabled":true,"max_concurrent":0}"#;
+    let at_zero = Server::start(vec![
+        route_of(&runners::SETTINGS, [], Reply::json(200, zero)),
+        route_of(&runners::SETTINGS_UPDATE, [], Reply::json(200, zero)),
+    ]);
+    hipc(&at_zero, &["settings", "update", "--max-concurrent", "0"]).ok();
+    assert_eq!(at_zero.requests().pop().unwrap().method, "PUT");
     // A setting the read does not hold as hipc compares it may be a raise, so it asks.
     let odd = r#"{"enabled":"yes","max_concurrent":"4","allowed_sizes":"small","default_region":null,"allow_public_repos":null}"#;
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/runners/settings/",
+    let server = Server::start(vec![route_of(
+        &runners::SETTINGS,
+        [],
         Reply::json(200, odd),
     )]);
     for flags in [
@@ -254,11 +262,11 @@ fn settings_update_sends_a_cut_unasked() {
         argv.extend(flags);
         hipc(&server, &argv).fails(2, "confirmation_required");
     }
-    // Turning runners off, closing public repositories, `0` at once, or a region never asks,
-    // whatever the read holds.
+    // Turning runners off, closing public repositories, or a region never asks, whatever the
+    // read holds.
     let server = Server::start(vec![
-        route("GET", "/api/runners/settings/", Reply::json(200, odd)),
-        route("PUT", "/api/runners/settings/", Reply::json(200, on)),
+        route_of(&runners::SETTINGS, [], Reply::json(200, odd)),
+        route_of(&runners::SETTINGS_UPDATE, [], Reply::json(200, on)),
     ]);
     hipc(
         &server,
@@ -269,17 +277,15 @@ fn settings_update_sends_a_cut_unasked() {
             "false",
             "--allow-public-repos",
             "false",
-            "--max-concurrent",
-            "0",
             "--default-region",
             "FR",
         ],
     )
     .ok();
     // A failed read sends no PUT.
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/runners/settings/",
+    let server = Server::start(vec![route_of(
+        &runners::SETTINGS,
+        [],
         Reply::json(502, r#"{"error":"x"}"#),
     )]);
     let error =
@@ -291,19 +297,20 @@ fn settings_update_sends_a_cut_unasked() {
 #[test]
 fn settings_update_refuses_bad_flags_before_any_request_or_token() {
     let server = Server::start(vec![]);
-    let error = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    // The parser asks for one of the settings, as `hipc schema` lists them in a group.
+    let error = Hipc::tokenless(&Home::new(), &server)
         .run(&runners(&["settings", "update", "--yes"]))
         .fails(2, "usage");
-    assert_eq!(
-        error["message"],
-        "`hipc compute runners settings update` was given nothing to change"
-    );
-    assert_eq!(
-        error["hint"],
-        "pass `--enabled`, `--max-concurrent`, `--allowed-size`, `--default-region`, or \
-         `--allow-public-repos`"
-    );
+    let message = error["message"].as_str().expect("a message");
+    for flag in [
+        "--enabled",
+        "--max-concurrent",
+        "--allowed-size",
+        "--default-region",
+        "--allow-public-repos",
+    ] {
+        assert!(message.contains(flag), "{flag}: {message}");
+    }
     let error = hipc(
         &server,
         &[
@@ -322,7 +329,7 @@ fn settings_update_refuses_bad_flags_before_any_request_or_token() {
         "`--allowed-size` names `small` more than once"
     );
     for flags in [
-        &["--allowed-size", "xlarge"][..],
+        &["--allowed-size", "x large"][..],
         &["--allowed-size", "Small"],
         &["--default-region", "FRA"],
         &["--default-region", ""],
@@ -356,8 +363,8 @@ fn settings_update_errors_map_to_their_codes() {
         (502, r#"{"error":"x"}"#, "unavailable", "partial"),
     ] {
         let server = Server::start(vec![
-            route("GET", "/api/runners/settings/", Reply::json(200, SETTINGS)),
-            route("PUT", "/api/runners/settings/", Reply::json(status, body)),
+            route_of(&runners::SETTINGS, [], Reply::json(200, SETTINGS)),
+            route_of(&runners::SETTINGS_UPDATE, [], Reply::json(status, body)),
         ]);
         let error = hipc(
             &server,
@@ -372,9 +379,9 @@ fn settings_update_errors_map_to_their_codes() {
 
 #[test]
 fn installations_list_prints_the_envelope_from_a_bare_array() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/runners/installations/",
+    let server = Server::start(vec![route_of(
+        &runners::INSTALLATIONS,
+        [],
         Reply::json(200, &format!("[{INSTALLATION}]")),
     )]);
     let doc = hipc(&server, &["installations", "list"]).ok();
@@ -386,9 +393,9 @@ fn installations_list_prints_the_envelope_from_a_bare_array() {
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert!(run.stdout().contains("acme"), "{}", run.stdout());
     assert!(!run.stdout().trim_start().starts_with('{'));
-    let odd = Server::start(vec![route(
-        "GET",
-        "/api/runners/installations/",
+    let odd = Server::start(vec![route_of(
+        &runners::INSTALLATIONS,
+        [],
         Reply::json(200, r#"{"installations":[]}"#),
     )]);
     hipc(&odd, &["installations", "list"]).fails(1, "internal");
@@ -396,9 +403,9 @@ fn installations_list_prints_the_envelope_from_a_bare_array() {
 
 #[test]
 fn installations_delete_needs_yes_and_prints_a_document_on_204() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/runners/installations/7/",
+    let server = Server::start(vec![route_of(
+        &runners::INSTALLATION_DELETE,
+        [&7],
         Reply::json(204, ""),
     )]);
     let error = hipc(&server, &["installations", "delete", "7"]).fails(2, "confirmation_required");
@@ -420,16 +427,16 @@ fn installations_delete_needs_yes_and_prints_a_document_on_204() {
 
 #[test]
 fn installations_delete_prints_a_body_and_maps_a_missing_one_to_not_found() {
-    let server = Server::start(vec![route(
-        "DELETE",
-        "/api/runners/installations/7/",
+    let server = Server::start(vec![route_of(
+        &runners::INSTALLATION_DELETE,
+        [&7],
         Reply::json(200, r#"{"id":7,"deleted":true,"note":"x"}"#),
     )]);
     let doc = hipc(&server, &["installations", "delete", "7", "--yes"]).ok();
     assert_eq!(doc["note"], "x");
-    let missing = Server::start(vec![route(
-        "DELETE",
-        "/api/runners/installations/8/",
+    let missing = Server::start(vec![route_of(
+        &runners::INSTALLATION_DELETE,
+        [&8],
         Reply::not_found(),
     )]);
     let error = hipc(&missing, &["installations", "delete", "8", "--yes"]).fails(1, "not_found");
@@ -504,23 +511,6 @@ fn jobs_all_stops_on_a_repeated_cursor() {
 }
 
 #[test]
-fn jobs_all_stops_after_a_thousand_pages() {
-    let (url, server) = crate::common::endless_pages(|_, served| {
-        format!(r#"{{"results":[],"next_before":{}}}"#, served + 1)
-    });
-    let error = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, TOKEN)
-        .run(&runners(&["jobs", "--all"]))
-        .fails(1, "internal");
-    assert!(
-        error["message"].as_str().unwrap().contains("1000 pages"),
-        "{error}"
-    );
-    assert_eq!(server.join().unwrap(), 1000);
-}
-
-#[test]
 fn jobs_refuses_a_limit_a_bad_token_and_a_page_that_is_not_a_cursor_page() {
     let server = Server::start(vec![]);
     for args in [
@@ -533,8 +523,7 @@ fn jobs_refuses_a_limit_a_bad_token_and_a_page_that_is_not_a_cursor_page() {
     ] {
         hipc(&server, args).fails(2, "usage");
     }
-    let error = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let error = Hipc::tokenless(&Home::new(), &server)
         .run(&runners(&["jobs", "--page-token", "x"]))
         .fails(2, "usage");
     assert!(
@@ -555,9 +544,9 @@ fn jobs_refuses_a_limit_a_bad_token_and_a_page_that_is_not_a_cursor_page() {
 
 #[test]
 fn connect_prints_the_url_document_and_says_the_console_finishes_the_link() {
-    let server = Server::start(vec![route(
-        "POST",
-        "/api/runners/github/connect/",
+    let server = Server::start(vec![route_of(
+        &runners::CONNECT,
+        [],
         Reply::json(201, CONNECT),
     )]);
     assert_eq!(hipc(&server, &["connect"]).ok(), parsed(CONNECT));
@@ -581,9 +570,9 @@ fn connect_prints_the_url_document_and_says_the_console_finishes_the_link() {
 #[test]
 fn connect_errors_map_to_their_codes() {
     for (status, code, effects) in [(403, "permission", "none"), (503, "unavailable", "partial")] {
-        let server = Server::start(vec![route(
-            "POST",
-            "/api/runners/github/connect/",
+        let server = Server::start(vec![route_of(
+            &runners::CONNECT,
+            [],
             Reply::json(status, r#"{"error":"x"}"#),
         )]);
         let run = text(&server, &["connect"]);
@@ -598,20 +587,12 @@ fn connect_errors_map_to_their_codes() {
 #[test]
 fn a_membership_sends_the_account_header_on_every_route() {
     let server = Server::start(vec![
-        route("GET", "/api/runners/settings/", Reply::json(200, SETTINGS)),
-        route("PUT", "/api/runners/settings/", Reply::json(200, SETTINGS)),
-        route("GET", "/api/runners/installations/", Reply::json(200, "[]")),
-        route(
-            "DELETE",
-            "/api/runners/installations/7/",
-            Reply::json(204, ""),
-        ),
+        route_of(&runners::SETTINGS, [], Reply::json(200, SETTINGS)),
+        route_of(&runners::SETTINGS_UPDATE, [], Reply::json(200, SETTINGS)),
+        route_of(&runners::INSTALLATIONS, [], Reply::json(200, "[]")),
+        route_of(&runners::INSTALLATION_DELETE, [&7], Reply::json(204, "")),
         jobs("", r#"{"results":[],"next_before":null}"#),
-        route(
-            "POST",
-            "/api/runners/github/connect/",
-            Reply::json(201, CONNECT),
-        ),
+        route_of(&runners::CONNECT, [], Reply::json(201, CONNECT)),
     ]);
     for args in [
         &["settings", "get"][..],
@@ -670,8 +651,7 @@ fn these_runners_commands_dry_run_without_a_token_or_a_request() {
     ] {
         let mut argv = runners(args);
         argv.push("--dry-run");
-        let doc = Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        let doc = Hipc::tokenless(&Home::new(), &server)
             .env("HIPPIUS_ACCOUNT", MEMBER)
             .run(&argv)
             .ok();
@@ -717,8 +697,8 @@ fn limit(credits: &str) -> String {
 /// A server whose limit reads `answer` and that answers a PUT with `put`.
 fn limit_server(answer: &str, put: &str) -> Server {
     Server::start(vec![
-        route("GET", "/api/runners/limit/", Reply::json(200, answer)),
-        route("PUT", "/api/runners/limit/", Reply::json(200, put)),
+        route_of(&runners::LIMIT, [], Reply::json(200, answer)),
+        route_of(&runners::LIMIT_UPDATE, [], Reply::json(200, put)),
     ])
 }
 
@@ -748,8 +728,8 @@ const NOT_ENABLED: &str = "the runner spend limit is not enabled on this server;
                            runners settings get`, then lower `--max-concurrent` or \
                            `--allowed-size` with `hipc compute runners settings update`";
 
-const SET_UNKNOWN: &str = "set the monthly runner spend cap to `50` credits, where the current \
-                           cap is unknown: the limit has no amount in `monthly_cap_credits`";
+const SET_UNKNOWN: &str = "set the monthly runner spend cap to `50` credits, where the cap in \
+                           force is unknown: the limit has no amount in `monthly_cap_credits`";
 
 const REMOVE_UNKNOWN: &str = "remove the monthly runner spend cap, whose current value is \
                               unknown: the limit has no amount in `monthly_cap_credits`";
@@ -775,11 +755,7 @@ fn asks(answer: &str, cap: &str, what: &str, body: &Value) {
 
 #[test]
 fn usage_prints_the_spend_as_sent() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/runners/usage/",
-        Reply::json(200, USAGE),
-    )]);
+    let server = Server::start(vec![route_of(&runners::USAGE, [], Reply::json(200, USAGE))]);
     assert_eq!(hipc(&server, &["usage"]).ok(), parsed(USAGE));
     let request = server.only_request();
     assert_eq!(request.method, "GET");
@@ -787,9 +763,9 @@ fn usage_prints_the_spend_as_sent() {
     let run = text(&server, &["usage"]);
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert!(run.stdout().contains("3.25"), "{}", run.stdout());
-    let failing = Server::start(vec![route(
-        "GET",
-        "/api/runners/usage/",
+    let failing = Server::start(vec![route_of(
+        &runners::USAGE,
+        [],
         Reply::json(403, r#"{"error":"x"}"#),
     )]);
     let error = hipc(&failing, &["usage"]).fails(1, "permission");
@@ -799,11 +775,7 @@ fn usage_prints_the_spend_as_sent() {
 #[test]
 fn limit_get_prints_the_limit_as_sent() {
     let body = limit("\"50.000000\"");
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/runners/limit/",
-        Reply::json(200, &body),
-    )]);
+    let server = Server::start(vec![route_of(&runners::LIMIT, [], Reply::json(200, &body))]);
     assert_eq!(hipc(&server, &["limit", "get"]).ok(), parsed(&body));
     let request = server.only_request();
     assert_eq!(request.method, "GET");
@@ -817,11 +789,7 @@ fn limit_get_prints_the_limit_as_sent() {
 /// read of the limit can tell that; a 404 on the write after a good read is plain.
 #[test]
 fn a_404_on_reading_the_limit_is_not_found_with_a_hint_that_it_is_not_enabled() {
-    let off = Server::start(vec![route(
-        "GET",
-        "/api/runners/limit/",
-        Reply::not_found(),
-    )]);
+    let off = Server::start(vec![route_of(&runners::LIMIT, [], Reply::not_found())]);
     let error = hipc(&off, &["limit", "get"]).fails(1, "not_found");
     assert_eq!(error["http_status"], 404);
     assert_eq!(error["hint"], NOT_ENABLED);
@@ -838,12 +806,8 @@ fn a_404_on_reading_the_limit_is_not_found_with_a_hint_that_it_is_not_enabled() 
     assert_eq!(error["side_effects"], "none");
     assert!(methods(&off).iter().all(|m| m == "GET"));
     let late = Server::start(vec![
-        route(
-            "GET",
-            "/api/runners/limit/",
-            Reply::json(200, &limit("\"20\"")),
-        ),
-        route("PUT", "/api/runners/limit/", Reply::not_found()),
+        route_of(&runners::LIMIT, [], Reply::json(200, &limit("\"20\""))),
+        route_of(&runners::LIMIT_UPDATE, [], Reply::not_found()),
     ]);
     let error = hipc(&late, &update("5")).fails(1, "not_found");
     assert_eq!(error["http_status"], 404);
@@ -851,9 +815,9 @@ fn a_404_on_reading_the_limit_is_not_found_with_a_hint_that_it_is_not_enabled() 
     assert!(!hint.contains("not enabled"), "{error}");
     assert_eq!(methods(&late), ["GET", "PUT"]);
     // Another error on the limit keeps its own hint.
-    let denied = Server::start(vec![route(
-        "GET",
-        "/api/runners/limit/",
+    let denied = Server::start(vec![route_of(
+        &runners::LIMIT,
+        [],
         Reply::json(403, r#"{"code":"insufficient_grant","error":"x"}"#),
     )]);
     let error = hipc(&denied, &["limit", "get"]).fails(1, "insufficient_grant");
@@ -861,79 +825,30 @@ fn a_404_on_reading_the_limit_is_not_found_with_a_hint_that_it_is_not_enabled() 
 }
 
 /// A raise, or a removal of a cap in force, allows more spend and needs `--yes`; the
-/// question names the cap read from `monthly_cap_credits` and the new one. The base units in
-/// `monthly_cap` are a far larger number, so a comparison with them would call each raise a
-/// cut.
+/// question names the cap read from `monthly_cap_credits` and the new one, and the cap sent is
+/// the normal form of the one given. `commands::compute::runners::tests` holds every
+/// comparison; these pin each outcome end to end.
 #[test]
 fn limit_update_needs_yes_when_it_raises_or_removes_the_cap() {
-    let cases: [(&str, &str, &str, Value); 8] = [
-        (
-            "\"20.000000\"",
-            "50",
-            "raise the monthly runner spend cap from `20.000000` to `50` credits",
-            json!({"monthly_cap": "50"}),
-        ),
-        (
-            "\"20\"",
-            "none",
-            "remove the monthly runner spend cap of `20` credits",
-            json!({"monthly_cap": null}),
-        ),
-        // Exact decimals: no float decides a raise.
-        (
-            "\"0.45\"",
-            "0.5",
-            "raise the monthly runner spend cap from `0.45` to `0.5` credits",
-            json!({"monthly_cap": "0.5"}),
-        ),
-        (
-            "9",
-            "10",
-            "raise the monthly runner spend cap from `9` to `10` credits",
-            json!({"monthly_cap": "10"}),
-        ),
-        // A leading zero does not make a cap longer.
-        (
-            "\"050\"",
-            "60",
-            "raise the monthly runner spend cap from `050` to `60` credits",
-            json!({"monthly_cap": "60"}),
-        ),
-        (
-            "\"0\"",
-            "0.01",
-            "raise the monthly runner spend cap from `0` to `0.01` credits",
-            json!({"monthly_cap": "0.01"}),
-        ),
-        // The amount sent and shown is the normal form of the one given.
-        (
-            "\"20\"",
-            "050.500",
-            "raise the monthly runner spend cap from `20` to `50.5` credits",
-            json!({"monthly_cap": "50.5"}),
-        ),
-        // A cap that is not an amount still asks before it is removed, quoted as the
-        // server's words.
-        (
-            "\"lots`\"",
-            "none",
-            "remove the monthly runner spend cap, where `monthly_cap_credits` is \
-             `lots\\u{60}`, which is not an amount of credits",
-            json!({"monthly_cap": null}),
-        ),
-    ];
-    for (credits, cap, what, body) in cases {
-        asks(&limit(credits), cap, what, &body);
-    }
+    asks(
+        &limit("\"20.000000\""),
+        "050.500",
+        "raise the monthly runner spend cap from `20.000000` to `50.5` credits",
+        &json!({"monthly_cap": "50.5"}),
+    );
+    asks(
+        &limit("\"20\""),
+        "none",
+        "remove the monthly runner spend cap of `20` credits",
+        &json!({"monthly_cap": null}),
+    );
 }
 
-/// `null` is unconfirmed to mean no cap, and may be a server default, so a cap set over it
-/// asks. Without an amount in `monthly_cap_credits` the cap in force is unknown, whatever
-/// `monthly_cap` holds, so every change asks, `none` included.
+/// `null` is unconfirmed to mean no cap, so a cap set over it asks; without an amount in
+/// `monthly_cap_credits` the cap in force is unknown, so every change asks; and a
+/// `monthly_cap_credits` that is not an amount is named.
 #[test]
 fn limit_update_needs_yes_when_the_cap_in_force_is_null_or_unknown() {
-    let base_only = format!(r#"{{"monthly_cap":"{BASE_UNITS}"}}"#);
-    let base_and_null = format!(r#"{{"monthly_cap":"{BASE_UNITS}","monthly_cap_credits":null}}"#);
     asks(
         &limit("null"),
         "50",
@@ -941,83 +856,31 @@ fn limit_update_needs_yes_when_the_cap_in_force_is_null_or_unknown() {
          or a server default",
         &json!({"monthly_cap": "50"}),
     );
-    // The CDN shape without the credits: base units alone must not read as 20 quintillion
-    // credits, under which `50` would be a cut.
-    for answer in [
-        base_only.as_str(),
-        &base_and_null,
-        r#"{"spent_this_month":"1.50"}"#,
-        r#"{"monthly_cap_credits":null}"#,
-        // A missing `monthly_cap_credits` is not `null`: the cap in force is unknown.
-        r#"{"monthly_cap":null}"#,
-        // A `null` beside credits hipc cannot read is no proof that no cap is set.
-        r#"{"monthly_cap":null,"monthly_cap_credits":true}"#,
-        "[]",
-    ] {
-        asks(answer, "50", SET_UNKNOWN, &json!({"monthly_cap": "50"}));
-        asks(
-            answer,
-            "none",
-            REMOVE_UNKNOWN,
-            &json!({"monthly_cap": null}),
-        );
-    }
-    // A `monthly_cap_credits` that is not a decimal amount is no cap to compare with, and
-    // the question names it.
-    for (credits, shown) in [
-        ("\"-5\"", "`-5`"),
-        ("-5", "`-5`"),
-        ("\"5.\"", "`5.`"),
-        ("\".5\"", "`.5`"),
-        ("\"5.x\"", "`5.x`"),
-        ("\"5e1\"", "`5e1`"),
-        ("1e300", "`1e+300`"),
-        ("\"\"", "``"),
-    ] {
-        let bad =
-            format!("where `monthly_cap_credits` is {shown}, which is not an amount of credits");
-        let set = format!("set the monthly runner spend cap to `50` credits, {bad}");
-        asks(&limit(credits), "50", &set, &json!({"monthly_cap": "50"}));
-        let remove = format!("remove the monthly runner spend cap, {bad}");
-        asks(
-            &limit(credits),
-            "none",
-            &remove,
-            &json!({"monthly_cap": null}),
-        );
-    }
-    // One that is not a string or a number is no amount at all.
-    for credits in ["true", r#"{"credits":"5"}"#, "[5]"] {
-        asks(
-            &limit(credits),
-            "50",
-            SET_UNKNOWN,
-            &json!({"monthly_cap": "50"}),
-        );
-    }
+    let base_only = format!(r#"{{"monthly_cap":"{BASE_UNITS}"}}"#);
+    asks(&base_only, "50", SET_UNKNOWN, &json!({"monthly_cap": "50"}));
+    asks(
+        &base_only,
+        "none",
+        REMOVE_UNKNOWN,
+        &json!({"monthly_cap": null}),
+    );
+    asks(
+        &limit("1e300"),
+        "50",
+        "set the monthly runner spend cap to `50` credits, where `monthly_cap_credits` is \
+         `1e+300`, which is not an amount of credits",
+        &json!({"monthly_cap": "50"}),
+    );
 }
 
 /// A lower cap, the same cap, or `none` over a `null` cap allows no more spend, so it is
 /// sent without `--yes`, after the read, in its normal form.
 #[test]
 fn limit_update_needs_no_yes_when_it_lowers_or_keeps_the_cap() {
-    let cases: [(String, &str, Value); 12] = [
+    let cases: [(String, &str, Value); 4] = [
         (limit("\"20.000000\""), "5", json!({"monthly_cap": "5"})),
-        (limit("\"10\""), "9.99", json!({"monthly_cap": "9.99"})),
-        (limit("20.5"), "20.50", json!({"monthly_cap": "20.5"})),
         (limit("\"050\""), "50.0", json!({"monthly_cap": "50"})),
-        (limit("\"50\""), "050.00", json!({"monthly_cap": "50"})),
-        (limit("\"50\""), "50", json!({"monthly_cap": "50"})),
-        (limit("\"0.5\""), "0.45", json!({"monthly_cap": "0.45"})),
-        (limit("\"1\""), "000.000", json!({"monthly_cap": "0"})),
-        (limit("\"1\""), "0.10", json!({"monthly_cap": "0.1"})),
         (limit("null"), "none", json!({"monthly_cap": null})),
-        // 18 decimals is a credit's smallest part; trailing zeros past it are dropped.
-        (
-            limit("\"20\""),
-            "0.000000000000000001",
-            json!({"monthly_cap": "0.000000000000000001"}),
-        ),
         (
             limit("\"20\""),
             "5.000000000000000000000",
@@ -1081,7 +944,7 @@ fn limit_update_refuses_an_answer_that_does_not_show_the_cap_sent() {
         ),
         // `null` credits beside a cap in base units is not a removal, and neither is an
         // answer that leaves either field out.
-        ("none", base_and_null.clone(), removed, without),
+        ("none", base_and_null, removed, without),
         (
             "none",
             r#"{"monthly_cap":null}"#.to_owned(),
@@ -1130,40 +993,28 @@ fn limit_update_refuses_an_answer_that_does_not_show_the_cap_sent() {
     }
 }
 
+/// `cli::runners::tests` holds every refused cap; this pins the `usage` each refusal
+/// becomes, before any request or token.
 #[test]
 fn limit_update_refuses_a_bad_cap_before_any_request_or_token() {
     let server = Server::start(vec![]);
-    for cap in [
-        "", "-1", "1e3", "5.", ".5", "NONE", "None", "50 ", "5,0", "x",
+    for (cap, says) in [
+        (
+            "-1",
+            "a cap is a decimal number of credits, such as `50` or `20.5`, or `none`",
+        ),
+        (
+            "0.0000000000000000001",
+            "a cap has at most 18 digits after the point",
+        ),
     ] {
         // `=` keeps a value that starts with `-` from reading as a flag.
         let flag = format!("--monthly-cap={cap}");
-        let error = Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        let error = Hipc::tokenless(&Home::new(), &server)
             .run(&runners(&["limit", "update", &flag, "--yes"]))
             .fails(2, "usage");
-        assert!(
-            error["message"].as_str().unwrap().contains(
-                "a cap is a decimal number of credits, such as `50` or `20.5`, or `none`"
-            ),
-            "{cap}: {error}"
-        );
-    }
-    // A credit has 18 decimals, so a finer cap is refused too, whatever trailing zeros follow.
-    for cap in [
-        "0.0000000000000000001",
-        "1.12345678901234567890",
-        "5.0000000000000000001000",
-    ] {
-        let flag = format!("--monthly-cap={cap}");
-        let error = hipc(&server, &["limit", "update", &flag, "--yes"]).fails(2, "usage");
-        assert!(
-            error["message"]
-                .as_str()
-                .unwrap()
-                .contains("a cap has at most 18 digits after the point"),
-            "{cap}: {error}"
-        );
+        let message = error["message"].as_str().expect("the message is a string");
+        assert!(message.contains(says), "{cap}: {message}");
     }
     hipc(&server, &["limit", "update", "--yes"]).fails(2, "usage");
     assert!(server.requests().is_empty());
@@ -1177,14 +1028,10 @@ fn limit_update_errors_map_to_their_codes() {
         (502, "unavailable", "partial"),
     ] {
         let server = Server::start(vec![
-            route(
-                "GET",
-                "/api/runners/limit/",
-                Reply::json(200, &limit("\"20\"")),
-            ),
-            route(
-                "PUT",
-                "/api/runners/limit/",
+            route_of(&runners::LIMIT, [], Reply::json(200, &limit("\"20\""))),
+            route_of(
+                &runners::LIMIT_UPDATE,
+                [],
                 Reply::json(status, r#"{"error":"x"}"#),
             ),
         ]);
@@ -1200,17 +1047,12 @@ fn limit_update_errors_map_to_their_codes() {
 /// question names the membership.
 #[test]
 fn the_limit_and_usage_routes_take_a_membership_and_a_project() {
-    const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
     let server = Server::start(vec![
-        route("GET", "/api/runners/usage/", Reply::json(200, USAGE)),
-        route(
-            "GET",
-            "/api/runners/limit/",
-            Reply::json(200, &limit("\"20\"")),
-        ),
-        route(
-            "PUT",
-            "/api/runners/limit/",
+        route_of(&runners::USAGE, [], Reply::json(200, USAGE)),
+        route_of(&runners::LIMIT, [], Reply::json(200, &limit("\"20\""))),
+        route_of(
+            &runners::LIMIT_UPDATE,
+            [],
             Reply::json(200, &limit("\"5\"")),
         ),
     ]);
@@ -1259,8 +1101,7 @@ fn the_limit_and_usage_commands_dry_run_without_a_token_or_a_request() {
     let dry = |args: &[&str]| {
         let mut argv = runners(args);
         argv.push("--dry-run");
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&Home::new(), &server)
             .env("HIPPIUS_ACCOUNT", MEMBER)
             .run(&argv)
             .ok()

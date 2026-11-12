@@ -78,12 +78,28 @@ unicode-normalization = { version = "0.1.24", default-features = false }
 # curve25519-dalek 4 with ed25519-dalek, so the curve is built once. getrandom: a signature
 # takes fresh randomness from the system.
 schnorrkel = { version = "0.11.5", default-features = false, features = ["std", "getrandom"] }
+# Tests only: the script tests read the workflows, the release action and dependabot.yml as
+# YAML, so they check jobs, steps and commands rather than text at a given indentation. Pure
+# Rust; without default features it takes no encoding_rs, which only decodes input that is
+# not UTF-8.
+yaml-rust2 = { version = "0.13", default-features = false }
+# Tests only: snapshots of the documents hipc wholly owns, the `hipc schema` document, its
+# error table and the dry runs, so a change to any of them shows as one reviewed diff. The
+# tests snapshot the pretty-printed JSON text, which keeps an `arbitrary_precision` number as
+# hipc prints it, so no serde feature is needed. No default features: colors only paint a
+# terminal diff.
+insta = { version = "1.49", default-features = false }
 # PBKDF2-HMAC-SHA512 of the phrase's entropy, the Substrate mini secret as Substrate's
 # `from_phrase` makes it, into a buffer hipc clears (substrate-bip39 returns it in a plain
 # array). hmac: the HMAC form. 0.13 shares digest 0.11 with sha2.
 pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }
 # BLAKE2b-512, the checksum of an SS58 address. crypto_box builds its own 0.10.
 blake2 = { version = "0.11.0", default-features = false }
+
+# The repo follows the house Rust style, rust-style; ARCHITECTURE.md says where hipc departs
+# from it.
+[workspace.metadata.house-check]
+baseline = true
 
 [workspace.lints.rust]
 # The crates have no unsafe code and must not grow any.
@@ -105,8 +121,8 @@ unused_extern_crates = "warn"
 unused_import_braces = "warn"
 # The edition 2024 default, stated so it holds whatever the edition.
 static_mut_refs = "deny"
-# Declare every custom cfg, so a typo in a cfg name warns.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(fuzzing)', 'cfg(coverage_nightly)'] }
+# Declare every custom cfg here, so a typo in a cfg name warns. The code uses none today.
+unexpected_cfgs = { level = "warn", check-cfg = [] }
 
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
@@ -144,19 +160,47 @@ partial_pub_fields = "warn"
 # Ignoring a #[must_use] value needs `drop(..)` or a binding that says why.
 let_underscore_must_use = "warn"
 
-# Unsafe. Every block has a `// SAFETY:` comment; every unsafe fn a `# Safety`
-# section; one unsafe operation per block so each gets its own argument.
+# Unsafe and async, kept from the house lint template so they hold if either arrives; today
+# `unsafe_code` is forbidden and nothing is async. Every unsafe block would need a
+# `// SAFETY:` comment, every unsafe fn a `# Safety` section, and one unsafe operation per
+# block.
 undocumented_unsafe_blocks = "deny"
 missing_safety_doc = "deny"
 multiple_unsafe_ops_per_block = "warn"
-
-# Concurrency and async
 await_holding_lock = "deny"
 large_futures = "deny"
+# A forgotten value skips its `Drop`, which is where secrets are cleared.
 mem_forget = "deny"
 
-# Pedantic relaxations: noisy without catching bugs.
-module_name_repetitions = "allow"
+# Restriction and nursery lints, chosen one by one; neither group is ever on as a whole.
+# Each is enabled once the code has no hit left, so it holds the line from then on.
+# Exit codes come only from `main` (tenet 4).
+exit = "warn"
+# Output order never depends on a hash (tenet 15).
+iter_over_hash_type = "warn"
+# `expect("<invariant>")` or a `let ... else` that returns, as for `unwrap`.
+unreachable = "warn"
+get_unwrap = "warn"
+# Idiom: one spelling for each.
+empty_structs_with_brackets = "warn"
+if_then_some_else_none = "warn"
+needless_raw_strings = "warn"
+or_fun_call = "warn"
+redundant_clone = "warn"
+redundant_type_annotations = "warn"
+ref_patterns = "warn"
+renamed_function_params = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+str_to_string = "warn"
+try_err = "warn"
+unnecessary_self_imports = "warn"
+# A trait imported only for its methods is `use Trait as _`.
+unused_trait_names = "warn"
+large_stack_frames = "warn"
+
+# Pedantic relaxations: noisy without catching bugs. The house template also allows
+# `module_name_repetitions`; it is a restriction lint now, off unless named, so it is not
+# listed.
 similar_names = "allow"
 must_use_candidate = "allow"
 # Pushing a format! onto a String is clear; the lint's rewrite (write! plus an ignored

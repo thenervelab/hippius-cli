@@ -5,17 +5,13 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 
+use hippius::routes::compute;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, route};
+use crate::common::{BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Server, draft, route, route_of};
 
-const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
-const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
-
-const INFO: &str = "/api/compute/app-engine/info/";
 const VALIDATE: &str = "/api/compute/app-engine/validate/";
 const FIX: &str = "/api/compute/app-engine/fix/";
-const APPS: &str = "/api/compute/app-engine/apps/";
 const APP: &str = "/api/compute/app-engine/apps/vm-1a2b/";
 
 const COMPOSE: &str = "services:\n  web:\n    image: nginx\n";
@@ -66,7 +62,11 @@ fn fixed(sha256: &str, extra: &Value) -> String {
 fn get_reads_the_limits_and_says_when_the_account_may_not_use_it() {
     let home = Home::new();
     let on = r#"{"enabled":true,"grammar_version":1,"max_compose_bytes":65536}"#;
-    let server = Server::start(vec![route("GET", INFO, Reply::json(200, on))]);
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_INFO,
+        [],
+        Reply::json(200, on),
+    )]);
     let doc = hipc(&home, &server, &["compute", "app-engine", "get"]).ok();
     assert_eq!(doc["max_compose_bytes"], 65536);
     let run = text(&home, &server, &["compute", "app-engine", "get"]);
@@ -83,7 +83,11 @@ fn get_reads_the_limits_and_says_when_the_account_may_not_use_it() {
             "warning: the account may not use App Engine\n",
         ),
     ] {
-        let server = Server::start(vec![route("GET", INFO, Reply::json(200, body))]);
+        let server = Server::start(vec![route_of(
+            &compute::APP_ENGINE_INFO,
+            [],
+            Reply::json(200, body),
+        )]);
         // `enabled: false` is an answer, not a failure: exit 0, and JSON mode stays quiet.
         assert_eq!(
             hipc(&home, &server, &["compute", "app-engine", "get"]).ok()["enabled"],
@@ -99,9 +103,9 @@ fn get_reads_the_limits_and_says_when_the_account_may_not_use_it() {
 #[test]
 fn apps_list_is_an_envelope() {
     let home = Home::new();
-    let server = Server::start(vec![route(
-        "GET",
-        APPS,
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_APPS,
+        [],
         Reply::json(200, r#"[{"vm_id":"vm-1a2b","status":"running"}]"#),
     )]);
     let doc = hipc(&home, &server, &["compute", "app-engine", "apps", "list"]).ok();
@@ -109,7 +113,11 @@ fn apps_list_is_an_envelope() {
         doc,
         json!({"items": [{"vm_id": "vm-1a2b", "status": "running"}], "next_page_token": null})
     );
-    let server = Server::start(vec![route("GET", APPS, Reply::json(200, "[]"))]);
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_APPS,
+        [],
+        Reply::json(200, "[]"),
+    )]);
     let doc = hipc(&home, &server, &["compute", "app-engine", "apps", "list"]).ok();
     assert_eq!(doc, json!({"items": [], "next_page_token": null}));
 }
@@ -122,28 +130,40 @@ fn every_command_sends_the_account_and_the_project() {
     let compose = home.file("compose.yaml", COMPOSE.as_bytes());
     let compose = compose.to_str().unwrap();
     let server = Server::start(vec![
-        route("GET", INFO, Reply::json(200, r#"{"enabled":true}"#)),
-        route(
-            "POST",
-            VALIDATE,
+        route_of(
+            &compute::APP_ENGINE_INFO,
+            [],
+            Reply::json(200, r#"{"enabled":true}"#),
+        ),
+        route_of(
+            &compute::APP_ENGINE_VALIDATE,
+            [],
             Reply::json(200, &validated(COMPOSE_SHA256)),
         ),
-        route(
-            "POST",
-            FIX,
+        route_of(
+            &compute::APP_ENGINE_FIX,
+            [],
             Reply::json(200, &fixed(FIXED_SHA256, &json!({}))),
         ),
-        route("GET", APPS, Reply::json(200, "[]")),
-        route("GET", APP, Reply::json(200, "{}")),
-        route("GET", &format!("{APP}runtime/"), Reply::json(200, "{}")),
-        route(
-            "GET",
-            &format!("{APP}guest-components/"),
+        route_of(&compute::APP_ENGINE_APPS, [], Reply::json(200, "[]")),
+        route_of(
+            &compute::APP_ENGINE_APP,
+            [&"vm-1a2b"],
             Reply::json(200, "{}"),
         ),
-        route(
-            "GET",
-            &format!("{APP}guest-upgrade/"),
+        route_of(
+            &compute::APP_ENGINE_RUNTIME,
+            [&"vm-1a2b"],
+            Reply::json(200, "{}"),
+        ),
+        route_of(
+            &compute::APP_ENGINE_GUEST_COMPONENTS,
+            [&"vm-1a2b"],
+            Reply::json(200, "{}"),
+        ),
+        route_of(
+            &compute::APP_ENGINE_GUEST_UPGRADE,
+            [&"vm-1a2b"],
             Reply::json(200, r#"{"job":null}"#),
         ),
     ]);
@@ -194,10 +214,10 @@ fn a_billing_selection_is_refused_and_a_stored_one_is_skipped() {
     let compose = home.file("compose.yaml", COMPOSE.as_bytes());
     let compose = compose.to_str().unwrap();
     let server = Server::start(vec![
-        route("GET", APPS, Reply::json(200, "[]")),
-        route(
-            "POST",
-            VALIDATE,
+        route_of(&compute::APP_ENGINE_APPS, [], Reply::json(200, "[]")),
+        route_of(
+            &compute::APP_ENGINE_VALIDATE,
+            [],
             Reply::json(200, &validated(COMPOSE_SHA256)),
         ),
     ]);
@@ -245,27 +265,27 @@ fn a_billing_selection_is_refused_and_a_stored_one_is_skipped() {
 fn the_app_reads_print_the_answer_with_their_text_mode_asides() {
     let home = Home::new();
     let server = Server::start(vec![
-        route(
-            "GET",
-            APP,
+        route_of(
+            &compute::APP_ENGINE_APP,
+            [&"vm-1a2b"],
             Reply::json(200, r#"{"vm_id":"vm-1a2b","compose":"services: {}\n"}"#),
         ),
-        route(
-            "GET",
-            &format!("{APP}runtime/"),
+        route_of(
+            &compute::APP_ENGINE_RUNTIME,
+            [&"vm-1a2b"],
             Reply::json(200, r#"{"verified":false,"compose_sha256_reported":"ab"}"#),
         ),
-        route(
-            "GET",
-            &format!("{APP}guest-components/"),
+        route_of(
+            &compute::APP_ENGINE_GUEST_COMPONENTS,
+            [&"vm-1a2b"],
             Reply::json(
                 200,
                 r#"{"release":6,"newest_release":7,"needs_operator":true}"#,
             ),
         ),
-        route(
-            "GET",
-            &format!("{APP}guest-upgrade/"),
+        route_of(
+            &compute::APP_ENGINE_GUEST_UPGRADE,
+            [&"vm-1a2b"],
             Reply::json(200, r#"{"job":null}"#),
         ),
     ]);
@@ -310,7 +330,11 @@ fn apps_get_warns_that_the_verify_command_comes_from_the_api() {
     let with = r#"{"vm_id":"vm-1a2b","evidence":{"verify_command":"curl x | sh"}}"#;
     let null = r#"{"vm_id":"vm-1a2b","evidence":{"verify_command":null}}"#;
     let args = ["compute", "app-engine", "apps", "get", "vm-1a2b"];
-    let server = Server::start(vec![route("GET", APP, Reply::json(200, with))]);
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_APP,
+        [&"vm-1a2b"],
+        Reply::json(200, with),
+    )]);
     assert_eq!(
         hipc(&home, &server, &args).ok(),
         serde_json::from_str::<Value>(with).unwrap()
@@ -322,7 +346,11 @@ fn apps_get_warns_that_the_verify_command_comes_from_the_api() {
         "warning: `evidence.verify_command` comes from the API: read it before running it, and \
          never pipe it to a shell\n"
     );
-    let server = Server::start(vec![route("GET", APP, Reply::json(200, null))]);
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_APP,
+        [&"vm-1a2b"],
+        Reply::json(200, null),
+    )]);
     let run = text(&home, &server, &args);
     assert_eq!(run.code(), Some(0));
     assert_eq!(run.stderr(), "");
@@ -369,14 +397,14 @@ fn every_app_read_names_the_list_when_the_app_is_missing() {
 fn a_healthy_guest_and_an_upgrade_job_say_nothing() {
     let home = Home::new();
     let server = Server::start(vec![
-        route(
-            "GET",
-            &format!("{APP}guest-components/"),
+        route_of(
+            &compute::APP_ENGINE_GUEST_COMPONENTS,
+            [&"vm-1a2b"],
             Reply::json(200, r#"{"release":7,"needs_operator":false}"#),
         ),
-        route(
-            "GET",
-            &format!("{APP}guest-upgrade/"),
+        route_of(
+            &compute::APP_ENGINE_GUEST_UPGRADE,
+            [&"vm-1a2b"],
             Reply::json(200, r#"{"job":{"job_id":"j1","state":"done"}}"#),
         ),
     ]);
@@ -392,11 +420,14 @@ fn a_healthy_guest_and_an_upgrade_job_say_nothing() {
 fn a_missing_app_names_the_list_and_an_unavailable_engine_names_get() {
     let home = Home::new();
     let unavailable = r#"{"error":"app-engine-unavailable","detail":"App Engine is not enabled"}"#;
-    let runtime = format!("{APP}runtime/");
     let server = Server::start(vec![
-        route("GET", APP, Reply::not_found()),
-        route("GET", APPS, Reply::json(403, unavailable)),
-        route("GET", &runtime, Reply::json(404, unavailable)),
+        route_of(&compute::APP_ENGINE_APP, [&"vm-1a2b"], Reply::not_found()),
+        route_of(&compute::APP_ENGINE_APPS, [], Reply::json(403, unavailable)),
+        route_of(
+            &compute::APP_ENGINE_RUNTIME,
+            [&"vm-1a2b"],
+            Reply::json(404, unavailable),
+        ),
     ]);
     let error = hipc(
         &home,
@@ -416,9 +447,9 @@ fn a_missing_app_names_the_list_and_an_unavailable_engine_names_get() {
     );
     assert_eq!(error["details"]["error"], "app-engine-unavailable");
     // The slug in `code`, which compute bodies may carry in place of `error`, is the same gate.
-    let in_code = Server::start(vec![route(
-        "GET",
-        APPS,
+    let in_code = Server::start(vec![route_of(
+        &compute::APP_ENGINE_APPS,
+        [],
         Reply::json(403, r#"{"code":"app-engine-unavailable"}"#),
     )]);
     let error =
@@ -436,9 +467,9 @@ fn a_missing_app_names_the_list_and_an_unavailable_engine_names_get() {
         "{error}"
     );
     // Another code on a 403 is not the engine's gate either.
-    let server = Server::start(vec![route(
-        "GET",
-        &runtime,
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_RUNTIME,
+        [&"vm-1a2b"],
         Reply::json(403, r#"{"error":"forbidden"}"#),
     )]);
     let error = hipc(&home, &server, &runtime_args).fails(1, "permission");
@@ -448,7 +479,11 @@ fn a_missing_app_names_the_list_and_an_unavailable_engine_names_get() {
         "{error}"
     );
     // `get` is the command the hint names, so its own 403 does not send the caller to it.
-    let server = Server::start(vec![route("GET", INFO, Reply::json(403, unavailable))]);
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_INFO,
+        [],
+        Reply::json(403, unavailable),
+    )]);
     let error = hipc(&home, &server, &["compute", "app-engine", "get"]).fails(1, "permission");
     assert_eq!(error["details"]["error"], "app-engine-unavailable");
     assert!(error["hint"].is_null(), "{error}");
@@ -483,9 +518,9 @@ fn validate_sends_the_exact_bytes_and_nothing_else() {
     let raw = MARKED;
     let compose = home.file("compose.yaml", raw.as_bytes());
     let compose = compose.to_str().unwrap();
-    let server = Server::start(vec![route(
-        "POST",
-        VALIDATE,
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_VALIDATE,
+        [],
         Reply::json(
             200,
             &json!({"compose_sha256": MARKED_SHA256, "services": [], "issues": []}).to_string(),
@@ -526,10 +561,10 @@ fn a_marked_compose_warns_before_it_is_sent() {
     let compose = compose.to_str().unwrap();
     let refused = r#"{"error":"app-compose-invalid","issues":[{"rule":"bom","message":"a BOM"}]}"#;
     let server = Server::start(vec![
-        route("POST", VALIDATE, Reply::json(400, refused)),
-        route(
-            "POST",
-            FIX,
+        route_of(&compute::APP_ENGINE_VALIDATE, [], Reply::json(400, refused)),
+        route_of(
+            &compute::APP_ENGINE_FIX,
+            [],
             Reply::json(400, r#"{"error":"app-fix-unparseable"}"#),
         ),
     ]);
@@ -561,9 +596,9 @@ fn a_marked_compose_warns_before_it_is_sent() {
             "{leaf}"
         );
     }
-    let server = Server::start(vec![route(
-        "POST",
-        FIX,
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_FIX,
+        [],
         Reply::json(200, &fixed(FIXED_SHA256, &json!({}))),
     )]);
     let run = text(
@@ -586,9 +621,9 @@ fn a_marked_compose_warns_before_it_is_sent() {
 #[test]
 fn validate_reads_stdin_for_a_dash_and_checks_the_hash() {
     let home = Home::new();
-    let server = Server::start(vec![route(
-        "POST",
-        VALIDATE,
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_VALIDATE,
+        [],
         Reply::json(200, &validated(&COMPOSE_SHA256.to_uppercase())),
     )]);
     let doc = Hipc::against(&home, &server)
@@ -622,7 +657,11 @@ fn validate_refuses_an_answer_that_hashed_other_bytes() {
         (validated(FIXED_SHA256), format!("`{FIXED_SHA256}`")),
         (r#"{"compose_sha256":7}"#.to_owned(), "`7`".to_owned()),
     ] {
-        let server = Server::start(vec![route("POST", VALIDATE, Reply::json(200, &answer))]);
+        let server = Server::start(vec![route_of(
+            &compute::APP_ENGINE_VALIDATE,
+            [],
+            Reply::json(200, &answer),
+        )]);
         let error = hipc(
             &home,
             &server,
@@ -651,7 +690,11 @@ fn validate_refuses_an_answer_that_hashed_other_bytes() {
         r#"{"services":[],"issues":[]}"#,
         r#"{"compose_sha256":null}"#,
     ] {
-        let server = Server::start(vec![route("POST", VALIDATE, Reply::json(200, answer))]);
+        let server = Server::start(vec![route_of(
+            &compute::APP_ENGINE_VALIDATE,
+            [],
+            Reply::json(200, answer),
+        )]);
         let error = hipc(
             &home,
             &server,
@@ -830,9 +873,9 @@ fn a_refused_compose_lists_every_issue() {
             {"rule": "no-message"},
         ],
     });
-    let server = Server::start(vec![route(
-        "POST",
-        VALIDATE,
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_VALIDATE,
+        [],
         Reply::json(400, &refused.to_string()),
     )]);
     let args = [
@@ -868,9 +911,9 @@ fn a_refusal_without_issues_is_one_line() {
     let home = Home::new();
     let compose = home.file("compose.yaml", COMPOSE.as_bytes());
     let compose = compose.to_str().unwrap();
-    let server = Server::start(vec![route(
-        "POST",
-        FIX,
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_FIX,
+        [],
         Reply::json(400, r#"{"error":"app-fix-too-large","issues":"many"}"#),
     )]);
     let run = text(
@@ -901,9 +944,9 @@ fn fix_prints_the_answer_and_warns_of_what_alters_what_runs() {
         ],
         "unresolved": [{"rule": "ports", "line": 2, "message": "port 22"}],
     });
-    let server = Server::start(vec![route(
-        "POST",
-        FIX,
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_FIX,
+        [],
         Reply::json(200, &fixed(FIXED_SHA256, &extra)),
     )]);
     let args = ["compute", "app-engine", "fix", "--compose-file", compose];
@@ -920,9 +963,9 @@ fn fix_prints_the_answer_and_warns_of_what_alters_what_runs() {
          valid: `unresolved` lists what was not fixed\n"
     );
     // A clean answer says nothing more.
-    let server = Server::start(vec![route(
-        "POST",
-        FIX,
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_FIX,
+        [],
         Reply::json(200, &fixed(FIXED_SHA256, &json!({"changes": "none"}))),
     )]);
     let run = text(&home, &server, &args);
@@ -937,9 +980,9 @@ fn fix_writes_the_fixed_compose_to_a_new_private_file() {
     let compose = compose.to_str().unwrap();
     let output = home.path().join("fixed.yaml");
     let out = output.to_str().unwrap();
-    let server = Server::start(vec![route(
-        "POST",
-        FIX,
+    let server = Server::start(vec![route_of(
+        &compute::APP_ENGINE_FIX,
+        [],
         Reply::json(200, &fixed(FIXED_SHA256, &json!({}))),
     )]);
     let args = [
@@ -1037,7 +1080,11 @@ fn fix_writes_nothing_from_an_answer_it_cannot_trust() {
         ),
     ];
     for (answer, why) in &cases {
-        let server = Server::start(vec![route("POST", FIX, Reply::json(200, answer))]);
+        let server = Server::start(vec![route_of(
+            &compute::APP_ENGINE_FIX,
+            [],
+            Reply::json(200, answer),
+        )]);
         let error = hipc(
             &home,
             &server,

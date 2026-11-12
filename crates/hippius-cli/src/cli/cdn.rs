@@ -5,9 +5,11 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand, ValueEnum};
 
+use crate::cli::values::{Spaces, label};
 use crate::cli::{
-    CdnLists, CdnWaf, PURGE_ID, TierZones, credits, examples, normal_credits, number, waf, zone_id,
+    CdnLists, CdnWaf, PURGE_ID, TierZones, ZoneTarget, country_code, examples, number, waf,
 };
+use crate::units;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Cdn {
@@ -135,8 +137,8 @@ pub(crate) struct RegionGb {
     pub(crate) gb: serde_json::Number,
 }
 
-/// `REGION=GB`: a two-letter region code (the API's codes are ISO country codes, such as
-/// `FR` and `AU`) and a number from 0 to [`MAX_ESTIMATE_GB`]. The range is compared as an
+/// `REGION=GB`: a two-letter region code, uppercased (the API's codes are ISO country codes,
+/// such as `FR` and `AU`), and a number from 0 to [`MAX_ESTIMATE_GB`]. The range is compared as an
 /// `f64`, so a value a few billionths over the top can pass and is left to the server.
 fn region_gb(value: &str) -> Result<RegionGb, String> {
     let refused = || {
@@ -145,15 +147,12 @@ fn region_gb(value: &str) -> Result<RegionGb, String> {
     };
     let (region, text) = value.split_once('=').ok_or_else(refused)?;
     let gb: serde_json::Number = text.parse().map_err(|_| refused())?;
-    let valid = region.len() == 2
-        && region.bytes().all(|b| b.is_ascii_alphabetic())
-        && !text.starts_with('-')
-        && gb.as_f64().is_some_and(|gb| gb <= MAX_ESTIMATE_GB);
+    // Uppercased, as every compute region is, so `fr` and `FR` are one region to the check
+    // that refuses a region given twice.
+    let region = country_code(region).ok_or_else(refused)?;
+    let valid = !text.starts_with('-') && gb.as_f64().is_some_and(|gb| gb <= MAX_ESTIMATE_GB);
     if valid {
-        Ok(RegionGb {
-            region: region.to_owned(),
-            gb,
-        })
+        Ok(RegionGb { region, gb })
     } else {
         Err(refused().to_owned())
     }
@@ -170,11 +169,7 @@ pub(crate) enum CdnZones {
     #[command(after_help = examples(&[
         "hipc cdn zones get zab12cd34ef56",
     ]))]
-    Get {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
-    },
+    Get(ZoneTarget),
     /// Create a zone serving a bucket or a prefix of it; spends money: needs --yes and --public
     ///
     /// A zone makes a private bucket public: every object under the bucket and prefix becomes
@@ -203,17 +198,13 @@ pub(crate) enum CdnZones {
     #[command(after_help = examples(&[
         "hipc cdn zones delete zab12cd34ef56 --yes",
     ]))]
-    Delete {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
-    },
+    Delete(ZoneTarget),
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct ZoneCreate {
-    /// A label for the zone, at most 64 characters
-    #[arg(long)]
+    /// A label for the zone: one line of 1 to 64 characters
+    #[arg(long, value_parser = zone_name)]
     pub(crate) name: String,
     /// The account's S3 bucket the zone serves
     #[arg(long)]
@@ -236,11 +227,10 @@ pub(crate) struct ZoneCreate {
 
 #[derive(Debug, Args)]
 pub(crate) struct ZoneUpdate {
-    /// The zone id from hipc cdn zones list
-    #[arg(value_parser = zone_id)]
-    pub(crate) zone_id: String,
-    /// A new label, at most 64 characters
-    #[arg(long)]
+    #[command(flatten)]
+    pub(crate) zone: ZoneTarget,
+    /// A new label: one line of 1 to 64 characters
+    #[arg(long, value_parser = zone_name)]
     pub(crate) name: Option<String>,
     /// Move the zone to another of the account's buckets
     ///
@@ -307,11 +297,7 @@ pub(crate) enum CdnCap {
     #[command(after_help = examples(&[
         "hipc cdn cap get zab12cd34ef56",
     ]))]
-    Get {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
-    },
+    Get(ZoneTarget),
     /// Set the monthly spend cap; needs --yes when it raises the cap, or when the cap in force
     /// is unknown
     ///
@@ -324,9 +310,8 @@ pub(crate) enum CdnCap {
         "hipc cdn cap update zab12cd34ef56 --monthly-cap 50 --yes",
     ]))]
     Update {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
+        #[command(flatten)]
+        zone: ZoneTarget,
         /// The monthly spend cap in credits (1 credit = $1), 1 to 100000, with at most 18 digits
         /// after the point
         #[arg(long, value_name = "CREDITS", value_parser = cdn_cap)]
@@ -340,11 +325,7 @@ pub(crate) enum CdnHostnames {
     #[command(after_help = examples(&[
         "hipc cdn hostnames list zab12cd34ef56",
     ]))]
-    List {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
-    },
+    List(ZoneTarget),
     // The three records, and the DNS only setting at Cloudflare, are those of the docs'
     // custom domain page (https://docs.hippius.com/use/cdn).
     /// Add a custom hostname; spends money: needs --yes
@@ -357,9 +338,8 @@ pub(crate) enum CdnHostnames {
         "hipc cdn hostnames create zab12cd34ef56 cdn.example.com --yes",
     ]))]
     Create {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
+        #[command(flatten)]
+        zone: ZoneTarget,
         /// A domain the account controls, such as cdn.example.com
         #[arg(value_parser = hostname)]
         hostname: String,
@@ -369,9 +349,8 @@ pub(crate) enum CdnHostnames {
         "hipc cdn hostnames verify zab12cd34ef56 cdn.example.com",
     ]))]
     Verify {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
+        #[command(flatten)]
+        zone: ZoneTarget,
         /// The custom hostname
         #[arg(value_parser = hostname)]
         hostname: String,
@@ -398,9 +377,8 @@ pub(crate) enum CdnHostnames {
         "hipc cdn hostnames domain-connect zab12cd34ef56 cdn.example.com",
     ]))]
     DomainConnect {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
+        #[command(flatten)]
+        zone: ZoneTarget,
         /// The custom hostname
         #[arg(value_parser = hostname)]
         hostname: String,
@@ -412,9 +390,8 @@ pub(crate) enum CdnHostnames {
         "hipc cdn hostnames delete zab12cd34ef56 cdn.example.com --yes",
     ]))]
     Delete {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
+        #[command(flatten)]
+        zone: ZoneTarget,
         /// The custom hostname
         #[arg(value_parser = hostname)]
         hostname: String,
@@ -428,9 +405,8 @@ const DNS_SETUP_EXAMPLE: &str = concat!(
 
 #[derive(Debug, Args)]
 pub(crate) struct DnsSetup {
-    /// The zone id from hipc cdn zones list
-    #[arg(value_parser = zone_id)]
-    pub(crate) zone_id: String,
+    #[command(flatten)]
+    pub(crate) zone: ZoneTarget,
     /// The custom hostname
     #[arg(value_parser = hostname)]
     pub(crate) hostname: String,
@@ -465,9 +441,8 @@ impl DnsProviderArg {
     clap::ArgGroup::new("target").required(true).args(["everything", "paths", "prefixes"])
 ))]
 pub(crate) struct CdnPurge {
-    /// The zone id from hipc cdn zones list
-    #[arg(value_parser = zone_id)]
-    pub(crate) zone_id: String,
+    #[command(flatten)]
+    pub(crate) zone: ZoneTarget,
     /// Purge everything the zone has cached
     ///
     /// Not --all, which means "follow every page" on every list command.
@@ -497,19 +472,14 @@ pub(crate) enum CdnPurges {
     #[command(after_help = examples(&[
         "hipc cdn purges list zab12cd34ef56",
     ]))]
-    List {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
-    },
+    List(ZoneTarget),
     /// One purge: pending until every node has applied it, then done
     #[command(after_help = examples(&[
         "hipc cdn purges get zab12cd34ef56 9",
     ]))]
     Get {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
+        #[command(flatten)]
+        zone: ZoneTarget,
         /// The purge id that hipc cdn purges create printed
         #[arg(value_parser = number(PURGE_ID))]
         purge_id: u64,
@@ -522,11 +492,7 @@ pub(crate) enum CdnRules {
     #[command(after_help = examples(&[
         "hipc cdn rules get zab12cd34ef56",
     ]))]
-    Get {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
-    },
+    Get(ZoneTarget),
     /// Replace the whole rule list with a file's; needs --yes, and --remove-others to drop or
     /// move a rule
     ///
@@ -539,9 +505,8 @@ pub(crate) enum CdnRules {
         "hipc cdn rules update zab12cd34ef56 --rules-file cdn-rules.json --remove-others --yes",
     ]))]
     Update {
-        /// The zone id from hipc cdn zones list
-        #[arg(value_parser = zone_id)]
-        zone_id: String,
+        #[command(flatten)]
+        zone: ZoneTarget,
         /// A JSON file such as {"rules": [...]}, or - for stdin, sent as it is
         ///
         /// {"rules": []} removes every rule. A key the API does not list for a rule, its match,
@@ -563,9 +528,8 @@ pub(crate) enum CdnRules {
 
 #[derive(Debug, Args)]
 pub(crate) struct CdnStats {
-    /// The zone id from hipc cdn zones list
-    #[arg(value_parser = zone_id)]
-    pub(crate) zone_id: String,
+    #[command(flatten)]
+    pub(crate) zone: ZoneTarget,
     /// The start of the window, as an ISO 8601 date-time
     #[arg(long, value_name = "DATETIME")]
     pub(crate) from: Option<String>,
@@ -601,6 +565,12 @@ impl StatsStep {
             Self::Day => "1d",
         }
     }
+}
+
+/// A zone's name: a [`label`] of at most 64 characters (swagger, `name` of `POST
+/// /api/cdn/zones/`), refused here rather than by a 400 after the question.
+fn zone_name(value: &str) -> Result<String, String> {
+    label(value, 1..=64, Spaces::Kept, "a zone name")
 }
 
 /// A zone's origin prefix: empty for the whole bucket, or a folder ending in `/` (swagger,
@@ -710,37 +680,17 @@ fn hostname(value: &str) -> Result<String, String> {
 }
 
 /// The CDN zone's monthly spend cap: a credit amount from `1` to `100000`, as the flag's help
-/// says, sent in its normal form ([`normal_credits`]), as the runner limit's is. Refused here,
-/// so a cap of `0` never reaches the question or the server. A credit is `10^18` base units,
-/// so a finer cap cannot be held, and `cdn cap update` could not compare it with the cap in
-/// force. Trailing zeros are stripped before the decimals are counted, so the server never
-/// gets more than 18 written ones.
+/// says, in its normal form ([`units::credits`]), as the runner limit's is. Refused here, so a
+/// cap of `0` never reaches the question or the server.
 fn cdn_cap(value: &str) -> Result<String, String> {
-    use crate::commands::credits::DECIMALS;
-
-    let credits = normal_credits(&credits(value)?);
-    if credits
-        .split_once('.')
-        .is_some_and(|(_, fraction)| fraction.len() > DECIMALS as usize)
-    {
-        return Err(format!(
-            "a monthly spend cap has at most {DECIMALS} digits after the point, the \
-             smallest part of a credit"
-        ));
-    }
-    let at_least = |bound| {
-        matches!(
-            crate::commands::credits::compare(&credits, bound),
-            Some(Ordering::Greater | Ordering::Equal)
-        )
-    };
-    let at_most = |bound| {
-        matches!(
-            crate::commands::credits::compare(&credits, bound),
-            Some(Ordering::Less | Ordering::Equal)
-        )
-    };
-    let in_range = at_least("1") && at_most("100000");
+    let credits = units::credits(value, "a monthly spend cap")?;
+    let in_range = matches!(
+        units::compare(&credits, "1"),
+        Some(Ordering::Greater | Ordering::Equal)
+    ) && matches!(
+        units::compare(&credits, "100000"),
+        Some(Ordering::Less | Ordering::Equal)
+    );
     if in_range {
         Ok(credits)
     } else {
@@ -750,7 +700,7 @@ fn cdn_cap(value: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::Parser as _;
 
     use crate::cli::Cli;
 
@@ -792,7 +742,7 @@ mod tests {
         ] {
             assert_eq!(super::cdn_cap(bad), Err(decimals.to_owned()), "{bad}");
         }
-        let grammar = "a credit amount is a decimal number, such as `20` or `20.5`";
+        let grammar = "a monthly spend cap is a decimal number of credits, such as `50` or `20.5`";
         for bad in ["", "-1", "1.", ".5", "2e3", "twenty"] {
             assert_eq!(super::cdn_cap(bad), Err(grammar.to_owned()), "{bad}");
         }

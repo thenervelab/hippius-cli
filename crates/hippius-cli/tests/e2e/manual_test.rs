@@ -3,9 +3,8 @@
 //! `bash` and `jq`, as the script does.
 
 use std::collections::BTreeSet;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Read, Write as _};
-use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -13,9 +12,8 @@ use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
-
-use crate::common::{Home, no_server};
+use crate::common::terminal::pty;
+use crate::common::{Home, PROXY_VARIABLES, no_server};
 
 const CATALOGUE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -31,44 +29,42 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Runs the script with `HOME` and `TMPDIR` inside `home`, so nothing reads the developer's
-/// own config and a test can see that the script's temporary directory is removed, and
-/// without the variables that would change what it does (the token, the origin, CI and
-/// agent detection).
+/// Runs the script as [`script`] sets it up, so nothing reads the developer's own config and
+/// a test can see that the script's temporary directory is removed.
 fn manual_test(home: &Home, args: &[&str]) -> Output {
     manual_test_with(home, args, &[])
 }
 
-/// [`manual_test`] with the variables `env` set, after the others are removed. `--offline`
-/// is aimed at [`no_server`], a loopback port that refuses connections, unless `env` names
-/// another dead origin.
-fn manual_test_with(home: &Home, args: &[&str], env: &[(&str, &str)]) -> Output {
+/// The script, run in `home` with `HOME` and `TMPDIR` inside it, and without the variables
+/// that would change what it does: the token, the origin, CI and agent detection, and the
+/// developer's proxies. `--offline` is aimed at [`no_server`], a loopback port that refuses
+/// connections, never a fixed port where something may listen.
+fn script(home: &Home) -> Command {
     let tmp = home.path().join("tmp");
     std::fs::create_dir_all(&tmp).expect("create TMPDIR");
     let mut command = Command::new(repo().join("scripts/manual_test.sh"));
-    for name in ["HIPPIUS_TOKEN", "HIPPIUS_API_URL", "CI", "AI_AGENT"] {
+    for name in ["HIPPIUS_TOKEN", "HIPPIUS_API_URL", "CI", "AI_AGENT"]
+        .into_iter()
+        .chain(PROXY_VARIABLES)
+    {
         command.env_remove(name);
     }
     // A run without `--offline` aims at the default origin; every request it might send goes
     // to a proxy that refuses it, so no test can reach the live API.
-    for name in [
-        "HTTPS_PROXY",
-        "https_proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-        "NO_PROXY",
-        "no_proxy",
-    ] {
-        command.env_remove(name);
-    }
     command
         .env("ALL_PROXY", no_server())
         .env("HOME", home.path())
         .env("TMPDIR", &tmp)
         .env("HIPC_MANUAL_TEST_DEAD_ORIGIN", no_server())
-        .envs(env.iter().copied())
-        .current_dir(home.path())
-        .args(args);
+        .current_dir(home.path());
+    command
+}
+
+/// [`manual_test`] with the variables `env` set over those of [`script`]: `env` may name
+/// another dead origin.
+fn manual_test_with(home: &Home, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut command = script(home);
+    command.envs(env.iter().copied()).args(args);
     let log = args
         .iter()
         .position(|arg| *arg == "--log")
@@ -231,12 +227,14 @@ fn scripted_hipc(home: &Home, prelude: &str, cases: &[(&str, &str)]) -> (PathBuf
     (fake_hipc(home, &body), calls)
 }
 
-/// The calls a stand-in recorded that were sent for real: no `--dry-run`.
+/// The calls a stand-in recorded that were sent for real: no `--dry-run`, and no `hipc
+/// schema`, which the script asks for a route and which reads only the binary.
 fn real_calls(calls: &Path) -> Vec<String> {
     std::fs::read_to_string(calls)
         .unwrap_or_default()
         .lines()
         .filter(|line| !line.split_whitespace().any(|word| word == "--dry-run"))
+        .filter(|line| !line.starts_with("schema "))
         .map(str::to_owned)
         .collect()
 }
@@ -265,6 +263,11 @@ const FREE_DRIVE: (&str, &str) = (
 /// attached.
 const EXPOSURE_REMOVED: (&str, &str) = ("*\" exposures delete \"*", "exit 0");
 const FIREWALL_CLOSED: (&str, &str) = ("*\" compute firewall update \"*", "exit 0");
+/// The read-back of the closed firewall: no rule.
+const FIREWALL_EMPTY: (&str, &str) = (
+    "*\" compute firewall get \"*",
+    "printf '%s\\n' '{\"rules\":[]}'; exit 0",
+);
 
 /// The scenario names `--list` prints, in order, setup and teardown included.
 fn listed_scenarios(listing: &str) -> Vec<String> {
@@ -308,7 +311,18 @@ fn assert_clean_offline_run(output: &Output, log: &str, home: &Home) {
 #[test]
 fn the_catalogue_lists_the_commands_the_script_runs() {
     let home = Home::new();
-    let output = manual_test(&home, &["--list", "--tier", "write"]);
+    // With the binary, so the steps that send a route through `hipc api` show the route
+    // `hipc schema` lists, as a run would send it.
+    let output = manual_test(
+        &home,
+        &[
+            "--list",
+            "--tier",
+            "write",
+            "--hipc",
+            env!("CARGO_BIN_EXE_hipc"),
+        ],
+    );
     assert!(output.status.success());
     let listing = stdout(&output);
     let expected: Vec<&str> = listing.trim_end().split("\n\n").collect();
@@ -451,7 +465,7 @@ fn the_ledger_holds_a_resource_before_its_create_runs() {
     let home = Home::new();
     let seen = home.path().join("ledger-at-create");
     // A free Drive plan to buy, and an exposure that is removed and a firewall that is
-    // closed, so the subscribe and the public IP are sent too.
+    // closed and read back empty, so the subscribe and the public IP are sent too.
     let (wrapper, _) = scripted_hipc(
         &home,
         &format!(
@@ -462,7 +476,12 @@ fn the_ledger_holds_a_resource_before_its_create_runs() {
             ),
             seen.display(),
         ),
-        &[FREE_DRIVE, EXPOSURE_REMOVED, FIREWALL_CLOSED],
+        &[
+            FREE_DRIVE,
+            EXPOSURE_REMOVED,
+            FIREWALL_CLOSED,
+            FIREWALL_EMPTY,
+        ],
     );
     let (output, log) = offline(
         &home,
@@ -486,6 +505,7 @@ fn the_ledger_holds_a_resource_before_its_create_runs() {
             title.starts_with("Read the Drive subscription")
                 || title == "Remove the exposure"
                 || title == "Close every inbound port"
+                || title == "Read the firewall"
         }),
         "{log}"
     );
@@ -689,7 +709,7 @@ fn the_trap_puts_back_the_spend_cap_and_a_billing_account_name() {
                 "*\" compute runners limit update --monthly-cap 21 \"*",
                 "exit 0",
             ),
-            ("*\" api PUT /runners/limit/ \"*", &cap_back),
+            ("*\" api PUT /api/runners/limit/ \"*", &cap_back),
             (
                 "*\" account billing-accounts list \"*",
                 "printf '%s\\n' '{\"billing_accounts\":[{\"id\":\"default\",\"name\":\"Default\"},\
@@ -724,7 +744,11 @@ fn the_trap_puts_back_the_spend_cap_and_a_billing_account_name() {
     );
     let sent = real_calls(&calls);
     let count = |needle: &str| sent.iter().filter(|call| call.contains(needle)).count();
-    assert_eq!(count("api PUT /runners/limit/ --body-file "), 2, "{sent:?}");
+    assert_eq!(
+        count("api PUT /api/runners/limit/ --body-file "),
+        2,
+        "{sent:?}"
+    );
     assert_eq!(
         count("account billing-accounts update bill_0123456789abcdef0123 --name Ops team"),
         2,
@@ -774,7 +798,7 @@ fn no_cap_and_a_name_hipc_would_trim_are_left_alone() {
     let sent = real_calls(&calls);
     assert!(
         !sent.iter().any(|call| call.contains("runners limit update")
-            || call.contains("api PUT /runners/limit/")
+            || call.contains("api PUT /api/runners/limit/")
             || call.contains("billing-accounts update")),
         "{sent:?}"
     );
@@ -849,7 +873,7 @@ fn an_offline_spend_run_passes_and_announces_each_cost() {
     assert!(log.contains("cleanup: ticket hipc-manual-"), "{log}");
 }
 
-/// Money fix: when the Drive subscription cannot be read, there is no telling whether a
+/// When the Drive subscription cannot be read, there is no telling whether a
 /// paid plan exists, so the purchase is not even asked about, and no subscribe is sent.
 #[test]
 fn an_unreadable_drive_subscription_buys_nothing_and_asks_nothing() {
@@ -877,7 +901,7 @@ fn an_unreadable_drive_subscription_buys_nothing_and_asks_nothing() {
     );
 }
 
-/// Money fix: a subscribe the server refuses (409) bought nothing, so neither the scenario
+/// A subscribe the server refuses (409) bought nothing, so neither the scenario
 /// nor the exit trap cancels anything: the plan that exists is not this run's.
 #[test]
 fn a_refused_subscribe_is_never_cancelled() {
@@ -948,15 +972,10 @@ fn a_bought_plan_is_cancelled_through_a_425() {
             ("*\" drive subscription cancel \"*", &confirming),
         ],
     );
-    let mut command = Command::new(repo().join("scripts/manual_test.sh"));
-    let tmp = home.path().join("tmp");
-    std::fs::create_dir_all(&tmp).expect("create TMPDIR");
+    let mut command = script(&home);
     let log_path = home.path().join("manual_test.log");
     command
-        .env("HOME", home.path())
-        .env("TMPDIR", &tmp)
         .env("HIPC_MANUAL_RETRY_SECONDS", "0")
-        .current_dir(home.path())
         .args(["--offline", "--tier", "spend", "--yes-spend", "--hipc"])
         .arg(&wrapper)
         .arg("--log")
@@ -982,7 +1001,7 @@ fn a_bought_plan_is_cancelled_through_a_425() {
     );
 }
 
-/// Money fix: a deleted VM or database is `decommissioning`, then `decommissioned`, and
+/// A deleted VM or database is `decommissioning`, then `decommissioned`, and
 /// stays listed; `revoked` counts it gone, so no step picks it and a list without a live
 /// row proves the delete.
 #[test]
@@ -1015,7 +1034,7 @@ fn a_decommissioned_vm_or_database_counts_as_gone() {
     assert_eq!(stdout(&output), "[\"c\"]\n[\"live\"]\n");
 }
 
-/// Money fix: the throwaway VM's exposure is of a port nothing listens on, never SSH, and its
+/// The throwaway VM's exposure is of a port nothing listens on, never SSH, and its
 /// public IP is attached only after the exposure's delete exited 0 and a firewall with no
 /// rule closed every inbound port.
 #[test]
@@ -1034,7 +1053,11 @@ fn the_public_ip_waits_for_the_exposure_to_be_removed() {
         .expect("the firewall is closed");
     assert!(removed < closed && closed < attached, "{listing}");
     let home = Home::new();
-    let (wrapper, calls) = scripted_hipc(&home, "", &[EXPOSURE_REMOVED, FIREWALL_CLOSED]);
+    let (wrapper, calls) = scripted_hipc(
+        &home,
+        "",
+        &[EXPOSURE_REMOVED, FIREWALL_CLOSED, FIREWALL_EMPTY],
+    );
     let (_, log) = offline(
         &home,
         wrapper.to_str().expect("UTF-8"),
@@ -1042,7 +1065,13 @@ fn the_public_ip_waits_for_the_exposure_to_be_removed() {
     );
     assert_eq!(
         failed_titles(&log),
-        ["Remove the exposure", "Close every inbound port"],
+        // The scenario reads the firewall before it closes it, and again after.
+        [
+            "Read the firewall",
+            "Remove the exposure",
+            "Close every inbound port",
+            "Read the firewall"
+        ],
         "{log}"
     );
     let sent = real_calls(&calls);
@@ -1051,6 +1080,39 @@ fn the_public_ip_waits_for_the_exposure_to_be_removed() {
             .any(|call| call.contains("compute public-ip create")),
         "{sent:?}"
     );
+    // An update that exited 0 while the read-back still shows a rule, or the rules under
+    // another key, attaches no IP: the read-back gates it.
+    for answer in [
+        r#"{"rules":[{"protocol":"tcp","ports":["22"]}]}"#,
+        r#"{"inbound":[]}"#,
+    ] {
+        let home = Home::new();
+        let read_back = format!("printf '%s\\n' '{answer}'; exit 0");
+        let (wrapper, calls) = scripted_hipc(
+            &home,
+            "",
+            &[
+                EXPOSURE_REMOVED,
+                FIREWALL_CLOSED,
+                ("*\" compute firewall get \"*", read_back.as_str()),
+            ],
+        );
+        let (_, log) = offline(
+            &home,
+            wrapper.to_str().expect("UTF-8"),
+            &["--tier", "spend", "--yes-spend", "compute"],
+        );
+        assert!(
+            log.contains("SKIP: the firewall was not closed, so no public IP is attached"),
+            "{answer}: {log}"
+        );
+        assert!(
+            !real_calls(&calls)
+                .iter()
+                .any(|call| call.contains("compute public-ip create")),
+            "{answer}: {log}"
+        );
+    }
     // With the exposure removed but the firewall change failed, no IP is attached.
     let home = Home::new();
     let (wrapper, calls) = scripted_hipc(&home, "", &[EXPOSURE_REMOVED]);
@@ -1071,7 +1133,7 @@ fn the_public_ip_waits_for_the_exposure_to_be_removed() {
     );
 }
 
-/// Money fix: a launch whose create exits non-zero but prints the VM (a wait that ended
+/// A launch whose create exits non-zero but prints the VM (a wait that ended
 /// early) is in the ledger by that id, so the exit trap deletes it; so is a database. A
 /// cleanup that cannot prove the delete keeps the ledger beside the log, without the lines
 /// the trap cleaned.
@@ -1132,7 +1194,7 @@ fn a_failed_create_that_answers_an_id_is_deleted_by_it() {
     );
 }
 
-/// Money fix: the balance may move only after a purchase's create exited 0; an answer of y
+/// The balance may move only after a purchase's create exited 0; an answer of y
 /// alone, or a create that failed, spent nothing.
 #[test]
 fn the_balance_may_move_only_after_a_purchase_succeeds() {
@@ -1188,7 +1250,7 @@ fn the_balance_may_move_only_after_a_purchase_succeeds() {
     );
 }
 
-/// Money fix: a rename or a rotation edits the resource's ledger line in place, so at every
+/// A rename or a rotation edits the resource's ledger line in place, so at every
 /// moment the ledger names it exactly once.
 #[test]
 fn a_rename_or_a_rotation_keeps_one_ledger_line() {
@@ -1350,16 +1412,8 @@ fn a_purchase_runs_only_after_a_y_at_the_terminal() {
     let (wrapper, _) = scripted_hipc(&home, "", &[FREE_DRIVE]);
     let (master, terminal) = pty();
     let log = home.path().join("manual_test.log");
-    let mut command = Command::new(repo().join("scripts/manual_test.sh"));
-    for name in ["HIPPIUS_TOKEN", "HIPPIUS_API_URL", "CI", "AI_AGENT"] {
-        command.env_remove(name);
-    }
-    let tmp = home.path().join("tmp");
-    std::fs::create_dir_all(&tmp).expect("create TMPDIR");
+    let mut command = script(&home);
     command
-        .env("HOME", home.path())
-        .env("TMPDIR", &tmp)
-        .current_dir(home.path())
         .args(["--offline", "--tier", "spend", "--hipc"])
         .arg(&wrapper)
         .arg("--log")
@@ -1404,21 +1458,6 @@ fn a_purchase_runs_only_after_a_y_at_the_terminal() {
     );
     assert!(!log.contains("cleanup: drive-sub"), "{log}");
     assert!(log.contains("cleanup: ticket hipc-manual-"), "{log}");
-}
-
-/// A pseudo-terminal: the side the script sees as its stdin, and the side the test types
-/// into.
-fn pty() -> (OwnedFd, File) {
-    let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).expect("open a pty");
-    grantpt(&master).expect("grant the pty");
-    unlockpt(&master).expect("unlock the pty");
-    let name = ptsname(&master, Vec::new()).expect("the pty has a name");
-    let terminal = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(name.to_str().expect("a pty name is UTF-8"))
-        .expect("open the terminal side of the pty");
-    (master, terminal)
 }
 
 /// The global flags that take a value, and those that do not; the guard checks both lists
@@ -1700,13 +1739,11 @@ fn bad_arguments_exit_2_before_anything_runs() {
 #[test]
 fn xtrace_is_refused() {
     let home = Home::new();
-    let mut command = Command::new(repo().join("scripts/manual_test.sh"));
+    let mut command = script(&home);
     command
-        .env("HOME", home.path())
         .env("SHELLOPTS", "xtrace")
         .env("HIPPIUS_TOKEN", OFFLINE_TOKEN)
-        .args(["--offline", "--hipc", env!("CARGO_BIN_EXE_hipc")])
-        .current_dir(home.path());
+        .args(["--offline", "--hipc", env!("CARGO_BIN_EXE_hipc")]);
     let output = bounded(&mut command, Stdio::null(), None);
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1747,19 +1784,10 @@ fn jq(filter: &str, input: &str) -> String {
 
 /// An offline run, as `offline`, with the 425 retries 0 seconds apart.
 fn offline_fast_retry(home: &Home, hipc: &Path, args: &[&str]) -> (Output, String) {
-    let tmp = home.path().join("tmp");
-    std::fs::create_dir_all(&tmp).expect("create TMPDIR");
     let log_path = home.path().join("manual_test.log");
-    let mut command = Command::new(repo().join("scripts/manual_test.sh"));
+    let mut command = script(home);
     command
-        .env("HOME", home.path())
-        .env("TMPDIR", &tmp)
         .env("HIPC_MANUAL_RETRY_SECONDS", "0")
-        .env_remove("HIPPIUS_TOKEN")
-        .env_remove("HIPPIUS_API_URL")
-        .env_remove("CI")
-        .env_remove("AI_AGENT")
-        .current_dir(home.path())
         .arg("--offline")
         .arg("--hipc")
         .arg(hipc)
@@ -1779,7 +1807,7 @@ fn count_calls(calls: &Path, what: &str) -> usize {
         .count()
 }
 
-/// Masking, round 2: the secret fields of every command that takes `--reveal` are masked,
+/// The secret fields of every command that takes `--reveal` are masked,
 /// among them a Kubernetes backup listing's `manifest.sealed_key` and signed download link,
 /// a database's credentials, and the tokens and setup keys `hipc api --reveal` can print.
 #[test]
@@ -1821,7 +1849,7 @@ fn every_reveal_secret_field_is_masked() {
     );
 }
 
-/// Masking, round 2: the literal rules run longest first, so a password that is a prefix
+/// The literal rules run longest first, so a password that is a prefix
 /// of the passphrase and of the client key cannot replace its part of them first and leave
 /// the rest in the log.
 #[test]
@@ -1849,7 +1877,7 @@ fn a_password_that_starts_the_passphrase_and_the_key_does_not_shred_them() {
     );
 }
 
-/// Masking, round 2: the log scan also looks for the parts of a secret around a shorter
+/// The log scan also looks for the parts of a secret around a shorter
 /// secret inside it, so a part left over by a short secret's rule fails the run, even when
 /// neither whole secret is in the log.
 #[test]
@@ -1901,7 +1929,7 @@ fn the_log_scan_finds_the_rest_of_a_secret_a_shorter_one_broke_up() {
     }
 }
 
-/// Masking, round 2: a password or a passphrase in a URL's query is masked: the whole URL
+/// A password or a passphrase in a URL's query is masked: the whole URL
 /// under a `url` or `uri` key, and the value alone in any other line.
 #[test]
 fn a_password_in_a_query_string_is_masked() {
@@ -1940,7 +1968,7 @@ fn a_password_in_a_query_string_is_masked() {
     );
 }
 
-/// Drive, round 2: the Starter question is asked only on a free state the script
+/// The Starter question is asked only on a free state the script
 /// recognises; every other shape is taken for a paid plan.
 #[test]
 fn only_a_recognised_free_drive_state_may_be_bought_over() {
@@ -1995,7 +2023,7 @@ fn only_a_recognised_free_drive_state_may_be_bought_over() {
     }
 }
 
-/// Drive, round 2: a subscription read that answers `not_found` (no subscription at all) is
+/// A subscription read that answers `not_found` (no subscription at all) is
 /// a free state, so the plan is asked about and bought; a shape that is not recognised is
 /// logged, and nothing is asked or bought.
 #[test]
@@ -2042,7 +2070,7 @@ fn a_missing_drive_subscription_is_bought_over_and_an_unknown_one_is_not() {
     assert_eq!(count_calls(&calls, "drive subscription cancel"), 0, "{log}");
 }
 
-/// Drive, round 2: only a real cancelled shape counts as cancelled; a cancel date on an
+/// Only a real cancelled shape counts as cancelled; a cancel date on an
 /// active, paid plan does not, nor does a status that merely holds the word.
 #[test]
 fn only_a_real_cancelled_drive_shape_counts_as_cancelled() {
@@ -2081,7 +2109,7 @@ fn only_a_real_cancelled_drive_shape_counts_as_cancelled() {
     }
 }
 
-/// Drive, round 2: a cancel that exited 0 in the scenario marks its ledger line
+/// A cancel that exited 0 in the scenario marks its ledger line
 /// `cancelled`, and the exit trap only reads the plan again: no second cancel is sent.
 #[test]
 fn a_cancel_that_exited_0_is_never_sent_again() {
@@ -2116,7 +2144,7 @@ fn a_cancel_that_exited_0_is_never_sent_again() {
     assert!(log.contains("cleanup: drive-sub solo: undone"), "{log}");
 }
 
-/// Drive, round 2: the exit trap's cancel of a `created` line retries a 425
+/// The exit trap's cancel of a `created` line retries a 425
 /// (`still_confirming`) as the scenario's does.
 #[test]
 fn the_trap_retries_a_425_cancel() {
@@ -2164,7 +2192,7 @@ fn the_trap_retries_a_425_cancel() {
     assert!(log.contains("cleanup: drive-sub solo: undone"), "{log}");
 }
 
-/// Matching, round 2: a 403 that is not the unprovisioned network stays a failure, even when
+/// A 403 that is not the unprovisioned network stays a failure, even when
 /// its hint names `network create` (a role that may not read the network).
 #[test]
 fn a_forbidden_network_read_whose_hint_names_the_create_is_a_failure() {
@@ -2199,7 +2227,7 @@ fn a_forbidden_network_read_whose_hint_names_the_create_is_a_failure() {
     );
 }
 
-/// Matching, round 2: `revoked` reads the status from its start, so `not_deleted` is live,
+/// `revoked` reads the status from its start, so `not_deleted` is live,
 /// and a status that names a failure is never gone: the resource may still run and bill.
 #[test]
 fn a_failed_or_negated_status_is_not_gone() {
@@ -2276,7 +2304,7 @@ fn the_app_launch_dry_run_shows_a_placeholder_and_never_the_secret() {
     assert!(!log.contains("hipc-manual-app-secret-"), "{log}");
 }
 
-/// Drive, round 3: an inactive answer that still carries a status, a period end or a
+/// An inactive answer that still carries a status, a period end or a
 /// funding source may be a plan the account pays for, so nothing is asked or bought, and
 /// the answer is logged.
 #[test]
@@ -2309,7 +2337,7 @@ fn an_inactive_drive_answer_with_more_to_it_is_not_bought_over() {
     }
 }
 
-/// Drive, round 3: the snapshot keeps the Drive subscription whole, so the teardown's
+/// The snapshot keeps the Drive subscription whole, so the teardown's
 /// cancelled check reads every key `drive_free` reads, and the diff still compares only the
 /// plan fields, `plan_name` among them.
 #[test]
@@ -2474,7 +2502,7 @@ fn the_log_scan_of_a_big_log_takes_seconds() {
     );
 }
 
-/// Live write run, 2026-11-03: the S3 bucket list names its rows `bucket_name`, not `name`,
+/// The S3 bucket list names its rows `bucket_name`, not `name`,
 /// so a list that held the new bucket did not show it, and the delete's check passed for
 /// any list. Both spellings are a row's name.
 #[test]
@@ -3011,7 +3039,7 @@ fn an_account_without_a_hub_namespace_is_a_state_not_a_failure() {
     assert_eq!(
         log.matches("note: this account has no Hub namespace")
             .count(),
-        6,
+        7,
         "{log}"
     );
     // The snapshot takes the state as the value of its two Hub reads.

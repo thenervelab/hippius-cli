@@ -6,25 +6,24 @@
 
 use std::path::{Path, PathBuf};
 
+use hippius::routes::{Paging, Route, s3};
 use hippius::{
-    AccessKeyId, AwsFiles, AwsProfile, Client, Error, Method, Request, Response, Result, SecretKey,
-    phrase, without_fields,
+    AccessKeyId, AwsFiles, AwsProfile, Client, Error, Request, Response, Result, SecretKey,
+    SecretValue, phrase, without_fields,
 };
 use serde_json::{Map, Value, json};
 
-use crate::cli::values::{Charset, Dash, is_word};
 use crate::cli::{
-    AclUpdate, BucketAcl, BucketObjects, Buckets, Configure, MAX_CONTINUATION_TOKEN_BYTES,
-    ObjectsList, Presign, S3, S3Subscription, TokenCreate, TokenKind, TokenRotate, TokenTarget,
-    Tokens, continuation_token,
+    AclUpdate, BucketAcl, BucketObjects, Buckets, Configure, ObjectsList, Presign, S3,
+    S3Subscription, TokenCreate, TokenKind, TokenRotate, TokenTarget, Tokens,
 };
 use crate::commands::files::{save_secret, shown_once};
 use crate::commands::{
-    Cleared, Input, Pages, Printed, dry_run_requests, list, local_dry_run, plan_setting,
-    print_body, print_body_or, print_envelope, print_keyed_list, print_with, require_public,
-    require_reveal, require_reveal_or_file, subscribed,
+    Input, Printed, list, local_dry_run, object, plan_setting, print_body, print_body_or,
+    print_envelope, print_keyed_list, print_with, require_public, require_reveal,
+    require_reveal_or_file, subscribed,
 };
-use crate::context::{self, Context, Gate, Question, Step};
+use crate::context::{self, Context, Gate, Question};
 
 pub(crate) fn run(ctx: &Context<'_>, command: &S3) -> Result<Printed> {
     match command {
@@ -33,7 +32,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &S3) -> Result<Printed> {
         S3::Plans => print_body(
             ctx,
             &ctx.client(&context::config()?)?,
-            &Request::get("/s3/plans/").about("list the S3 plans"),
+            &Request::to(&s3::PLANS, []).about("list the S3 plans"),
             Gate::Open,
         ),
         S3::Subscription(command) => subscription(ctx, &ctx.load_authed_client()?, command),
@@ -45,46 +44,50 @@ pub(crate) fn run(ctx: &Context<'_>, command: &S3) -> Result<Printed> {
 fn subscription(ctx: &Context<'_>, client: &Client, command: &S3Subscription) -> Result<Printed> {
     match command {
         S3Subscription::Get => {
-            let request = Request::get("/s3/subscription/").about("get the S3 plan");
+            let request = Request::to(&s3::SUBSCRIPTION, []).about("get the S3 plan");
             print_body(ctx, client, &request, Gate::Open)
         }
         S3Subscription::Checkout { intent_id } => {
-            let request = Request::get(format!("/s3/subscription/checkout/{intent_id}/"))
+            let request = Request::to(&s3::CHECKOUT, [intent_id])
                 .about(format!("get the card checkout `{intent_id}`"));
             print_body(ctx, client, &request, Gate::Open)
         }
         S3Subscription::History(args) => {
-            let request =
-                Request::get("/s3/subscription/history/").about("list the S3 plan history");
+            let request = Request::to(&s3::HISTORY, []).about("list the S3 plan history");
             list::run(ctx, client, &request, args)
         }
         S3Subscription::Subscribe(args) => {
-            let body = json!({ "plan": args.plan.code(), "rail": args.pay_from.code() });
-            let request = Request::new(Method::Post, "/s3/subscription/")
+            let body = s3::SubscribeBody {
+                plan: &args.plan,
+                rail: args.pay_from.code(),
+            };
+            // The server judges the plan code (owner decision D22): the help lists today's.
+            let request = Request::to(&s3::SUBSCRIBE, [])
                 .json(&body)
-                .about(format!("buy the S3 plan `{}`", args.plan.code()));
+                .about(format!("buy the S3 plan `{}`", args.plan));
             let gate = Gate::Confirm {
                 consequence: Some(args.pay_from.how()),
             };
-            print_with(ctx, client, &request, gate, |r| subscribed(ctx, &r, "s3"))
+            print_with(ctx, client, &request, gate, |response| {
+                subscribed(ctx, &response, "s3")
+            })
         }
         S3Subscription::Change(args) => {
-            let (request, gate) = match args.plan {
+            let (request, gate) = match &args.plan {
                 Some(plan) => (
-                    Request::new(Method::Patch, "/s3/subscription/")
-                        .json(&json!({ "plan": plan.code() }))
-                        .about(format!("switch the S3 plan to `{}`", plan.code())),
+                    Request::to(&s3::SUBSCRIPTION_CHANGE, [])
+                        .json(&s3::PlanChangeBody { plan })
+                        .about(format!("switch the S3 plan to `{plan}`")),
                     Gate::Confirm {
                         consequence: Some("a plan below the current usage pauses uploads"),
                     },
                 ),
-                None => plan_setting("/s3/subscription/", "S3", &args.setting)?,
+                None => plan_setting(&s3::SUBSCRIPTION_CHANGE, "S3", &args.setting)?,
             };
             print_body(ctx, client, &request, gate)
         }
         S3Subscription::Cancel => {
-            let request =
-                Request::new(Method::Delete, "/s3/subscription/").about("cancel the S3 plan");
+            let request = Request::to(&s3::SUBSCRIPTION_CANCEL, []).about("cancel the S3 plan");
             let gate = Gate::Confirm {
                 consequence: Some(CANCELLED),
             };
@@ -108,7 +111,7 @@ fn buckets(ctx: &Context<'_>, command: &Buckets) -> Result<Printed> {
         Buckets::List => print_keyed_list(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/objectstore/buckets/").about("list the buckets"),
+            &Request::to(&s3::BUCKETS, []).about("list the buckets"),
             "buckets",
         ),
         Buckets::Acl(command) => acl(ctx, command),
@@ -118,27 +121,21 @@ fn buckets(ctx: &Context<'_>, command: &Buckets) -> Result<Printed> {
             bucket_name,
             region,
         } => {
-            check_bucket(bucket_name)?;
-            let mut body = Map::new();
-            body.insert("name".to_owned(), bucket_name.as_str().into());
-            if let Some(region) = region {
-                body.insert("region".to_owned(), region.as_str().into());
-            }
-            let request = Request::new(Method::Post, "/objectstore/buckets/")
-                .json(&Value::Object(body))
+            let body = s3::BucketCreateBody {
+                name: bucket_name.as_str(),
+                region: region.as_deref(),
+            };
+            let request = Request::to(&s3::BUCKET_CREATE, [])
+                .json(&body)
                 .about(format!("create the bucket `{bucket_name}`"));
             let client = ctx.load_authed_client()?;
             print_body(ctx, &client, &request, Gate::Confirm { consequence: None })
         }
         Buckets::Delete { bucket_name } => {
-            check_bucket(bucket_name)?;
-            let request = Request::new(
-                Method::Delete,
-                format!("/objectstore/buckets/{bucket_name}/"),
-            )
-            .listed_by("hipc s3 buckets list")
-            .about(format!("delete the bucket `{bucket_name}`"));
-            let done = json!({ "name": bucket_name, "deleted": true });
+            let request = Request::to(&s3::BUCKET_DELETE, [bucket_name])
+                .listed_by("hipc s3 buckets list")
+                .about(format!("delete the bucket `{bucket_name}`"));
+            let done = json!({ "name": bucket_name.as_str(), "deleted": true });
             let client = ctx.load_authed_client()?;
             print_body_or(
                 ctx,
@@ -159,127 +156,23 @@ fn buckets(ctx: &Context<'_>, command: &Buckets) -> Result<Printed> {
 /// and `--all` would drop them.
 fn list_objects(ctx: &Context<'_>, args: &ObjectsList) -> Result<Printed> {
     let name = &args.bucket_name;
-    check_bucket(name)?;
     let limit = args.limit.to_string();
+    let paging = s3::OBJECTS
+        .endpoint()
+        .paging()
+        .expect("the row of a bucket's objects says how they are paged");
     let page_request = |token: Option<&str>| {
-        let mut request = Request::get(format!("/objectstore/buckets/{name}/objects/"))
+        let request = Request::to(&s3::OBJECTS, [name])
             .listed_by("hipc s3 buckets list")
-            .about(format!("list the objects of the bucket `{name}`"))
-            .query("max_keys", &limit);
+            .about(format!("list the objects of the bucket `{name}`"));
+        let mut request = list::sized(request, paging, Some(&limit));
         if let Some(prefix) = &args.prefix {
             request = request.query("prefix", prefix);
         }
-        match token {
-            Some(token) => request.query("continuation_token", token),
-            None => request,
-        }
+        list::at_page(request, paging, token)
     };
     let client = ctx.load_authed_client()?;
-    let mut items = Vec::new();
-    // The first page has no token; `""` stands for it, as `--page-token` takes no empty one.
-    let mut pages = Pages::starting_at(args.page_token.as_deref().unwrap_or(""));
-    let mut token = args.page_token.clone();
-    loop {
-        let answer = match ctx.call(&client, &page_request(token.as_deref()), Gate::Open)? {
-            Step::Sent(response) => {
-                pages.read(response.bytes().len())?;
-                response.json()?
-            }
-            Step::DryRun(doc) => return Ok(Printed::Document(doc)),
-        };
-        let page = objects_page(answer)?;
-        if !args.all {
-            let mut doc = hippius::envelope_beside(page.items, page.fields);
-            doc["next_page_token"] = page.next.map_or(Value::Null, Value::String);
-            return Ok(Printed::List(doc));
-        }
-        items.extend(page.items);
-        let Some(next) = page.next else {
-            return Ok(Printed::List(Value::Array(items)));
-        };
-        pages.admit(&next)?;
-        token = Some(next);
-    }
-}
-
-/// One page of a bucket's objects.
-#[derive(Debug)]
-struct ObjectsPage {
-    /// `Contents`: the objects.
-    items: Vec<Value>,
-    /// `NextContinuationToken`, or `None` on the last page.
-    next: Option<String>,
-    /// The answer's other fields, such as `KeyCount` and `IsTruncated`.
-    fields: Map<String, Value>,
-}
-
-/// Reads an S3 `ListObjectsV2` answer. `Contents` may be missing, as boto3 leaves it out of
-/// an empty page. An empty `NextContinuationToken` is no token, as the AWS SDK paginators
-/// read it, so a loop never sends it and fetches the first page again.
-///
-/// # Errors
-///
-/// `internal` for an answer that is not an object, a `Contents` that is not an array, a
-/// token that is not text or that `--page-token` would refuse, and an `IsTruncated: true`
-/// page with no token or an `IsTruncated` that is neither a boolean nor `null`: reading that
-/// as the last page would print a short list as if it were complete. A page with
-/// `IsTruncated: false` is the last, whatever token it carries.
-fn objects_page(answer: Value) -> Result<ObjectsPage> {
-    let not_a_list =
-        || Error::internal("the API answered a list request with something other than a list");
-    let Value::Object(mut fields) = answer else {
-        return Err(not_a_list());
-    };
-    let items = match fields.shift_remove("Contents") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(items)) => items,
-        Some(_) => return Err(not_a_list()),
-    };
-    let next = match fields.shift_remove("NextContinuationToken") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(token)) => Some(token).filter(|token| !token.is_empty()),
-        Some(_) => {
-            return Err(Error::internal(
-                "the API's `NextContinuationToken` is not text, so the next page cannot be read",
-            ));
-        }
-    };
-    let next = match (fields.get("IsTruncated"), next) {
-        // S3 sends a token only on a truncated page; one beside `IsTruncated: false` leads
-        // nowhere, and following it would fetch a page the server says does not exist.
-        (Some(Value::Bool(false)), _) => None,
-        (Some(Value::Bool(true)), None) => {
-            return Err(Error::internal(
-                "the API says the list goes on (`IsTruncated`) but gives no \
-                 `NextContinuationToken`, so the next page cannot be read",
-            ));
-        }
-        // A string `"true"` or a number `1` is no boolean to trust either way: read as absent
-        // it would make a page without a token the last, a short list printed as complete.
-        (Some(truncated), _) if !truncated.is_null() && !truncated.is_boolean() => {
-            return Err(Error::internal(
-                "the API's `IsTruncated` is not `true` or `false`, so whether the list goes on \
-                 cannot be read",
-            ));
-        }
-        (_, next) => next,
-    };
-    // Held to the rule `--page-token` checks, so a printed `next_page_token` is always one
-    // the next call accepts. The token is not quoted: it is the server's, and may be long.
-    if let Some(token) = &next
-        && continuation_token(token).is_err()
-    {
-        return Err(Error::internal(format!(
-            "the API's `NextContinuationToken` is not one `--page-token` takes: it is empty, \
-             holds a space or a control character, or is longer than \
-             {MAX_CONTINUATION_TOKEN_BYTES} bytes"
-        )));
-    }
-    Ok(ObjectsPage {
-        items,
-        next,
-        fields,
-    })
+    list::run_with(ctx, &client, paging, args.into(), page_request)
 }
 
 /// `GET /api/objectstore/buckets/<name>/presigned-url/?key=<key>[&expires_in=<seconds>]`
@@ -295,7 +188,6 @@ fn presign(ctx: &Context<'_>, args: &Presign) -> Result<Printed> {
         expires_in,
         reveal,
     } = args;
-    check_bucket(bucket_name)?;
     if key.is_empty() {
         return Err(Error::usage(
             "the object key is empty",
@@ -303,7 +195,7 @@ fn presign(ctx: &Context<'_>, args: &Presign) -> Result<Printed> {
         ));
     }
     require_reveal(ctx, *reveal)?;
-    let request = Request::get(format!("/objectstore/buckets/{bucket_name}/presigned-url/"))
+    let request = Request::to(&s3::PRESIGNED_URL, [bucket_name])
         .query("key", key)
         .listed_by("hipc s3 buckets list")
         .about(format!(
@@ -326,12 +218,11 @@ fn acl(ctx: &Context<'_>, command: &BucketAcl) -> Result<Printed> {
         BucketAcl::List => print_envelope(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/objectstore/acl/").about("list the sub-token grants of the buckets"),
+            &Request::to(&s3::ACLS, []).about("list the sub-token grants of the buckets"),
         ),
         // Swagger `objectstore_buckets_acl_list`: `{bucket, policy}`.
         BucketAcl::Get { bucket_name } => {
-            check_bucket(bucket_name)?;
-            let request = Request::get(format!("/objectstore/buckets/{bucket_name}/acl/"))
+            let request = Request::to(&s3::BUCKET_ACL, [bucket_name])
                 .listed_by("hipc s3 buckets list")
                 .about(format!("get the policy of the bucket `{bucket_name}`"));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
@@ -351,7 +242,6 @@ fn acl(ctx: &Context<'_>, command: &BucketAcl) -> Result<Printed> {
 /// `hipc api` checks them on this route, and the current policy is not read first.
 fn update_acl(ctx: &Context<'_>, args: &AclUpdate) -> Result<Printed> {
     let name = &args.bucket_name;
-    check_bucket(name)?;
     let input = Input {
         path: &args.policy_file,
         flag: "--policy-file",
@@ -373,7 +263,7 @@ fn update_acl(ctx: &Context<'_>, args: &AclUpdate) -> Result<Printed> {
         args.public,
         &format!("the policy may make the bucket `{name}` readable by anyone"),
     )?;
-    // A dry run sends nothing, so it removes nothing (TENETS 5).
+    // A dry run sends nothing, so it removes nothing (tenet 5).
     if !args.remove_others && !ctx.dry_run() {
         return Err(Error::remove_others_unread(
             format!(
@@ -383,43 +273,20 @@ fn update_acl(ctx: &Context<'_>, args: &AclUpdate) -> Result<Printed> {
             ctx.args(),
         ));
     }
-    let request = Request::new(Method::Put, format!("/objectstore/buckets/{name}/acl/set/"))
+    let request = Request::to(&s3::BUCKET_ACL_SET, [name])
         .listed_by("hipc s3 buckets list")
-        .json(&json!({ "policy": policy }))
+        .json(&s3::BucketAclSetBody { policy: &policy })
         .about(format!(
             "replace the whole policy of the bucket `{name}` with the one in {}, which can make \
              it readable by anyone",
             input.name()
         ));
     // Swagger documents the 200 as "Updated" with no body.
-    let done = json!({ "bucket": name, "updated": true });
+    let done = json!({ "bucket": name.as_str(), "updated": true });
     let gate = Gate::Confirm {
         consequence: Some("every statement the file leaves out is removed"),
     };
     print_body_or(ctx, &ctx.load_authed_client()?, &request, gate, done)
-}
-
-/// S3 bucket naming: 3 to 63 lowercase letters, digits, `.`, and `-`, starting and ending
-/// with a letter or digit, with no `..`. Checked before sending because the name becomes a
-/// path segment.
-fn check_bucket(name: &str) -> Result<()> {
-    let bytes = name.as_bytes();
-    // A name that starts with a letter or digit starts with no `-`.
-    let valid = is_word(name, 3..=63, Charset::LowerDotDash, Dash::Refused)
-        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
-        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
-        && !name.contains("..");
-    if valid {
-        Ok(())
-    } else {
-        Err(Error::usage(
-            format!(
-                "`{name}` is not a bucket name: a name is 3 to 63 lowercase letters, digits, \
-                 `.`, and `-`, starts and ends with a letter or a digit, and has no `..`"
-            ),
-            "pass a bucket name such as `my-bucket.2`",
-        ))
-    }
 }
 
 fn tokens(ctx: &Context<'_>, command: &Tokens) -> Result<Printed> {
@@ -431,11 +298,31 @@ fn tokens(ctx: &Context<'_>, command: &Tokens) -> Result<Printed> {
     }
 }
 
-/// The collection path of a token kind.
-fn collection(kind: TokenKind) -> &'static str {
-    match kind {
-        TokenKind::Master => "/objectstore/master-tokens/",
-        TokenKind::Sub => "/objectstore/sub-tokens/",
+/// The routes of one kind of token.
+#[derive(Debug)]
+struct TokenRoutes {
+    list: Route<0>,
+    create: Route<0>,
+    revoke: Route<1>,
+    rotate: Route<1>,
+}
+
+impl TokenRoutes {
+    const fn of(kind: TokenKind) -> &'static Self {
+        match kind {
+            TokenKind::Master => &Self {
+                list: s3::MASTER_TOKENS,
+                create: s3::MASTER_TOKEN_CREATE,
+                revoke: s3::MASTER_TOKEN_REVOKE,
+                rotate: s3::MASTER_TOKEN_ROTATE,
+            },
+            TokenKind::Sub => &Self {
+                list: s3::SUB_TOKENS,
+                create: s3::SUB_TOKEN_CREATE,
+                revoke: s3::SUB_TOKEN_REVOKE,
+                rotate: s3::SUB_TOKEN_ROTATE,
+            },
+        }
     }
 }
 
@@ -443,33 +330,27 @@ fn collection(kind: TokenKind) -> &'static str {
 /// `page` and `page_size`, so its `next` links are followed; the first request carries no
 /// parameters, and the server picks the page size.
 fn list_tokens(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
+    let first_page = |kind: TokenKind| {
+        Request::to(&TokenRoutes::of(kind).list, [])
+            .about(format!("list the S3 `{}` tokens", kind.code()))
+    };
+    if ctx.dry_run() {
+        let [master, sub] = [TokenKind::Master, TokenKind::Sub].map(first_page);
+        return ctx.dry_run_of(client, &[&master, &sub]).map(Printed::from);
+    }
+    // Swagger gives the sub-token list DRF's `page`, but no command takes page flags on it,
+    // so its route is not marked paged; it is read by number all the same.
+    let paging = Paging::Numbered;
     let mut items = Vec::new();
-    let mut dry_runs = Vec::new();
     for kind in [TokenKind::Master, TokenKind::Sub] {
-        let mut pages = Pages::starting_at("1");
-        let mut page_number: Option<String> = None;
-        loop {
-            let request = Request::get(collection(kind))
-                .about(format!("list the S3 `{}` tokens", kind.code()));
-            let request = match &page_number {
-                Some(number) => request.query("page", number),
-                None => request,
-            };
-            let page = match ctx.call(client, &request, Gate::Open)? {
-                Step::Sent(response) => {
-                    pages.read(response.bytes().len())?;
-                    hippius::page(response.json()?)?
-                }
-                Step::DryRun(doc) => {
-                    dry_runs.push(doc);
-                    break;
-                }
-            };
+        let mut asked = None;
+        list::walk(ctx, client, first_page(kind), "1", |answer| {
+            let page = hippius::page(answer)?;
             // A server that ignores `page` and answers page 1 again, with a `next` that
             // keeps rising, would repeat the list on every page; a later page that names
             // another `page` than the one asked is refused.
-            let start_over = page_number.as_ref().map(|_| list::CHANGED_WHILE_READ);
-            list::answered_as_asked(&page, page_number.as_deref().unwrap_or("1"), start_over)?;
+            let start_over = asked.as_ref().map(|_| list::CHANGED_WHILE_READ);
+            list::answered_as_asked(&page, asked.as_deref().unwrap_or("1"), start_over)?;
             let next = page.next_page_token()?;
             for token in page.items {
                 let mut token = token_document(without_fields(token, &is_s3_secret), kind);
@@ -479,25 +360,27 @@ fn list_tokens(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
                 }
                 items.push(token);
             }
-            let Some(number) = next else { break };
-            pages.admit(&number)?;
-            page_number = Some(number);
-        }
+            let Some(number) = next else {
+                return Ok(list::Turn::Done(()));
+            };
+            let request = list::at_page(first_page(kind), paging, Some(&number));
+            asked = Some(number.clone());
+            Ok(list::Turn::Next {
+                token: number,
+                request,
+            })
+        })?;
     }
-    if dry_runs.is_empty() {
-        Ok(Printed::List(hippius::envelope(items)))
-    } else {
-        Ok(Printed::Document(dry_run_requests(dry_runs)))
-    }
+    Ok(Printed::List(hippius::envelope(items)))
 }
 
 fn create_token(ctx: &Context<'_>, args: &TokenCreate) -> Result<Printed> {
     let body = token_body(args)?;
-    require_reveal_or_file(ctx, args.reveal, args.secret_file.path.is_some())?;
-    let request = Request::new(Method::Post, collection(args.kind))
+    require_reveal_or_file(ctx, args.secret.reveal, args.secret.path.is_some())?;
+    let request = Request::to(&TokenRoutes::of(args.kind).create, [])
         .json(&body)
         .about(format!("create an S3 `{}` token", args.kind.code()));
-    let secret_file = args.secret_file.path.as_deref();
+    let secret_file = args.secret.path.as_deref();
     let consequence = shown_once("its secret", secret_file);
     let gate = Gate::Confirm {
         consequence: Some(&consequence),
@@ -529,14 +412,12 @@ fn issued_token(
 
 /// The create body: only the flags the caller set. A sub-token flag on a master token is a
 /// usage error, not a field the server would ignore.
-fn token_body(args: &TokenCreate) -> Result<Value> {
-    let mut body = Map::new();
-    if let Some(name) = &args.name {
-        body.insert("name".to_owned(), name.as_str().into());
-    }
-    if let Some(expires_at) = &args.expires_at {
-        body.insert("expires_at".to_owned(), expires_at.as_str().into());
-    }
+fn token_body(args: &TokenCreate) -> Result<s3::TokenCreateBody<'_>> {
+    let body = s3::TokenCreateBody {
+        name: args.name.as_deref(),
+        expires_at: args.expires_at.as_deref(),
+        ..s3::TokenCreateBody::default()
+    };
     let sub_flags = args.scope_type.is_some()
         || !args.buckets.is_empty()
         || !args.actions.is_empty()
@@ -544,40 +425,26 @@ fn token_body(args: &TokenCreate) -> Result<Value> {
         || !args.ips.is_empty()
         || args.not_before.is_some();
     match args.kind {
-        TokenKind::Master if sub_flags => {
-            return Err(Error::usage(
-                "`--scope-type`, `--bucket`, `--action`, `--prefix`, `--ip`, and \
-                 `--not-before` are for sub tokens, and `--kind` is `master`",
-                "pass `--kind sub` to create a token with those limits",
-            ));
-        }
-        TokenKind::Master => {}
-        TokenKind::Sub => {
-            if let Some(scope) = args.scope_type {
-                body.insert("scope_type".to_owned(), scope.code().into());
-            }
-            for (field, values) in [
-                ("bucket_names", &args.buckets),
-                ("actions", &args.actions),
-                ("allowed_prefixes", &args.prefixes),
-                ("ip_allowlist", &args.ips),
-            ] {
-                if !values.is_empty() {
-                    body.insert(field.to_owned(), values.clone().into());
-                }
-            }
-            if let Some(not_before) = &args.not_before {
-                body.insert("not_before".to_owned(), not_before.as_str().into());
-            }
-        }
+        TokenKind::Master if sub_flags => Err(Error::usage(
+            "`--scope-type`, `--bucket`, `--action`, `--prefix`, `--ip`, and `--not-before` are \
+             for sub tokens, and `--kind` is `master`",
+            "pass `--kind sub` to create a token with those limits",
+        )),
+        TokenKind::Master => Ok(body),
+        TokenKind::Sub => Ok(s3::TokenCreateBody {
+            scope_type: args.scope_type.map(crate::cli::ScopeType::code),
+            bucket_names: &args.buckets,
+            actions: &args.actions,
+            allowed_prefixes: &args.prefixes,
+            ip_allowlist: &args.ips,
+            not_before: args.not_before.as_deref(),
+            ..body
+        }),
     }
-    Ok(Value::Object(body))
 }
 
 fn revoke_token(ctx: &Context<'_>, target: &TokenTarget) -> Result<Printed> {
-    check_uuid(&target.token_id)?;
-    let path = format!("{}{}/revoke/", collection(target.kind), target.token_id);
-    let request = Request::new(Method::Post, path)
+    let request = Request::to(&TokenRoutes::of(target.kind).revoke, [&target.token_id])
         .listed_by("hipc s3 tokens list")
         .about(format!(
             "revoke the S3 `{}` token `{}`",
@@ -592,7 +459,7 @@ fn revoke_token(ctx: &Context<'_>, target: &TokenTarget) -> Result<Printed> {
         Gate::Confirm { consequence: None },
         |response| {
             let mut doc = Map::new();
-            doc.insert("id".to_owned(), target.token_id.as_str().into());
+            doc.insert("id".to_owned(), target.token_id.to_string().into());
             // A revoke issues no secret; one the server sent anyway is not printed (tenet 9).
             if let Value::Object(body) = without_fields(response.json()?, &is_s3_secret) {
                 doc.extend(body);
@@ -603,21 +470,18 @@ fn revoke_token(ctx: &Context<'_>, target: &TokenTarget) -> Result<Printed> {
 }
 
 fn rotate_token(ctx: &Context<'_>, args: &TokenRotate) -> Result<Printed> {
-    check_uuid(&args.target.token_id)?;
-    require_reveal_or_file(ctx, args.reveal, args.secret_file.path.is_some())?;
-    let path = format!(
-        "{}{}/rotate/",
-        collection(args.target.kind),
+    require_reveal_or_file(ctx, args.secret.reveal, args.secret.path.is_some())?;
+    let request = Request::to(
+        &TokenRoutes::of(args.target.kind).rotate,
+        [&args.target.token_id],
+    )
+    .listed_by("hipc s3 tokens list")
+    .about(format!(
+        "rotate the S3 `{}` token `{}`",
+        args.target.kind.code(),
         args.target.token_id
-    );
-    let request = Request::new(Method::Post, path)
-        .listed_by("hipc s3 tokens list")
-        .about(format!(
-            "rotate the S3 `{}` token `{}`",
-            args.target.kind.code(),
-            args.target.token_id
-        ));
-    let secret_file = args.secret_file.path.as_deref();
+    ));
+    let secret_file = args.secret.path.as_deref();
     let consequence = format!(
         "the old token stops working, and {}",
         shown_once("the new secret", secret_file)
@@ -649,9 +513,10 @@ fn configure_note(ctx: &Context<'_>, token: &Value, secret_file: Option<&Path>) 
     let Some(id) = id.filter(|_| has_secret) else {
         return;
     };
-    let file = secret_file.map_or("<path>".to_owned(), |path| {
-        phrase::shell_word(&path.to_string_lossy())
-    });
+    let file = secret_file.map_or_else(
+        || "<path>".to_owned(),
+        |path| phrase::shell_word(&path.to_string_lossy()),
+    );
     let words = format!("s3 configure --access-key-id {id} --secret-key-file {file}");
     if let Some(command) = ctx.next_command(&words) {
         ctx.note(&match secret_file {
@@ -664,24 +529,6 @@ fn configure_note(ctx: &Context<'_>, token: &Value, secret_file: Option<&Path>) 
                 "save `secret` to a file, then run `{command}` to write an AWS CLI profile for it"
             ),
         });
-    }
-}
-
-/// A token id is a UUID. Checked before sending because it becomes a path segment.
-fn check_uuid(id: &str) -> Result<()> {
-    let groups: Vec<&str> = id.split('-').collect();
-    let valid = groups.len() == 5
-        && groups
-            .iter()
-            .zip([8, 4, 4, 4, 12])
-            .all(|(group, len)| group.len() == len && group.bytes().all(|b| b.is_ascii_hexdigit()));
-    if valid {
-        Ok(())
-    } else {
-        Err(Error::usage(
-            format!("`{id}` is not a token id: a token id is a UUID"),
-            "run `hipc s3 tokens list` to see the token ids",
-        ))
     }
 }
 
@@ -758,8 +605,12 @@ fn key_pair_from_document(path: &Path) -> Result<(AccessKeyId, SecretKey)> {
     // Text mode prints a key-value block, not JSON, so the hint names `--json`.
     let print_one = "pass the JSON output of `hipc --json s3 tokens create --reveal` or \
                      `hipc --json s3 tokens rotate --reveal`";
-    let parsed = serde_json::from_slice::<Value>(&bytes).map(Cleared);
-    let Some(document) = parsed.as_ref().ok().and_then(|parsed| parsed.0.as_object()) else {
+    let parsed = serde_json::from_slice::<Value>(&bytes).map(SecretValue::new);
+    let Some(document) = parsed
+        .as_ref()
+        .ok()
+        .and_then(|parsed| parsed.as_value().as_object())
+    else {
         return Err(refused("is not a JSON object", print_one));
     };
     let Some(id) = document.get("access_key_id").and_then(Value::as_str) else {
@@ -868,12 +719,15 @@ fn configure(ctx: &Context<'_>, args: &Configure) -> Result<Printed> {
         context::env_os("HOME").map(PathBuf::from).as_deref(),
     )?;
     let doc = |written: bool| {
-        json!({
-            "aws_profile": profile.as_str(),
-            "config_path": files.config.display().to_string(),
-            "credentials_path": files.credentials.display().to_string(),
-            "secret_written": written,
-        })
+        object([
+            ("aws_profile", profile.as_str().into()),
+            ("config_path", files.config.display().to_string().into()),
+            (
+                "credentials_path",
+                files.credentials.display().to_string().into(),
+            ),
+            ("secret_written", written.into()),
+        ])
     };
     if ctx.dry_run() {
         files.check()?;
@@ -895,7 +749,7 @@ fn configure(ctx: &Context<'_>, args: &Configure) -> Result<Printed> {
             profile.as_str()
         ));
     }
-    Ok(Printed::Document(doc(true)))
+    Ok(Printed::Document(Value::Object(doc(true))))
 }
 
 /// What an S3 plan cancel leaves, for its question and `hipc api`'s.
@@ -905,44 +759,6 @@ pub(crate) const CANCELLED: &str = "the plan stays until the end of the month pa
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn bucket_names_follow_s3_rules() {
-        for good in ["abc", "my-bucket.2", &"a".repeat(63)] {
-            assert!(check_bucket(good).is_ok(), "{good}");
-        }
-        for bad in [
-            "",
-            "..",
-            "ab",
-            &"a".repeat(64),
-            "Abc",
-            "a_b",
-            "-ab",
-            "ab-",
-            "a..b",
-            "a/b",
-            "a b",
-            ".ab",
-        ] {
-            assert!(check_bucket(bad).is_err(), "{bad}");
-        }
-    }
-
-    #[test]
-    fn token_ids_are_uuids() {
-        assert!(check_uuid("0f8fad5b-d9cb-469f-a165-70867728950e").is_ok());
-        for bad in [
-            "",
-            "0f8fad5b-d9cb-469f-a165",
-            "0f8fad5b-d9cb-469f-a165-70867728950g",
-            "0f8fad5bd9cb469fa16570867728950e",
-            "../../x",
-            "0f8fad5b-d9cb-469f-a165-70867728950e-",
-        ] {
-            assert!(check_uuid(bad).is_err(), "{bad}");
-        }
-    }
 
     #[test]
     fn token_documents_are_snake_case_with_kind_first() {

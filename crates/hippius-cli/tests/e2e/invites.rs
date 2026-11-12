@@ -4,9 +4,10 @@
 use std::io::{Read as _, Write as _};
 use std::path::PathBuf;
 
+use hippius::routes::account;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Route, Run, Server, TOKEN, route};
+use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Route, Run, Server, TOKEN, route_of};
 
 /// The invite token every test sends.
 const INVITE: &str = "inv_Qx9Wb2-secret_token";
@@ -23,11 +24,11 @@ const JOINED: &str =
     r#"{"account":{"id":"acct_0123456789abcdef0123","name":"Boss Co","is_owner":false}}"#;
 
 fn preview_route(reply: Reply) -> Route {
-    route("POST", "/api/accounts/invites/preview/", reply)
+    route_of(&account::INVITE_PREVIEW, [], reply)
 }
 
 fn accept_route(reply: Reply) -> Route {
-    route("POST", "/api/accounts/invites/accept/", reply)
+    route_of(&account::INVITE_ACCEPT, [], reply)
 }
 
 /// The invite token, in a private file of `home`.
@@ -78,8 +79,7 @@ fn preview_posts_the_token_in_the_body_and_prints_the_offer() {
 fn preview_needs_no_token_and_never_sends_the_account_header() {
     let server = Server::start(vec![preview_route(Reply::json(201, PREVIEW))]);
     let home = Home::new();
-    let doc = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&home, &server)
         .stdin(format!("  {INVITE}\n").as_bytes())
         .run(&[
             "account",
@@ -134,15 +134,11 @@ fn preview_at_another_origin_needs_yes_and_names_its_source() {
         assert_eq!(error["hint"], "pass `--yes` to confirm");
     };
     refusal(
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
-            .run(&preview),
+        Hipc::tokenless(&home, &server).run(&preview),
         "`HIPPIUS_API_URL`",
     );
     let text = [&["--output", "text"][..], &preview].concat();
-    let run = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
-        .run(&text);
+    let run = Hipc::tokenless(&home, &server).run(&text);
     assert_eq!(run.code(), Some(2), "{}", run.stderr());
     assert!(
         run.stderr().contains("send the invite token to"),
@@ -315,8 +311,9 @@ fn a_bad_token_file_is_usage_and_sends_nothing() {
             error["hint"],
             "pipe only the invite token, the last part of the invite link, to `--token-file -`"
         );
+        // The path may be the invite token pasted in its place, so it is not repeated.
         let missing = home.path().join("missing.txt");
-        Hipc::against(&home, &server)
+        let error = Hipc::against(&home, &server)
             .run(&[
                 "account",
                 "invites",
@@ -325,6 +322,11 @@ fn a_bad_token_file_is_usage_and_sends_nothing() {
                 missing.to_str().unwrap(),
             ])
             .fails(2, "usage");
+        assert_eq!(
+            error["message"],
+            "cannot read the invite token from the file `--token-file` names: it does not exist; \
+             the path is not repeated here, in case it is the invite token itself"
+        );
     }
     assert!(server.requests().is_empty());
 }
@@ -432,7 +434,7 @@ fn accept_needs_a_token_before_anything_is_sent() {
     let server = Server::start(vec![]);
     let home = Home::new();
     let path = token_file(&home);
-    let run = Hipc::new(&home).env("HIPPIUS_API_URL", server.url()).run(&[
+    let run = Hipc::tokenless(&home, &server).run(&[
         "account",
         "invites",
         "accept",
@@ -455,7 +457,7 @@ fn accept_with_a_withheld_token_sends_nothing() {
          token_origin = \"https://api.hippius.com\"\n"
     ));
     let path = token_file(&home);
-    let run = Hipc::new(&home).env("HIPPIUS_API_URL", server.url()).run(&[
+    let run = Hipc::tokenless(&home, &server).run(&[
         "account",
         "invites",
         "accept",

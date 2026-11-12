@@ -4,7 +4,8 @@
 use clap::{Args, Subcommand, ValueEnum};
 
 use crate::cli::{
-    HubEvents, HubKeys, HubModels, SUBSCRIPTION_ID, SecretFile, examples, number, reference,
+    HubEvents, HubKeys, HubModels, Namespace, OneTimeSecret, SUBSCRIPTION_ID, examples, number,
+    reference,
 };
 
 #[derive(Debug, Subcommand)]
@@ -232,7 +233,8 @@ pub(crate) enum HubNamespace {
     ]))]
     Availability {
         /// The namespace: 1 to 63 lowercase letters, digits, and dashes
-        namespace: String,
+        #[arg(value_parser = Namespace::parse)]
+        namespace: Namespace,
     },
     // A new namespace is public by default in the docs (https://docs.hippius.com/registry/push).
     /// Create the registry namespace; needs --yes, and --reveal or --secret-file
@@ -241,8 +243,8 @@ pub(crate) enum HubNamespace {
     /// --secret-file, which writes it only to a new private file, is required before anything
     /// is sent.
     ///
-    /// The Free plan needs a balance of at least $10 to create a namespace, a spam check the server
-    /// enforces with 402.
+    /// Creating a namespace needs a balance even on the Free plan, a spam check the server
+    /// enforces with 402; the server sets the minimum.
     ///
     /// A new namespace is public: anyone can pull from it. To keep it private, run hipc hub
     /// namespace update --visibility private --yes before the first push.
@@ -252,12 +254,10 @@ pub(crate) enum HubNamespace {
     ]))]
     Create {
         /// The namespace: 1 to 63 lowercase letters, digits, and dashes
-        namespace: String,
-        /// Print the one-time robot secret on stdout; without it or --secret-file nothing is sent
-        #[arg(long)]
-        reveal: bool,
+        #[arg(value_parser = Namespace::parse)]
+        namespace: Namespace,
         #[command(flatten)]
-        secret_file: SecretFile,
+        secret: OneTimeSecret,
     },
     /// The namespace's provisioning status
     #[command(after_help = examples(&[
@@ -322,11 +322,7 @@ pub(crate) enum HubRobot {
         "hipc hub namespace robot rotate --secret-file robot-new.secret --yes",
     ]))]
     Rotate {
-        /// Print the new one-time robot secret on stdout; without it or --secret-file nothing is
-        /// sent
-        #[arg(long)]
-        reveal: bool,
         #[command(flatten)]
-        secret_file: SecretFile,
+        secret: OneTimeSecret,
     },
 }

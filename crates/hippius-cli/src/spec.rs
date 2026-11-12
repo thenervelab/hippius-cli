@@ -4,11 +4,21 @@
 //! parser and fails when a command has no row here, so a new command cannot ship without
 //! an effect.
 
-use clap::CommandFactory;
+#[cfg(test)]
+mod doc_commands;
+#[cfg(test)]
+mod help_agrees;
+mod routes;
+mod rows;
+
+use std::sync::LazyLock;
+
+use clap::CommandFactory as _;
 use hippius::Code;
 use serde_json::{Value, json};
 
 use crate::cli::Cli;
+use crate::cli::api::rules::{self, Voice};
 
 /// The verb shelf of tenet 2: every word a leaf may end in as a verb, in the order tenet 2
 /// lists them. A test holds every leaf to it.
@@ -63,7 +73,8 @@ const VERBS: [&str; 40] = [
 /// VM and Kubernetes backups lists and the database events and refusals print the list
 /// envelope, more commands are confirmed, and a database create or restore with
 /// `--credentials-dir` prints the paths of its credential files in place of every secret.
-const SCHEMA_VERSION: u32 = 3;
+/// 4: each command lists the `routes` it sends to.
+const SCHEMA_VERSION: u32 = 4;
 
 /// What a repeat of the command does to the server (tenet 7).
 #[derive(Debug, Clone, Copy)]
@@ -87,23 +98,40 @@ impl Effect {
     }
 }
 
-/// When a command refuses with `confirmation_required` unless `--yes` is passed.
+/// When a command needs a flag that says the caller means it: `--yes`, or it refuses with
+/// `confirmation_required` (tenet 5), and `--reveal`, or it refuses with `reveal_required`
+/// (tenet 9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Confirmation {
+pub(crate) enum Asks {
     Never,
     Always,
-    /// Only when this holds, as the end of a sentence that starts "it is confirmed when".
+    /// Only when this holds, as the end of a sentence that starts "it is confirmed when" or
+    /// "it needs `--reveal` when".
     When(&'static str),
 }
 
-/// When a command refuses with `reveal_required` unless `--reveal` is passed (tenet 9).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Reveal {
-    Never,
-    Always,
-    /// Only when this holds, as the end of a sentence that starts "it needs `--reveal`
-    /// when".
-    When(&'static str),
+impl Spec {
+    /// When the command asks before a write, which decides how its writes are sent
+    /// ([`crate::context::Confirmed`]).
+    pub(crate) fn confirmation(&self) -> Asks {
+        self.confirmation
+    }
+}
+
+impl Asks {
+    /// Whether the command can ask at all: `confirmation` or `reveal` in `hipc schema`.
+    fn asks(self) -> bool {
+        self != Self::Never
+    }
+
+    /// When it asks, if only sometimes: `confirmation_when` or `reveal_when` in `hipc
+    /// schema`.
+    fn when(self) -> Option<&'static str> {
+        match self {
+            Self::When(when) => Some(when),
+            Self::Never | Self::Always => None,
+        }
+    }
 }
 
 /// An exit-2 refusal of a write, beside the confirmation and `--reveal`, that the flag of
@@ -119,13 +147,10 @@ struct Guard {
 
 /// One row of the schema.
 #[derive(Debug)]
-struct Spec {
+pub(crate) struct Spec {
     effect: Effect,
-    confirmation: Confirmation,
-    reveal: Reveal,
-    /// The command returns one page and accepts `--page-token` and `--all`, or, for
-    /// `hipc api`, follows pages with `--all`.
-    pagination: bool,
+    confirmation: Asks,
+    reveal: Asks,
     /// When the command refuses with `usage` whatever the flags, as the end of a sentence that
     /// starts "it refuses when".
     refused_when: Option<&'static str>,
@@ -135,9 +160,8 @@ struct Spec {
 
 const READ_ONLY: Spec = Spec {
     effect: Effect::ReadOnly,
-    confirmation: Confirmation::Never,
-    reveal: Reveal::Never,
-    pagination: false,
+    confirmation: Asks::Never,
+    reveal: Asks::Never,
     refused_when: None,
     guards: &[],
 };
@@ -152,7 +176,7 @@ const UNGATED_WRITE: Spec = Spec {
 /// A write that spends or creates, and so runs only when confirmed.
 const SPEND: Spec = Spec {
     effect: Effect::NonIdempotent,
-    confirmation: Confirmation::Always,
+    confirmation: Asks::Always,
     ..READ_ONLY
 };
 
@@ -163,47 +187,43 @@ const WAF_CHECK: &str = "`--check` is not passed: a check publishes nothing";
 /// only when confirmed. A repeat is safe.
 const UNDO: Spec = Spec {
     effect: Effect::Idempotent,
-    confirmation: Confirmation::Always,
+    confirmation: Asks::Always,
     ..READ_ONLY
 };
 
-/// The flags `hipc api` needs beyond `--yes`, on the routes `Client::route_flags` names,
-/// each refused with the code `RouteFlag::code` gives it.
-const API_GUARDS: &[Guard] = &[
-    Guard {
-        code: Code::ChangeIsolationRequired,
-        when: Some(
-            "the request writes to `/api/network/isolation/` (any method but `GET` and `HEAD`)",
-        ),
-    },
-    Guard {
-        code: Code::PublicRequired,
-        when: Some(
-            "the request is `POST /api/cdn/zones/`, \
-             `PUT /api/objectstore/buckets/<name>/acl/set/`, a `PATCH` of \
-             `/api/cdn/zones/<zone_id>/` whose body sets `origin`, or a \
-             `PATCH /api/registry/me/publicity/` unless the body sets `public` to `false`; a \
-             body that is not a JSON object counts as setting the key, and each rule holds for \
-             every write method of its route, not only the one named",
-        ),
-    },
-    Guard {
-        code: Code::RemoveOthersRequired,
-        when: Some(
-            "the request is a `PUT` of `/api/compute/vms/<vm_id>/firewall/`, \
-             `/api/cdn/zones/<zone_id>/rules/`, `/api/cdn/zones/<zone_id>/waf/rules/`, \
-             `/api/cdn/zones/<zone_id>/waf/rate-limits/`, `/api/cdn/lists/<name>/items/`, \
-             or `/api/objectstore/buckets/<name>/acl/set/`, a `PATCH` of \
-             `/api/accounts/members/<id>/` whose body sets `grants`, a `PATCH` of \
-             `/api/cdn/lists/<name>/` whose body sets `items`, or any other write `hipc` \
-             guards that replaces a whole list or document; a body that is not a JSON \
-             object counts as setting the key, and each rule holds for every write method of \
-             its route, not only the one named; a `POST` or `DELETE` of \
-             `/api/cdn/lists/<name>/items/`, which adds or removes the items it names, needs \
-             none",
-        ),
-    },
-];
+/// When `hipc api` refuses for each flag it needs beyond `--yes`, said from the route rows
+/// (`cli::api::rules`), in the order of `RouteFlag::ALL`.
+static API_GUARD_WHEN: LazyLock<Vec<String>> = LazyLock::new(api_guard_when);
+
+/// The flags `hipc api` needs beyond `--yes`, each refused with the code
+/// `RouteFlag::code` gives it, on the routes its rule names.
+static API_GUARDS: LazyLock<Vec<Guard>> = LazyLock::new(api_guards);
+
+/// [`API_GUARD_WHEN`]: for each flag, the routes it gets past, then what holds for all.
+fn api_guard_when() -> Vec<String> {
+    hippius::RouteFlag::ALL
+        .iter()
+        .map(|&flag| {
+            format!(
+                "the request is {}; {}",
+                hippius::phrase::join(&rules::needs(Voice::Schema, flag), "or"),
+                rules::flag_rules(Voice::Schema, flag)
+            )
+        })
+        .collect()
+}
+
+/// [`API_GUARDS`].
+fn api_guards() -> Vec<Guard> {
+    hippius::RouteFlag::ALL
+        .iter()
+        .zip(API_GUARD_WHEN.iter())
+        .map(|(flag, when)| Guard {
+            code: flag.code(),
+            when: Some(when.as_str()),
+        })
+        .collect()
+}
 
 /// When `hub subscription subscribe` refuses with `replace_required`. The window is
 /// `MARKER_SECONDS` in `commands/hub.rs`.
@@ -225,9 +245,9 @@ const CDN_CAP_RAISED: &str = "`--monthly-cap` is higher than the cap's `monthly_
 
 /// When `compute runners settings update` asks: it reads the settings in force first.
 const RUNNER_SETTINGS_SPEND_MORE: &str = "against the settings it reads first, `--enabled` \
-     or `--allow-public-repos` is `true` where the setting is not, `--max-concurrent` is not `0` \
-     and is higher than `max_concurrent`, or an `--allowed-size` is not in `allowed_sizes`; a \
-     setting hipc cannot compare counts as higher";
+     or `--allow-public-repos` is `true` where the setting is not, `--max-concurrent` is higher \
+     than `max_concurrent` or is `0` where `max_concurrent` is not, or an `--allowed-size` is \
+     not in `allowed_sizes`; a setting hipc cannot compare counts as higher";
 
 /// When `billing auto-reload update` asks: it reads the setting in force first.
 const RELOAD_CHARGES_MORE: &str = "the update leaves auto-reload on, and the setting it reads \
@@ -235,14 +255,28 @@ const RELOAD_CHARGES_MORE: &str = "the update leaves auto-reload on, and the set
      `threshold`, `target`, or `monthly_cap` (`null` is no cap, the highest), or holds one of \
      those in a shape hipc cannot compare";
 
-/// When a command that sends a secret to the API origin asks first (tenet 8).
+/// What a support text must not hold, as `hipc schema` says it for `support tickets create`
+/// and `reply` and for `hipc api` under `/api/support/`: what `commands::support::secret_in`
+/// finds. A macro, so both rows are one literal each.
+macro_rules! support_secret {
+    () => {
+        "`HIPPIUS_TOKEN` or a token a profile of the config file stores, as it is, quoted, \
+         percent-encoded, or behind a JSON escape, also when whitespace or an invisible joining \
+         character splits it, or an access key: 12 to 24 words of the BIP-39 list in a row whose \
+         checksum holds, with anything that is not a letter read as a space"
+    };
+}
+
 /// When a support ticket or reply refuses with `usage`: a person reads it (tenet 5).
-const TICKET_HOLDS_A_TOKEN: &str = "the subject or the message holds `HIPPIUS_TOKEN` or a \
-     token a profile of the config file stores, as it is, quoted, or percent-encoded";
+const TICKET_HOLDS_A_TOKEN: &str = concat!(
+    "the subject or the message, alone or the two together, holds ",
+    support_secret!()
+);
 
 const NO_SECRET_FILE: &str = "`--secret-file` is not given, so the secret would go to stdout";
 const NO_CREDENTIALS_DIR: &str =
     "`--credentials-dir` is not given, so the credentials would go to stdout";
+/// When a command that sends a secret to the API origin asks first (tenet 8).
 const NOT_DEFAULT_ORIGIN: &str = "the API origin is not `https://api.hippius.com`";
 
 /// When `account notifications update` is confirmed: it turns off an email that warns of a
@@ -250,524 +284,98 @@ const NOT_DEFAULT_ORIGIN: &str = "the API origin is not `https://api.hippius.com
 const NOTIFICATION_ALERT_OFF: &str = "`--email-enabled`, `--low-credit-alerts`, \
      `--zero-balance-alerts`, or `--file-status-updates` is `false`";
 
-/// The row for a command path such as `["auth", "status"]`, or `None` for an unknown path.
-#[expect(
-    clippy::too_many_lines,
-    reason = "a lookup table, one arm per row kind; it grows with commands, not with logic"
-)]
+/// When `hipc api` refuses whatever the flags, a dry run included: the routes whose row or
+/// guard table entry refuses them, said from the rows (`cli::api::rules`), and the support
+/// check. A refusal listed for one write method holds for every write method with no rule of
+/// its own. A curated command is the one path to each refused effect. It lists refused
+/// requests only; what `hipc api` sends that a curated command refuses or never sends, the
+/// data-loss resume and a ticket `PATCH` with any body, is in its help.
+static API_REFUSED_WHEN: LazyLock<String> = LazyLock::new(api_refused_when);
+
+/// [`API_REFUSED_WHEN`].
+fn api_refused_when() -> String {
+    let mut refused = rules::refused(Voice::Schema);
+    refused.push(
+        concat!(
+            "a write under `/api/support/` whose body holds ",
+            support_secret!()
+        )
+        .to_owned(),
+    );
+    format!(
+        "the target is a full URL off the configured API origin, or the request is {}; a write \
+         is `POST`, `PUT`, `PATCH`, or `DELETE`, and each path counts in any letter case, with \
+         or without the trailing slash or a format suffix, and under any API version",
+        hippius::phrase::join(&refused, "or")
+    )
+}
+
+/// When `hipc api` asks: on every write, and on a read of a route whose row `provisions`,
+/// named from the rows in every form the route tables match. A write to a route no command
+/// lists is confirmed as any write is, with a warning.
+static API_CONFIRMATION: LazyLock<String> = LazyLock::new(api_confirmation);
+
+/// [`API_CONFIRMATION`].
+fn api_confirmation() -> String {
+    format!(
+        "the method is not `GET` or `HEAD`, or the request is {}, whose read may create \
+         something, with or without the trailing slash or a format suffix, and under any API \
+         version; a write to a route \
+         no command lists in its `routes` also warns that `hipc` does not know it",
+        hippius::phrase::join(&rules::provisioning_reads(Voice::Schema), "or")
+    )
+}
+
+/// When `hipc api` needs `--reveal`: on a route whose answer `hipc` knows holds a secret, and
+/// on a `GET` of a route it does not know, whose answer may hold one (tenet 9).
+const API_REVEAL_WHEN: &str = "the route answers with a secret, or the request is a `GET` of a \
+                               route no command lists in its `routes`, whose answer may hold one";
+
+/// The row for a command path such as `["auth", "status"]`, or `None` for an unknown path:
+/// each group's rows are in its own function in `spec/rows.rs`.
 fn spec(path: &[&str]) -> Option<Spec> {
     match path {
-        ["version" | "schema" | "completions" | "status"]
-        | ["auth", "status"]
-        | ["account", "list" | "get"]
-        | ["account", "notifications" | "marketing-consent", "get"]
-        | [
-            "account",
-            "members" | "invites" | "projects" | "billing-accounts" | "project-transfers",
-            "list",
-        ]
-        | ["account", "billing-accounts", "costs"]
-        | ["account", "projects", "budget" | "quota", "get"]
-        | ["account", "referrals", "list" | "analytics"]
-        | [
-            "billing",
-            "balance" | "subscriptions" | "stripe" | "summary" | "usage" | "native-quote",
-        ]
-        | ["billing", "auto-reload", "get" | "history"]
-        | ["billing", "gamma" | "profile", "get"]
-        | ["billing", "gamma", "conversions", "get"]
-        | ["drive" | "s3" | "hub", "plans"]
-        | ["drive" | "s3" | "hub", "subscription", "get"]
-        | ["drive" | "s3", "subscription", "checkout"]
-        | ["s3", "buckets" | "tokens", "list"]
-        | ["s3", "buckets", "acl", "list" | "get"]
-        | ["hub", "namespace", "availability" | "status" | "get"]
-        | ["hub", "namespace", "robot", "get"]
-        | ["hub", "usage"]
-        | ["hub", "keys" | "repositories" | "artifacts", "list" | "get"]
-        | ["hub", "events", "list"]
-        | ["hub", "models", "formats"]
-        | [
-            "compute",
-            "prices"
-                | "public-prices"
-                | "quota"
-                | "charge-cap"
-                | "flavors"
-                | "images"
-                | "apps"
-                | "regions"
-                | "placement-groups"
-                | "feasibility"
-                | "account-ssh-keys",
-        ]
-        | [
-            "compute",
-            "vms",
-            "list" | "get" | "attestation" | "failovers" | "resize-options" | "resize-status",
-        ]
-        | ["compute", "vms", "power-policy", "get"]
-        | ["compute", "public-ip", "availability" | "get" | "usage"]
-        | ["compute", "firewall" | "ssh-keys", "get"]
-        | ["compute", "exposures", "list"]
-        | ["compute", "backups", "options" | "list" | "restore-status"]
-        | ["compute", "backups", "policy", "get"]
-        | ["compute", "databases", "list" | "get" | "events" | "metrics" | "refusals"]
-        | [
-            "compute",
-            "kubernetes",
-            "clusters",
-            "list" | "get" | "events" | "refusals",
-        ]
-        | ["compute", "kubernetes", "node-pools" | "operations", "list"]
-        | ["compute", "runners", "settings" | "limit", "get"]
-        | ["compute", "runners", "installations", "list"]
-        | ["compute", "runners", "usage"]
-        // `validate`, a compose check, is a POST that changes nothing.
-        | ["compute", "app-engine", "get" | "validate"]
-        | ["compute", "app-engine", "apps", "list" | "get" | "runtime"]
-        | ["compute", "app-engine", "guest-components", "get" | "update-status"]
-        // An estimate is a POST that changes nothing.
-        | ["cdn", "prices" | "regions" | "estimate" | "stats"]
-        | ["cdn", "zones" | "hostnames" | "purges", "list"]
-        // A Domain Connect link is read; the records change only when a person approves
-        // them at the provider.
-        | ["cdn", "hostnames", "domain-connect"]
-        | ["cdn", "zones" | "purges" | "cap" | "rules", "get"]
-        // A WAF test is a POST that changes nothing and publishes nothing.
-        | ["cdn", "waf", "get" | "status" | "analytics" | "events" | "test"]
-        | ["cdn", "waf", "rules" | "rate-limits", "get"]
-        | ["cdn", "waf", "versions", "list" | "get"]
-        | ["cdn", "lists", "list" | "get"]
-        | ["support", "tickets", "get"] => Some(READ_ONLY),
-        ["billing", "transactions"]
-        | ["billing", "gamma", "conversions", "list"]
-        | ["support", "tickets", "list"]
-        | ["support", "tickets", "messages", "list"]
-        | ["billing", "invoices", "list"]
-        | ["drive" | "s3", "subscription", "history"]
-        | ["s3", "buckets", "objects", "list"]
-        | ["compute", "ssh-keys", "list"]
-        | ["hub", "models", "list" | "get"]
-        | ["compute", "runners", "jobs"] => Some(Spec {
-            pagination: true,
-            ..READ_ONLY
-        }),
-        // An invite preview is a POST that changes nothing. It sends the invite token, a
-        // secret, so an origin but the default one is confirmed, as for a login (tenet 8).
-        ["account", "invites", "preview"] => Some(Spec {
-            confirmation: Confirmation::When(NOT_DEFAULT_ORIGIN),
-            ..READ_ONLY
-        }),
-        // A token bound to any origin but the default one is confirmed (tenet 8), and so is
-        // one that replaces a different stored token, since later commands act as its owner.
-        ["auth", "login"] => Some(Spec {
-            confirmation: Confirmation::When(
-                "the API origin is not `https://api.hippius.com`, or the profile stores a \
-                 different token",
-            ),
-            ..UNGATED_WRITE
-        }),
-        // A stop takes down what the VM serves; a repeat leaves it stopped (tenet 7).
-        // A WAF list's items added again leave the same list, which the server merges, but an
-        // added item changes what every zone that uses the list lets through.
-        ["compute", "vms", "stop"] | ["cdn", "lists", "items", "create"] => Some(Spec {
-            confirmation: Confirmation::Always,
-            ..UNGATED_WRITE
-        }),
-        // A profile update sends the fields given, so a repeat leaves the profile the same; it
-        // spends nothing, but a new billing email sends the invoices elsewhere.
-        ["billing", "profile", "update"] => Some(Spec {
-            confirmation: Confirmation::When(
-                "`--billing-email` is given and differs from the `billing_email` of the billing \
-                 profile it reads first; a profile that is not found, or holds no email, \
-                 differs from every email but an empty one",
-            ),
-            ..UNGATED_WRITE
-        }),
-        // The notification settings set the values given, so a repeat leaves them the same;
-        // they spend nothing, but an alert turned off hides a low or empty balance.
-        ["account", "notifications", "update"] => Some(Spec {
-            confirmation: Confirmation::When(NOTIFICATION_ALERT_OFF),
-            ..UNGATED_WRITE
-        }),
-        // A repeat of a VM power change leaves the power state as one call did (tenet 7).
-        // A hostname verify checks its DNS records again.
-        // An invoice download writes only a local file, and a repeat finds that file and stops.
-        // So does a kubeconfig, which goes only to a new file and never to stdout, so it needs
-        // no `--reveal`.
-        ["account", "use"]
-        // A rename sends the name, so a repeat leaves the same name; it spends nothing.
-        | ["account", "projects" | "billing-accounts", "use" | "update"]
-        | ["billing", "invoices", "get"]
-        // A referral rename changes a label stored on Hippius only; the code and slug stay.
-        | ["account", "referrals", "update"]
-        | ["compute", "kubernetes", "clusters", "kubeconfig"]
-        // A compose fix saves nothing on the server, but `--output-file` writes a new local
-        // file, and a repeat finds that file and stops.
-        | ["compute", "app-engine", "fix"]
-        | ["compute", "vms", "start"]
-        // A power policy sets one value, so a repeat leaves the same policy. Either value
-        // spends nothing and is undone by setting the other, and it decides only whether a
-        // VM shut down from inside is started again, which `start` does unasked.
-        | ["compute", "vms", "power-policy", "update"]
-        | ["cdn", "hostnames", "verify"]
-        | ["cdn", "lists", "update"] => Some(UNGATED_WRITE),
-        // A purge spends nothing, so it is not gated; a repeat purges again. A runner connect
-        // spends nothing and links nothing (the console finishes the link); a repeat starts
-        // another install flow. A reply goes to a ticket that already exists, so it is not
-        // gated; a repeat posts the message again. A WAF list costs nothing, so its
-        // create is not gated; tenet 7 calls a create non-idempotent, and a repeat of one name
-        // is refused with 409 `list_exists`. A Kubernetes node pool starts empty and spends
-        // nothing until it is scaled, which is confirmed; a repeat of one name is refused.
-        ["cdn", "purges" | "lists", "create"]
-        // A project or billing account is free (the free-create rule), so its create is not
-        // gated; a repeat creates another. A referral link spends nothing: the server's
-        // signer mints the user's code on first use and later links reuse it. A repeat of one
-        // name is refused with 409.
-        | ["account", "projects" | "billing-accounts" | "referrals", "create"]
-        | ["compute", "kubernetes", "node-pools", "create"]
-        | ["compute", "runners", "connect"]
-        // A card setup charges nothing (swagger); a repeat starts another checkout.
-        | ["billing", "auto-reload", "card-setup"]
-        // A hotkey link spends nothing; a repeat asks for, and spends, another challenge.
-        | ["billing", "gamma", "hotkeys", "create"]
-        // A consent withdrawal spends nothing; swagger appends each one to the consent
-        // history, so a repeat adds another entry.
-        | ["account", "marketing-consent", "update"] => Some(Spec {
-            effect: Effect::NonIdempotent,
-            ..READ_ONLY
-        }),
-        ["support", "tickets", "reply"] => Some(Spec {
-            effect: Effect::NonIdempotent,
-            refused_when: Some(TICKET_HOLDS_A_TOKEN),
-            ..READ_ONLY
-        }),
-        // A ticket spends nothing, but a person on the support team reads it.
-        ["support", "tickets", "create"] => Some(Spec {
-            refused_when: Some(TICKET_HOLDS_A_TOKEN),
-            ..SPEND
-        }),
-        // A conversion burns gamma on chain, which cannot be refunded; a repeat burns again.
-        ["billing", "gamma", "conversions", "create"]
-        | ["drive" | "s3", "subscription", "subscribe" | "change"]
-        | ["s3", "buckets", "create"]
-        | ["compute", "vms", "create" | "reboot" | "resize"]
-        // An app is a VM with a public IPv4, so a repeat launches, and bills, a second one.
-        | ["compute", "app-engine", "apps", "create"]
-        // A repeat restores again once the first is done, losing what was written since.
-        | ["compute", "backups", "restore"]
-        | ["compute", "ssh-keys", "create"]
-        // A restart is queued again on a repeat, and restarts PostgreSQL again.
-        | ["compute", "databases", "restart"]
-        // A scale up and a replacement launch billed VMs. A scale is to a size, but a repeat
-        // after an add was rejected (its signature expired) adds again, so both count as
-        // spending again.
-        | ["compute", "kubernetes", "node-pools", "scale"]
-        | ["compute", "kubernetes", "nodes", "replace"]
-        | ["cdn", "hostnames", "create"]
-        | ["account", "invites", "create"]
-        // A repeat offers the project again. The project leaves the account once the other
-        // account accepts, so it is confirmed.
-        | ["account", "projects", "transfer"]
-        // A repeat starts another checkout.
-        | ["billing", "top-up"] => Some(SPEND),
-        // Hub lets an account hold a plan twice, so a second subscribe charges twice
-        // (tenet 11).
-        ["hub", "subscription", "subscribe"] => Some(Spec {
-            guards: &[Guard {
-                code: Code::ReplaceRequired,
-                when: Some(HUB_REPLACE_WHEN),
-            }],
-            ..SPEND
-        }),
-        // Whether the bucket is private is known only from the answer, after the write, so
-        // every create needs `--public`, and every update that moves the origin.
-        // A repeat leaves the namespace as one call did. Opening it to anonymous pulls needs
-        // `--public` (tenet 5); closing it does not.
-        ["hub", "namespace", "update"] => Some(Spec {
-            guards: &[Guard {
-                code: Code::PublicRequired,
-                when: Some("`--visibility` is `public`"),
-            }],
-            ..UNDO
-        }),
-        ["cdn", "zones", "create"] => Some(Spec {
-            guards: &[Guard {
-                code: Code::PublicRequired,
-                when: None,
-            }],
-            ..SPEND
-        }),
-        ["auth", "logout"]
-        | ["drive" | "s3" | "hub", "subscription", "cancel"]
-        | ["s3", "buckets", "delete"]
-        | ["s3", "tokens", "revoke"]
-        // An unlink leaves the gamma in its deposit; a repeat finds the hotkey unlinked (404).
-        | ["billing", "gamma", "hotkeys", "delete"]
-        // A repeat delete of a Hub key, repository, or artifact finds it gone. Hub data
-        // deleted there is gone for good, which the question says; `--yes` is the one
-        // confirmation (tenet 5).
-        | ["hub", "keys" | "repositories" | "artifacts", "delete"]
-        // A repeat delete of a database answers 409 "Already decommissioned" (swagger).
-        | ["compute", "vms" | "ssh-keys" | "databases", "delete"]
-        // Swagger: a policy PUT sets the interval and the DELETE is "Idempotent". Stored
-        // backups are billed, and turning them off ends new ones, so both are confirmed.
-        | ["compute", "backups", "policy", "update" | "delete"]
-        // Swagger: attaching again returns the address already attached, and exposing a port
-        // and protocol again returns the exposure that exists, so a repeat is safe. An
-        // attach starts a bill and an exposure opens a port to the internet, so both are
-        // confirmed.
-        | ["compute", "public-ip" | "exposures", "create" | "delete"]
-        // Exposing a database publishes its primary and mints nothing, so a repeat leaves it
-        // published; it makes the primary reachable from the internet, so it is confirmed.
-        | ["compute", "databases", "exposure", "create" | "delete"]
-        | ["cdn", "zones" | "hostnames" | "lists", "delete"]
-        // An invite is used once, as the console treats it (unverified against the API): a
-        // repeat accept is refused and the caller stays a member.
-        // Joining gives the token access to another account, so it is confirmed.
-        | ["account", "invites", "revoke" | "accept"]
-        // Unlinking an installation again finds it gone.
-        | ["compute", "runners", "installations", "delete"]
-        // A cluster delete again finds the teardown running or over. A cancel moves the
-        // operation out of `queued`, `running`, or `blocked`, and a resume out of `blocked`
-        // or `queued`, so a repeat usually finds it moved and refuses before the question. A
-        // node removal again finds the remove operation running.
-        | ["compute", "kubernetes", "clusters" | "nodes", "delete"]
-        | ["compute", "kubernetes", "operations", "cancel" | "resume"]
-        // Swagger: a project delete archives an empty project, and a repeat finds it
-        // archived.
-        | ["account", "members" | "projects", "delete"]
-        // A budget PUT replaces the whole budget, a quota PATCH sets the limits given, and a
-        // budget delete again finds none; each changes what the project may spend or run, so
-        // each is confirmed.
-        | ["account", "projects", "budget", "update" | "delete"]
-        | ["account", "projects", "quota", "update"]
-        // A transfer is decided once: a repeat accept, decline, or cancel is refused, and
-        // the project stays where the first left it. An accept moves a project into the
-        // token's own account, a decline ends an offer, and a cancel withdraws one.
-        | ["account", "project-transfers", "accept" | "decline" | "cancel"]
-        // A WAF settings change publishes a version, and a mode but `off` is billed. A repeat
-        // is safe.
-        | ["cdn", "waf", "update"]
-        // A rollback publishes a copy of that version again, which leaves the same WAF.
-        | ["cdn", "waf", "versions", "rollback"]
-        // A DNS setup writes the hostname's records at the provider, and a repeat writes the
-        // same records. It changes a DNS zone outside Hippius, so it is confirmed.
-        | ["cdn", "hostnames", "dns-setup"]
-        // A close again leaves the ticket closed. hipc refuses one of a ticket its read shows
-        // closed, so a repeat of a close that worked exits `conflict`; it is still
-        // `idempotent` on the assumption that the server's `PATCH` only sets the status, so
-        // a second one, say after a close elsewhere between the read and the write, changes
-        // nothing. It ends the support team's work on the ticket, as a cancel does, so it is
-        // confirmed.
-        | ["support", "tickets", "update"]
-        | ["cdn", "lists", "items", "delete"] => Some(UNDO),
-        // A rules file replaces the whole list, so a repeat leaves the same list.
-        ["compute", "firewall", "update"] => Some(Spec {
-            guards: &[Guard {
-                code: Code::RemoveOthersRequired,
-                when: Some(
-                    "the rules file leaves out a rule the VM has now, or changes its protocol, \
-                     ports, sources, or enabled flag, in either direction; a missing enabled \
-                     counts as true",
-                ),
-            }],
-            ..UNDO
-        }),
-        ["cdn", "rules", "update"] => Some(Spec {
-            guards: &[Guard {
-                code: Code::RemoveOthersRequired,
-                when: Some("the rules file leaves out or moves a rule the zone has now"),
-            }],
-            ..UNDO
-        }),
-        ["cdn", "waf", "rules", "update"] => Some(Spec {
-            guards: &[Guard {
-                code: Code::RemoveOthersRequired,
-                when: Some(
-                    "the rules file leaves out or moves a rule the zone has now, or changes its \
-                     expression, action, or enabled flag; a missing enabled counts as true",
-                ),
-            }],
-            confirmation: Confirmation::When(WAF_CHECK),
-            ..UNDO
-        }),
-        ["cdn", "waf", "rate-limits", "update"] => Some(Spec {
-            guards: &[Guard {
-                code: Code::RemoveOthersRequired,
-                when: Some(
-                    "the rules file leaves out a rate limit the zone has now, or changes its \
-                     expression, action, key, period, requests, timeout, or enabled flag; a \
-                     missing enabled counts as true",
-                ),
-            }],
-            confirmation: Confirmation::When(WAF_CHECK),
-            ..UNDO
-        }),
-        ["cdn", "lists", "items", "update"] => Some(Spec {
-            guards: &[Guard {
-                code: Code::RemoveOthersRequired,
-                when: Some("the items file leaves out an item the list stores now"),
-            }],
-            ..UNDO
-        }),
-        // A policy replaces the whole bucket policy, so a repeat leaves the same policy. Its
-        // statements are not judged, so both guards always apply (`commands/s3.rs`).
-        ["s3", "buckets", "acl", "update"] => Some(Spec {
-            guards: &[
-                Guard {
-                    code: Code::PublicRequired,
-                    when: None,
-                },
-                Guard {
-                    code: Code::RemoveOthersRequired,
-                    when: None,
-                },
-            ],
-            ..UNDO
-        }),
-        // A member update replaces the whole grant list, so a repeat leaves the same list.
-        ["account", "members", "update"] => Some(Spec {
-            guards: &[Guard {
-                code: Code::RemoveOthersRequired,
-                when: Some("a `--grant` is given, and the grants leave out one the member has now"),
-            }],
-            ..UNDO
-        }),
-        // A zone update can publish a private bucket. A repeat is safe.
-        ["cdn", "zones", "update"] => Some(Spec {
-            guards: &[Guard {
-                code: Code::PublicRequired,
-                when: Some("`--bucket` or `--prefix` is given"),
-            }],
-            ..UNDO
-        }),
-        // Writing a new profile replaces nothing, so only an existing one is confirmed.
-        ["s3", "configure"] => Some(Spec {
-            confirmation: Confirmation::When("the AWS profile already exists"),
-            ..UNDO
-        }),
-        // Auto-reload charges the card by itself, so a change that may charge more asks.
-        ["billing", "auto-reload", "update"] => Some(Spec {
-            confirmation: Confirmation::When(RELOAD_CHARGES_MORE),
-            ..UNDO
-        }),
-        // A lower cap, or a first one, allows less spend, so only a raise or a removal asks.
-        ["compute", "runners", "limit", "update"] => Some(Spec {
-            confirmation: Confirmation::When(RUNNER_CAP_RAISED),
-            ..UNDO
-        }),
-        // Every spend cap asks the same way: a raise, not a cut. A repeat is safe.
-        ["cdn", "cap", "update"] => Some(Spec {
-            confirmation: Confirmation::When(CDN_CAP_RAISED),
-            ..UNDO
-        }),
-        // A settings update sets the keys given, so a repeat leaves the same settings; only a
-        // change that may let jobs spend more of the balance asks.
-        ["compute", "runners", "settings", "update"] => Some(Spec {
-            confirmation: Confirmation::When(RUNNER_SETTINGS_SPEND_MORE),
-            ..UNDO
-        }),
-        // The server shows the new secret once, so these also need `--reveal`. A database
-        // create and a restore, which makes a new database, answer with its credentials.
-        // The Kubernetes backups answer holds presigned download links and sealed keys; the
-        // read changes nothing. A presigned URL reads the object with no other credential
-        // until it expires.
-        ["compute", "kubernetes", "backups", "list"]
-        | ["s3", "buckets", "objects", "presign"] => Some(Spec {
-            reveal: Reveal::Always,
-            ..READ_ONLY
-        }),
-        // A file the caller names for the secret asks for it as plainly as `--reveal`, and
-        // keeps it off stdout, so either flag lets the request go.
-        ["s3", "tokens", "create" | "rotate"]
-        | ["hub", "keys", "create" | "rotate"]
-        | ["hub", "namespace", "create"]
-        | ["hub", "namespace", "robot", "rotate"] => Some(Spec {
-            reveal: Reveal::When(NO_SECRET_FILE),
-            ..SPEND
-        }),
-        ["compute", "databases", "create" | "restore"] => Some(Spec {
-            reveal: Reveal::When(NO_CREDENTIALS_DIR),
-            ..SPEND
-        }),
-        // A POST can spend money, so `hipc api` reports the effect of its most dangerous
-        // method. At run time GET and HEAD are reads and need no confirmation, except on
-        // `/api/network/me/`, whose first call creates the account's network, so it is
-        // confirmed as `hipc network get` is. The requests whose answer holds a secret need
-        // `--reveal`, reads included, as the curated commands that reach some of them do. A
-        // change to the network's isolation needs a flag that names the effect, the routes of
-        // the curated `--public` and `--remove-others` guards need those flags, an account
-        // deletion request is left to the console, and a cluster's sealed kubeconfig to `hipc
-        // compute kubernetes clusters kubeconfig`.
-        ["api"] => Some(Spec {
-            confirmation: Confirmation::When(API_CONFIRMATION),
-            reveal: Reveal::When("the route answers with a secret"),
-            pagination: true,
-            refused_when: Some(API_REFUSED_WHEN),
-            guards: API_GUARDS,
-            ..SPEND
-        }),
-        ["network", rest @ ..] => network_spec(rest),
-        _ => None,
+        ["auth", rest @ ..] => rows::of_auth(rest),
+        ["account", rest @ ..] => rows::of_account(rest),
+        ["billing", rest @ ..] => rows::of_billing(rest),
+        ["drive", rest @ ..] => rows::of_drive(rest),
+        ["s3", rest @ ..] => rows::of_s3(rest),
+        ["hub", rest @ ..] => rows::of_hub(rest),
+        ["compute", "app-engine", rest @ ..] => rows::of_compute_app_engine(rest),
+        ["compute", "runners", rest @ ..] => rows::of_compute_runners(rest),
+        ["compute", "databases", rest @ ..] => rows::of_compute_databases(rest),
+        ["compute", "kubernetes", rest @ ..] => rows::of_compute_kubernetes(rest),
+        ["compute", rest @ ..] => rows::of_compute(rest),
+        ["cdn", rest @ ..] => rows::of_cdn(rest),
+        ["support", rest @ ..] => rows::of_support(rest),
+        ["network", rest @ ..] => rows::of_network(rest),
+        ["api"] => Some(rows::of_api()),
+        top => rows::of_top(top),
     }
 }
 
-/// When `hipc api` refuses whatever the flags, a dry run included: the console is the one
-/// path to an account deletion, `hipc compute kubernetes clusters kubeconfig` the one
-/// path to a cluster's sealed kubeconfig, and `hipc cdn hostnames dns-setup` the one path to a
-/// DNS setup, whose body and answer hold a provider credential, and `hipc hub subscription
-/// subscribe` the one path to a Hub subscribe, since it reads the current plans first. The
-/// three App Engine routes
-/// that take `secrets` are refused when the body sets it: `hipc compute app-engine apps
-/// create` is the path for those values. A support write whose body holds an API token or an
-/// access key is refused as `hipc support tickets create` and `reply` refuse one. It lists refused requests
-/// only; what `hipc api` sends that a curated command refuses or never sends, the data-loss
-/// resume and a ticket `PATCH` with any body, is in its help.
-const API_REFUSED_WHEN: &str = "the target is a full URL off the configured API origin, or \
-                                the request is `POST /api/account/deletion/`, any method of \
-                                `/api/auth/token/`, `GET` or `HEAD` \
-                                of `/api/kubernetes/clusters/<cluster_id>/secrets/`, a `POST`, \
-                                `PUT`, or `PATCH` of \
-                                `/api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`, \
-                                `POST /api/registry/subscribe/`, or a `POST \
-                                /api/compute/app-engine/apps/`, a write of \
-                                `/api/compute/app-engine/apps/<vm_id>/compose/`, or a `POST \
-                                /api/compute/app-engine/validate/` whose body sets `secrets` \
-                                (a body that is not a JSON object counts as setting it), or a \
-                                `POST`, `PUT`, `PATCH`, or `DELETE` under `/api/support/` \
-                                whose body holds `HIPPIUS_TOKEN` or a token a profile of the \
-                                config file stores, as it is, quoted, percent-encoded, behind \
-                                a JSON escape, or split by whitespace, or an access key \
-                                whose checksum holds, with or without the trailing slash or a \
-                                format suffix";
+/// The row of `path`, a command the parser ran.
+///
+/// # Errors
+///
+/// `internal` when it has none, which `spec::tests::every_command_has_a_spec_row` keeps from
+/// shipping, so a missing row is still one error object rather than a panic.
+pub(crate) fn row(path: &[String]) -> hippius::Result<Spec> {
+    let words: Vec<&str> = path.iter().map(String::as_str).collect();
+    spec(&words).ok_or_else(|| {
+        hippius::Error::internal(format!(
+            "`hipc` has no schema row for {}",
+            hippius::phrase::quote(format!("hipc {}", path.join(" ")))
+        ))
+    })
+}
 
-/// When `hipc api` asks: the one route it confirms on a read is the one the rows of
-/// `hippius::PROVISIONING_ROUTES` name, written here so the text says which, in every form
-/// the route tables match.
-const API_CONFIRMATION: &str = "the method is not `GET` or `HEAD`, or the path is \
-                                `/api/network/me/`, whose first call creates the network, \
-                                with or without the trailing slash or a format suffix";
-
-/// The rows of `hipc network`, by the path after `network`.
-fn network_spec(path: &[&str]) -> Option<Spec> {
-    match path {
-        ["groups" | "policies" | "vpcs", "list"]
-        | ["peers", "list" | "get"]
-        | ["vpcs", "resources" | "routers", "list"] => Some(READ_ONLY),
-        // Swagger: the first `GET /api/network/me/` for an account creates its network (a
-        // default group, a VPC network, and the intra-network policy), and later calls find
-        // it. A repeat leaves the server as one call did, and every call is confirmed because
-        // which one is the first is not known before it is sent.
-        // Swagger calls `POST /api/network/provision/` idempotent: a repeat finds the network
-        // the first call created. It creates the network, so it is confirmed.
-        // A rename sets the name, so a repeat leaves the same name; a repeat remove finds the
-        // peer gone. A peer is a device or VM that someone reaches over the network, so both
-        // are confirmed.
-        ["get" | "create"] | ["peers", "update" | "delete"] => Some(UNDO),
-        _ => None,
-    }
+/// Whether `command` returns one page and follows the rest with `--all`, as tenet 6 has every
+/// list the server pages do, and as `hipc api` does: exactly the commands that take `--all`.
+fn pages(command: &clap::Command) -> bool {
+    command
+        .get_arguments()
+        .any(|arg| arg.get_long() == Some("all"))
 }
 
 /// Every leaf command path under `command`, in declaration order.
@@ -1057,28 +665,22 @@ fn resolve(root: &clap::Command, words: &[String]) -> hippius::Result<Vec<String
 }
 
 /// Adds to a dry run's document whether the real run asks for `--yes`, as `hipc schema` says
-/// it for the command at `path`: `confirmation`, and `confirmation_when` when that depends on
+/// it in `row`, the command's: `confirmation`, and `confirmation_when` when that depends on
 /// what the real run reads or is given. A dry run sends nothing, so it cannot say more than
 /// the schema: a spend cap that asks only for a raise cannot know the cap in force. The caller
 /// calls it only for a run given `--dry-run`, and only a dry run that lists `requests` gets
 /// them; a local change's dry run keeps its shape, `dry_run`
 /// then the document a real run prints. Any other document is left as it is.
-pub(crate) fn add_confirmation(path: &[String], document: &mut Value) {
+pub(crate) fn add_confirmation(row: &Spec, document: &mut Value) {
     if let Value::Object(fields) = document
         && fields.get("dry_run") == Some(&Value::Bool(true))
         && fields.contains_key("requests")
     {
-        let parts: Vec<&str> = path.iter().map(String::as_str).collect();
-        let spec = spec(&parts).expect("every command has a spec row; spec tests enforce it");
+        fields.insert("confirmation".to_owned(), row.confirmation.asks().into());
         fields.insert(
-            "confirmation".to_owned(),
-            (spec.confirmation != Confirmation::Never).into(),
+            "confirmation_when".to_owned(),
+            row.confirmation.when().into(),
         );
-        let when = match spec.confirmation {
-            Confirmation::When(when) => Some(when),
-            Confirmation::Never | Confirmation::Always => None,
-        };
-        fields.insert("confirmation_when".to_owned(), when.into());
     }
 }
 
@@ -1099,23 +701,17 @@ pub(crate) fn schema(prefix: &[String]) -> hippius::Result<Value> {
         .iter()
         .filter(|path| path.starts_with(&prefix))
         .map(|path| {
+            let spec = row(path)?;
             let parts: Vec<&str> = path.iter().map(String::as_str).collect();
-            let spec = spec(&parts).expect("every command has a spec row; spec tests enforce it");
             let command = leaf(&root, path);
-            json!({
+            Ok(json!({
                 "path": path,
                 "effect": spec.effect.as_str(),
-                "confirmation": spec.confirmation != Confirmation::Never,
-                "reveal": spec.reveal != Reveal::Never,
-                "pagination": spec.pagination,
-                "confirmation_when": match spec.confirmation {
-                    Confirmation::When(when) => Some(when),
-                    Confirmation::Never | Confirmation::Always => None,
-                },
-                "reveal_when": match spec.reveal {
-                    Reveal::When(when) => Some(when),
-                    Reveal::Never | Reveal::Always => None,
-                },
+                "confirmation": spec.confirmation.asks(),
+                "reveal": spec.reveal.asks(),
+                "pagination": pages(command),
+                "confirmation_when": spec.confirmation.when(),
+                "reveal_when": spec.reveal.when(),
                 "refused_when": spec.refused_when,
                 "guards": spec.guards.iter().map(|guard| json!({
                     "code": guard.code.as_str(),
@@ -1125,9 +721,13 @@ pub(crate) fn schema(prefix: &[String]) -> hippius::Result<Value> {
                 "args": arg_entries(command, clap::Arg::is_positional),
                 "flags": arg_entries(command, |arg| !arg.is_positional()),
                 "required_groups": required_groups(command),
-            })
+                "routes": routes::routes(&parts).iter().map(|endpoint| json!({
+                    "method": endpoint.method().as_str(),
+                    "path": endpoint.template(),
+                })).collect::<Vec<Value>>(),
+            }))
         })
-        .collect();
+        .collect::<hippius::Result<_>>()?;
     // The code table of tenet 4, so an agent learns every code and its exit code from the
     // binary.
     let errors: Vec<Value> = Code::ALL
@@ -1155,12 +755,6 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-
-    /// The schema row of `path`, one of `command_paths`.
-    fn row(path: &[String]) -> Spec {
-        let parts: Vec<&str> = path.iter().map(String::as_str).collect();
-        spec(&parts).expect("every command has a spec row")
-    }
 
     /// TENETS 2: `get` reads one resource, with or without an id, so no leaf is named or
     /// aliased `show` or `describe`.
@@ -1379,304 +973,6 @@ mod tests {
         assert_eq!(missing, Vec::<&Vec<String>>::new());
     }
 
-    /// Every command, with its effect and whether it asks, written out by hand so a
-    /// change to a command's gate fails here.
-    const PLAN_ROWS: [(&str, &str, bool); 273] = [
-        ("version", "read_only", false),
-        ("status", "read_only", false),
-        ("schema", "read_only", false),
-        ("completions", "read_only", false),
-        ("auth login", "idempotent", true),
-        ("auth status", "read_only", false),
-        ("auth logout", "idempotent", true),
-        ("account list", "read_only", false),
-        ("account use", "idempotent", false),
-        ("account get", "read_only", false),
-        ("account notifications get", "read_only", false),
-        ("account notifications update", "idempotent", true),
-        ("account marketing-consent get", "read_only", false),
-        ("account marketing-consent update", "non_idempotent", false),
-        ("account members list", "read_only", false),
-        ("account members update", "idempotent", true),
-        ("account members delete", "idempotent", true),
-        ("account invites list", "read_only", false),
-        ("account invites create", "non_idempotent", true),
-        ("account invites revoke", "idempotent", true),
-        ("account invites preview", "read_only", true),
-        ("account invites accept", "idempotent", true),
-        ("account projects list", "read_only", false),
-        ("account projects create", "non_idempotent", false),
-        ("account projects update", "idempotent", false),
-        ("account projects delete", "idempotent", true),
-        ("account projects transfer", "non_idempotent", true),
-        ("account projects budget get", "read_only", false),
-        ("account projects budget update", "idempotent", true),
-        ("account projects budget delete", "idempotent", true),
-        ("account projects quota get", "read_only", false),
-        ("account projects quota update", "idempotent", true),
-        ("account projects use", "idempotent", false),
-        ("account project-transfers list", "read_only", false),
-        ("account project-transfers accept", "idempotent", true),
-        ("account project-transfers decline", "idempotent", true),
-        ("account project-transfers cancel", "idempotent", true),
-        ("account billing-accounts list", "read_only", false),
-        ("account billing-accounts create", "non_idempotent", false),
-        ("account billing-accounts update", "idempotent", false),
-        ("account billing-accounts costs", "read_only", false),
-        ("account billing-accounts use", "idempotent", false),
-        ("account referrals list", "read_only", false),
-        ("account referrals create", "non_idempotent", false),
-        ("account referrals update", "idempotent", false),
-        ("account referrals analytics", "read_only", false),
-        ("billing balance", "read_only", false),
-        ("billing subscriptions", "read_only", false),
-        ("billing transactions", "read_only", false),
-        ("billing stripe", "read_only", false),
-        ("billing summary", "read_only", false),
-        ("billing usage", "read_only", false),
-        ("billing invoices list", "read_only", false),
-        ("billing invoices get", "idempotent", false),
-        ("billing auto-reload get", "read_only", false),
-        ("billing auto-reload history", "read_only", false),
-        ("billing auto-reload update", "idempotent", true),
-        ("billing auto-reload card-setup", "non_idempotent", false),
-        ("billing profile get", "read_only", false),
-        ("billing profile update", "idempotent", true),
-        ("billing native-quote", "read_only", false),
-        ("billing gamma get", "read_only", false),
-        ("billing gamma hotkeys create", "non_idempotent", false),
-        ("billing gamma hotkeys delete", "idempotent", true),
-        ("billing gamma conversions create", "non_idempotent", true),
-        ("billing gamma conversions list", "read_only", false),
-        ("billing gamma conversions get", "read_only", false),
-        ("billing top-up", "non_idempotent", true),
-        ("drive plans", "read_only", false),
-        ("drive subscription get", "read_only", false),
-        ("drive subscription subscribe", "non_idempotent", true),
-        ("drive subscription change", "non_idempotent", true),
-        ("drive subscription cancel", "idempotent", true),
-        ("drive subscription checkout", "read_only", false),
-        ("drive subscription history", "read_only", false),
-        ("s3 plans", "read_only", false),
-        ("s3 subscription get", "read_only", false),
-        ("s3 subscription subscribe", "non_idempotent", true),
-        ("s3 subscription change", "non_idempotent", true),
-        ("s3 subscription cancel", "idempotent", true),
-        ("s3 subscription checkout", "read_only", false),
-        ("s3 subscription history", "read_only", false),
-        ("s3 buckets list", "read_only", false),
-        ("s3 buckets acl list", "read_only", false),
-        ("s3 buckets acl get", "read_only", false),
-        ("s3 buckets acl update", "idempotent", true),
-        ("s3 buckets objects list", "read_only", false),
-        ("s3 buckets objects presign", "read_only", false),
-        ("s3 buckets create", "non_idempotent", true),
-        ("s3 buckets delete", "idempotent", true),
-        ("s3 tokens list", "read_only", false),
-        ("s3 tokens create", "non_idempotent", true),
-        ("s3 tokens revoke", "idempotent", true),
-        ("s3 tokens rotate", "non_idempotent", true),
-        ("s3 configure", "idempotent", true),
-        ("hub plans", "read_only", false),
-        ("hub subscription get", "read_only", false),
-        ("hub subscription subscribe", "non_idempotent", true),
-        ("hub subscription cancel", "idempotent", true),
-        ("hub namespace availability", "read_only", false),
-        ("hub namespace create", "non_idempotent", true),
-        ("hub namespace status", "read_only", false),
-        ("hub namespace get", "read_only", false),
-        ("hub namespace update", "idempotent", true),
-        ("hub namespace robot get", "read_only", false),
-        ("hub namespace robot rotate", "non_idempotent", true),
-        ("hub usage", "read_only", false),
-        ("hub keys list", "read_only", false),
-        ("hub keys get", "read_only", false),
-        ("hub keys create", "non_idempotent", true),
-        ("hub keys rotate", "non_idempotent", true),
-        ("hub keys delete", "idempotent", true),
-        ("hub repositories list", "read_only", false),
-        ("hub repositories get", "read_only", false),
-        ("hub repositories delete", "idempotent", true),
-        ("hub artifacts list", "read_only", false),
-        ("hub artifacts get", "read_only", false),
-        ("hub artifacts delete", "idempotent", true),
-        ("hub events list", "read_only", false),
-        ("hub models list", "read_only", false),
-        ("hub models formats", "read_only", false),
-        ("hub models get", "read_only", false),
-        ("compute prices", "read_only", false),
-        ("compute public-prices", "read_only", false),
-        ("compute quota", "read_only", false),
-        ("compute charge-cap", "read_only", false),
-        ("compute flavors", "read_only", false),
-        ("compute images", "read_only", false),
-        ("compute apps", "read_only", false),
-        ("compute app-engine get", "read_only", false),
-        ("compute app-engine validate", "read_only", false),
-        ("compute app-engine fix", "idempotent", false),
-        ("compute app-engine apps list", "read_only", false),
-        ("compute app-engine apps get", "read_only", false),
-        ("compute app-engine apps create", "non_idempotent", true),
-        ("compute app-engine apps runtime", "read_only", false),
-        (
-            "compute app-engine guest-components get",
-            "read_only",
-            false,
-        ),
-        (
-            "compute app-engine guest-components update-status",
-            "read_only",
-            false,
-        ),
-        ("compute regions", "read_only", false),
-        ("compute placement-groups", "read_only", false),
-        ("compute feasibility", "read_only", false),
-        ("compute vms list", "read_only", false),
-        ("compute vms get", "read_only", false),
-        ("compute vms attestation", "read_only", false),
-        ("compute vms failovers", "read_only", false),
-        ("compute vms create", "non_idempotent", true),
-        ("compute vms start", "idempotent", false),
-        ("compute vms stop", "idempotent", true),
-        ("compute vms reboot", "non_idempotent", true),
-        ("compute vms resize-options", "read_only", false),
-        ("compute vms resize", "non_idempotent", true),
-        ("compute vms resize-status", "read_only", false),
-        ("compute vms power-policy get", "read_only", false),
-        ("compute vms power-policy update", "idempotent", false),
-        ("compute vms delete", "idempotent", true),
-        ("compute public-ip availability", "read_only", false),
-        ("compute public-ip get", "read_only", false),
-        ("compute public-ip create", "idempotent", true),
-        ("compute public-ip delete", "idempotent", true),
-        ("compute public-ip usage", "read_only", false),
-        ("compute firewall get", "read_only", false),
-        ("compute firewall update", "idempotent", true),
-        ("compute exposures list", "read_only", false),
-        ("compute exposures create", "idempotent", true),
-        ("compute exposures delete", "idempotent", true),
-        ("compute backups options", "read_only", false),
-        ("compute backups policy get", "read_only", false),
-        ("compute backups policy update", "idempotent", true),
-        ("compute backups policy delete", "idempotent", true),
-        ("compute backups list", "read_only", false),
-        ("compute backups restore", "non_idempotent", true),
-        ("compute backups restore-status", "read_only", false),
-        ("compute runners settings get", "read_only", false),
-        ("compute runners settings update", "idempotent", true),
-        ("compute runners installations list", "read_only", false),
-        ("compute runners installations delete", "idempotent", true),
-        ("compute runners jobs", "read_only", false),
-        ("compute runners connect", "non_idempotent", false),
-        ("compute runners usage", "read_only", false),
-        ("compute runners limit get", "read_only", false),
-        ("compute runners limit update", "idempotent", true),
-        ("compute ssh-keys list", "read_only", false),
-        ("compute ssh-keys get", "read_only", false),
-        ("compute ssh-keys create", "non_idempotent", true),
-        ("compute ssh-keys delete", "idempotent", true),
-        ("compute account-ssh-keys", "read_only", false),
-        ("compute databases list", "read_only", false),
-        ("compute databases get", "read_only", false),
-        ("compute databases create", "non_idempotent", true),
-        ("compute databases delete", "idempotent", true),
-        ("compute databases restart", "non_idempotent", true),
-        ("compute databases restore", "non_idempotent", true),
-        ("compute databases exposure create", "idempotent", true),
-        ("compute databases exposure delete", "idempotent", true),
-        ("compute databases events", "read_only", false),
-        ("compute databases metrics", "read_only", false),
-        ("compute databases refusals", "read_only", false),
-        ("compute kubernetes clusters list", "read_only", false),
-        ("compute kubernetes clusters get", "read_only", false),
-        ("compute kubernetes clusters delete", "idempotent", true),
-        ("compute kubernetes clusters events", "read_only", false),
-        ("compute kubernetes clusters refusals", "read_only", false),
-        (
-            "compute kubernetes clusters kubeconfig",
-            "idempotent",
-            false,
-        ),
-        ("compute kubernetes backups list", "read_only", false),
-        ("compute kubernetes node-pools list", "read_only", false),
-        (
-            "compute kubernetes node-pools create",
-            "non_idempotent",
-            false,
-        ),
-        (
-            "compute kubernetes node-pools scale",
-            "non_idempotent",
-            true,
-        ),
-        ("compute kubernetes operations list", "read_only", false),
-        ("compute kubernetes operations cancel", "idempotent", true),
-        ("compute kubernetes operations resume", "idempotent", true),
-        ("compute kubernetes nodes delete", "idempotent", true),
-        ("compute kubernetes nodes replace", "non_idempotent", true),
-        ("cdn prices", "read_only", false),
-        ("cdn regions", "read_only", false),
-        ("cdn estimate", "read_only", false),
-        ("cdn zones list", "read_only", false),
-        ("cdn zones get", "read_only", false),
-        ("cdn zones create", "non_idempotent", true),
-        ("cdn zones update", "idempotent", true),
-        ("cdn zones delete", "idempotent", true),
-        ("cdn cap get", "read_only", false),
-        ("cdn cap update", "idempotent", true),
-        ("cdn hostnames list", "read_only", false),
-        ("cdn hostnames create", "non_idempotent", true),
-        ("cdn hostnames verify", "idempotent", false),
-        ("cdn hostnames dns-setup", "idempotent", true),
-        ("cdn hostnames domain-connect", "read_only", false),
-        ("cdn hostnames delete", "idempotent", true),
-        ("cdn purges create", "non_idempotent", false),
-        ("cdn purges list", "read_only", false),
-        ("cdn purges get", "read_only", false),
-        ("cdn rules get", "read_only", false),
-        ("cdn rules update", "idempotent", true),
-        ("cdn stats", "read_only", false),
-        ("cdn waf get", "read_only", false),
-        ("cdn waf update", "idempotent", true),
-        ("cdn waf status", "read_only", false),
-        ("cdn waf analytics", "read_only", false),
-        ("cdn waf events", "read_only", false),
-        ("cdn waf test", "read_only", false),
-        ("cdn waf rules get", "read_only", false),
-        ("cdn waf rules update", "idempotent", true),
-        ("cdn waf rate-limits get", "read_only", false),
-        ("cdn waf rate-limits update", "idempotent", true),
-        ("cdn waf versions list", "read_only", false),
-        ("cdn waf versions get", "read_only", false),
-        ("cdn waf versions rollback", "idempotent", true),
-        ("cdn lists list", "read_only", false),
-        ("cdn lists get", "read_only", false),
-        ("cdn lists create", "non_idempotent", false),
-        ("cdn lists update", "idempotent", false),
-        ("cdn lists delete", "idempotent", true),
-        ("cdn lists items create", "idempotent", true),
-        ("cdn lists items update", "idempotent", true),
-        ("cdn lists items delete", "idempotent", true),
-        ("support tickets list", "read_only", false),
-        ("support tickets get", "read_only", false),
-        ("support tickets create", "non_idempotent", true),
-        ("support tickets reply", "non_idempotent", false),
-        ("support tickets update", "idempotent", true),
-        ("support tickets messages list", "read_only", false),
-        ("network get", "idempotent", true),
-        ("network create", "idempotent", true),
-        ("network peers list", "read_only", false),
-        ("network peers get", "read_only", false),
-        ("network peers update", "idempotent", true),
-        ("network peers delete", "idempotent", true),
-        ("network groups list", "read_only", false),
-        ("network policies list", "read_only", false),
-        ("network vpcs list", "read_only", false),
-        ("network vpcs resources list", "read_only", false),
-        ("network vpcs routers list", "read_only", false),
-        ("api", "non_idempotent", true),
-    ];
-
     /// Twelve commands ask only sometimes, and the schema says when: `confirmation` is true
     /// and `confirmation_when` names the condition, so an agent passes `--yes` when it
     /// holds. Every other command asks always or never.
@@ -1687,8 +983,8 @@ mod tests {
             .filter_map(|path| {
                 let parts: Vec<&str> = path.iter().map(String::as_str).collect();
                 match spec(&parts)?.confirmation {
-                    Confirmation::When(when) => Some((path.join(" "), when)),
-                    Confirmation::Never | Confirmation::Always => None,
+                    Asks::When(when) => Some((path.join(" "), when)),
+                    Asks::Never | Asks::Always => None,
                 }
             })
             .collect();
@@ -1726,9 +1022,10 @@ mod tests {
                 (
                     "compute runners settings update".to_owned(),
                     "against the settings it reads first, `--enabled` or `--allow-public-repos` \
-                     is `true` where the setting is not, `--max-concurrent` is not `0` and is \
-                     higher than `max_concurrent`, or an `--allowed-size` is not in \
-                     `allowed_sizes`; a setting hipc cannot compare counts as higher"
+                     is `true` where the setting is not, `--max-concurrent` is higher than \
+                     `max_concurrent` or is `0` where `max_concurrent` is not, or an \
+                     `--allowed-size` is not in `allowed_sizes`; a setting hipc cannot compare \
+                     counts as higher"
                 ),
                 (
                     "compute runners limit update".to_owned(),
@@ -1747,9 +1044,11 @@ mod tests {
                 ("cdn waf rate-limits update".to_owned(), WAF_CHECK),
                 (
                     "api".to_owned(),
-                    "the method is not `GET` or `HEAD`, or the path is `/api/network/me/`, \
-                     whose first call creates the network, with or without the trailing \
-                     slash or a format suffix"
+                    "the method is not `GET` or `HEAD`, or the request is a `GET` or `HEAD` of \
+                     `/api/network/me/`, whose read may create something, with or without the \
+                     trailing slash or a format suffix, and under any API version; a write to a \
+                     route no command lists in \
+                     its `routes` also warns that `hipc` does not know it"
                 ),
             ]
         );
@@ -1761,48 +1060,23 @@ mod tests {
             .cloned()
             .unwrap();
         assert_eq!(api["confirmation"], true);
-        assert_eq!(
-            api["confirmation_when"],
-            "the method is not `GET` or `HEAD`, or the path is `/api/network/me/`, whose \
-             first call creates the network, with or without the trailing slash or a format \
-             suffix"
-        );
+        assert_eq!(api["confirmation_when"], API_CONFIRMATION.as_str());
     }
 
-    #[test]
-    fn rows_match_the_plan_tables() {
-        let paths: Vec<String> = command_paths(&Cli::command())
-            .iter()
-            .map(|p| p.join(" "))
-            .collect();
-        let listed: Vec<&str> = PLAN_ROWS.iter().map(|(p, ..)| *p).collect();
-        assert_eq!(paths, listed);
-        for (path, effect, confirmation) in PLAN_ROWS {
-            let parts: Vec<&str> = path.split(' ').collect();
-            let row = spec(&parts).unwrap();
-            assert_eq!(row.effect.as_str(), effect, "{path}");
-            assert_eq!(
-                row.confirmation != Confirmation::Never,
-                confirmation,
-                "{path}"
-            );
-        }
-    }
-
-    /// The `reveal` and `pagination` bits come from the flags each command takes, so a row
-    /// cannot go stale when a flag is added or removed: `--reveal` is what `reveal` asks
-    /// for, and a list pages with `--page-token`, or is `hipc api`, which has `--all` and no
-    /// `--page-token`.
+    /// The `reveal` bit agrees with the flags each command takes, so a row cannot go stale
+    /// when a flag is added or removed: `--reveal` is what `reveal` asks for. `pagination` is
+    /// read from the flags ([`pages`]): a list pages with `--page-token`, or is `hipc api`,
+    /// which has `--all` and no `--page-token`.
     #[test]
     fn reveal_and_pagination_follow_the_flags_each_command_takes() {
         let root = Cli::command();
         for path in command_paths(&root) {
             let leaf = leaf(&root, &path);
             let takes = |id: &str| leaf.get_arguments().any(|arg| arg.get_id() == id);
-            let row = row(&path);
-            assert_eq!(row.reveal != Reveal::Never, takes("reveal"), "{path:?}");
-            let pages = takes("page_token") || path == ["api"];
-            assert_eq!(row.pagination, pages, "{path:?}");
+            let row = row(&path).unwrap();
+            assert_eq!(row.reveal.asks(), takes("reveal"), "{path:?}");
+            let paged = takes("page_token") || path == ["api"];
+            assert_eq!(pages(leaf), paged, "{path:?}");
         }
     }
 
@@ -1835,12 +1109,12 @@ mod tests {
         );
         for path in command_paths(&root) {
             let leaf = leaf(&root, &path);
-            let all = leaf
+            let pages_by_token = leaf
                 .get_arguments()
-                .any(|arg| arg.get_long() == Some("all"));
+                .any(|arg| arg.get_long() == Some("page-token"));
             assert_eq!(
-                all,
-                row(&path).pagination,
+                pages(leaf),
+                pages_by_token || path == ["api"],
                 "{path:?}: `--all` must go with pages"
             );
             let named: Vec<&str> = leaf
@@ -1870,7 +1144,7 @@ mod tests {
                     .map(|text| text.to_string().to_lowercase())
                     .collect::<Vec<_>>()
                     .join(" ");
-                let confirmed = row(path).confirmation != Confirmation::Never;
+                let confirmed = row(path).unwrap().confirmation.asks();
                 help.contains("needs --yes") != confirmed
             })
             .map(|path| path.join(" "))
@@ -1901,7 +1175,7 @@ mod tests {
         for path in command_paths(&root) {
             let leaf = leaf(&root, &path);
             let takes = |id: &str| leaf.get_arguments().any(|arg| arg.get_id() == id);
-            let row = row(&path);
+            let row = row(&path).unwrap();
             let guarded = |code| row.guards.iter().any(|guard| guard.code == code);
             // The schema and the hint spell the flag from the code; the command reads it by
             // its clap name, so this ties the two.
@@ -1935,12 +1209,12 @@ mod tests {
             .filter_map(|path| {
                 let parts: Vec<&str> = path.iter().map(String::as_str).collect();
                 match spec(&parts)?.reveal {
-                    Reveal::When(when) => Some((path.join(" "), when)),
-                    Reveal::Never | Reveal::Always => None,
+                    Asks::When(when) => Some((path.join(" "), when)),
+                    Asks::Never | Asks::Always => None,
                 }
             })
             .collect();
-        let when = "the route answers with a secret";
+        let when = API_REVEAL_WHEN;
         let mut expected = vec![("api".to_owned(), when)];
         for path in [
             "s3 tokens create",
@@ -1992,13 +1266,15 @@ mod tests {
                 && path[..2] == ["support", "tickets"]
                 && ["create", "reply"].contains(&path[2].as_str());
             assert_eq!(
-                row(&path).refused_when.is_some(),
+                row(&path).unwrap().refused_when.is_some(),
                 path == ["api"] || support_write,
                 "{path:?}"
             );
         }
         assert_eq!(
-            row(&["support".into(), "tickets".into(), "reply".into()]).refused_when,
+            row(&["support".into(), "tickets".into(), "reply".into()])
+                .unwrap()
+                .refused_when,
             Some(TICKET_HOLDS_A_TOKEN)
         );
         let route_flags = hippius::RouteFlag::ALL.map(|flag| (flag.code(), flag.flag()));
@@ -2029,23 +1305,34 @@ mod tests {
         );
         assert_eq!(
             api["guards"][0]["when"],
-            "the request writes to `/api/network/isolation/` (any method but `GET` and `HEAD`)"
+            "the request is a `POST` of `/api/network/isolation/`; each rule holds for every \
+             write method of its route that has no rule of its own"
         );
+        // Every route a guard of `hipc api` names is said with its condition, and the write
+        // methods a route documents as doing something else are named as needing none.
         assert_eq!(
-            api["refused_when"],
-            "the target is a full URL off the configured API origin, or the request is `POST \
-             /api/account/deletion/`, any method of `/api/auth/token/`, `GET` or `HEAD` of \
-             `/api/kubernetes/clusters/<cluster_id>/secrets/`, a `POST`, `PUT`, or `PATCH` of \
-             `/api/cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/`, `POST \
-             /api/registry/subscribe/`, or a `POST /api/compute/app-engine/apps/`, a write of \
-             `/api/compute/app-engine/apps/<vm_id>/compose/`, or a `POST \
-             /api/compute/app-engine/validate/` whose body sets `secrets` (a body that is not a \
-             JSON object counts as setting it), or a `POST`, `PUT`, `PATCH`, or `DELETE` under \
-             `/api/support/` whose body holds `HIPPIUS_TOKEN` or a token a profile of the config \
-             file stores, as it is, quoted, percent-encoded, behind a JSON escape, or split by \
-             whitespace, or an access key whose checksum holds, with or without the trailing slash \
-             or a format suffix"
+            api["guards"][1]["when"],
+            "the request is a `POST` of `/api/cdn/zones/`, a `PATCH` or `DELETE` of \
+             `/api/cdn/zones/{zone_id}/` whose body sets `origin`, a `PATCH` of \
+             `/api/registry/me/publicity/` unless its body sets `public` to `false`, or a `PUT` \
+             of `/api/objectstore/buckets/{bucket_name}/acl/set/`; a body that is not a JSON \
+             object counts as setting the key; each rule holds for every write method of its \
+             route that has no rule of its own; a `PUT` that borrows a rule on a key of the \
+             body needs the flag whatever its body sets"
         );
+        let remove_others = api["guards"][2]["when"].as_str().unwrap();
+        assert!(
+            remove_others.contains("a `PUT` of `/api/v1/operator/nodes/{node_id}/storage/`"),
+            "{remove_others}"
+        );
+        assert!(
+            remove_others.ends_with(
+                "a `POST` or `DELETE` of `/api/cdn/lists/{list_name}/items/`, which the API \
+                 documents as doing something else, needs none"
+            ),
+            "{remove_others}"
+        );
+        assert_eq!(api["refused_when"], API_REFUSED_WHEN.as_str());
         for noun in ["repositories", "artifacts"] {
             let delete = commands
                 .iter()
@@ -2150,11 +1437,8 @@ mod tests {
             (&flavor["required"], &flavor["repeats"]),
             (&json!(true), &json!(false))
         );
-        let tier = arg_of(&["compute", "databases", "create"], "--tier");
-        assert_eq!(
-            tier["possible_values"],
-            json!(["starter", "production", "ha"])
-        );
+        let tier = arg_of(&["compute", "vms", "create"], "--os-disk-tier");
+        assert_eq!(tier["possible_values"], json!(["nvme", "ssd", "hdd"]));
         assert_eq!(tier["default"], Value::Null);
         let profile = arg_of(&["s3", "configure"], "--aws-profile");
         assert_eq!(profile["default"], "hippius");
@@ -2226,8 +1510,8 @@ mod tests {
 
     /// A launch needs a key flag, a purge a target, `s3 configure` a key pair, a plan
     /// change one kind of change, and the billing profile, auto-reload, notification settings,
-    /// and project quota updates at least one field, which no single flag says, so the schema
-    /// lists each such set; no other command has one.
+    /// runner settings, and project quota updates at least one field, which no single flag
+    /// says, so the schema lists each such set; no other command has one.
     #[test]
     fn a_set_of_which_one_is_required_is_listed() {
         let doc = schema(&[]).unwrap();
@@ -2238,86 +1522,86 @@ mod tests {
             .filter(|c| c["required_groups"] != json!([]))
             .map(|c| (c["path"].to_string(), c["required_groups"].clone()))
             .collect();
-        let change = json!([{
-            "names": ["--plan", "--pay-from", "--storage-cap"],
-            "multiple": false,
-        }]);
+        // One group of `names`, of which `multiple` may be given together.
+        let group = |path: &[&str], names: &[&str], multiple: bool| {
+            (
+                json!(path).to_string(),
+                json!([{ "names": names, "multiple": multiple }]),
+            )
+        };
+        let change = ["--plan", "--pay-from", "--storage-cap"];
+        let notifications = [
+            "--email-enabled",
+            "--low-credit-alerts",
+            "--zero-balance-alerts",
+            "--file-status-updates",
+            "--marketing-emails",
+            "--provider-advice-emails",
+        ];
+        let quota = [
+            "--vms",
+            "--databases",
+            "--clusters",
+            "--vcpus",
+            "--memory",
+            "--disk",
+            "--public-ips",
+            "--runners",
+        ];
+        let profile = [
+            "--company-name",
+            "--address-line1",
+            "--address-line2",
+            "--city",
+            "--postal-code",
+            "--region",
+            "--country",
+            "--tax-id",
+            "--billing-email",
+        ];
+        let runners = [
+            "--enabled",
+            "--max-concurrent",
+            "--allowed-size",
+            "--default-region",
+            "--allow-public-repos",
+        ];
         assert_eq!(
             groups,
             [
-                (
-                    json!(["account", "notifications", "update"]).to_string(),
-                    json!([{
-                        "names": [
-                            "--email-enabled",
-                            "--low-credit-alerts",
-                            "--zero-balance-alerts",
-                            "--file-status-updates",
-                            "--marketing-emails",
-                            "--provider-advice-emails",
-                        ],
-                        "multiple": true,
-                    }])
+                group(
+                    &["account", "notifications", "update"],
+                    &notifications,
+                    true
                 ),
-                (
-                    json!(["account", "projects", "quota", "update"]).to_string(),
-                    json!([{
-                        "names": [
-                            "--vms",
-                            "--databases",
-                            "--clusters",
-                            "--vcpus",
-                            "--memory",
-                            "--disk",
-                            "--public-ips",
-                            "--runners",
-                        ],
-                        "multiple": true,
-                    }])
+                group(&["account", "projects", "quota", "update"], &quota, true),
+                group(
+                    &["billing", "auto-reload", "update"],
+                    &["--enabled", "--threshold", "--target", "--monthly-cap"],
+                    true
                 ),
-                (
-                    json!(["billing", "auto-reload", "update"]).to_string(),
-                    json!([{
-                        "names": ["--enabled", "--threshold", "--target", "--monthly-cap"],
-                        "multiple": true,
-                    }])
+                group(&["billing", "profile", "update"], &profile, true),
+                group(&["drive", "subscription", "change"], &change, false),
+                group(&["s3", "subscription", "change"], &change, false),
+                group(
+                    &["s3", "configure"],
+                    &["--from-token-file", "--access-key-id"],
+                    false
                 ),
-                (
-                    json!(["billing", "profile", "update"]).to_string(),
-                    json!([{
-                        "names": [
-                            "--company-name",
-                            "--address-line1",
-                            "--address-line2",
-                            "--city",
-                            "--postal-code",
-                            "--region",
-                            "--country",
-                            "--tax-id",
-                            "--billing-email",
-                        ],
-                        "multiple": true,
-                    }])
+                group(
+                    &["compute", "vms", "create"],
+                    &["--ssh-key-id", "--ssh-public-key-file"],
+                    true
                 ),
-                (
-                    json!(["drive", "subscription", "change"]).to_string(),
-                    change.clone()
+                group(
+                    &["compute", "runners", "settings", "update"],
+                    &runners,
+                    true
                 ),
-                (json!(["s3", "subscription", "change"]).to_string(), change),
-                (
-                    json!(["s3", "configure"]).to_string(),
-                    json!([{"names": ["--from-token-file", "--access-key-id"], "multiple": false}])
-                ),
-                (
-                    json!(["compute", "vms", "create"]).to_string(),
-                    json!([{
-                        "names": ["--ssh-key-id", "--ssh-public-key-file"],
-                        "multiple": true,
-                    }])
-                ),
-                (
-                    json!(["cdn", "purges", "create"]).to_string(),
-                    json!([{"names": ["--everything", "--path", "--prefix"], "multiple": false}])
+                group(
+                    &["cdn", "purges", "create"],
+                    &["--everything", "--path", "--prefix"],
+                    false
                 ),
             ]
         );
@@ -2393,6 +1677,33 @@ mod tests {
         );
     }
 
+    /// A path under a group that names none of its commands has no row, in every group the
+    /// row lookup splits by.
+    #[test]
+    fn a_path_that_names_no_command_has_no_row() {
+        let groups: [&[&str]; 15] = [
+            &[],
+            &["auth"],
+            &["account"],
+            &["billing"],
+            &["drive"],
+            &["s3"],
+            &["hub"],
+            &["compute"],
+            &["compute", "app-engine"],
+            &["compute", "databases"],
+            &["compute", "kubernetes"],
+            &["compute", "runners"],
+            &["cdn"],
+            &["network"],
+            &["support"],
+        ];
+        for group in groups {
+            let path = [group, &["no-such-command"]].concat();
+            assert!(spec(&path).is_none(), "{path:?}");
+        }
+    }
+
     #[test]
     fn unknown_or_partial_paths_have_no_row() {
         assert!(spec(&["nope"]).is_none());
@@ -2400,6 +1711,13 @@ mod tests {
         assert!(spec(&["version", "extra"]).is_none());
         assert!(spec(&["network"]).is_none());
         assert!(spec(&["network", "peers"]).is_none());
+        // A path the parser ran that has no row is an error object, not a panic.
+        let error = row(&words(&["compute", "nope"])).unwrap_err();
+        assert_eq!(error.code(), Code::Internal);
+        assert_eq!(
+            error.message(),
+            "`hipc` has no schema row for `hipc compute nope`"
+        );
     }
 
     /// The window `HUB_REPLACE_WHEN` names is the one the Hub marker holds.
@@ -2569,10 +1887,114 @@ mod tests {
         assert_eq!(own["commands"][0]["args"][0]["repeats"], true);
     }
 
+    /// Every route a command lists is a row of `hippius::routes`, and a command takes the page
+    /// flags exactly when one of its routes is a list the server pages. `hipc api` pages
+    /// whatever route it is given, and lists only routes no other command lists.
+    #[test]
+    fn every_listed_route_is_a_row_that_pages_as_its_command_does() {
+        let root = Cli::command();
+        let rows: Vec<(hippius::Method, &str)> = hippius::routes::all()
+            .map(|row| (row.method(), row.template()))
+            .collect();
+        for path in command_paths(&root) {
+            let parts: Vec<&str> = path.iter().map(String::as_str).collect();
+            let listed = routes::routes(&parts);
+            let unlisted: Vec<(hippius::Method, &str)> = listed
+                .iter()
+                .map(|endpoint| (endpoint.method(), endpoint.template()))
+                .filter(|route| !rows.contains(route))
+                .collect();
+            assert!(unlisted.is_empty(), "{path:?}: {unlisted:?} are not rows");
+            if parts == ["api"] {
+                let curated: Vec<&hippius::routes::Endpoint> = command_paths(&root)
+                    .iter()
+                    .filter(|other| *other != &path)
+                    .flat_map(|other| {
+                        let words: Vec<&str> = other.iter().map(String::as_str).collect();
+                        routes::routes(&words)
+                    })
+                    .collect();
+                assert_ne!(listed.len(), 0);
+                assert!(listed.iter().all(|route| !curated.contains(route)));
+                continue;
+            }
+            let paged = listed.iter().any(|endpoint| endpoint.paging().is_some());
+            assert_eq!(pages(leaf(&root, &path)), paged, "{path:?}");
+        }
+    }
+
+    /// Every row of `hippius::routes` is a route some command lists, so "a route no command
+    /// lists in its `routes`", which is how `hipc schema` says when `hipc api` asks for
+    /// `--reveal` or warns, is exactly a route the client has no row for.
+    #[test]
+    fn every_row_is_a_route_some_command_lists() {
+        let root = Cli::command();
+        let listed: Vec<(hippius::Method, &str)> = command_paths(&root)
+            .iter()
+            .flat_map(|path| {
+                let parts: Vec<&str> = path.iter().map(String::as_str).collect();
+                routes::routes(&parts)
+            })
+            .map(|endpoint| (endpoint.method(), endpoint.template()))
+            .collect();
+        let unlisted: Vec<(hippius::Method, &str)> = hippius::routes::all()
+            .map(|row| (row.method(), row.template()))
+            .filter(|route| !listed.contains(route))
+            .collect();
+        assert_eq!(unlisted, []);
+    }
+
+    /// A path under a group that names none of its commands lists no route, in every group
+    /// the route lookup splits by.
+    #[test]
+    fn a_path_that_names_no_command_lists_no_route() {
+        let groups: [&[&str]; 14] = [
+            &["auth"],
+            &["account"],
+            &["billing"],
+            &["drive"],
+            &["s3"],
+            &["hub"],
+            &["compute"],
+            &["compute", "app-engine"],
+            &["compute", "databases"],
+            &["compute", "kubernetes"],
+            &["compute", "runners"],
+            &["cdn"],
+            &["network"],
+            &["support"],
+        ];
+        for group in groups {
+            let path = [group, &["no-such-command"]].concat();
+            assert!(routes::routes(&path).is_empty(), "{path:?}");
+        }
+        assert_eq!(
+            routes::routes(&["no-such-group"]),
+            Vec::<&hippius::routes::Endpoint>::new()
+        );
+    }
+
+    /// The whole `hipc schema` document, which `hipc` wholly owns (tenet 7), so a change to any
+    /// row, argument, help line, route, or code shows as one diff to review. Refresh it with
+    /// `INSTA_UPDATE=always cargo test -p hippius-cli --bin hipc spec::`, then read the diff.
+    #[test]
+    fn the_schema_document_is_its_snapshot() {
+        let document = schema(&[]).unwrap();
+        insta::assert_snapshot!("schema", serde_json::to_string_pretty(&document).unwrap());
+    }
+
+    /// The error table of tenet 4 alone, so a change to a code, its exit code, meaning, or
+    /// flag is a short diff of its own.
+    #[test]
+    fn the_error_table_is_its_snapshot() {
+        let errors = &schema(&[]).unwrap()["errors"];
+        insta::assert_snapshot!("errors", serde_json::to_string_pretty(errors).unwrap());
+    }
+
     #[test]
     fn schema_document_shape() {
         let doc = schema(&[]).unwrap();
-        assert_eq!(doc["schema_version"], 3);
+        assert_eq!(doc["schema_version"], 4);
         assert_eq!(
             doc["commands"][0],
             json!({
@@ -2588,7 +2010,13 @@ mod tests {
                 "args": [],
                 "flags": [],
                 "required_groups": [],
+                "routes": [],
             })
+        );
+        let delete = schema(&words(&["account", "members", "delete"])).unwrap();
+        assert_eq!(
+            delete["commands"][0]["routes"],
+            json!([{"method": "DELETE", "path": "/api/accounts/members/{member_id}/"}])
         );
         let keys: Vec<&String> = doc.as_object().unwrap().keys().collect();
         assert_eq!(

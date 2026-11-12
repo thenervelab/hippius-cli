@@ -1,12 +1,12 @@
 //! `hipc s3 buckets objects list`: a bucket's objects, read from the control plane, one page
 //! at a time or every page with `--all`. No object bytes move.
 
+use hippius::routes::s3;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Route, Run, Server, TOKEN, draft, route};
-
-const PROJECT: &str = "proj_0a1b2c3d4e5f60718293";
-const BILLING: &str = "bill_9f8e7d6c5b4a39281706";
+use crate::common::{
+    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Route, Run, Server, draft, route, route_of,
+};
 
 const PATH: &str = "/api/objectstore/buckets/photos/objects/";
 
@@ -131,6 +131,29 @@ fn text_mode_prints_the_objects() {
     assert!(run.stdout().contains("2026/a.jpg"), "{}", run.stdout());
 }
 
+/// An object key is written by whoever holds a bucket token, so text mode escapes a control
+/// character in it rather than let it reach the terminal (tenet 15).
+#[test]
+fn text_mode_escapes_the_control_characters_of_a_key() {
+    let key = "a\u{1b}]0;owned\u{7}b";
+    let server = Server::start(vec![page("", &listing(&[key], None))]);
+    let argv = objects(&["photos"]);
+    let mut full = vec!["--output", "text"];
+    full.extend(argv.iter().map(String::as_str));
+    let run = Hipc::against(&Home::new(), &server).run(&full);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert!(
+        !run.stdout().contains(['\u{1b}', '\u{7}']),
+        "{}",
+        run.stdout()
+    );
+    assert!(
+        run.stdout().contains(r"a\u{1b}]0;owned\u{7}b"),
+        "{}",
+        run.stdout()
+    );
+}
+
 #[test]
 fn an_empty_bucket_is_an_empty_page_and_an_empty_token_is_the_last_page() {
     // boto3 leaves `Contents` out of an empty page.
@@ -205,9 +228,12 @@ fn all_stops_on_a_token_that_leads_back() {
     assert_eq!(server.requests().len(), 3);
 }
 
+/// The end-to-end test of the page cap, and the next one of the byte cap: every `--all` pages
+/// through `list::walk`, whose caps `list::tests` checks, so no other list repeats these
+/// two, the heaviest runs of the suite.
 #[test]
 fn all_stops_after_a_thousand_pages() {
-    let (url, server) = crate::common::endless_pages(|_, served| {
+    let server = crate::common::endless_pages(PATH, |served| {
         format!(
             r#"{{"Contents":[],"IsTruncated":true,"NextContinuationToken":"t{}"}}"#,
             served + 1
@@ -215,16 +241,14 @@ fn all_stops_after_a_thousand_pages() {
     });
     let argv = objects(&["photos", "--all"]);
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let error = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", &url)
-        .with_env_token(&url, TOKEN)
+    let error = Hipc::against(&Home::new(), &server)
         .run(&argv)
         .fails(1, "internal");
     assert!(
         error["message"].as_str().unwrap().contains("1000 pages"),
         "{error}"
     );
-    assert_eq!(server.join().unwrap(), 1000);
+    assert_eq!(server.requests().len(), 1000);
 }
 
 #[test]
@@ -396,8 +420,7 @@ fn bad_flags_are_usage_before_any_request_or_token() {
     ] {
         let argv = objects(args);
         let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&Home::new(), &server)
             .run(&argv)
             .fails(2, "usage");
     }
@@ -415,8 +438,7 @@ fn bad_flags_are_usage_before_any_request_or_token() {
     assert!(server.requests().is_empty());
     let argv = objects(&["photos"]);
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&argv)
         .fails(1, "auth");
     assert!(server.requests().is_empty());
@@ -424,9 +446,9 @@ fn bad_flags_are_usage_before_any_request_or_token() {
 
 #[test]
 fn a_missing_bucket_is_not_found_with_a_hint_to_list_the_buckets() {
-    let server = Server::start(vec![route(
-        "GET",
-        PATH,
+    let server = Server::start(vec![route_of(
+        &s3::OBJECTS,
+        [&"photos"],
         Reply::json(404, r#"{"detail":"Bucket not found"}"#),
     )]);
     let error = hipc(&server, &["photos"]).fails(1, "not_found");
@@ -507,8 +529,7 @@ fn a_dry_run_names_the_first_request_without_a_token() {
         let mut argv = objects(args);
         argv.push("--dry-run".to_owned());
         let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-        let doc = Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        let doc = Hipc::tokenless(&Home::new(), &server)
             .env("HIPPIUS_ACCOUNT", MEMBER)
             .run(&argv)
             .ok();

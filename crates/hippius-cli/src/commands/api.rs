@@ -7,13 +7,13 @@
 //! escaped. `--all` is the exception: it collects the pages into one JSON array, as `--all`
 //! does on every list command.
 
-use hippius::{Client, Error, Method, Request, Result, RouteFlag};
+use hippius::routes::{self, Endpoint, Paging};
+use hippius::{Client, Error, Method, Next, Request, Result, RouteFlag};
 use serde_json::Value;
 
 use crate::cli::Api;
-use crate::commands::{
-    Input, Pages, Printed, cdn, compute, drive, hub, network, require_reveal, s3,
-};
+use crate::commands::list::{self, Turn};
+use crate::commands::{Input, Printed, cdn, compute, drive, hub, network, require_reveal, s3};
 use crate::context::{self, Context, Gate, Step};
 
 /// The largest `--body-file` body read, in bytes. Arbitrary: far above any console request
@@ -58,23 +58,45 @@ pub(crate) fn run(ctx: &Context<'_>, args: &Api) -> Result<Printed> {
     let config = context::config()?;
     let client = ctx.client(&config)?;
     refuse_token_to_support(ctx, &client, &config, &request, body.as_ref())?;
+    // `None` for a route `hipc` does not know: no command sends it.
+    let row = client.route_of(&request)?;
     // Before the selected account's refusals and the confirmation, as for every curated
-    // command (TENETS 5 and 9): `returns_secret` applies no account rule.
+    // command (tenets 5 and 9): `returns_secret` applies no account rule. An answer `hipc`
+    // knows nothing of may hold a secret too, so a `GET` of a route with no row needs
+    // `--reveal` as well (tenet 9); a `HEAD` answer has no body to print.
     if client.returns_secret(&request)? {
         require_reveal(ctx, args.reveal)?;
+    } else if row.is_none() && method == Method::Get {
+        require_reveal(ctx, args.reveal).map_err(|refusal| {
+            refusal.with_message(format!(
+                "`hipc` does not know `{method} {}`, so its answer may hold a secret, and the \
+                 command needs `--reveal` to print it",
+                hippius::without_query_values(&args.path)
+            ))
+        })?;
+    }
+    // A write `hipc` does not know is sent as any write is, with `--yes`, but no curated
+    // command says what it changes.
+    if row.is_none() && !method.is_read() {
+        ctx.run_warning(&format!(
+            "`hipc` does not know `{method} {}`: no command sends it, so `hipc` cannot say \
+             what it changes",
+            hippius::without_query_values(&args.path)
+        ));
     }
     // After `--reveal` and before the same refusals, for the same reason. A route never
     // sent, such as an account deletion request, was refused already, inside
     // `returns_secret`, whatever the flags.
     // A route that needs two flags refuses for the first one missing, so a rerun with its
     // hint meets the second.
-    for route_flag in client.route_flags(&request)? {
-        require_route_flag(ctx, args, route_flag, client.opens_a_namespace(&request)?)?;
+    for (route_flag, route) in client.route_flags(&request)? {
+        let namespace = route == routes::hub::PUBLICITY_UPDATE.endpoint().template();
+        require_route_flag(ctx, args, route_flag, namespace)?;
     }
     // A read that may create something, such as the first `GET /api/network/me/`, is a
     // write from here on: confirmed with the curated command's consequence, refused with a
-    // stored project, and `partial` when it fails after it was sent. Marked
-    // before `url`, which applies the selection rules by the request's access.
+    // stored project, and `partial` when it fails after it was sent. Marked before `url`,
+    // which applies the selection rules by the request's access.
     let provisions = client.provisions(&request)?;
     if provisions {
         request = request.provisions();
@@ -99,11 +121,16 @@ pub(crate) fn run(ctx: &Context<'_>, args: &Api) -> Result<Printed> {
     let url = hippius::without_query_values(&client.url(&request)?);
     let request = request.about(format!("call `{method} {url}`"));
     let permanent = client.is_permanent(&request)?;
-    let consequence = client.route_value(&request, CONSEQUENCES)?.copied();
+    let consequence = row.and_then(|row| {
+        CONSEQUENCES
+            .iter()
+            .find(|(route, _)| *route == row)
+            .map(|&(_, consequence)| consequence)
+    });
     let gate = gate(&request, provisions, permanent, consequence);
     match ctx.call(&client, &request, gate)? {
         Step::Sent(response) => Ok(Printed::Body(response.into_bytes())),
-        Step::DryRun(doc) => Ok(Printed::Document(doc)),
+        Step::DryRun(doc) => Ok(doc.into()),
     }
 }
 
@@ -193,73 +220,63 @@ fn gate(
     }
 }
 
-/// The deletes and cancels whose curated command says what they end, with that consequence,
-/// so `hipc api` asks the same question on the same route. Matched by
-/// [`hippius::Client::route_value`]: a slashless or suffixed path names its route too. A
-/// consequence a curated command builds from the read or the id, such as a database delete's,
-/// is not here.
-const CONSEQUENCES: &[(Method, &str, &str)] = &[
-    (Method::Delete, "/api/drive/subscription/", drive::CANCELLED),
-    (Method::Delete, "/api/s3/subscription/", s3::CANCELLED),
+/// The deletes and cancels whose curated command says what they end, by the route the
+/// command sends, with that consequence, so `hipc api` asks the same question on the same
+/// route. The route is the row a request reaches ([`Client::route_of`]), so a slashless or
+/// suffixed path names its route too. A consequence a curated command builds from the read
+/// or the id, such as a database delete's, is not here.
+const CONSEQUENCES: [(&Endpoint, &str); 14] = [
     (
-        Method::Delete,
-        "/api/registry/subscriptions/{id}/",
-        hub::CANCELLED,
+        routes::drive::SUBSCRIPTION_CANCEL.endpoint(),
+        drive::CANCELLED,
     ),
+    (routes::s3::SUBSCRIPTION_CANCEL.endpoint(), s3::CANCELLED),
+    (routes::hub::SUBSCRIPTION_CANCEL.endpoint(), hub::CANCELLED),
+    (routes::hub::KEY_DELETE.endpoint(), hub::keys::DELETED),
     (
-        Method::Delete,
-        "/api/registry/keys/{id}/",
-        hub::keys::DELETED,
-    ),
-    (
-        Method::Delete,
-        "/api/compute/vms/{id}/",
+        routes::compute::VM_DELETE.endpoint(),
         compute::VM_LEFT_BILLED,
     ),
     (
-        Method::Delete,
-        "/api/compute/vms/{id}/public-ip/",
+        routes::compute::PUBLIC_IP_DELETE.endpoint(),
         compute::IP_DETACHED,
     ),
     (
-        Method::Delete,
-        "/api/compute/vms/{id}/expose/{id}/",
+        routes::compute::EXPOSURE_DELETE.endpoint(),
         compute::EXPOSURE_DELETED,
     ),
-    (Method::Delete, "/api/cdn/zones/{id}/", cdn::ZONE_DELETED),
+    (routes::cdn::ZONE_DELETE.endpoint(), cdn::ZONE_DELETED),
     (
-        Method::Delete,
-        "/api/cdn/zones/{id}/hostnames/{id}/",
+        routes::cdn::HOSTNAME_DELETE.endpoint(),
         cdn::HOSTNAME_DELETED,
     ),
     (
-        Method::Delete,
-        "/api/runners/installations/{id}/",
+        routes::runners::INSTALLATION_DELETE.endpoint(),
         compute::runners::UNLINKED,
     ),
     (
-        Method::Delete,
-        "/api/network/peers/{id}/",
+        routes::network::PEER_DELETE.endpoint(),
         network::PEER_REMOVED,
     ),
     (
-        Method::Delete,
-        "/api/compute/vms/{id}/backup/",
+        routes::compute::BACKUP_POLICY_DELETE.endpoint(),
         compute::BACKUPS_KEPT,
     ),
-    (Method::Delete, "/api/ssh-keys/{id}/", compute::SSH_KEY_KEPT),
     (
-        Method::Delete,
-        "/api/cdn/lists/{id}/items/",
+        routes::compute::SSH_KEY_DELETE.endpoint(),
+        compute::SSH_KEY_KEPT,
+    ),
+    (
+        routes::cdn::LIST_ITEMS_REMOVE.endpoint(),
         cdn::waf::LIST_REPUBLISHES,
     ),
 ];
 
 /// Refuses a request that needs `route_flag` unless it was passed. A dry run sends nothing,
-/// so it needs no flag, as it needs no `--reveal` (TENETS 5). Each flag refuses with its
+/// so it needs no flag, as it needs no `--reveal` (tenet 5). Each flag refuses with its
 /// own code, `--public` and `--remove-others` with the curated commands' codes.
-/// `namespace` says the request is the Hub namespace publicity `PATCH`, whose `--public`
-/// refusal names who can pull rather than a bucket.
+/// `namespace` says the rule is the Hub namespace publicity route's, whatever the method sent,
+/// so its `--public` refusal names who can pull rather than a bucket.
 fn require_route_flag(
     ctx: &Context<'_>,
     args: &Api,
@@ -286,7 +303,7 @@ fn require_route_flag(
             ),
         ),
         // The curated command reads the list and names what a write removes; `hipc api`
-        // reads nothing, for the reason the route-rule table in `hippius::account` gives.
+        // reads nothing, so its refusal can name no entry.
         RouteFlag::RemoveOthers => (
             args.remove_others,
             Error::remove_others_unread(
@@ -307,28 +324,43 @@ fn require_route_flag(
 /// `--all` does on every list command. A bare array is one page.
 ///
 /// A `next` link must stay on the origin of the first page ([`hippius::follow`]) and on its
-/// path, and [`Pages`] refuses a loop and a list past its page cap.
+/// path, and the page loop ([`list::walk`]) refuses a loop and a list past its page cap. A
+/// page of a route whose row pages it another way is read as its row says
+/// ([`list::read_page`]), and one that names its next page by a number or a token, not by a
+/// `next` link, is `internal` (tenet 6): `hipc api` follows links only, and reading such a
+/// page as the last would print a short list as if it were complete.
 fn every_page(ctx: &Context<'_>, client: &Client, first: Request) -> Result<Printed> {
-    let mut items = Vec::new();
+    let paging = client
+        .route_of(&first)?
+        .and_then(Endpoint::paging)
+        .unwrap_or(Paging::Numbered);
     // The first URL is the caller's: a refusal of it is their usage error.
     let mut url = client.url(&first)?;
+    if ctx.dry_run() {
+        return ctx.dry_run_of(client, &[&first]).map(Printed::from);
+    }
     let list_path = path_of(&url).to_owned();
-    let mut pages = Pages::starting_at(&url);
-    let mut request = first;
-    loop {
-        let page = match ctx.call(client, &request, Gate::Open)? {
-            Step::Sent(response) => {
-                pages.read(response.bytes().len())?;
-                response.json()?
-            }
-            Step::DryRun(doc) => return Ok(Printed::Document(doc)),
-        };
-        let page = hippius::page(page).map_err(|_| not_a_list(&url))?;
+    let mut items = Vec::new();
+    let start = url.clone();
+    list::walk(ctx, client, first, &start, |answer| {
+        let page = list::read_page(paging, answer).map_err(|error| match paging {
+            Paging::Numbered => not_a_list(&url),
+            Paging::Totalled { .. }
+            | Paging::UntilShort { .. }
+            | Paging::Cursor
+            | Paging::Continuation => error,
+        })?;
         items.extend(page.items);
-        let Some(next) = page.next else {
-            break;
+        let next = match page.next {
+            None => {
+                return Ok(Turn::Done(Printed::Document(Value::Array(std::mem::take(
+                    &mut items,
+                )))));
+            }
+            Some(Next::Link(link)) => link,
+            Some(Next::Token(_)) => return Err(no_next_link(&url)),
         };
-        request = hippius::follow(&url, &next)?;
+        let request = hippius::follow(&url, &next)?;
         // Later URLs come from the server, so a refusal of one is not the caller's to fix
         // (tenet 4: exit 2 means the invocation must change): whatever `url` refuses it with
         // is `internal`. That holds for `account_scope_unsupported` too: `--account self`
@@ -347,12 +379,14 @@ fn every_page(ctx: &Context<'_>, client: &Client, first: Request) -> Result<Prin
             return Err(Error::internal(format!(
                 "the API's `next` link {} leaves {}, the path of the list",
                 hippius::phrase::quote(hippius::without_query_values(&url)),
-                hippius::phrase::quote(list_path)
+                hippius::phrase::quote(&list_path)
             )));
         }
-        pages.admit(&url)?;
-    }
-    Ok(Printed::Document(Value::Array(items)))
+        Ok(Turn::Next {
+            token: url.clone(),
+            request,
+        })
+    })
 }
 
 /// The path of `url`, a URL from [`Client::url`], without its query.
@@ -362,6 +396,19 @@ fn path_of(url: &str) -> &str {
         .find('/')
         .map_or("/", |start| &after_scheme[start..]);
     path.split_once('?').map_or(path, |(path, _)| path)
+}
+
+/// The refusal of a page that says the list goes on without a `next` link to follow.
+fn no_next_link(url: &str) -> Error {
+    Error::internal(format!(
+        "{} answered a page that names the next one by a number or a token, not by a `next` \
+         link, which `--all` follows, so the rest of the list is unknown",
+        hippius::phrase::quote(hippius::without_query_values(url))
+    ))
+    .with_hint(
+        "run the `hipc` command that lists it with `--all`, which reads every page; `hipc \
+         schema` names the route in its `routes`",
+    )
 }
 
 fn not_a_list(url: &str) -> Error {

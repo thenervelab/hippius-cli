@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crypto_box::aead::OsRng;
 
 use super::*;
+use crate::error::Code;
 
 const BOX_PUBLIC: &str = "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw=";
 const SIGN_PUBLIC: &str = "VCgh6VKd0a0kO/3/XGQKZRlLSBaYemUN6GHXzp5BemM=";
@@ -173,8 +174,8 @@ fn flip_bit(text: &str, index: usize) -> String {
 #[test]
 fn the_keys_derive_the_public_keys_pynacl_derives() {
     let key = vector_key();
-    assert_eq!(key.sign_public, SIGN_PUBLIC);
-    assert_eq!(key.box_public, BOX_PUBLIC);
+    assert_eq!(b64(&key.sign_public), SIGN_PUBLIC);
+    assert_eq!(b64(&key.box_public), BOX_PUBLIC);
     let guest = SigningKey::from_bytes(&range(101, 133));
     assert_eq!(b64(guest.verifying_key().as_bytes()), GUEST);
     let other = SigningKey::from_bytes(&range(201, 233));
@@ -317,7 +318,7 @@ fn the_newest_launch_drop_is_found_by_its_time_among_those_that_can_be_opened() 
     let opened = open(&key, &secrets(GUEST, &json!([older, east]))).unwrap();
     assert_eq!(opened.as_str(), KUBECONFIG);
     // A time that is not one is older than any that is.
-    let mut garbled = newer.clone();
+    let mut garbled = newer;
     garbled["created_at"] = json!("2026-10-99T00:00:00Z");
     let opened = open(&key, &secrets(GUEST, &json!([garbled, older]))).unwrap();
     assert_eq!(opened.as_str(), KUBECONFIG);
@@ -334,45 +335,6 @@ fn the_newest_launch_drop_is_found_by_its_time_among_those_that_can_be_opened() 
         unusable[field] = json!(null);
         let opened = open(&key, &secrets(GUEST, &json!([older, unusable]))).unwrap();
         assert_eq!(opened.as_str(), KUBECONFIG, "{field}");
-    }
-}
-
-#[test]
-fn an_rfc3339_time_is_a_real_date_with_a_real_offset() {
-    for (text, seconds, nanos) in [
-        ("2024-02-29T00:00:00Z", 1_709_164_800, 0),
-        ("2000-02-29T00:00:00Z", 951_782_400, 0),
-        ("2026-12-31T23:59:59Z", 1_798_761_599, 0),
-        ("2026-11-03T10:00:00.5Z", 1_793_700_000, 500_000_000),
-        (
-            "2026-11-03T10:00:00.123456789123Z",
-            1_793_700_000,
-            123_456_789,
-        ),
-        ("2026-11-03T13:59:00+03:59", 1_793_700_000, 0),
-        ("2026-11-03T10:00:00-00:00", 1_793_700_000, 0),
-    ] {
-        assert_eq!(rfc3339(text), Some((seconds, nanos)), "{text}");
-    }
-    for bad in [
-        "2026-02-29T00:00:00Z",
-        "2100-02-29T00:00:00Z",
-        "2026-02-31T00:00:00Z",
-        "2026-04-31T00:00:00Z",
-        "2026-11-03T10:00:00+24:00",
-        "2026-11-03T10:00:00+99:99",
-        "2026-11-03T10:00:00+02:60",
-        "2026-11-03T10:00:00+2:00",
-        "2026-11-03T10:00:00+002:00",
-        "2026-1-03T10:00:00Z",
-        "2026-11-3T10:00:00Z",
-        "26-11-03T10:00:00Z",
-        "2026-11-03T1:00:00Z",
-        "2026-11-03T10:00:00:00Z",
-        "2026-11-03-01T10:00:00Z",
-        "2026-11-03T10:00:00Z02:00",
-    ] {
-        assert_eq!(rfc3339(bad), None, "{bad}");
     }
 }
 
@@ -543,19 +505,21 @@ fn a_key_file_is_matched_to_its_cluster_by_both_public_keys() {
     );
 }
 
+/// The map of a `json!` object literal.
+fn object(literal: Value) -> Map<String, Value> {
+    serde_json::from_value(literal).expect("the literal is a JSON object")
+}
+
 /// The `add_node` of the console's vector, its params out of order at both depths.
 fn add_node_params() -> Map<String, Value> {
-    let Value::Object(params) = json!({
+    object(json!({
         "pool": "gpu",
         "flavor": "large",
         "k8s_version": "v1.34.3+rke2r1",
         "image": "ubuntu",
         "labels": { "zone": "b", "app": "web", "team.example.com/owner": "ops" },
         "taints": ["gpu=true:NoSchedule", "dedicated:PreferNoSchedule"],
-    }) else {
-        unreachable!("the literal is an object")
-    };
-    params
+    }))
 }
 
 /// The canonical bytes of the `add_node` envelope of `params`, as a test builds them.
@@ -573,10 +537,12 @@ fn sign_vector(id: u64, params: &Map<String, Value>, uuid: &str, iat: u64) -> Va
     let key = vector_key();
     let mut cluster = cluster(Some(GUEST));
     cluster["id"] = json!(id);
-    key.matched(id, &cluster)
+    let signed = key
+        .matched(id, &cluster)
         .unwrap()
         .add_node_at(params, uuid, iat)
-        .unwrap()
+        .unwrap();
+    serde_json::to_value(signed).unwrap()
 }
 
 #[test]
@@ -612,16 +578,14 @@ fn an_add_node_is_signed_exactly_as_pynacl_signs_it() {
 #[test]
 fn a_replacement_signs_the_pool_params_with_replaces_added() {
     let uuid = "a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d";
-    let Value::Object(mut params) = json!({
+    let mut params = object(json!({
         "pool": "workers",
         "flavor": "medium",
         "k8s_version": "v1.34.3+rke2r1",
         "image": "ubuntu",
         "labels": {},
         "taints": [],
-    }) else {
-        unreachable!("the literal is an object")
-    };
+    }));
     params.insert("replaces".to_owned(), json!("workers-1a2b3c4d"));
     assert_eq!(
         b64(envelope_bytes(7, uuid, &params, 1_790_000_100).as_bytes()),
@@ -643,7 +607,7 @@ fn a_replacement_signs_the_pool_params_with_replaces_added() {
 #[test]
 fn non_ascii_nesting_and_escapes_sign_exactly_as_pynacl_signs_them() {
     let uuid = "00000000-0000-4000-8000-000000000001";
-    let Value::Object(params) = json!({
+    let params = object(json!({
         "pool": "p",
         "labels": {
             "\u{ff5e}": "fullwidth",
@@ -653,9 +617,7 @@ fn non_ascii_nesting_and_escapes_sign_exactly_as_pynacl_signs_them() {
             "esc": "q\"b\\n\n\t\u{1}\u{7f}\u{2028}/",
         },
         "taints": [],
-    }) else {
-        unreachable!("the literal is an object")
-    };
+    }));
     assert_eq!(
         b64(envelope_bytes(1_234_567, uuid, &params, 1_790_000_200).as_bytes()),
         "eyJjbHVzdGVyIjoiMTIzNDU2NyIsImRvbSI6ImhpcHBpdXMtazhzLW9wIiwiZXhwIjoxNzkwMDAzMjAwLCJpYX\
@@ -680,12 +642,13 @@ fn each_signed_add_node_has_a_fresh_v4_request_id_and_verifies() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let first = matched
-        .sign_add_node(&params, &Response::dated(None))
-        .unwrap();
-    let second = matched
-        .sign_add_node(&params, &Response::dated(None))
-        .unwrap();
+    let sign = || {
+        let signed = matched
+            .sign_add_node(&params, &Response::dated(None))
+            .unwrap();
+        serde_json::to_value(signed).unwrap()
+    };
+    let (first, second) = (sign(), sign());
     assert_ne!(first["request_uuid"], second["request_uuid"]);
     for signed in [first, second] {
         let uuid = signed["request_uuid"].as_str().unwrap();
@@ -775,8 +738,8 @@ fn an_add_node_is_signed_at_the_server_time_of_the_answer() {
     let signed = matched
         .sign_add_node(&add_node_params(), &answered)
         .unwrap();
-    assert_eq!(signed["issued_at"], server);
-    assert_eq!(signed["expires_at"], server + 3000);
+    assert_eq!(signed.issued_at, server);
+    assert_eq!(signed.expires_at, server + 3000);
     let far = Response::dated(Some("Sun, 06 Nov 1994 08:49:37 GMT"));
     let error = matched.sign_add_node(&add_node_params(), &far).unwrap_err();
     assert_eq!(error.code(), Code::Internal);
@@ -841,81 +804,6 @@ const CLOCK_HINT: &str = "check the system clock, then run this again with `--de
                           `https://github.com/thenervelab/hippius-cli/issues`";
 
 #[test]
-fn an_http_date_is_read_in_the_imf_fixdate_form_only() {
-    for (date, seconds) in [
-        ("Thu, 01 Jan 1970 00:00:00 GMT", 0),
-        ("Sun, 06 Nov 1994 08:49:37 GMT", 784_111_777),
-        ("Tue, 29 Feb 2000 12:00:00 GMT", 951_825_600),
-        ("Sun, 01 Nov 2026 23:59:59 GMT", 1_793_577_599),
-        ("Mon, 01 Mar 2100 00:00:00 GMT", 4_107_542_400),
-        // A leap second, which IMF-fixdate allows.
-        ("Wed, 31 Dec 2016 23:59:60 GMT", 1_483_228_800),
-    ] {
-        assert_eq!(http_date(date), Some(seconds), "{date}");
-    }
-    for date in [
-        "",
-        "Sunday, 06-Nov-94 08:49:37 GMT",
-        "Sun Nov  6 08:49:37 1994",
-        "Sun, 06 Nov 1994 08:49:37 UTC",
-        "Sun, 06 Nov 1994 08:49:37 GMT ",
-        "Sun, 06 Nov 1994 08:49 GMT",
-        "Sun, 06 Nov 1994 08:49:37:00 GMT",
-        "Sun, 06 Now 1994 08:49:37 GMT",
-        "Sun, 6 Nov 1994 08:49:37 GMT",
-        "Sun, +6 Nov 1994 08:49:37 GMT",
-        "Sun, 06 Nov 94 08:49:37 GMT",
-        "Sun, 06 Nov 1994 8:49:37 GMT",
-        "Sun, 06 Nov 1994 08:4x:37 GMT",
-        "Sun, 06 Nov 1994 08:49:3 GMT",
-        "Wed, 31 Dec 1969 23:59:59 GMT",
-        "Sun, 00 Nov 1994 08:49:37 GMT",
-        "Sun, 32 Nov 1994 08:49:37 GMT",
-        "Sun, 31 Nov 1994 08:49:37 GMT",
-        "Thu, 29 Feb 2001 00:00:00 GMT",
-        "Mon, 29 Feb 2100 00:00:00 GMT",
-        "Thu, 30 Feb 2000 00:00:00 GMT",
-        "Sun, 06 Nov 1994 24:00:00 GMT",
-        "Sun, 06 Nov 1994 08:60:00 GMT",
-        "Sun, 06 Nov 1994 08:49:61 GMT",
-    ] {
-        assert_eq!(http_date(date), None, "{date}");
-    }
-}
-
-/// Every day from 1970 to 2400 is one day after the one before it, by a calendar written
-/// here from the Gregorian leap rule.
-#[test]
-fn each_day_of_the_calendar_is_one_day_after_the_last() {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let mut expected = 0;
-    for year in 1970..=2400 {
-        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-        for (month, name) in MONTHS.iter().enumerate() {
-            let days = match month {
-                1 if leap => 29,
-                1 => 28,
-                3 | 5 | 8 | 10 => 30,
-                _ => 31,
-            };
-            for day in 1..=days {
-                let date = format!("Mon, {day:02} {name} {year} 00:00:00 GMT");
-                assert_eq!(http_date(&date), Some(expected), "{date}");
-                expected += 86_400;
-            }
-        }
-    }
-}
-
-#[test]
-fn a_uuid_gets_the_version_and_variant_bits() {
-    assert_eq!(uuid_v4([0; 16]), "00000000-0000-4000-8000-000000000000");
-    assert_eq!(uuid_v4([0xff; 16]), "ffffffff-ffff-4fff-bfff-ffffffffffff");
-}
-
-#[test]
 fn canonical_json_refuses_what_python_prints_differently() {
     for value in [json!(1.5), json!(1e3), json!({ "a": [0.0] })] {
         assert_eq!(canonical(&value), None, "{value}");
@@ -929,9 +817,7 @@ fn canonical_json_refuses_what_python_prints_differently() {
     );
     let key = vector_key();
     let matched = key.matched(42, &cluster(Some(GUEST))).unwrap();
-    let Value::Object(params) = json!({ "count": 1.5 }) else {
-        unreachable!("the literal is an object")
-    };
+    let params = object(json!({ "count": 1.5 }));
     let error = matched
         .sign_add_node(&params, &Response::dated(None))
         .unwrap_err();
@@ -959,18 +845,18 @@ fn a_string_is_escaped_as_python_escapes_it() {
 /// Every character, U+0000 to U+10FFFF, is written as Python's `json.dumps(ensure_ascii=False)`
 /// writes it. `serde_json` writes a string by the same rules (the two-character escapes, every
 /// other control below U+0020 as lowercase `\u00xx`, everything else as it is), so it is the
-/// oracle here; the pinned test above holds both to Python's own output.
+/// oracle here; the pinned test above holds both to Python's own output. Both escape each
+/// character alone, so a block of 256 characters escapes as its characters do one by one.
 #[test]
 fn every_character_is_escaped_as_python_escapes_it() {
-    for c in (0..=0x10_FFFF).filter_map(char::from_u32) {
-        let text = c.to_string();
+    for start in (0..=0x10_FFFF_u32).step_by(256) {
+        let text: String = (start..start + 256).filter_map(char::from_u32).collect();
         let mut out = String::new();
         python_string(&text, &mut out);
         assert_eq!(
             out,
             serde_json::to_string(&text).unwrap(),
-            "U+{:04X}",
-            u32::from(c)
+            "the block from U+{start:04X}"
         );
     }
 }
@@ -1135,20 +1021,21 @@ fn a_file_that_is_not_a_version_1_key_file_is_usage() {
 fn the_key_file_is_held_to_the_checks_of_the_config_file() {
     let dir = temp_dir("checks");
     let load = |path: &Path| ClusterKey::load(path, "--cluster-key-file").unwrap_err();
-    let missing = dir.join("missing.key");
-    let error = load(&missing);
-    assert_eq!(error.code(), Code::Usage);
-    assert!(
-        error.message().ends_with("missing.key` does not exist"),
-        "{}",
-        error.message()
-    );
-    let error = load(&dir.join("no-dir").join("x.key"));
-    assert!(
-        error.message().ends_with("x.key` does not exist"),
-        "{}",
-        error.message()
-    );
+    // A path that names no file is not repeated: it may be the key passed in its place.
+    for missing in [dir.join("missing.key"), dir.join("no-dir").join("x.key")] {
+        let error = load(&missing);
+        assert_eq!(error.code(), Code::Usage);
+        assert_eq!(
+            error.message(),
+            "the cluster key file `--cluster-key-file` names does not exist; the path is not \
+             repeated here, in case it is a secret passed in place of the file"
+        );
+        assert!(
+            error
+                .hint()
+                .is_some_and(|hint| hint.starts_with("pass `--cluster-key-file` the"))
+        );
+    }
     let file = dir.join("hippius-cluster-prod.key");
     fs::write(&file, vector_key_file()).unwrap();
     fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
@@ -1217,15 +1104,36 @@ fn debug_shows_the_public_keys_and_never_a_secret_key() {
     }
 }
 
+/// The API's public keys are compared as the bytes they decode to: the same keys spelled
+/// URL-safe, without padding, or wrapped still match, and other bytes, or text that is no
+/// key, are another cluster's.
 #[test]
-fn no_random_bytes_is_internal_and_quotes_the_system() {
-    let error = no_random_bytes(getrandom::Error::UNSUPPORTED);
-    assert_eq!(error.code(), Code::Internal);
-    assert!(
-        error
-            .message()
-            .starts_with("cannot read random bytes for a request id: the system says `"),
-        "{}",
-        error.message()
-    );
+fn a_cluster_key_spelled_another_way_still_matches() {
+    let key = vector_key();
+    let respelled = |text: &str, how: fn(&[u8]) -> String| {
+        let mut bytes = [0_u8; 32];
+        Base64::decode(text, &mut bytes).unwrap();
+        how(&bytes)
+    };
+    let spellings: [fn(&[u8]) -> String; 4] = [
+        |bytes| Base64Url::encode_string(bytes),
+        |bytes| Base64Unpadded::encode_string(bytes),
+        |bytes| Base64UrlUnpadded::encode_string(bytes),
+        |bytes| {
+            let text = Base64::encode_string(bytes);
+            format!("{}\n{}", &text[..20], &text[20..])
+        },
+    ];
+    for how in spellings {
+        let mut theirs = cluster(Some(GUEST));
+        theirs["client_sign_pubkey"] = json!(respelled(SIGN_PUBLIC, how));
+        theirs["client_box_pubkey"] = json!(respelled(BOX_PUBLIC, how));
+        assert!(key.matched(42, &theirs).is_ok(), "{theirs}");
+    }
+    for not_a_key in ["", "not base64!", &b64(&[7; 31])] {
+        let mut theirs = cluster(Some(GUEST));
+        theirs["client_box_pubkey"] = json!(not_a_key);
+        let error = key.matched(42, &theirs).unwrap_err();
+        assert_eq!(error.code(), Code::Usage, "{not_a_key}");
+    }
 }

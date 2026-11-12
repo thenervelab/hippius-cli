@@ -1,10 +1,10 @@
 //! The grammar of `hipc compute runners`.
 
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
 
-use crate::cli::{
-    CursorArgs, INSTALLATION_ID, country_code, credits, examples, normal_credits, number,
-};
+use crate::cli::values::catalog;
+use crate::cli::{CursorArgs, INSTALLATION_ID, country_code, examples, number};
+use crate::units;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Runners {
@@ -79,7 +79,9 @@ pub(crate) enum RunnerLimit {
     /// default. Lowering the cap, or keeping it, is not. The amount is sent in monthly_cap,
     /// without leading or trailing zeros and with at most 18 digits after the point, and an
     /// answer whose monthly_cap_credits is not that amount is an error. While the limit is not
-    /// enabled on the server, the read answers 404 and nothing is written.
+    /// enabled on the server, the read answers 404 and nothing is written. The read and the
+    /// write are separate requests, since the route takes no version, so a change someone else
+    /// makes between them is not seen.
     #[command(after_help = examples(&[
         "hipc compute runners limit update --monthly-cap 50",
         "hipc compute runners limit update --monthly-cap none --yes",
@@ -103,25 +105,13 @@ fn monthly_cap(value: &str) -> Result<MonthlyCap, String> {
     if value == "none" {
         return Ok(MonthlyCap::None);
     }
-    let credits = normal_credits(&credits(value).map_err(|_| {
-        "a cap is a decimal number of credits, such as `50` or `20.5`, or `none`".to_owned()
-    })?);
-    // A credit is 10^18 base units, so a finer amount cannot be stored as sent, and the
-    // answer, which the update compares exactly with the amount sent, could never show it.
-    if credits
-        .split_once('.')
-        .is_some_and(|(_, fraction)| fraction.len() > MAX_CAP_FRACTION_DIGITS)
-    {
-        return Err(format!(
-            "a cap has at most {MAX_CAP_FRACTION_DIGITS} digits after the point, the smallest \
-             part of a credit"
-        ));
+    if units::Decimal::parse(value).is_none() {
+        return Err(
+            "a cap is a decimal number of credits, such as `50` or `20.5`, or `none`".to_owned(),
+        );
     }
-    Ok(MonthlyCap::Credits(credits))
+    units::credits(value, "a cap").map(MonthlyCap::Credits)
 }
-
-/// The decimals of a credit: 1 credit is 10^18 base units.
-const MAX_CAP_FRACTION_DIGITS: usize = 18;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum RunnerSettings {
@@ -135,11 +125,13 @@ pub(crate) enum RunnerSettings {
     /// enabled: needs --yes when the change may spend more
     ///
     /// While runners are enabled, every job a linked repository starts runs on a VM billed to the
-    /// balance. It reads the settings first: turning runners on, a higher --max-concurrent, an
-    /// --allowed-size the list lacks, and opening public repositories may spend more, so they
-    /// are confirmed, and so is a setting it cannot compare. A pure cut, such as --enabled
-    /// false, a lower --max-concurrent, or fewer sizes, needs no --yes, and neither does
-    /// --max-concurrent 0 or --default-region, which moves where jobs run, not how many.
+    /// balance. It reads the settings first: turning runners on, a higher --max-concurrent,
+    /// --max-concurrent 0, an --allowed-size the list lacks, and opening public repositories may
+    /// spend more, so they are confirmed, and so is a setting it cannot compare. A pure cut, such
+    /// as --enabled false, a lower --max-concurrent, or fewer sizes, needs no --yes, and neither
+    /// does --default-region, which moves where jobs run, not how many. The read and the write
+    /// are separate requests, since the route takes no version, so a change someone else makes
+    /// between them is not seen.
     #[command(after_help = examples(&[
         "hipc compute runners settings update --enabled true --yes",
         "hipc compute runners settings update --max-concurrent 4 --allowed-size small --yes",
@@ -148,7 +140,21 @@ pub(crate) enum RunnerSettings {
     Update(RunnerSettingsUpdate),
 }
 
+/// `hipc compute runners settings update`: the settings to change. One at least is required,
+/// so `hipc schema` lists the group, as it does for the other updates of a few fields.
 #[derive(Debug, Args)]
+#[command(group(
+    clap::ArgGroup::new("change")
+        .required(true)
+        .multiple(true)
+        .args([
+            "enabled",
+            "max_concurrent",
+            "allowed_sizes",
+            "default_region",
+            "allow_public_repos",
+        ])
+))]
 pub(crate) struct RunnerSettingsUpdate {
     /// Turn runners on or off: true or false
     #[arg(long, value_name = "BOOL")]
@@ -156,13 +162,21 @@ pub(crate) struct RunnerSettingsUpdate {
     /// The most runners at once
     ///
     /// The server caps it at the account's runner quota. What 0 means is not documented by the
-    /// server; it is sent without --yes, as a cut is.
+    /// server, and it may mean no cap, so 0 needs --yes, as a raise does, unless the setting is
+    /// already 0.
     #[arg(long, value_name = "N")]
     pub(crate) max_concurrent: Option<u32>,
     /// A size jobs may use: small, medium, or large; repeat it for several; the list given replaces
     /// the current one
-    #[arg(long = "allowed-size", value_name = "SIZE", value_enum)]
-    pub(crate) allowed_sizes: Vec<RunnerSize>,
+    ///
+    /// The server owns the list: these are its codes when this hipc was built, and any other
+    /// code is sent as given for the server to judge.
+    #[arg(
+        long = "allowed-size",
+        value_name = "SIZE",
+        value_parser = catalog("a runner size", &["small", "medium", "large"])
+    )]
+    pub(crate) allowed_sizes: Vec<String>,
     /// Where runners launch when a job's label names no region: a two-letter country code, such as
     /// FR, or anywhere
     #[arg(long, value_name = "CC", value_parser = runner_region)]
@@ -170,24 +184,6 @@ pub(crate) struct RunnerSettingsUpdate {
     /// Whether jobs from public repositories may run: true or false
     #[arg(long, value_name = "BOOL")]
     pub(crate) allow_public_repos: Option<bool>,
-}
-
-/// The runner sizes, the `hippius-<size>` labels the console offers.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum RunnerSize {
-    Small,
-    Medium,
-    Large,
-}
-
-impl RunnerSize {
-    pub(crate) fn code(self) -> &'static str {
-        match self {
-            Self::Small => "small",
-            Self::Medium => "medium",
-            Self::Large => "large",
-        }
-    }
 }
 
 /// A runner `default_region`: `anywhere`, sent as `""`, which the console reads as any
@@ -219,4 +215,45 @@ pub(crate) enum RunnerInstallations {
         #[arg(value_parser = number(INSTALLATION_ID))]
         installation_id: u64,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_monthly_cap_is_credits_to_18_decimals_or_none() {
+        assert!(matches!(monthly_cap("none"), Ok(MonthlyCap::None)));
+        assert!(matches!(
+            monthly_cap("050.500"),
+            Ok(MonthlyCap::Credits(credits)) if credits == "50.5"
+        ));
+        for cap in [
+            "", "-1", "1e3", "5.", ".5", "NONE", "None", "50 ", "5,0", "x",
+        ] {
+            let refused = monthly_cap(cap);
+            assert!(refused.is_err(), "{cap:?}");
+            assert_eq!(
+                refused.expect_err("asserted above"),
+                "a cap is a decimal number of credits, such as `50` or `20.5`, or `none`",
+                "{cap:?}"
+            );
+        }
+        // A credit has 18 decimals, so a finer cap is refused too, whatever trailing zeros
+        // follow.
+        for cap in [
+            "0.0000000000000000001",
+            "1.12345678901234567890",
+            "5.0000000000000000001000",
+        ] {
+            let refused = monthly_cap(cap);
+            assert!(refused.is_err(), "{cap:?}");
+            assert!(
+                refused
+                    .expect_err("asserted above")
+                    .contains("a cap has at most 18 digits after the point"),
+                "{cap:?}"
+            );
+        }
+    }
 }

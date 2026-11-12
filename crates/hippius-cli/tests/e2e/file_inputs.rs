@@ -3,10 +3,14 @@
 //! ever. The hipc config file and the AWS credentials file are refused whatever names them,
 //! a hard link or stdin included: a file flag sends what it reads, to the API, to support
 //! staff, or into a published page.
+//!
+//! The cases here run on a few commands, one per reader. That every file flag refuses the
+//! config file is checked on each one, from its help examples, by
+//! `examples::every_file_flag_refuses_the_config_file`.
 
 use std::path::Path;
 
-use crate::common::{Hipc, Home, Server, command, draft};
+use crate::common::{Hipc, Home, Server, draft};
 
 const ZONE: &str = "zab12cd34ef56";
 
@@ -217,16 +221,12 @@ fn stdin_is_read_unless_it_is_the_config_file() {
         .run(&args)
         .ok();
     assert_eq!(draft(&doc)["body"]["description"], "the VM will not boot\n");
-    let output = command(&home)
+    let run = Hipc::new(&home)
         .env("HIPPIUS_TOKEN", "hip_test_token")
-        .arg("--json")
-        .args(args)
-        .stdin(std::fs::File::open(home.config()).unwrap())
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(output.stdout, b"");
-    let stderr = String::from_utf8(output.stderr).unwrap();
+        .stdin_from(std::fs::File::open(home.config()).unwrap())
+        .run(&[&["--json"][..], &args].concat());
+    run.fails(2, "usage");
+    let stderr = run.stderr();
     assert!(!stderr.contains("s3cr3t"), "{stderr}");
     assert!(
         stderr.contains(

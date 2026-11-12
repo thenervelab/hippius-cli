@@ -522,7 +522,7 @@ Examples:
 ```text
 Print every command with its effect, or only the commands under a path, as JSON in every output mode; does not touch the network
 
-With a path, such as compute app-engine, commands lists only the commands under it, and a whole command path, such as s3 buckets create, lists that command alone. schema_version, global_flags, and errors are printed as without a path: the path filters commands and changes nothing else. A name that is not a command at its place is a usage error, exit 2, that lists the commands there, and whose hint runs the nearest one.
+With a path, such as compute app-engine, commands lists only the commands under it, and a whole command path, such as s3 buckets create, lists that command alone. schema_version, global_flags, and errors are printed as without a path: the path filters commands and changes nothing else. A name that is not a command at its place is a usage error, exit 2, that lists the commands there, and whose hint runs the nearest one. Each command lists the routes it may send to in routes, each a method and a path template such as GET /api/compute/vms/{vm_id}/. api sends to the route it is given, so it lists only the guarded routes no other command sends to.
 
 Usage: hipc schema [PATH]...
 
@@ -2098,7 +2098,7 @@ Examples:
 ```text
 Change the auto-reload setting; spends money when it leaves auto-reload on, and then needs --yes when it turns it on, finds it in a state other than armed, raises the threshold, the target, or the monthly cap, or cannot read the setting in force
 
-Auto-reload charges the saved card whenever the balance falls below the threshold, back up to the target. The route replaces the whole setting, so hipc reads it first and sends it back with only the flags given changed; a change saved by someone else in between is written over. Turning auto-reload off, or lowering an amount while it is armed, needs no --yes. A save while it is on checks the balance at once, which may charge the card now, so an update that leaves it on is confirmed in every state but armed. A field the setting does not hold, such as the threshold of a setting never saved, must be given. A member acts only in a billing account, from --billing, HIPPIUS_BILLING, or hipc account billing-accounts use.
+Auto-reload charges the saved card whenever the balance falls below the threshold, back up to the target. The route replaces the whole setting, so hipc reads it first and sends it back with only the flags given changed. The read and the write are separate requests, since the route takes no version, so a change saved by someone else in between is written over. Turning auto-reload off, or lowering an amount while it is armed, needs no --yes. A save while it is on checks the balance at once, which may charge the card now, so an update that leaves it on is confirmed in every state but armed. A field the setting does not hold, such as the threshold of a setting never saved, must be given. A member acts only in a billing account, from --billing, HIPPIUS_BILLING, or hipc account billing-accounts use.
 
 Usage: hipc billing auto-reload update <--enabled <BOOL>|--threshold <USD>|--target <USD>|--monthly-cap <USD>>
 
@@ -2454,12 +2454,12 @@ Options:
       --amount <USD>
           The amount of a card or Bitcoin top-up in US dollars, to the cent, such as 50 or 12.50
           
-          A card top-up takes 10 to 10000, and a Bitcoin top-up 20 to 100000.
+          Required with --method card or bitcoin, and refused with halpha. A card top-up takes 10 to 10000, and a Bitcoin top-up 20 to 100000.
 
       --alpha <HALPHA>
           The hAlpha a hAlpha top-up spends, a decimal such as 1.5 or 0.01
           
-          At least 0.01, the chain's minimum, with at most 18 digits after the point.
+          Required with --method halpha, and refused with card or bitcoin. At least 0.01, the chain's minimum, with at most 18 digits after the point.
 
       --method <METHOD>
           How the top-up is paid: a Stripe card checkout, a BTCPay Bitcoin invoice (on-chain or Lightning), or the account's hAlpha
@@ -2472,17 +2472,17 @@ Options:
       --idempotency-key <UUID>
           The Idempotency-Key of a hAlpha buy to retry, a UUID: the one a run that failed printed, so the retry is not a second buy
           
-          Without it each run sends a new one. With it, the run resends that buy as it was: it needs --min-credits from the same hint and the same --alpha, reads the quote but not the purchases first, and refuses a --min-credits below 90 percent of what --alpha buys now.
+          Only with --method halpha. Without it each run sends a new one. With it, the run resends that buy as it was: it needs --min-credits from the same hint and the same --alpha, reads the quote but not the purchases first, and refuses a --min-credits below 90 percent of what --alpha buys now.
 
       --min-credits <CREDITS>
           The min_credits of the hAlpha buy to retry, in credits, as the failed run printed it
           
-          Only with --idempotency-key: a retry sends the first run's amounts unchanged.
+          Only with --method halpha and --idempotency-key: a retry sends the first run's amounts unchanged.
 
       --wait-timeout <SECONDS>
           How long a hAlpha top-up follows the purchase, in seconds, 1 to 900, default 900
           
-          A poll still in flight at the deadline can add up to --request-timeout.
+          Only with --method halpha. A poll still in flight at the deadline can add up to --request-timeout.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -2819,7 +2819,7 @@ Options:
       --plan <PLAN>
           The plan code: pro, business, or enterprise
           
-          [possible values: pro, business, enterprise]
+          The server owns the plans: these are its codes when this hipc was built, and hipc s3 plans lists them. After the question, the plans are read, and a code they do not list is refused before anything is bought.
 
       --pay-from <PAY_FROM>
           Pay from the balance (credits), or start a card checkout (card)
@@ -2849,9 +2849,9 @@ Usage: hipc s3 subscription change <--plan <PLAN>|--pay-from <PAY_FROM>|--storag
 
 Options:
       --plan <PLAN>
-          The plan code to switch to
+          The plan code to switch to: pro, business, or enterprise
           
-          [possible values: pro, business, enterprise]
+          The server owns the plans: these are its codes when this hipc was built, and hipc s3 plans lists them. After the question, the plans are read, and a code they do not list is refused before anything is bought.
 
       --pay-from <PAY_FROM>
           How each renewal is paid; keeps the plan
@@ -3344,7 +3344,7 @@ Options:
           [possible values: master, sub]
 
       --reveal
-          Print the new one-time secret on stdout; without it or --secret-file nothing is sent
+          Print the one-time secret on stdout; without it or --secret-file nothing is sent
 
       --secret-file <PATH>
           Write the one-time secret to a new file of mode 0600 at this path instead of stdout; in place of --reveal
@@ -3582,7 +3582,7 @@ Create the registry namespace; needs --yes, and --reveal or --secret-file
 
 The docker robot secret is shown once, so --reveal, which prints it on stdout, or --secret-file, which writes it only to a new private file, is required before anything is sent.
 
-The Free plan needs a balance of at least $10 to create a namespace, a spam check the server enforces with 402.
+Creating a namespace needs a balance even on the Free plan, a spam check the server enforces with 402; the server sets the minimum.
 
 A new namespace is public: anyone can pull from it. To keep it private, run hipc hub namespace update --visibility private --yes before the first push.
 
@@ -3594,7 +3594,7 @@ Arguments:
 
 Options:
       --reveal
-          Print the one-time robot secret on stdout; without it or --secret-file nothing is sent
+          Print the one-time secret on stdout; without it or --secret-file nothing is sent
 
       --secret-file <PATH>
           Write the one-time secret to a new file of mode 0600 at this path instead of stdout; in place of --reveal
@@ -3715,7 +3715,7 @@ Usage: hipc hub namespace robot rotate [OPTIONS]
 
 Options:
       --reveal
-          Print the new one-time robot secret on stdout; without it or --secret-file nothing is sent
+          Print the one-time secret on stdout; without it or --secret-file nothing is sent
 
       --secret-file <PATH>
           Write the one-time secret to a new file of mode 0600 at this path instead of stdout; in place of --reveal
@@ -3822,13 +3822,9 @@ Options:
           A short name for the key, one word; the registry login ends in it
 
       --role <ROLE>
-          What the key may do in the namespace
-
-          Possible values:
-          - read:        Pull and list images and artifacts
-          - push:        What read can do, and push
-          - push-delete: What push can do, and delete
-          - admin:       The whole namespace
+          What the key may do in the namespace: read, push, push-delete, or admin
+          
+          read pulls and lists images and artifacts; push does what read does, and pushes; push-delete does what push does, and deletes; admin is the whole namespace. These are the presets the Hub client offers; the API names the role field but not its values, so any other role is sent as given for the server to judge.
 
       --expires-in <DAYS>
           Days until the key stops working, 1 or more; without it the key does not expire
@@ -3866,7 +3862,7 @@ Arguments:
 
 Options:
       --reveal
-          Print the new one-time secret on stdout; without it or --secret-file nothing is sent
+          Print the one-time secret on stdout; without it or --secret-file nothing is sent
 
       --secret-file <PATH>
           Write the one-time secret to a new file of mode 0600 at this path instead of stdout; in place of --reveal
@@ -4546,52 +4542,54 @@ Options:
           
           Without it the scheduler chooses.
 
+      --placement-group <NAME>
+          The anti-affinity group: two VMs of the account in one group never share a server
+          
+          A name is 1 to 64 of a-z, 0-9, and -, not starting with -. Fixed for the VM's life. hipc compute placement-groups says whether the server offers groups.
+
       --os-disk-tier <TIER>
           The OS disk's tier, a minimum: the disk may land on a faster one; the server defaults it to nvme
           
-          Fixed for the VM's life, and billed at that tier's price, vm_by_os_disk_tier in hipc compute prices.
+          Fixed for the VM's life, and billed at that tier's price, vm_by_os_disk_tier in hipc compute prices. hipc compute feasibility --os-disk-tier says whether a launch on it could land now.
 
           Possible values:
           - nvme: The fastest tier
           - ssd:  Slower than nvme, and cheaper
           - hdd:  The slowest and cheapest: as an OS disk, slow shared storage for development and test, not for production or databases; max_flavor in hipc compute public-prices is the largest flavor it is offered on
 
-      --placement-group <NAME>
-          The anti-affinity group: two VMs of the account in one group never share a server
+      --backup-interval <SECONDS>
+          Turn on scheduled backups once the VM runs, at this many seconds between backups: 900, 3600, 21600, or 86400
           
-          A name is 1 to 64 of a-z, 0-9, and -, not starting with -. Fixed for the VM's life.
+          Stored backups are billed per GB-hour at the price hipc compute backups options shows. The server owns the intervals: these are its own when this hipc was built, and hipc compute backups options lists them. After the question, the options are read, and an interval they do not list is refused before anything is launched; a failure to turn backups on later is the VM's backup_error.
+
+      --failover <MODE>
+          The failover of those backups: auto restarts the VM on another server from its latest backup if its server dies, losing what was written after it; manual, the server's default, leaves that to Hippius support
+          
+          auto places the VM only on a server with a failover peer, so it is chosen at launch.
+          
+          [possible values: auto, manual]
 
       --on-guest-poweroff <POLICY>
           What a power-off from inside the VM does: restart (the server's default) or stop
           
+          stop places the VM only on a server that supports it, so it is chosen at launch; hipc compute vms power-policy update changes it later.
+          
           [possible values: restart, stop]
-
-      --backup-interval <SECONDS>
-          Turn on scheduled backups once the app runs, at this many seconds between backups
-          
-          Stored backups are billed per GB-hour at the price hipc compute backups options shows.
-          
-          [possible values: 900, 3600, 21600, 86400]
-
-      --failover <MODE>
-          The failover of those backups: auto restarts the app on another server from its latest backup if its server dies, losing what was written after it; manual, the server's default, leaves that to Hippius support
-          
-          [possible values: auto, manual]
 
       --wait
           Wait for running even when stdout is not a terminal, CI is set, or AI_AGENT is set
           
-          The app is running when its status and boot_phase both are. A run killed during the wait prints nothing on stdout; a caller that may be killed first omits --wait and follows the app with hipc compute app-engine apps get.
+          An app is running when its status and boot_phase both are. A run killed during the wait prints nothing on stdout; a caller that may be killed first omits --wait and follows the VM with hipc compute vms get, or the app with hipc compute app-engine apps get.
 
       --no-wait
           Print the launch answer and exit without waiting for running
           
-          The default when stdout is not a terminal, or CI is set, or AI_AGENT is set and not off.
+          The default when stdout is not a terminal, or CI is set, or AI_AGENT is set and not off: the rule that picks JSON for --output auto.
 
       --wait-timeout <SECONDS>
           Wait for running for this many seconds, 1 to 3600, default 300
           
-          It waits as --wait does. A wait that ends before running prints the app on stdout, so its vm_id is not lost.
+          It waits as --wait does, even when stdout is not a terminal, or CI or AI_AGENT is set. A poll still in flight at the deadline can add up to --request-timeout. A wait that ends before running still prints the VM or the app on stdout, so its vm_id is not lost.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -4913,6 +4911,11 @@ Options:
       --open-ssh
           Same as --open-port 22, for SSH
 
+      --dedicated-disk <SIZE:TIER>
+          A whole physical disk for the VM, SIZE:TIER, such as 2000:hdd; repeat it once per disk, up to 8
+          
+          SIZE is the least GiB the disk has, 1000 or more; TIER is nvme, ssd, or hdd, a minimum. Every disk of a launch has the same size and tier. Each is billed per GiB-hour at its size class (floored to 100 GiB), while the VM is stopped too, at the price dedicated_disks in hipc compute prices. The disks pin the VM to its server: no backup, migration, or failover, so --backup-interval cannot go with it.
+
       --placement-group <NAME>
           The anti-affinity group: two VMs of the account in one group never share a server
           
@@ -4928,17 +4931,10 @@ Options:
           - ssd:  Slower than nvme, and cheaper
           - hdd:  The slowest and cheapest: as an OS disk, slow shared storage for development and test, not for production or databases; max_flavor in hipc compute public-prices is the largest flavor it is offered on
 
-      --dedicated-disk <SIZE:TIER>
-          A whole physical disk for the VM, SIZE:TIER, such as 2000:hdd; repeat it once per disk, up to 8
-          
-          SIZE is the least GiB the disk has, 1000 or more; TIER is nvme, ssd, or hdd, a minimum. Every disk of a launch has the same size and tier. Each is billed per GiB-hour at its size class (floored to 100 GiB), while the VM is stopped too, at the price dedicated_disks in hipc compute prices. The disks pin the VM to its server: no backup, migration, or failover, so --backup-interval cannot go with it.
-
       --backup-interval <SECONDS>
-          Turn on scheduled backups once the VM runs, at this many seconds between backups
+          Turn on scheduled backups once the VM runs, at this many seconds between backups: 900, 3600, 21600, or 86400
           
-          Stored backups are billed per GB-hour at the price hipc compute backups options shows. The server checks the interval before anything is bought; a failure to turn backups on later is the VM's backup_error.
-          
-          [possible values: 900, 3600, 21600, 86400]
+          Stored backups are billed per GB-hour at the price hipc compute backups options shows. The server owns the intervals: these are its own when this hipc was built, and hipc compute backups options lists them. After the question, the options are read, and an interval they do not list is refused before anything is launched; a failure to turn backups on later is the VM's backup_error.
 
       --failover <MODE>
           The failover of those backups: auto restarts the VM on another server from its latest backup if its server dies, losing what was written after it; manual, the server's default, leaves that to Hippius support
@@ -4957,7 +4953,7 @@ Options:
       --wait
           Wait for running even when stdout is not a terminal, CI is set, or AI_AGENT is set
           
-          A run killed during the wait prints nothing on stdout; a caller that may be killed before running omits --wait and follows the VM with hipc compute vms get.
+          An app is running when its status and boot_phase both are. A run killed during the wait prints nothing on stdout; a caller that may be killed first omits --wait and follows the VM with hipc compute vms get, or the app with hipc compute app-engine apps get.
 
       --no-wait
           Print the launch answer and exit without waiting for running
@@ -4967,7 +4963,7 @@ Options:
       --wait-timeout <SECONDS>
           Wait for running for this many seconds, 1 to 3600, default 300
           
-          It waits as --wait does, even when stdout is not a terminal, or CI or AI_AGENT is set. A poll still in flight at the deadline can add up to --request-timeout.
+          It waits as --wait does, even when stdout is not a terminal, or CI or AI_AGENT is set. A poll still in flight at the deadline can add up to --request-timeout. A wait that ends before running still prints the VM or the app on stdout, so its vm_id is not lost.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -5391,7 +5387,7 @@ Options:
       --remove-others
           Remove the VM's rules the file leaves out
           
-          Without it the current rules are read first, and the update is refused when the file leaves out a rule the VM has now, or changes its protocol, ports, sources, or enabled flag in either direction (a missing enabled counts as true); its description may change. Without --base-revision the update carries the revision that read returned, so a change made since is refused with conflict.
+          Without it the current rules are read first, and the update is refused when the file leaves out a rule the VM has now, or changes its protocol, ports, sources, or enabled flag in either direction (a missing enabled counts as true); its description may change. Without --base-revision the update carries the revision that read returned, so a change made since is refused with conflict. With --remove-others and no --base-revision, the rules are still read, after the question, for that revision.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -5598,9 +5594,9 @@ Arguments:
 
 Options:
       --interval <SECONDS>
-          Seconds between backups: the most data a restore could lose
+          Seconds between backups, the most data a restore could lose: 900, 3600, 21600, or 86400
           
-          [possible values: 900, 3600, 21600, 86400]
+          The server owns the intervals: these are its own when this hipc was built, and hipc compute backups options lists them. After the question, the options are read, and an interval they do not list is refused before anything is sent.
 
       --failover <FAILOVER>
           The failover: auto restarts the VM on another server from its latest backup if its server dies, losing what was written after that backup; manual leaves that to Hippius support
@@ -5772,9 +5768,9 @@ Examples:
 ```text
 Change the settings given; the others are kept; jobs spend money while runners are enabled: needs --yes when the change may spend more
 
-While runners are enabled, every job a linked repository starts runs on a VM billed to the balance. It reads the settings first: turning runners on, a higher --max-concurrent, an --allowed-size the list lacks, and opening public repositories may spend more, so they are confirmed, and so is a setting it cannot compare. A pure cut, such as --enabled false, a lower --max-concurrent, or fewer sizes, needs no --yes, and neither does --max-concurrent 0 or --default-region, which moves where jobs run, not how many.
+While runners are enabled, every job a linked repository starts runs on a VM billed to the balance. It reads the settings first: turning runners on, a higher --max-concurrent, --max-concurrent 0, an --allowed-size the list lacks, and opening public repositories may spend more, so they are confirmed, and so is a setting it cannot compare. A pure cut, such as --enabled false, a lower --max-concurrent, or fewer sizes, needs no --yes, and neither does --default-region, which moves where jobs run, not how many. The read and the write are separate requests, since the route takes no version, so a change someone else makes between them is not seen.
 
-Usage: hipc compute runners settings update [OPTIONS]
+Usage: hipc compute runners settings update <--enabled <BOOL>|--max-concurrent <N>|--allowed-size <SIZE>|--default-region <CC>|--allow-public-repos <BOOL>>
 
 Options:
       --enabled <BOOL>
@@ -5785,12 +5781,12 @@ Options:
       --max-concurrent <N>
           The most runners at once
           
-          The server caps it at the account's runner quota. What 0 means is not documented by the server; it is sent without --yes, as a cut is.
+          The server caps it at the account's runner quota. What 0 means is not documented by the server, and it may mean no cap, so 0 needs --yes, as a raise does, unless the setting is already 0.
 
       --allowed-size <SIZE>
           A size jobs may use: small, medium, or large; repeat it for several; the list given replaces the current one
           
-          [possible values: small, medium, large]
+          The server owns the list: these are its codes when this hipc was built, and any other code is sent as given for the server to judge.
 
       --default-region <CC>
           Where runners launch when a job's label names no region: a two-letter country code, such as FR, or anywhere
@@ -5963,7 +5959,7 @@ Examples:
 ```text
 Set or remove the monthly runner spend limit; needs --yes when it raises or removes the cap, or when the cap in force is unknown
 
-It reads the limit first and compares with its monthly_cap_credits: raising the cap, or removing it, lets runners spend more, so it is confirmed; so is any change while the limit has no amount there, and setting a cap while it shows null, which may be a server default. Lowering the cap, or keeping it, is not. The amount is sent in monthly_cap, without leading or trailing zeros and with at most 18 digits after the point, and an answer whose monthly_cap_credits is not that amount is an error. While the limit is not enabled on the server, the read answers 404 and nothing is written.
+It reads the limit first and compares with its monthly_cap_credits: raising the cap, or removing it, lets runners spend more, so it is confirmed; so is any change while the limit has no amount there, and setting a cap while it shows null, which may be a server default. Lowering the cap, or keeping it, is not. The amount is sent in monthly_cap, without leading or trailing zeros and with at most 18 digits after the point, and an answer whose monthly_cap_credits is not that amount is an error. While the limit is not enabled on the server, the read answers 404 and nothing is written. The read and the write are separate requests, since the route takes no version, so a change someone else makes between them is not seen.
 
 Usage: hipc compute runners limit update --monthly-cap <CREDITS>
 
@@ -6183,17 +6179,17 @@ Options:
       --tier <TIER>
           The tier: starter and production are one instance; ha is three, with failover
           
-          [possible values: starter, production, ha]
+          The server owns the list: these are its codes when this hipc was built, and any other code is sent as given for the server to judge.
 
       --size <SIZE>
-          The instance size
+          The instance size: s, m, l, or xl
           
-          [possible values: s, m, l, xl]
+          The server owns the list: these are its codes when this hipc was built, and any other code is sent as given for the server to judge.
 
       --engine-version <ENGINE_VERSION>
-          The PostgreSQL major version
+          The PostgreSQL major version: 16, 17, or 18
           
-          [possible values: 16, 17, 18]
+          The server owns the list: these are its codes when this hipc was built, and any other code is sent as given for the server to judge.
 
       --name <NAME>
           A label
@@ -7051,7 +7047,7 @@ Usage: hipc cdn zones create [OPTIONS] --name <NAME> --bucket <BUCKET>
 
 Options:
       --name <NAME>
-          A label for the zone, at most 64 characters
+          A label for the zone: one line of 1 to 64 characters
 
       --bucket <BUCKET>
           The account's S3 bucket the zone serves
@@ -7115,7 +7111,7 @@ Arguments:
 
 Options:
       --name <NAME>
-          A new label, at most 64 characters
+          A new label: one line of 1 to 64 characters
 
       --bucket <BUCKET>
           Move the zone to another of the account's buckets
@@ -8933,7 +8929,7 @@ Examples:
 ```text
 Call any console API endpoint; a method other than GET or HEAD needs --yes, as does GET or HEAD /network/me/, which may create the network
 
-The request carries the same auth, account, project, and billing rules as every command. It goes only to the configured API origin: a full URL on any other origin, plain http to a loopback port included, exits 2 usage; use curl for another host. An account deletion request is never sent: request it in the console. No request to the account token route (/auth/token/, any method) is sent: create a token in the console settings. A read of a Kubernetes cluster's secrets (GET or HEAD /kubernetes/clusters/<cluster_id>/secrets/) is never sent either: hipc compute kubernetes clusters kubeconfig opens the kubeconfig. A CDN hostname's DNS setup (POST /cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/) is never sent: hipc cdn hostnames dns-setup reads the provider credential from a private file. A Hub subscribe (POST /registry/subscribe/) is never sent: hipc hub subscription subscribe reads the current plans first and refuses a second paid one. An App Engine launch, compose update, or compose check whose body sets secrets (POST /compute/app-engine/apps/, any write of /compute/app-engine/apps/<vm_id>/compose/, POST /compute/app-engine/validate/) is never sent: hipc compute app-engine apps create launches an app with secrets read from a private file, and a compose update with secrets is not in this version; without secrets they are sent as usual. A POST, PUT, PATCH, or DELETE under /support/, such as a new ticket, a reply, or a chat handoff, whose body holds HIPPIUS_TOKEN or a token a profile of the config file stores, as it is, quoted, percent-encoded, or behind a JSON escape, is never sent: a person on the support team may read it. Without a token, a PATCH of one support ticket (PATCH /support/tickets/<ticket_id>/) is sent with the body given: the server decides which fields a customer may change, and hipc support tickets update sends only the close. A resume of a Kubernetes operation blocked on data loss is sent: the server is the guard, and the refusal of hipc compute kubernetes operations resume is a courtesy. hipc api sends no If-Match, so a PUT of a zone's WAF rules or rate limits (/cdn/zones/<zone_id>/waf/rules/, /cdn/zones/<zone_id>/waf/rate-limits/) is not conditional and writes over a version another client published since it was read; hipc cdn waf rules update and hipc cdn waf rate-limits update send the version they read and stop on a conflict. A 2xx answer larger than 32 MiB is not printed: it exits 1 internal. On an error status a body that large is dropped, and the status decides the error.
+The request carries the same auth, account, project, and billing rules as every command. It goes only to the configured API origin: a full URL on any other origin, plain http to a loopback port included, exits 2 usage; use curl for another host. A refusal listed for one write method (POST, PUT, PATCH, or DELETE) holds for every write method of the route that has no rule of its own, and every path counts in any letter case, with or without the trailing slash or a format suffix, and under any API version (/v2/...). A write other than DELETE of /account/deletion/ is never sent: an account deletion locks the account and revokes every token at once; request the deletion in the console, under Settings, Delete Account. A write of /cdn/zones/<zone_id>/hostnames/<hostname>/dns-setup/ is never sent: its body and its answer hold a DNS provider credential; run hipc cdn hostnames dns-setup, which reads the credential from a private file and keeps it out of every output. A write of /compute/app-engine/apps/ whose body sets secrets is never sent: the body holds the app's secret values; run hipc compute app-engine apps create --secrets-file, which reads the values from a private file and keeps them out of every output; without secrets it is sent as usual. A write of /compute/app-engine/validate/ whose body sets secrets is never sent: the body holds secret values, and a compose check needs none; run hipc compute app-engine validate, which sends the compose alone; without secrets it is sent as usual. A write of /compute/app-engine/apps/<vm_id>/compose/ whose body sets secrets is never sent: the body holds the app's secret values; a compose update with secrets is not in this version of hipc: send the body without secrets, or change the app's secrets in the console; without secrets it is sent as usual. A write of /registry/subscribe/ is never sent: it reads no current plan first, so it could start a second paid Hub subscription; run hipc hub subscription subscribe, which refuses a second plan and replaces one only with --replace. GET or HEAD of /kubernetes/clusters/<cluster_id>/secrets/ is never sent: its answer holds the cluster's sealed kubeconfig; run hipc compute kubernetes clusters kubeconfig, which opens the kubeconfig with the cluster key file and writes it to a new file. GET or HEAD of /auth/token/ is never sent: its answer is the account's API token; create a token in the console settings at https://console.hippius.com/dashboard/settings. A write of /auth/token/ is never sent: the route hands out the account's API token; create a token in the console settings at https://console.hippius.com/dashboard/settings. A write under /support/, such as a new ticket, a reply, or a chat handoff, whose body holds HIPPIUS_TOKEN or a token a profile of the config file stores, as it is, quoted, percent-encoded, or behind a JSON escape, also when whitespace or an invisible joining character splits it, or an access key (12 to 24 BIP-39 words in a row whose checksum holds), is never sent: a person on the support team may read it. Without a token, a PATCH of one support ticket (PATCH /support/tickets/<ticket_id>/) is sent with the body given: the server decides which fields a customer may change, and hipc support tickets update sends only the close. A resume of a Kubernetes operation blocked on data loss is sent: the server is the guard, and the refusal of hipc compute kubernetes operations resume is a courtesy. hipc api sends no If-Match, so a PUT of a zone's WAF rules or rate limits (/cdn/zones/<zone_id>/waf/rules/, /cdn/zones/<zone_id>/waf/rate-limits/) is not conditional and writes over a version another client published since it was read; hipc cdn waf rules update and hipc cdn waf rate-limits update send the version they read and stop on a conflict. A route no command sends (one no command of hipc schema lists in its routes) is one hipc does not know: a GET of it needs --reveal, since its answer may hold a secret, and a write needs --yes, as any write does, and warns. A 2xx answer larger than 32 MiB is not printed: it exits 1 internal. On an error status a body that large is not read: the status decides the error, and its message says the body was not read.
 
 Usage: hipc api [OPTIONS] <METHOD> <PATH>
 
@@ -8958,47 +8954,49 @@ Options:
       --reveal
           Print a secret; required for the requests that return one, or nothing is sent
           
-          The requests that return one, where <id> is one path segment and <n> a number:
-            POST /objectstore/master-tokens/
-            POST /objectstore/master-tokens/<id>/rotate/
-            POST /objectstore/sub-tokens/
-            POST /objectstore/sub-tokens/<id>/rotate/
-            POST /registry/keys/
-            POST /registry/keys/<id>/rotate/
-            POST /registry/robot/rotate/
-            POST /registry/provision/
+          The requests that return one, where each <name> is one path segment and <n> a number:
             POST /databases/
-            POST /databases/<n>/restore/
+            POST /databases/<database_id>/restore/
+            POST /registry/provision/
+            POST /registry/robot/rotate/
+            POST /registry/keys/
+            POST /registry/keys/<key_id>/rotate/
+            GET /kubernetes/clusters/<cluster_id>/backups/
+            GET /objectstore/buckets/<bucket_name>/presigned-url/
+            POST /objectstore/master-tokens/
+            POST /objectstore/master-tokens/<token_id>/rotate/
+            POST /objectstore/sub-tokens/
+            POST /objectstore/sub-tokens/<token_id>/rotate/
             GET /databases/<n>/backup-token/
             POST /databases/<n>/backup-token/
             POST /network/peers/enroll/
-            POST /compute/vms/<id>/terminal-ticket/
+            POST /compute/vms/<vm_id>/terminal-ticket/
             POST /billing/transactions/
             POST /objectstore/tokens/auth/
             POST /auth/exchange/
             POST /auth/verify/
-            GET /kubernetes/clusters/<id>/backups/
-            GET /objectstore/buckets/<id>/presigned-url/
-            GET /chat/conversations/<id>/attachments/<id>/
+            GET /chat/conversations/<conversation_id>/attachments/<attachment_id>/
             POST /auth/sso/ticket/
             POST /auth/session/
             POST /auth/sign-in-methods/step-up/verify/
           
+          A GET of a route no command sends (one that no command of hipc schema lists in its routes) needs --reveal too: hipc does not know what its answer holds.
+          
 
       --change-isolation
-          Change which peers of the network can reach each other; required for POST /network/isolation/
+          Change which peers of the network can reach each other; required for a POST of /network/isolation/
           
-          The deny_intra mode deletes the catch-all policy, so --yes alone sends nothing. Any other write method to the route needs it too.
+          The deny_intra mode deletes the catch-all policy, so --yes alone sends nothing. Each rule holds for every write method of its route that has no rule of its own.
 
       --public
-          Let a write publish a bucket that may be private, or open the Hub namespace; required for POST /cdn/zones/, PUT /objectstore/buckets/<name>/acl/set/, a PATCH of /cdn/zones/<zone_id>/ whose body sets origin, and a PATCH of /registry/me/publicity/ unless its body sets public to false
+          Let a write publish a bucket that may be private, or open the Hub namespace; required for a POST of /cdn/zones/, a PATCH or DELETE of /cdn/zones/<zone_id>/ whose body sets origin, a PATCH of /registry/me/publicity/ unless its body sets public to false, and a PUT of /objectstore/buckets/<bucket_name>/acl/set/
           
-          A zone makes a private bucket readable by anyone, which is known only from the answer, and a bucket policy can name any principal, so --yes alone sends nothing, as with hipc cdn zones create. A public namespace lets anyone pull its images and models without logging in, as with hipc hub namespace update --visibility public. Each route named needs it for any write method, not only the one named.
+          A zone makes a private bucket readable by anyone, which is known only from the answer, and a bucket policy can name any principal, so --yes alone sends nothing, as with hipc cdn zones create. A public namespace lets anyone pull its images and models without logging in, as with hipc hub namespace update --visibility public. A body that is not a JSON object counts as setting the key; each rule holds for every write method of its route that has no rule of its own; a PUT that borrows a rule on a key of the body needs the flag whatever its body sets.
 
       --remove-others
-          Let a write that replaces a whole list or document remove the entries it leaves out; required for a PUT of /compute/vms/<vm_id>/firewall/, /cdn/zones/<zone_id>/rules/, /cdn/zones/<zone_id>/waf/rules/, /cdn/zones/<zone_id>/waf/rate-limits/, /cdn/lists/<name>/items/, or /objectstore/buckets/<name>/acl/set/, for a PATCH of /accounts/members/<id>/ whose body sets grants or of /cdn/lists/<name>/ whose body sets items, and for any other write hipc guards that replaces a whole list or document
+          Let a write that replaces a whole list or document remove the entries it leaves out; required for a PATCH or DELETE of /accounts/members/<member_id>/ whose body sets grants, a PUT of /cdn/zones/<zone_id>/rules/, a PUT of /cdn/zones/<zone_id>/waf/rules/, a PUT of /cdn/zones/<zone_id>/waf/rate-limits/, a PATCH or DELETE of /cdn/lists/<list_name>/ whose body sets items, a PUT of /cdn/lists/<list_name>/items/, a PUT of /compute/vms/<vm_id>/firewall/, a PUT of /objectstore/buckets/<bucket_name>/acl/set/, and an operator route hipc guards the same way
           
-          hipc api does not read the list first, so without the flag it sends nothing. hipc compute firewall update, hipc cdn rules update, and hipc account members update read the list, and refuse only a write that removes an entry. Each route named needs it for any write method, not only the one named; a POST or DELETE of /cdn/lists/<name>/items/, which adds or removes the items it names, needs no flag.
+          hipc api does not read the list first, so without the flag it sends nothing. hipc compute firewall update, hipc cdn rules update, and hipc account members update read the list, and refuse only a write that removes an entry. A body that is not a JSON object counts as setting the key; each rule holds for every write method of its route that has no rule of its own; a PUT that borrows a rule on a key of the body needs the flag whatever its body sets; a POST or DELETE of /cdn/lists/<list_name>/items/, which the API documents as doing something else, needs none.
 
   -h, --help
           Print help (see a summary with '-h')

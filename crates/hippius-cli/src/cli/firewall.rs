@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
-use crate::cli::{examples, vm_id};
+use crate::cli::{VmTarget, examples};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Firewall {
@@ -12,11 +12,7 @@ pub(crate) enum Firewall {
     #[command(after_help = examples(&[
         "hipc compute firewall get vm-1a2b",
     ]))]
-    Get {
-        /// The vm_id from hipc compute vms list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Get(VmTarget),
     /// Replace every inbound rule of a VM with the rules in a file; needs --yes, and
     /// --remove-others to drop a rule or change its protocol, ports, sources, or enabled flag
     ///
@@ -35,7 +31,7 @@ pub(crate) enum Firewall {
     /// "web"}]}. A port is 1 to 65535 or a range such as 8000-8080, a source is an IPv4 CIDR,
     /// the protocol is tcp, udp, or icmp (which takes no ports), and enabled is true when
     /// left out.
-    #[allow(
+    #[expect(
         clippy::doc_link_with_quotes,
         reason = "the help shows an example file, whose JSON arrays of strings look like links"
     )]
@@ -48,9 +44,8 @@ pub(crate) enum Firewall {
 
 #[derive(Debug, Args)]
 pub(crate) struct FirewallUpdate {
-    /// The vm_id from hipc compute vms list
-    #[arg(value_parser = vm_id)]
-    pub(crate) vm_id: String,
+    #[command(flatten)]
+    pub(crate) vm: VmTarget,
     /// The JSON file with the rules, or - for stdin
     ///
     /// It is read only as a regular file, never through a symlink; /dev/stdin and <(...) are
@@ -67,7 +62,8 @@ pub(crate) struct FirewallUpdate {
     /// leaves out a rule the VM has now, or changes its protocol, ports, sources, or enabled
     /// flag in either direction (a missing enabled counts as true); its description may change.
     /// Without --base-revision the update carries the revision that read returned, so a change
-    /// made since is refused with conflict.
+    /// made since is refused with conflict. With --remove-others and no --base-revision, the
+    /// rules are still read, after the question, for that revision.
     #[arg(long)]
     pub(crate) remove_others: bool,
 }

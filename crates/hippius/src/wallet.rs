@@ -26,9 +26,9 @@ use sha2::Sha512;
 use unicode_normalization::UnicodeNormalization as _;
 use zeroize::{Zeroize as _, Zeroizing};
 
+use crate::encode::hex;
 use crate::error::{Error, Result};
-use crate::kubernetes::hex;
-use crate::private_file::{Guarded, NamedBy, PrivateFile};
+use crate::private_file::{Guarded, NamedBy, PrivateFile, utf8_text};
 use crate::source::Source;
 
 /// The signing context of a Substrate sr25519 signature (`sp_core::sr25519`), which the API
@@ -216,16 +216,12 @@ pub fn read_hotkey_file(path: &Path, flag: &'static str) -> Result<Zeroizing<Str
     } else {
         crate::phrase::quote_path(path)
     };
-    String::from_utf8(bytes)
-        .map(Zeroizing::new)
-        .map_err(|error| {
-            // The bytes the conversion hands back are cleared too.
-            drop(Zeroizing::new(error.into_bytes()));
-            Error::usage(
-                format!("{what} {named} is not UTF-8 text"),
-                format!("pass `{flag}` a file that holds only the hotkey's words"),
-            )
-        })
+    utf8_text(bytes).ok_or_else(|| {
+        Error::usage(
+            format!("{what} {named} is not UTF-8 text"),
+            format!("pass `{flag}` a file that holds only the hotkey's words"),
+        )
+    })
 }
 
 /// The fewest words in a row on the English BIP-39 list that [`holds_phrase`] takes for a
@@ -234,9 +230,9 @@ const PHRASE_WORDS: usize = 12;
 
 /// Whether `text` holds what looks like a seed phrase, such as a hotkey's words or an
 /// account's access key: 12 or more words in a row, each on the English BIP-39 list, in any
-/// letter case. A command line that does is refused without being quoted
-/// ([`phrase_in_argv`]), since an error that repeats it would copy the words into a log or a
-/// transcript.
+/// letter case. `hipc` refuses a command line that does, on every run and before it parses,
+/// without quoting it ([`phrase_in_argv`]), since an error that repeats it would copy the
+/// words into a log or a transcript.
 pub fn holds_phrase(text: &str) -> bool {
     let mut run = 0;
     for word in text.split_whitespace() {
@@ -268,9 +264,11 @@ const PHRASE_LENGTHS: [usize; 5] = [12, 15, 18, 21, 24];
 /// so a numbered or comma-separated list of the words is found.
 ///
 /// The checksum tells a key from prose: everyday words (`please`, `help`, `account`, `error`)
-/// are on the list, and twelve of them in a row are common in a message, but only one such
-/// run in 16 has a valid checksum. A key with a mistyped word fails it too, so this guards
-/// against a pasted key, not a damaged one. Every copy of the text is cleared when dropped.
+/// are on the list, and twelve of them in a row are common in a message, but only about one
+/// window of twelve in 16 has a valid checksum (its four checksum bits); every window of every
+/// BIP-39 length is tried, so a longer run of listed words is found more often. A key with a
+/// mistyped word fails it too, so this guards against a pasted key, not a damaged one. Every
+/// copy of the text is cleared when dropped.
 pub fn holds_checked_phrase(text: &str) -> bool {
     let mut words = Zeroizing::new(String::with_capacity(text.nfkd().map(char::len_utf8).sum()));
     words.extend(
@@ -410,27 +408,9 @@ fn base58(bytes: &[u8]) -> String {
     text
 }
 
-/// A new random idempotency key: a lowercase version-4 UUID.
-///
-/// # Errors
-///
-/// `internal` when the system gives no random bytes.
-pub fn new_idempotency_key() -> Result<String> {
-    let mut random = [0_u8; 16];
-    getrandom::getrandom(&mut random).map_err(no_random_bytes)?;
-    Ok(crate::kubernetes::uuid_v4(random))
-}
-
-/// The refusal when the system gives no random bytes for a key.
-fn no_random_bytes(error: getrandom::Error) -> Error {
-    Error::internal(format!(
-        "cannot read random bytes for an idempotency key: the system says {}",
-        crate::phrase::quote(error)
-    ))
-}
-
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
     use std::path::PathBuf;
 
     use super::*;
@@ -457,6 +437,29 @@ mod tests {
             .step_by(2)
             .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
             .collect()
+    }
+
+    /// A hotkey file path that holds a phrase is never quoted: a missing one is refused as a
+    /// phrase on the command line, and one that exists is named by its flag.
+    #[test]
+    fn a_hotkey_path_that_holds_a_phrase_is_not_quoted() {
+        let dir = std::env::temp_dir().join(format!("hipc-hotkey-{}", std::process::id()));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(&dir)
+            .unwrap();
+        let named = dir.join(format!("x {DEV_PHRASE}"));
+        let missing = read_hotkey_file(&named, "--hotkey-file").unwrap_err();
+        assert_eq!(missing.message(), phrase_in_argv().message());
+        std::fs::write(&named, b"\xff\xfe").unwrap();
+        std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let error = read_hotkey_file(&named, "--hotkey-file").unwrap_err();
+        assert_eq!(
+            error.message(),
+            "the hotkey file `--hotkey-file` names is not UTF-8 text"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The SS58 address is the one Substrate tools and Hippius wallets derive from this
@@ -811,21 +814,5 @@ mod tests {
         assert_eq!(base58(&[0, 0, 1]), "112");
         assert_eq!(base58(b"hello world"), "StV1DL6CwTryKyV");
         assert_eq!(base58(&[0xff; 4]), "7YXq9G");
-    }
-
-    #[test]
-    fn no_random_bytes_is_internal() {
-        let error = no_random_bytes(getrandom::Error::UNSUPPORTED);
-        assert_eq!(error.code(), crate::error::Code::Internal);
-        let message = error.message();
-        assert!(message.starts_with("cannot read random bytes for an idempotency key: the system"));
-    }
-
-    #[test]
-    fn idempotency_keys_are_new_v4_uuids() {
-        let first = new_idempotency_key().unwrap();
-        assert_eq!(first.len(), 36);
-        assert_eq!(&first[14..15], "4");
-        assert_ne!(first, new_idempotency_key().unwrap());
     }
 }

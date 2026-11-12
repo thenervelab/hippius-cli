@@ -4,6 +4,7 @@
 use std::process::{Command, Output};
 
 use crate::support::TempDir;
+use crate::workflow;
 
 const GENERATOR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/brew-formula.sh");
 
@@ -18,9 +19,6 @@ const FORMULA: &str = include_str!("hipc.rb");
 
 /// The `hipc` crate's manifest, whose description the formula's must stay in step with.
 const CRATE_MANIFEST: &str = include_str!("../../Cargo.toml");
-
-/// The release workflow, whose homebrew job copies the formula into the tap.
-const RELEASE_WORKFLOW: &str = include_str!("../../../../.github/workflows/release.yml");
 
 fn generate(version: &str, sums: &str) -> Output {
     Command::new("/bin/bash")
@@ -55,20 +53,27 @@ fn the_formula_matches_the_checked_in_one() {
 #[test]
 fn the_formula_is_hipc_and_installs_hipc() {
     assert!(FORMULA.contains("\nclass Hipc < Formula\n"), "{FORMULA}");
-    // The release job is what puts the formula at that path in the tap.
-    assert!(
-        RELEASE_WORKFLOW.contains("\n          cp \"${RUNNER_TEMP}/hipc.rb\" Formula/hipc.rb\n"),
-        "the homebrew job no longer writes Formula/hipc.rb"
-    );
-    // The tap is shared, so the job stages its own formula and removes only the two names
-    // this tool's releases used before, and nothing else.
-    assert!(
-        RELEASE_WORKFLOW.contains("\n          git add Formula/hipc.rb\n"),
-        "the homebrew job no longer stages Formula/hipc.rb"
-    );
-    let removals: Vec<&str> = RELEASE_WORKFLOW
-        .lines()
-        .map(str::trim)
+    // The release job is what puts the formula at that path in the tap. The tap is shared,
+    // so the job stages its own formula and removes only the two names this tool's releases
+    // used before, and nothing else.
+    let release = workflow::release();
+    let push = workflow::run(workflow::named(
+        workflow::steps(workflow::job(&release, "homebrew")),
+        "Commit and push the formula",
+    ));
+    let lines: Vec<&str> = push.lines().map(str::trim).collect();
+    for line in [
+        r#"cp "${RUNNER_TEMP}/hipc.rb" Formula/hipc.rb"#,
+        "git add Formula/hipc.rb",
+    ] {
+        assert!(
+            lines.contains(&line),
+            "the homebrew job no longer runs {line}"
+        );
+    }
+    let removals: Vec<&str> = lines
+        .iter()
+        .copied()
         .filter(|line| line.contains("git rm"))
         .collect();
     assert_eq!(
@@ -97,8 +102,12 @@ fn the_formula_is_hipc_and_installs_hipc() {
     // Hippius console, so a crate description that moves away from it fails here and the
     // formula's is reworded with it.
     assert!(desc.contains("Hippius console"), "{desc}");
+    let manifest: toml::Table = CRATE_MANIFEST.parse().expect("Cargo.toml is TOML");
+    let crate_desc = manifest["package"]["description"]
+        .as_str()
+        .expect("the crate has a description");
     assert!(
-        CRATE_MANIFEST.contains("\ndescription = \"Hippius console "),
+        crate_desc.starts_with("Hippius console "),
         "the crate description changed: reword the formula desc in scripts/brew-formula.sh"
     );
     assert!(FORMULA.contains("    bin.install \"hipc\"\n"), "{FORMULA}");

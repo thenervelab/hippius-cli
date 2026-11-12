@@ -1,0 +1,29 @@
+---
+source: crates/hippius-cli/tests/e2e/snapshots.rs
+expression: dry_run(args)
+---
+{
+  "dry_run": true,
+  "requests": [
+    {
+      "method": "GET",
+      "url": "[origin]/api/runners/limit/",
+      "account_header": null,
+      "project_header": null,
+      "billing_header": null,
+      "body": null
+    },
+    {
+      "method": "PUT",
+      "url": "[origin]/api/runners/limit/",
+      "account_header": null,
+      "project_header": null,
+      "billing_header": null,
+      "body": {
+        "monthly_cap": "10"
+      }
+    }
+  ],
+  "confirmation": true,
+  "confirmation_when": "`--monthly-cap` is higher than the limit's `monthly_cap_credits`, or is `none` while that is set, or the limit has no decimal amount there; `none` asks nothing while `monthly_cap` is `null` and `monthly_cap_credits` is `null` or missing"
+}

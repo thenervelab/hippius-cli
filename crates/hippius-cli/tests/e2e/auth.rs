@@ -2,11 +2,12 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 
+use hippius::routes::account;
 use serde_json::Value;
 
 use crate::common::{
     ACCOUNTS, Hipc, Home, ME, MEMBER, Recorded, Reply, Server, TOKEN, draft, no_server, route,
-    status_routes,
+    route_of, status_routes,
 };
 
 fn mode(path: &std::path::Path) -> u32 {
@@ -73,10 +74,34 @@ fn login_refuses_bad_token_sources_and_writes_nothing() {
     let binary = home.file("binary", &[0xff, 0xfe, b'a']);
     let huge = home.file("huge", &vec![b'a'; 64 * 1024 + 1]);
     let missing = home.path().join("missing");
-    for path in [&empty, &binary, &huge, &missing] {
-        Hipc::new(&home)
+    let named = |path: &std::path::Path| format!("`{}`", path.display());
+    for (path, message) in [
+        (
+            &empty,
+            format!("the token from {} holds only whitespace", named(&empty)),
+        ),
+        (
+            &binary,
+            format!("the token from {} is not UTF-8 text", named(&binary)),
+        ),
+        (
+            &huge,
+            format!(
+                "{} is larger than 65536 bytes, the most hipc reads for the token",
+                named(&huge)
+            ),
+        ),
+        (
+            &missing,
+            "cannot read the token from the file `--token-file` names: it does not exist; the \
+             path is not repeated here, in case it is the token itself"
+                .to_owned(),
+        ),
+    ] {
+        let error = Hipc::new(&home)
             .run(&["auth", "login", "--token-file", path.to_str().unwrap()])
             .fails(2, "usage");
+        assert_eq!(error["message"], message, "{}", path.display());
     }
     assert!(!home.config().exists());
 }
@@ -103,16 +128,14 @@ fn login_says_why_the_token_file_cannot_be_read() {
         .fails(2, "usage");
     assert_eq!(error["message"], format!("`{path}` is not a regular file"));
     // Stdin is read whatever it is; a read that fails is named with its reason.
-    let output = crate::common::command(&home)
-        .args(["--json", "auth", "login", "--token-file", "-"])
-        .stdin(std::fs::File::open(home.path()).unwrap())
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8(output.stderr).unwrap();
+    let error = Hipc::new(&home)
+        .stdin_from(std::fs::File::open(home.path()).unwrap())
+        .run(&["--json", "auth", "login", "--token-file", "-"])
+        .fails(2, "usage");
+    let message = error["message"].as_str().unwrap();
     assert!(
-        stderr.contains("cannot read the token from stdin: it is a directory"),
-        "{stderr}"
+        message.contains("cannot read the token from stdin: it is a directory"),
+        "{message}"
     );
 }
 
@@ -208,8 +231,8 @@ fn the_removed_access_key_flags_are_usage_errors() {
 }
 
 /// A seed phrase typed on the command line by mistake, as stray words after the removed
-/// `--access-key` or as the value of a file flag, is refused without being repeated in any
-/// output, and nothing is sent.
+/// `--access-key` or as the value of a flag, is refused without being repeated in any output,
+/// and nothing is sent.
 #[test]
 fn a_seed_phrase_on_the_command_line_is_refused_without_being_repeated() {
     let home = Home::new();
@@ -221,7 +244,17 @@ fn a_seed_phrase_on_the_command_line_is_refused_without_being_repeated() {
     let mut as_one = vec!["--output", "text", "auth", "login", "--access-key"];
     as_one.push(phrase);
     let upper = phrase.to_uppercase();
+    // Joined to its flag with `=`, or numbered as a paste from a list would be.
+    let joined = format!("--name={phrase}");
+    let numbered = words
+        .iter()
+        .enumerate()
+        .map(|(at, word)| format!("{}. {word}", at + 1))
+        .collect::<Vec<String>>()
+        .join(" ");
     for args in [
+        vec!["cdn", "zones", "create", &joined, "--yes"],
+        vec!["cdn", "zones", "create", "--name", &numbered, "--yes"],
         stray,
         as_one,
         vec!["auth", "login", "--access-key-file", phrase, "--yes"],
@@ -235,17 +268,27 @@ fn a_seed_phrase_on_the_command_line_is_refused_without_being_repeated() {
             phrase,
             "--yes",
         ],
+        // A value clap takes, which a later check would refuse by quoting it.
+        vec![
+            "s3",
+            "configure",
+            "--access-key-id",
+            "hip_A",
+            "--secret-key-file",
+            "-",
+            "--aws-profile",
+            phrase,
+            "--dry-run",
+        ],
     ] {
         let run = Hipc::new(&home)
             .env("HIPPIUS_API_URL", server.url())
             .run(&args);
         assert_eq!(run.code(), Some(2), "{args:?}");
         let out = format!("{}{}", run.stdout(), run.stderr());
-        // clap refuses the first three, and the run refuses argv that holds the words; a
-        // flag clap accepts reads the file, and names no path that does not exist.
+        // Every run refuses argv that holds the words, before anything reads a flag.
         assert!(
-            out.contains("the command line holds what looks like a seed phrase")
-                || out.contains("does not exist; the path is not repeated here"),
+            out.contains("the command line holds what looks like a seed phrase"),
             "{args:?}: {out}"
         );
         let shown: Vec<String> = out
@@ -421,8 +464,8 @@ fn status_proves_the_token_without_the_account_header() {
 fn status_reads_the_user_from_a_page_of_one() {
     let page = format!(r#"{{"count":1,"next":null,"previous":null,"results":[{ME}]}}"#);
     let server = Server::start(vec![
-        route("GET", "/api/accounts/", Reply::json(200, ACCOUNTS)),
-        route("GET", "/api/users/me/", Reply::json(200, &page)),
+        route_of(&account::ACCOUNTS, [], Reply::json(200, ACCOUNTS)),
+        route_of(&account::USER, [], Reply::json(200, &page)),
     ]);
     let doc = Hipc::against(&Home::new(), &server)
         .run(&["auth", "status"])
@@ -431,7 +474,7 @@ fn status_reads_the_user_from_a_page_of_one() {
     assert_eq!(doc["user"]["email"], "ana@example.com");
 }
 
-/// A failed user read keeps the token check: exit 0, `ok` true, `user` null, and
+/// A failed user read keeps the token check: exit 0, no `ok` field, `user` null, and
 /// `user_error` with the failure's code and message; text mode warns on stderr. An
 /// answer `hipc` does not read is such a failure, never a user.
 #[test]
@@ -468,8 +511,8 @@ fn status_keeps_the_token_check_when_the_user_read_fails() {
         (Reply::json(200, "[]"), "internal", unreadable),
     ] {
         let server = Server::start(vec![
-            route("GET", "/api/accounts/", Reply::json(200, ACCOUNTS)),
-            route("GET", "/api/users/me/", reply),
+            route_of(&account::ACCOUNTS, [], Reply::json(200, ACCOUNTS)),
+            route_of(&account::USER, [], reply),
         ]);
         let doc = Hipc::against(&Home::new(), &server)
             .run(&["auth", "status"])
@@ -495,8 +538,7 @@ fn status_with_a_stored_token() {
     let server = Server::start(status_routes());
     let home = Home::new();
     let token_file = home.file("token", b"stored-token-abcd");
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&home, &server)
         .run(&[
             "auth",
             "login",
@@ -505,8 +547,7 @@ fn status_with_a_stored_token() {
             token_file.to_str().unwrap(),
         ])
         .ok();
-    let doc = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&home, &server)
         .run(&["auth", "status"])
         .ok();
     assert_eq!(doc["token_preview"], "abcd");
@@ -523,9 +564,9 @@ fn status_with_a_stored_token() {
 
 #[test]
 fn status_with_a_rejected_token_is_auth() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/accounts/",
+    let server = Server::start(vec![route_of(
+        &account::ACCOUNTS,
+        [],
         Reply::json(401, r#"{"detail":"Invalid token."}"#),
     )]);
     let home = Home::new();
@@ -547,8 +588,7 @@ fn status_with_a_rejected_token_is_auth() {
         "[profiles.default]\ntoken = \"stored-token-abcd\"\ntoken_origin = \"{}\"\n",
         server.url()
     ));
-    let error = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    let error = Hipc::tokenless(&home, &server)
         .run(&["auth", "status"])
         .fails(1, "auth");
     assert_eq!(
@@ -561,8 +601,7 @@ fn status_with_a_rejected_token_is_auth() {
 fn status_without_any_token_sends_nothing() {
     let server = Server::start(vec![]);
     let home = Home::new();
-    let error = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    let error = Hipc::tokenless(&home, &server)
         .run(&["auth", "status"])
         .fails(1, "auth");
     assert!(error["hint"].as_str().unwrap().contains("hipc auth login"));
@@ -716,8 +755,7 @@ fn logout_dry_run_keeps_the_token() {
 #[test]
 fn a_short_token_has_no_preview() {
     let server = Server::start(status_routes());
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .with_env_token(server.url(), "short")
         .run(&["auth", "status"])
         .ok();
@@ -745,22 +783,16 @@ fn a_stored_token_is_sent_only_to_the_origin_it_was_stored_for() {
         api.url(),
         "printed as stored, normalized"
     );
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", api.url())
-        .run(&["auth", "status"])
-        .ok();
+    Hipc::tokenless(&home, &api).run(&["auth", "status"]).ok();
     assert_eq!(
         api.requests()[0].header("authorization"),
         Some(&*format!("Token {TOKEN}"))
     );
     // Another origin, by flag or by variable: the stored token is withheld, nothing is sent.
     for (hipc, args) in [
+        (Hipc::tokenless(&home, &other), vec!["auth", "status"]),
         (
-            Hipc::new(&home).env("HIPPIUS_API_URL", other.url()),
-            vec!["auth", "status"],
-        ),
-        (
-            Hipc::new(&home).env("HIPPIUS_API_URL", api.url()),
+            Hipc::tokenless(&home, &api),
             vec!["--api-url", other.url(), "auth", "status"],
         ),
         // Neither is set, so the run targets the default origin: the hint cannot be to
@@ -788,8 +820,7 @@ fn a_stored_token_is_sent_only_to_the_origin_it_was_stored_for() {
         "the token never reached the other origin"
     );
     // HIPPIUS_TOKEN goes to another origin only when HIPPIUS_TOKEN_ORIGIN names it.
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", other.url())
+    Hipc::tokenless(&home, &other)
         .with_env_token(other.url(), "tok_for_the_other_host_0123456789")
         .run(&["auth", "status"])
         .ok();
@@ -805,8 +836,7 @@ fn a_withheld_token_variable_refuses_every_command_before_sending() {
     let home = Home::new();
     let body = home.file("body.json", b"{}");
     let hipc = || {
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&home, &server)
             .env("HIPPIUS_TOKEN", TOKEN)
             .env_remove("HIPPIUS_TOKEN_ORIGIN")
     };
@@ -833,7 +863,8 @@ fn a_withheld_token_variable_refuses_every_command_before_sending() {
 /// `HIPPIUS_TOKEN` is bound to the default origin, or to the one `HIPPIUS_TOKEN_ORIGIN`
 /// names: `--api-url` or `HIPPIUS_API_URL` alone cannot send it elsewhere, nor can a
 /// `HIPPIUS_TOKEN_ORIGIN` that names another origin, and the stored token does not stand in.
-/// A spelling of the same origin (case, a trailing `/`, the default port) is that origin.
+/// A spelling of the same origin (case, a trailing `/`) is that origin; the default port,
+/// which the test server's port rules out here, is `client::tests`' case.
 #[test]
 fn the_token_variable_is_sent_only_to_the_origin_it_is_bound_to() {
     let other = Server::start(status_routes());
@@ -841,8 +872,7 @@ fn the_token_variable_is_sent_only_to_the_origin_it_is_bound_to() {
     let home = Home::new();
     let file = home.file("token", TOKEN.as_bytes());
     // A stored token for this origin, which a withheld variable must not fall back to.
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", other.url())
+    Hipc::tokenless(&home, &other)
         .run(&[
             "auth",
             "login",
@@ -893,8 +923,7 @@ fn the_token_variable_is_sent_only_to_the_origin_it_is_bound_to() {
     assert!(other.requests().is_empty(), "nothing was sent");
     assert!(elsewhere.requests().is_empty());
     // A value that is no origin is refused, naming the variable.
-    let error = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", other.url())
+    let error = Hipc::tokenless(&home, &other)
         .with_env_token(other.url(), variable)
         .env("HIPPIUS_TOKEN_ORIGIN", "127.0.0.1")
         .run(&["auth", "status"])
@@ -911,8 +940,7 @@ fn the_token_variable_is_sent_only_to_the_origin_it_is_bound_to() {
         other.url().replace("http://", "HTTP://"),
         format!("{}/", other.url()),
     ] {
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", other.url())
+        Hipc::tokenless(&home, &other)
             .with_env_token(&spelling, variable)
             .run(&["auth", "status"])
             .ok();
@@ -943,8 +971,7 @@ fn a_profile_stored_before_token_origins_holds_a_token_for_the_default_api() {
     )
     .unwrap();
     std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let error = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    let error = Hipc::tokenless(&home, &server)
         .run(&["auth", "status"])
         .fails(1, "auth");
     assert!(
@@ -960,11 +987,7 @@ fn a_profile_stored_before_token_origins_holds_a_token_for_the_default_api() {
 #[test]
 fn the_token_is_checked_after_argv_reveal_and_dry_run_and_before_the_question() {
     let server = Server::start(vec![]);
-    let no_token = |args: &[&str]| {
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
-            .run(args)
-    };
+    let no_token = |args: &[&str]| Hipc::tokenless(&Home::new(), &server).run(args);
     // A dry run needs no token: the document has no header values.
     let doc = no_token(&["s3", "tokens", "create", "--kind", "master", "--dry-run"]).ok();
     assert_eq!(draft(&doc)["method"], "POST");
@@ -996,8 +1019,7 @@ fn the_token_is_checked_after_argv_reveal_and_dry_run_and_before_the_question() 
         &["drive", "subscription", "cancel"],
         &["drive", "subscription", "cancel", "--dry-run"],
     ] {
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&Home::new(), &server)
             .env("HIPPIUS_ACCOUNT", MEMBER)
             .run(args)
             .fails(2, "account_scope_unsupported");
@@ -1019,7 +1041,7 @@ fn a_token_stored_for_another_origin_still_allows_a_dry_run() {
             "--yes",
         ])
         .ok();
-    let hipc = || Hipc::new(&home).env("HIPPIUS_API_URL", server.url());
+    let hipc = || Hipc::tokenless(&home, &server);
     hipc()
         .run(&["compute", "vms", "delete", "vm-1", "--dry-run"])
         .ok();
@@ -1093,8 +1115,7 @@ fn public_routes_and_hipc_api_go_to_another_origin_without_the_stored_token() {
     ]);
     let home = Home::new();
     let file = home.file("token", TOKEN.as_bytes());
-    Hipc::new(&home)
-        .env("HIPPIUS_API_URL", home_api.url())
+    Hipc::tokenless(&home, &home_api)
         .run(&[
             "auth",
             "login",
@@ -1104,7 +1125,7 @@ fn public_routes_and_hipc_api_go_to_another_origin_without_the_stored_token() {
         ])
         .ok();
     for args in [
-        vec!["--api-url", other.url(), "api", "GET", "/x/"],
+        vec!["--api-url", other.url(), "api", "--reveal", "GET", "/x/"],
         vec!["--api-url", other.url(), "drive", "plans"],
     ] {
         let run = Hipc::new(&home).run(&args);
@@ -1121,8 +1142,7 @@ fn login_for_an_origin_other_than_the_default_needs_yes_and_names_its_source() {
     let server = Server::start(vec![]);
     let home = Home::new();
     let file = home.file("token", TOKEN.as_bytes());
-    let error = Hipc::new(&home)
-        .env("HIPPIUS_API_URL", server.url())
+    let error = Hipc::tokenless(&home, &server)
         .run(&["auth", "login", "--token-file", file.to_str().unwrap()])
         .fails(2, "confirmation_required");
     assert!(
@@ -1176,8 +1196,72 @@ fn login_names_a_profile_api_url_as_the_source() {
     );
 }
 
+/// A word of token length that a command refuses as an unknown argument, value, or command
+/// is not repeated by any command, not only by `hipc auth`, and the hint names the
+/// command's help.
+#[test]
+fn a_token_shaped_word_is_never_repeated_by_any_usage_error() {
+    let pasted = "tok_pasted_in_the_wrong_place_0123456789";
+    for args in [
+        &["completions", pasted][..],
+        &["compute", "vms", "list", pasted],
+        &["compute", "vms", "lisst-pasted-somewhere-wrong"],
+    ] {
+        let run = Hipc::new(&Home::new()).run(args);
+        let error = run.fails(2, "usage");
+        assert!(
+            !run.stderr().contains("pasted"),
+            "{args:?}: {}",
+            run.stderr()
+        );
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("so the word given is not repeated here"),
+            "{args:?}: {error}"
+        );
+        assert!(
+            error["hint"].as_str().unwrap().ends_with(" --help`"),
+            "{args:?}: {error}"
+        );
+    }
+    // A value its check refuses keeps the check's reason, without the value.
+    let line = format!("{pasted}\n");
+    for (args, message) in [
+        (
+            &["support", "tickets", "get", pasted][..],
+            "invalid value for `<TICKET_ID>`: ",
+        ),
+        (
+            &["cdn", "zones", "create", "--name", &line],
+            "invalid value for `--name <NAME>`: ",
+        ),
+    ] {
+        let run = Hipc::new(&Home::new()).run(args);
+        let error = run.fails(2, "usage");
+        assert!(
+            !run.stderr().contains("pasted"),
+            "{args:?}: {}",
+            run.stderr()
+        );
+        assert!(
+            error["message"].as_str().unwrap().starts_with(message),
+            "{args:?}: {error}"
+        );
+    }
+    // A short word is still quoted, so a typo is easy to see.
+    let error = Hipc::new(&Home::new())
+        .run(&["completions", "lots"])
+        .fails(2, "usage");
+    assert!(
+        error["message"].as_str().unwrap().contains("`lots`"),
+        "{error}"
+    );
+}
+
 /// A token passed where a path or no argument belongs is refused without being repeated: a
-/// stray word after `auth login`, a known token anywhere on a command line clap refuses, and
+/// stray word after `auth login`, a known token anywhere on a command line, parsed or not, and
 /// a secret-file flag whose path names no file.
 #[test]
 fn a_token_in_the_wrong_place_is_never_repeated() {
@@ -1185,7 +1269,7 @@ fn a_token_in_the_wrong_place_is_never_repeated() {
     let pasted = "tok_pasted_in_the_wrong_place_0123456789";
     let stored = "tok_stored_0123456789abcdef";
     home.write_config(&format!("[profiles.default]\ntoken = \"{stored}\"\n"));
-    let cases: [(Vec<&str>, &str); 8] = [
+    let cases: [(Vec<&str>, &str); 10] = [
         (
             vec!["auth", pasted],
             "`hipc auth` takes no such argument or value, so the word given is not repeated here",
@@ -1208,6 +1292,23 @@ fn a_token_in_the_wrong_place_is_never_repeated() {
         ),
         (
             vec!["compute", "vms", "get", "--bogus", stored],
+            "the command line holds an API token, so it is not repeated here",
+        ),
+        // Values clap takes, which a later check or message would quote.
+        (
+            vec![
+                "s3",
+                "configure",
+                "--access-key-id",
+                stored,
+                "--secret-key-file",
+                "-",
+                "--dry-run",
+            ],
+            "the command line holds an API token, so it is not repeated here",
+        ),
+        (
+            vec!["--profile", stored, "auth", "status"],
             "the command line holds an API token, so it is not repeated here",
         ),
         (
@@ -1233,7 +1334,10 @@ fn a_token_in_the_wrong_place_is_never_repeated() {
         assert_eq!(run.code(), Some(2), "{args:?}: {}", run.stderr());
         let out = format!("{}{}", run.stdout(), run.stderr());
         assert!(out.contains(says), "{args:?}: {out}");
-        assert!(!out.contains("0123456789"), "{args:?}: {out}");
+        // Each token, and the start of each, which a cut-off quote would still show.
+        for leaked in [pasted, stored, "tok_pasted", "tok_stored", "0123456789"] {
+            assert!(!out.contains(leaked), "{args:?}: {leaked} in {out}");
+        }
     }
     // A flag clap does not know is still quoted, as is a word after another command.
     let run = Hipc::new(&home).run(&["auth", "login", "--tokn-file", "x"]);

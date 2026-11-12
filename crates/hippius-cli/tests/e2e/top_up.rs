@@ -1,8 +1,9 @@
 //! `hipc billing top-up`: a card or Bitcoin checkout of the balance.
 
+use hippius::routes::billing;
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, no_server, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, no_server, route, route_of};
 
 const CARD: &str = "/api/billing/stripe/create-checkout-session/";
 const BITCOIN: &str = "/api/billing/btcpay/create-invoice/";
@@ -20,7 +21,11 @@ fn args(words: &[String]) -> Vec<&str> {
 #[test]
 fn a_card_top_up_prints_the_server_body_with_the_checkout_url() {
     let body = r#"{"checkout_url":"https://checkout.stripe.com/c/pay/cs_live_1?k=v#frag"}"#;
-    let server = Server::start(vec![route("POST", CARD, Reply::json(200, body))]);
+    let server = Server::start(vec![route_of(
+        &billing::CARD_CHECKOUT,
+        [],
+        Reply::json(200, body),
+    )]);
     let words = top_up("50", "card", &["--yes"]);
     let run = Hipc::against(&Home::new(), &server).run(&args(&words));
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
@@ -42,7 +47,11 @@ fn a_bitcoin_top_up_posts_to_btcpay() {
         r#"{"checkout_url":"https://pay.example/i/inv_1","#,
         r#""transaction_id":"t","invoice_id":"inv_1"}"#
     );
-    let server = Server::start(vec![route("POST", BITCOIN, Reply::json(201, body))]);
+    let server = Server::start(vec![route_of(
+        &billing::BITCOIN_INVOICE,
+        [],
+        Reply::json(201, body),
+    )]);
     let words = top_up("20.5", "bitcoin", &["--yes"]);
     let doc = Hipc::against(&Home::new(), &server).run(&args(&words)).ok();
     assert_eq!(doc["invoice_id"], "inv_1");
@@ -192,7 +201,11 @@ fn a_membership_is_refused_before_anything_is_sent_a_dry_run_included() {
 #[test]
 fn text_mode_notes_the_checkout_url_without_its_query_values() {
     let body = r#"{"checkout_url":"https://checkout.stripe.com/c/pay/cs_1?secret=s3cr3t#fid"}"#;
-    let server = Server::start(vec![route("POST", CARD, Reply::json(200, body))]);
+    let server = Server::start(vec![route_of(
+        &billing::CARD_CHECKOUT,
+        [],
+        Reply::json(200, body),
+    )]);
     let words = [
         vec!["--output".to_owned(), "text".to_owned()],
         top_up("50", "card", &["--yes"]),
@@ -213,7 +226,11 @@ fn text_mode_notes_the_checkout_url_without_its_query_values() {
 
 #[test]
 fn an_answer_without_a_checkout_url_notes_that_nothing_is_paid() {
-    let server = Server::start(vec![route("POST", BITCOIN, Reply::json(201, r#"{"x":1}"#))]);
+    let server = Server::start(vec![route_of(
+        &billing::BITCOIN_INVOICE,
+        [],
+        Reply::json(201, r#"{"x":1}"#),
+    )]);
     let words = [
         vec!["--output".to_owned(), "text".to_owned()],
         top_up("25", "bitcoin", &["--yes"]),
@@ -230,9 +247,9 @@ fn an_answer_without_a_checkout_url_notes_that_nothing_is_paid() {
 
 #[test]
 fn a_refused_top_up_changed_nothing() {
-    let server = Server::start(vec![route(
-        "POST",
-        CARD,
+    let server = Server::start(vec![route_of(
+        &billing::CARD_CHECKOUT,
+        [],
         Reply::json(400, r#"{"error":"Minimum amount is $10"}"#),
     )]);
     let error = Hipc::against(&Home::new(), &server)
@@ -246,18 +263,23 @@ fn a_refused_top_up_changed_nothing() {
 }
 
 /// A top-up answered 502 or 503, or not at all, may have started the checkout or the
-/// invoice, so each is `partial` and not retryable, whatever `Retry-After` says.
+/// invoice, so each is `partial` and not retryable, whatever `Retry-After` says. Both rails
+/// send through one `start_top_up`, so the timeout, which costs a second of waiting, runs on
+/// the card rail only.
 #[test]
 fn a_top_up_answered_502_503_or_not_at_all_is_partial() {
     for (method, path) in [("card", CARD), ("bitcoin", BITCOIN)] {
+        let never = (method == "card").then(|| (Reply::never(), "timeout"));
         for (reply, code) in [
             (Reply::json(502, r#"{"error":"x"}"#), "unavailable"),
             (
                 Reply::json(503, r#"{"error":"x"}"#).header("Retry-After", "4"),
                 "unavailable",
             ),
-            (Reply::never(), "timeout"),
-        ] {
+        ]
+        .into_iter()
+        .chain(never)
+        {
             let server = Server::start(vec![route("POST", path, reply)]);
             let words = top_up("50", method, &["--yes", "--request-timeout", "1"]);
             let error = Hipc::against(&Home::new(), &server)

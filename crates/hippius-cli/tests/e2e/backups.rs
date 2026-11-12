@@ -1,11 +1,12 @@
 //! `hipc compute backups`: a VM's backup policy, its backups, and restoring its disk from one
 //! of them.
 
+use hippius::routes::compute;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Recorded, Reply, Route, Run, Server, draft, route};
-
-const VM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+use crate::common::{
+    Hipc, Home, MEMBER, Recorded, Reply, Run, Server, VM, draft, parsed, route_each, route_of,
+};
 
 const POINT: &str = "run_7c1d";
 
@@ -18,6 +19,13 @@ const OPTIONS: &str = concat!(
     r#""retention_days":7,"max_disk_gb":0,"#,
     r#""price":{"free":false,"price_gb_month":"0.01","currency":"USD"},"#,
     r#""failover_auto_available":true}"#
+);
+
+/// The backup offer with every interval the server offered when this was written, which a
+/// policy update reads after its question.
+const EVERY_INTERVAL: &str = concat!(
+    r#"{"intervals":[{"seconds":900},{"seconds":3600},{"seconds":21600},"#,
+    r#"{"seconds":86400}]}"#
 );
 
 /// The policy document, shaped as swagger documents it.
@@ -41,10 +49,6 @@ const RESTORE: &str = concat!(
     r#""usable":false}}"#
 );
 
-fn vm_route(method: &'static str, suffix: &str, reply: Reply) -> Route {
-    route(method, &format!("/api/compute/vms/{VM}/{suffix}"), reply)
-}
-
 fn hipc(server: &Server, args: &[&str]) -> Run {
     let mut argv = vec!["compute", "backups"];
     argv.extend(args);
@@ -56,19 +60,6 @@ fn text(server: &Server, args: &[&str]) -> Run {
     let mut argv = vec!["--output", "text", "compute", "backups"];
     argv.extend(args);
     Hipc::against(&Home::new(), server).run(&argv)
-}
-
-fn parsed(text: &str) -> Value {
-    serde_json::from_str(text).expect("the fixture is JSON")
-}
-
-/// The method and path of every request the server received.
-fn targets(server: &Server) -> Vec<String> {
-    server
-        .requests()
-        .iter()
-        .map(|r| format!("{} {}", r.method, r.target))
-        .collect()
 }
 
 /// Exit 0 with a key-value block, not a JSON document, on stdout.
@@ -85,14 +76,14 @@ fn assert_text(run: &Run, needle: &str) {
 #[test]
 fn the_reads_print_the_object_as_sent_in_json_and_text() {
     let server = Server::start(vec![
-        route(
-            "GET",
-            "/api/compute/backup-options/",
-            Reply::json(200, OPTIONS),
+        route_of(&compute::BACKUP_OPTIONS, [], Reply::json(200, OPTIONS)),
+        route_of(&compute::BACKUP_POLICY, [&VM], Reply::json(200, POLICY)),
+        route_of(&compute::BACKUPS, [&VM], Reply::json(200, BACKUPS)),
+        route_of(
+            &compute::BACKUP_RESTORE_STATUS,
+            [&VM],
+            Reply::json(200, RESTORE),
         ),
-        vm_route("GET", "backup/", Reply::json(200, POLICY)),
-        vm_route("GET", "backups/", Reply::json(200, BACKUPS)),
-        vm_route("GET", "backups/restore/", Reply::json(200, RESTORE)),
     ]);
     let reads: [(&[&str], &str, &str); 3] = [
         (&["options"], OPTIONS, "price_gb_month"),
@@ -125,7 +116,7 @@ fn the_reads_print_the_object_as_sent_in_json_and_text() {
         format!("GET {}", path("backups/restore/")),
     ];
     let expected: Vec<String> = once.iter().flat_map(|t| [t.clone(), t.clone()]).collect();
-    assert_eq!(targets(&server), expected);
+    assert_eq!(server.targets(), expected);
 }
 
 /// Swagger requires no field of the list answer: one without `restore_points`, or with
@@ -137,7 +128,11 @@ fn a_backups_list_without_points_is_empty_and_a_bad_one_is_internal() {
         r#"{"state":"disabled"}"#,
         r#"{"state":"disabled","restore_points":null}"#,
     ] {
-        let server = Server::start(vec![vm_route("GET", "backups/", Reply::json(200, answer))]);
+        let server = Server::start(vec![route_of(
+            &compute::BACKUPS,
+            [&VM],
+            Reply::json(200, answer),
+        )]);
         assert_eq!(
             hipc(&server, &["list", VM]).ok(),
             json!({"state": "disabled", "items": [], "next_page_token": null})
@@ -147,7 +142,11 @@ fn a_backups_list_without_points_is_empty_and_a_bad_one_is_internal() {
         r#"{"state":"ok","restore_points":"x"}"#,
         r#"{"results":[],"next":"https://api.hippius.com/api/x/?page=2"}"#,
     ] {
-        let server = Server::start(vec![vm_route("GET", "backups/", Reply::json(200, answer))]);
+        let server = Server::start(vec![route_of(
+            &compute::BACKUPS,
+            [&VM],
+            Reply::json(200, answer),
+        )]);
         hipc(&server, &["list", VM]).fails(1, "internal");
     }
 }
@@ -161,9 +160,9 @@ fn the_reads_map_their_failures() {
     ] {
         let failing = || Reply::json(status, r#"{"error":"x"}"#);
         let server = Server::start(vec![
-            vm_route("GET", "backup/", failing()),
-            vm_route("GET", "backups/", failing()),
-            vm_route("GET", "backups/restore/", failing()),
+            route_of(&compute::BACKUP_POLICY, [&VM], failing()),
+            route_of(&compute::BACKUPS, [&VM], failing()),
+            route_of(&compute::BACKUP_RESTORE_STATUS, [&VM], failing()),
         ]);
         for args in [
             &["policy", "get", VM][..],
@@ -179,7 +178,11 @@ fn the_reads_map_their_failures() {
 
 #[test]
 fn policy_update_needs_yes_and_says_stored_backups_are_billed() {
-    let server = Server::start(vec![vm_route("PUT", "backup/", Reply::json(201, POLICY))]);
+    let server = Server::start(vec![route_of(
+        &compute::BACKUP_POLICY_UPDATE,
+        [&VM],
+        Reply::json(201, POLICY),
+    )]);
     let error = hipc(&server, &["policy", "update", VM, "--interval", "900"])
         .fails(2, "confirmation_required");
     assert_eq!(
@@ -227,19 +230,48 @@ fn policy_update_needs_yes_and_says_stored_backups_are_billed() {
 fn policy_update_sends_the_interval_and_the_failover_only_when_passed() {
     // Swagger: 201 when the PUT turns backups on, 200 when it changes them.
     for status in [200, 201] {
-        let server = Server::start(vec![vm_route(
-            "PUT",
-            "backup/",
-            Reply::json(status, POLICY),
-        )]);
+        let server = Server::start(vec![
+            route_of(
+                &compute::BACKUP_OPTIONS,
+                [],
+                Reply::json(200, EVERY_INTERVAL),
+            ),
+            route_of(
+                &compute::BACKUP_POLICY_UPDATE,
+                [&VM],
+                Reply::json(status, POLICY),
+            ),
+        ]);
         let args = ["policy", "update", VM, "--interval", "86400", "--yes"];
         assert_eq!(hipc(&server, &args).ok(), parsed(POLICY));
-        let request = server.only_request();
+        let requests = server.requests();
+        assert_eq!(requests[0].path(), "/api/compute/backup-options/");
+        let request = &requests[1];
+        assert_eq!(requests.len(), 2);
         assert_eq!(request.method, "PUT");
         assert_eq!(request.path(), format!("/api/compute/vms/{VM}/backup/"));
         assert_eq!(request.json(), json!({ "interval_s": 86400 }));
     }
-    let server = Server::start(vec![vm_route("PUT", "backup/", Reply::json(200, POLICY))]);
+    let server = Server::start(vec![
+        route_of(
+            &compute::BACKUP_OPTIONS,
+            [],
+            Reply::json(200, EVERY_INTERVAL),
+        ),
+        route_of(
+            &compute::BACKUP_POLICY_UPDATE,
+            [&VM],
+            Reply::json(200, POLICY),
+        ),
+    ]);
+    let puts = || -> Vec<Value> {
+        server
+            .requests()
+            .iter()
+            .filter(|request| request.method == "PUT")
+            .map(Recorded::json)
+            .collect()
+    };
     for (interval, mode) in [("900", "manual"), ("21600", "auto")] {
         let args = [
             "policy",
@@ -253,9 +285,8 @@ fn policy_update_sends_the_interval_and_the_failover_only_when_passed() {
         ];
         hipc(&server, &args).ok();
     }
-    let bodies: Vec<Value> = server.requests().iter().map(Recorded::json).collect();
     assert_eq!(
-        bodies,
+        puts(),
         [
             json!({ "interval_s": 900, "failover_mode": "manual" }),
             json!({ "interval_s": 21600, "failover_mode": "auto" }),
@@ -267,11 +298,11 @@ fn policy_update_sends_the_interval_and_the_failover_only_when_passed() {
     );
     assert_text(&run, "failover_mode");
     assert_eq!(run.stderr(), "");
-    assert_eq!(server.requests()[2].json(), json!({ "interval_s": 3600 }));
+    assert_eq!(puts()[2], json!({ "interval_s": 3600 }));
 }
 
 #[test]
-fn policy_update_refuses_values_off_the_swagger_enum_with_zero_requests() {
+fn policy_update_refuses_an_interval_that_is_not_seconds_with_zero_requests() {
     let server = Server::start(vec![]);
     let update = |extra: &[&'static str]| {
         let mut argv = vec!["policy", "update", VM];
@@ -279,13 +310,86 @@ fn policy_update_refuses_values_off_the_swagger_enum_with_zero_requests() {
         argv.push("--yes");
         hipc(&server, &argv).fails(2, "usage");
     };
-    for interval in ["600", "0", "15m", "", "-900", "900.0"] {
+    for interval in ["0", "15m", "", "-900", "+900", "900.0", "4294967296"] {
         update(&["--interval", interval]);
     }
     update(&[]);
     update(&["--interval", "900", "--failover", "always"]);
     update(&["--interval", "900", "--failover"]);
     assert!(server.requests().is_empty());
+}
+
+/// The intervals are the server's (owner decision D5): one its options list is sent even when
+/// this hipc does not know it, and one they do not list is refused after the question and the
+/// read, before the PUT. A dry run lists the read and reads nothing.
+#[test]
+fn policy_update_checks_the_interval_against_the_server_options() {
+    let server = Server::start(vec![
+        route_of(
+            &compute::BACKUP_OPTIONS,
+            [],
+            Reply::json(200, r#"{"intervals":[{"seconds":900},{"seconds":600}]}"#),
+        ),
+        route_of(
+            &compute::BACKUP_POLICY_UPDATE,
+            [&VM],
+            Reply::json(200, POLICY),
+        ),
+    ]);
+    hipc(
+        &server,
+        &["policy", "update", VM, "--interval", "600", "--yes"],
+    )
+    .ok();
+    assert_eq!(server.requests()[1].json(), json!({ "interval_s": 600 }));
+    let error = hipc(
+        &server,
+        &["policy", "update", VM, "--interval", "3600", "--yes"],
+    )
+    .fails(2, "usage");
+    assert_eq!(
+        error["message"],
+        "a backup interval `3600` is not one the server offers: the server offers `900` and `600`"
+    );
+    assert_eq!(
+        error["hint"],
+        "run `hipc compute backups options` to see them"
+    );
+    assert_eq!(server.requests().len(), 3, "the read, and no PUT");
+    let doc = hipc(
+        &server,
+        &["policy", "update", VM, "--interval", "3600", "--dry-run"],
+    )
+    .ok();
+    assert_eq!(doc["requests"][0]["method"], "GET");
+    assert_eq!(draft(&doc)["method"], "PUT");
+    assert_eq!(server.requests().len(), 3);
+    let error = Hipc::against(
+        &Home::new(),
+        &Server::start(vec![route_of(
+            &compute::BACKUP_OPTIONS,
+            [],
+            Reply::json(200, r#"{"enabled":false}"#),
+        )]),
+    )
+    .run(&[
+        "compute",
+        "backups",
+        "policy",
+        "update",
+        VM,
+        "--interval",
+        "900",
+        "--yes",
+    ])
+    .fails(2, "usage");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("is not one the server offers: the server lists none"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -302,7 +406,14 @@ fn policy_update_maps_the_documented_refusals() {
     ];
     for (status, slug, code) in cases {
         let body = json!({ "error": slug }).to_string();
-        let server = Server::start(vec![vm_route("PUT", "backup/", Reply::json(status, &body))]);
+        let server = Server::start(vec![
+            route_of(&compute::BACKUP_OPTIONS, [], Reply::json(200, OPTIONS)),
+            route_of(
+                &compute::BACKUP_POLICY_UPDATE,
+                [&VM],
+                Reply::json(status, &body),
+            ),
+        ]);
         let args = ["policy", "update", VM, "--interval", "900", "--yes"];
         let error = hipc(&server, &args).fails(1, code);
         assert_eq!(error["http_status"], status, "{slug}");
@@ -316,7 +427,11 @@ fn policy_update_maps_the_documented_refusals() {
 
 #[test]
 fn policy_delete_needs_yes_and_names_the_vm_on_204() {
-    let server = Server::start(vec![vm_route("DELETE", "backup/", Reply::json(204, ""))]);
+    let server = Server::start(vec![route_of(
+        &compute::BACKUP_POLICY_DELETE,
+        [&VM],
+        Reply::json(204, ""),
+    )]);
     let error = hipc(&server, &["policy", "delete", VM]).fails(2, "confirmation_required");
     assert_eq!(
         error["message"],
@@ -332,9 +447,9 @@ fn policy_delete_needs_yes_and_names_the_vm_on_204() {
         &text(&server, &["policy", "delete", VM, "--yes"]),
         "enabled",
     );
-    let with_body = Server::start(vec![vm_route(
-        "DELETE",
-        "backup/",
+    let with_body = Server::start(vec![route_of(
+        &compute::BACKUP_POLICY_DELETE,
+        [&VM],
         Reply::json(200, r#"{"enabled":false,"state":"disabled"}"#),
     )]);
     let doc = hipc(&with_body, &["policy", "delete", VM, "--yes"]).ok();
@@ -348,9 +463,9 @@ fn policy_delete_maps_its_failures() {
         (502, "unavailable", "partial"),
         (503, "unavailable", "partial"),
     ] {
-        let server = Server::start(vec![vm_route(
-            "DELETE",
-            "backup/",
+        let server = Server::start(vec![route_of(
+            &compute::BACKUP_POLICY_DELETE,
+            [&VM],
             Reply::json(status, r#"{"error":"x"}"#),
         )]);
         let error = hipc(&server, &["policy", "delete", VM, "--yes"]).fails(1, code);
@@ -362,8 +477,8 @@ fn policy_delete_maps_its_failures() {
 /// The routes a confirmed restore uses: the VM read, then the POST answering `status`.
 fn restore_server(status: u16, body: &str) -> Server {
     Server::start(vec![
-        vm_route("GET", "", Reply::json(200, VM_DOC)),
-        vm_route("POST", "backups/restore/", Reply::json(status, body)),
+        route_of(&compute::VM, [&VM], Reply::json(200, VM_DOC)),
+        route_of(&compute::BACKUP_RESTORE, [&VM], Reply::json(status, body)),
     ])
 }
 
@@ -405,7 +520,7 @@ fn restore_reads_the_vm_name_then_posts_it_as_confirm() {
     let server = restore_server(202, RESTORE);
     assert_eq!(restore(&server).ok(), parsed(RESTORE));
     assert_eq!(
-        targets(&server),
+        server.targets(),
         [
             format!("GET /api/compute/vms/{VM}/"),
             format!("POST /api/compute/vms/{VM}/backups/restore/"),
@@ -442,16 +557,16 @@ fn restore_reads_the_vm_name_then_posts_it_as_confirm() {
 #[test]
 fn restore_sends_no_post_when_the_vm_read_fails() {
     let missing = Server::start(vec![
-        vm_route("GET", "", Reply::not_found()),
-        vm_route("POST", "backups/restore/", Reply::json(202, RESTORE)),
+        route_of(&compute::VM, [&VM], Reply::not_found()),
+        route_of(&compute::BACKUP_RESTORE, [&VM], Reply::json(202, RESTORE)),
     ]);
     let error = restore(&missing).fails(1, "not_found");
     assert_eq!(error["http_status"], 404);
     assert_eq!(error["side_effects"], "none");
-    assert_eq!(targets(&missing), [format!("GET /api/compute/vms/{VM}/")]);
-    let down = Server::start(vec![vm_route(
-        "GET",
-        "",
+    assert_eq!(missing.targets(), [format!("GET /api/compute/vms/{VM}/")]);
+    let down = Server::start(vec![route_of(
+        &compute::VM,
+        [&VM],
         Reply::json(503, r#"{"error":"down"}"#),
     )]);
     let error = restore(&down).fails(1, "unavailable");
@@ -462,7 +577,7 @@ fn restore_sends_no_post_when_the_vm_read_fails() {
 #[test]
 fn restore_without_a_vm_name_is_internal_and_sends_no_post() {
     for vm in [r#"{"vm_id":"x"}"#, r#"{"vm_id":"x","name":null}"#, "[]"] {
-        let server = Server::start(vec![vm_route("GET", "", Reply::json(200, vm))]);
+        let server = Server::start(vec![route_of(&compute::VM, [&VM], Reply::json(200, vm))]);
         let error = restore(&server).fails(1, "internal");
         assert_eq!(
             error["message"],
@@ -479,6 +594,44 @@ fn restore_without_a_vm_name_is_internal_and_sends_no_post() {
         assert_eq!(error["side_effects"], "none");
         assert_eq!(server.requests().len(), 1, "{vm}");
     }
+}
+
+/// `confirm` is the name the run that sends read, which the server checks against the VM.
+/// A run without `--yes` asks and stops; the run with `--yes` reads the VM again and is asked
+/// nothing, so a VM renamed between the two runs is confirmed under its new name, which nobody
+/// was shown: the server's check is then the only guard. An empty name is sent as it is read,
+/// for the server to refuse.
+#[test]
+fn restore_confirms_the_name_the_sending_run_read() {
+    let renamed = r#"{"vm_id":"0f8fad5b-d9cb-469f-a165-70867728950e","name":"db-2"}"#;
+    let unnamed = r#"{"vm_id":"0f8fad5b-d9cb-469f-a165-70867728950e","name":""}"#;
+    let server = Server::start(vec![
+        route_each(
+            "GET",
+            &format!("/api/compute/vms/{VM}/"),
+            vec![
+                Reply::json(200, VM_DOC),
+                Reply::json(200, renamed),
+                Reply::json(200, unnamed),
+            ],
+        ),
+        route_of(&compute::BACKUP_RESTORE, [&VM], Reply::json(202, RESTORE)),
+    ]);
+    let error =
+        hipc(&server, &["restore", VM, "--run-id", POINT]).fails(2, "confirmation_required");
+    assert!(
+        error["message"].as_str().unwrap().contains("`db-1`"),
+        "{error}"
+    );
+    restore(&server).ok();
+    restore(&server).ok();
+    let confirms: Vec<Value> = server
+        .requests()
+        .iter()
+        .filter(|request| request.method == "POST")
+        .map(|request| request.json()["confirm"].clone())
+        .collect();
+    assert_eq!(confirms, [json!("db-2"), json!("")]);
 }
 
 #[test]
@@ -523,6 +676,42 @@ fn restore_dry_run_reads_nothing_and_shows_a_placeholder_name() {
     let run = text(&server, &["restore", VM, "--run-id", POINT, "--dry-run"]);
     assert_eq!(run.code(), Some(0));
     assert_eq!(run.stderr(), "", "a dry run restores nothing");
+    assert!(server.requests().is_empty());
+}
+
+/// A dry run of a policy update or delete needs no `--yes`, sends nothing, and ends with the
+/// write a real run sends (tenet 5).
+#[test]
+fn policy_update_and_delete_dry_runs_send_nothing() {
+    let server = Server::start(vec![]);
+    let url = format!("{}/api/compute/vms/{VM}/backup/", server.url());
+    let write = |method: &str, body: Value| {
+        json!({
+            "method": method,
+            "url": url,
+            "account_header": null,
+            "project_header": null,
+            "billing_header": null,
+            "body": body,
+        })
+    };
+    let args = [
+        "policy",
+        "update",
+        VM,
+        "--interval",
+        "900",
+        "--failover",
+        "auto",
+        "--dry-run",
+    ];
+    let doc = hipc(&server, &args).dry_ok();
+    assert_eq!(
+        draft(&doc),
+        &write("PUT", json!({ "interval_s": 900, "failover_mode": "auto" }))
+    );
+    let doc = hipc(&server, &["policy", "delete", VM, "--dry-run"]).dry_ok();
+    assert_eq!(draft(&doc), &write("DELETE", Value::Null));
     assert!(server.requests().is_empty());
 }
 
@@ -598,18 +787,22 @@ fn bad_ids_and_points_are_usage_with_zero_requests() {
 #[test]
 fn a_membership_sends_the_header_on_every_route() {
     let server = Server::start(vec![
-        route(
-            "GET",
-            "/api/compute/backup-options/",
-            Reply::json(200, OPTIONS),
+        route_of(&compute::BACKUP_OPTIONS, [], Reply::json(200, OPTIONS)),
+        route_of(&compute::BACKUP_POLICY, [&VM], Reply::json(200, POLICY)),
+        route_of(
+            &compute::BACKUP_POLICY_UPDATE,
+            [&VM],
+            Reply::json(200, POLICY),
         ),
-        vm_route("GET", "backup/", Reply::json(200, POLICY)),
-        vm_route("PUT", "backup/", Reply::json(200, POLICY)),
-        vm_route("DELETE", "backup/", Reply::json(204, "")),
-        vm_route("GET", "backups/", Reply::json(200, BACKUPS)),
-        vm_route("GET", "", Reply::json(200, VM_DOC)),
-        vm_route("POST", "backups/restore/", Reply::json(202, RESTORE)),
-        vm_route("GET", "backups/restore/", Reply::json(200, RESTORE)),
+        route_of(&compute::BACKUP_POLICY_DELETE, [&VM], Reply::json(204, "")),
+        route_of(&compute::BACKUPS, [&VM], Reply::json(200, BACKUPS)),
+        route_of(&compute::VM, [&VM], Reply::json(200, VM_DOC)),
+        route_of(&compute::BACKUP_RESTORE, [&VM], Reply::json(202, RESTORE)),
+        route_of(
+            &compute::BACKUP_RESTORE_STATUS,
+            [&VM],
+            Reply::json(200, RESTORE),
+        ),
     ]);
     let home = Home::new();
     let member = |args: &[&str]| {
@@ -627,7 +820,11 @@ fn a_membership_sends_the_header_on_every_route() {
     member(&["restore", VM, "--run-id", POINT, "--yes"]).ok();
     member(&["restore-status", VM]).ok();
     let requests = server.requests();
-    assert_eq!(requests.len(), 8, "the restore reads the VM, then posts");
+    assert_eq!(
+        requests.len(),
+        9,
+        "the policy update reads the options, then puts; the restore reads the VM, then posts"
+    );
     for request in requests {
         assert_eq!(
             request.header("x-hippius-account"),
@@ -652,15 +849,14 @@ fn a_membership_sends_the_header_on_every_route() {
         "{message}"
     );
     // The refused restore read the VM to name it, and wrote nothing.
-    assert_eq!(server.requests().len(), 9);
-    assert_eq!(server.requests()[8].method, "GET");
+    assert_eq!(server.requests().len(), 10);
+    assert_eq!(server.requests()[9].method, "GET");
 }
 
 #[test]
 fn restore_checks_the_token_before_the_question() {
     let server = restore_server(202, RESTORE);
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&["compute", "backups", "restore", VM, "--run-id", POINT])
         .fails(1, "auth");
     // The token is checked before the read that names the VM, so nothing goes out.

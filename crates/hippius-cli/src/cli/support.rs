@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand, ValueEnum};
 
+use crate::cli::values::{Spaces, label};
 use crate::cli::{ListArgs, SUPPORT_EXAMPLES, TICKET_ID, examples, number};
 
 #[derive(Debug, Subcommand)]
@@ -193,14 +194,7 @@ impl TicketPriority {
 
 /// A ticket subject. Swagger's `TicketCreate.subject` is 1 to 255 characters, and the
 /// server trims it, so a blank one is refused here rather than by a 400 after the question.
-/// A subject is one line, so a control character is refused too.
+/// A subject is a [`label`].
 fn ticket_subject(value: &str) -> Result<String, String> {
-    let valid = !value.trim().is_empty()
-        && value.chars().count() <= 255
-        && !value.chars().any(char::is_control);
-    if valid {
-        Ok(value.to_owned())
-    } else {
-        Err("a subject is one line of 1 to 255 characters".to_owned())
-    }
+    label(value, 1..=255, Spaces::Kept, "a subject")
 }

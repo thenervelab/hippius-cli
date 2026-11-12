@@ -1,8 +1,9 @@
 //! `hipc status`: the state of each product, a top-level read of `GET /api/services/status/`.
 
+use hippius::routes::support;
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, TOKEN, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Server, TOKEN, draft, route_of};
 
 const STATUS: &str = concat!(
     r#"{"hub":{"state":"none"},"drive":{"state":"active"},"#,
@@ -11,9 +12,9 @@ const STATUS: &str = concat!(
 );
 
 fn server() -> Server {
-    Server::start(vec![route(
-        "GET",
-        "/api/services/status/",
+    Server::start(vec![route_of(
+        &support::SERVICES_STATUS,
+        [],
         Reply::json(200, STATUS),
     )])
 }
@@ -54,8 +55,7 @@ fn status_follows_api_url_and_withholds_a_stored_token_from_another_origin() {
         .run(&["--api-url", server.url(), "status"])
         .fails(1, "auth");
     // No token at all is `auth` too, with nothing sent.
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&["status"])
         .fails(1, "auth");
     assert_eq!(server.requests().len(), 1);
@@ -70,8 +70,7 @@ fn status_refuses_a_membership_and_a_dry_run_sends_nothing() {
         .env("HIPPIUS_ACCOUNT", MEMBER)
         .run(&["status"])
         .fails(2, "account_scope_unsupported");
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .run(&["--dry-run", "status"])
         .ok();
     assert_eq!(draft(&doc)["method"], "GET");

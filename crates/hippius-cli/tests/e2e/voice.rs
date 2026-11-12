@@ -33,8 +33,7 @@ fn each_kind_of_error_follows_the_phrasing_rules() {
             .run(&["s3", "tokens", "create", "--kind", "master", "--yes"])
             .fails(2, "reveal_required"),
         // auth: no token at all.
-        Hipc::new(&home)
-            .env("HIPPIUS_API_URL", server.url())
+        Hipc::tokenless(&home, &server)
             .run(&["compute", "quota"])
             .fails(1, "auth"),
         // internal: an answer that is not JSON.

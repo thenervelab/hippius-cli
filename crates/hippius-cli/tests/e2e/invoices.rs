@@ -3,11 +3,12 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
+use hippius::routes::billing;
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, command, draft, route};
+use crate::common::{self, Hipc, Home, MEMBER, Reply, Server, command, draft, route_of};
 
 const PDF_PATH: &str = "/api/billing/invoices/12/pdf/";
 
@@ -16,9 +17,9 @@ const PDF_PATH: &str = "/api/billing/invoices/12/pdf/";
 const PDF: &[u8] = b"%PDF-1.7\n\x00\xff\xfe binary \x1b]52;c;x\x07 %%EOF\n";
 
 fn pdf_server() -> Server {
-    Server::start(vec![route(
-        "GET",
-        PDF_PATH,
+    Server::start(vec![route_of(
+        &billing::INVOICE_PDF,
+        [&12],
         Reply::bytes(200, "application/pdf", PDF),
     )])
 }
@@ -149,10 +150,9 @@ fn a_dangling_symlink_made_during_the_download_is_refused_and_its_target_is_not_
     let output = home.path().join("invoice.pdf");
     let target = home.path().join("stolen.pdf");
     let (link, to) = (output.clone(), target.clone());
-    let server = Server::start(vec![route(
-        "GET",
-        PDF_PATH,
-        // The server thread must not panic, so a failure to make the link is left to the
+    let server = Server::start(vec![route_of(
+        &billing::INVOICE_PDF,
+        [&12], // The server thread must not panic, so a failure to make the link is left to the
         // assertions below.
         Reply::bytes(200, "application/pdf", PDF)
             .before(move || drop(std::os::unix::fs::symlink(&to, &link))),
@@ -221,7 +221,7 @@ fn a_failed_download_leaves_no_file() {
         ),
         (Reply::json(503, "{}"), "unavailable"),
     ] {
-        let server = Server::start(vec![route("GET", PDF_PATH, reply)]);
+        let server = Server::start(vec![route_of(&billing::INVOICE_PDF, [&12], reply)]);
         let error = get(&home, &server, &output).fails(1, code);
         if code == "not_found" {
             assert_eq!(
@@ -238,7 +238,11 @@ fn an_answer_that_is_not_a_pdf_is_internal_and_writes_nothing() {
     let home = Home::new();
     let output = home.path().join("invoice.pdf");
     for body in [r#"{"detail":"ok"}"#, ""] {
-        let server = Server::start(vec![route("GET", PDF_PATH, Reply::json(200, body))]);
+        let server = Server::start(vec![route_of(
+            &billing::INVOICE_PDF,
+            [&12],
+            Reply::json(200, body),
+        )]);
         let error = get(&home, &server, &output).fails(1, "internal");
         assert_eq!(
             error["message"],
@@ -274,6 +278,9 @@ fn a_path_in_a_missing_directory_is_usage_before_anything_is_sent() {
 /// the download; it is still usage, since the caller must name another path.
 #[test]
 fn a_directory_that_cannot_be_written_is_usage_and_leaves_no_file() {
+    if !common::permission_bits_apply() {
+        return;
+    }
     let server = pdf_server();
     let home = Home::new();
     let locked = home.path().join("locked");
@@ -312,8 +319,9 @@ fn get_under_sh(home: &Home, server: &Server, setup: &str, output: &Path) -> Out
         .arg(hipc.get_program())
         .args(["billing", "invoices", "get", "12", "--output-file"])
         .arg(output)
-        .output()
-        .expect("run hipc under sh")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::common::finished(&mut shell)
 }
 
 /// The mode is exactly 0600 whatever the umask, which masks the mode `open` is given.
@@ -340,9 +348,9 @@ fn the_file_is_0600_under_a_strict_umask() {
 fn a_write_that_fails_removes_the_file() {
     let mut pdf = PDF.to_vec();
     pdf.resize(3 * 1024 * 1024, b' ');
-    let server = Server::start(vec![route(
-        "GET",
-        PDF_PATH,
+    let server = Server::start(vec![route_of(
+        &billing::INVOICE_PDF,
+        [&12],
         Reply::bytes(200, "application/pdf", &pdf),
     )]);
     let home = Home::new();

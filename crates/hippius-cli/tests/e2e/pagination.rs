@@ -64,11 +64,6 @@ const READ_WHOLE: &[(&[&str], &str, &str)] = &[
         "results",
     ),
     (
-        &["hub", "usage", "--repositories"],
-        "/api/registry/usage/repositories/",
-        "results",
-    ),
-    (
         &["hub", "repositories", "list"],
         "/api/registry/repositories/",
         "results",
@@ -215,12 +210,12 @@ const NOT_READ_WHOLE: &[(&str, &str)] = &[
 ];
 
 /// The lists swagger pages, and so the only ones that take the page flags: by `page` and
-/// `page_size` (`/billing/transactions/`, `/billing/invoices/`, `/billing/gamma/conversions/`, `/drive/subscription/history/`,
-/// `/s3/subscription/history/`, `/ssh-keys/`, `/support/tickets/`,
-/// `/support/tickets/{id}/messages/`), by
-/// `continuation_token` (`/objectstore/buckets/{name}/objects/`), by the `before` cursor at
-/// a fixed size (`/runners/jobs/`, no `--limit`), and by `page` and `page_size` with the next
-/// page worked out from `total` (`/models/` and a model's versions, `hub_models.rs`).
+/// `page_size` (`/billing/transactions/`, `/billing/invoices/`, `/billing/gamma/conversions/`,
+/// `/drive/subscription/history/`, `/s3/subscription/history/`, `/ssh-keys/`, `/support/tickets/`,
+/// `/support/tickets/{id}/messages/`), by `continuation_token`
+/// (`/objectstore/buckets/{name}/objects/`), by the `before` cursor at a fixed size
+/// (`/runners/jobs/`, no `--limit`), and by `page` and `page_size` with the next page worked out
+/// from `total` (`/models/` and a model's versions, `hub_models.rs`).
 const PAGED: &[(&str, &[&str])] = &[
     (
         "billing transactions",
@@ -387,6 +382,29 @@ fn every_list_that_does_not_page_is_audited() {
             1,
             "{path:?}: read whole {read_whole}, followed whole {followed}, exempt {exempt}"
         );
+    }
+}
+
+/// The paging these tables give each route is the one its row in `hippius::routes` says: a
+/// route read whole, or followed whole, is not a list the server pages, and one paged by
+/// number is.
+#[test]
+fn every_route_here_pages_as_its_row_says() {
+    let paged = |path: &str| {
+        let rows: Vec<_> = hippius::routes::all()
+            .filter(|row| row.method() == hippius::Method::Get && row.matches(path))
+            .collect();
+        assert!(!rows.is_empty(), "{path} has no row");
+        rows.iter().any(|row| row.paging().is_some())
+    };
+    for (_, path, _) in READ_WHOLE {
+        assert!(!paged(path), "{path} is read whole");
+    }
+    for path in FOLLOWED_WHOLE.iter().flat_map(|(_, paths)| *paths) {
+        assert!(!paged(path), "{path} is followed whole");
+    }
+    for (_, path) in PAGED_BY_NUMBER {
+        assert!(paged(path), "{path} is paged by number");
     }
 }
 
@@ -576,17 +594,42 @@ fn members_update_reads_the_page_and_refuses_a_miss_on_a_page_split() {
     assert_eq!(methods, ["GET"]);
 }
 
-/// A list read whole takes none of the page flags, so none of them can suggest it pages.
+/// A list read whole takes none of the page flags, so none of them can suggest it pages: its
+/// schema row lists none of them (`spec::help_agrees` holds the schema to the help, so a flag
+/// the row leaves out is one clap refuses), and one list shows each refused end to end.
 #[test]
 fn no_list_read_whole_takes_a_page_flag() {
-    let home = Home::new();
+    let page_flags = ["--limit", "--page-token", "--all"];
+    let schema = Hipc::new(&Home::new()).run(&["schema"]).ok();
+    let commands = schema["commands"]
+        .as_array()
+        .expect("the schema lists commands");
     for (args, _, _) in READ_WHOLE {
-        for flag in [&["--limit", "2"][..], &["--page-token", "2"], &["--all"]] {
-            let mut argv = vec!["--json"];
-            argv.extend_from_slice(args);
-            argv.extend_from_slice(flag);
-            Hipc::new(&home).run(&argv).fails(2, "usage");
+        let row = commands
+            .iter()
+            .filter(|command| {
+                let path = command["path"].as_array().expect("a path is an array");
+                path.len() <= args.len() && path.iter().zip(*args).all(|(word, arg)| word == arg)
+            })
+            .max_by_key(|command| command["path"].as_array().map(Vec::len));
+        assert!(row.is_some(), "{args:?} has no schema row");
+        let flags = row.expect("asserted above")["flags"].to_string();
+        for flag in page_flags {
+            assert!(
+                !flags.contains(&format!("\"{flag}\"")),
+                "{args:?} takes {flag}"
+            );
         }
+    }
+    let home = Home::new();
+    for flag in [&["--limit", "2"][..], &["--page-token", "2"], &["--all"]] {
+        let argv = [&["--json"][..], READ_WHOLE[0].0, flag].concat();
+        let error = Hipc::new(&home).run(&argv).fails(2, "usage");
+        assert_eq!(
+            error["message"],
+            format!("unexpected argument `{}` found", flag[0]),
+            "{argv:?}"
+        );
     }
 }
 

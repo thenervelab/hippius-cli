@@ -13,22 +13,25 @@
 
 use std::path::Path;
 
-use hippius::{Code, Error, Method, Request, Result, Selection, SideEffects, phrase};
+use hippius::routes::billing::{self, AutoReloadState, AutoReloadUpdateBody};
+use hippius::routes::{self, Route};
+use hippius::{
+    Code, Error, Failure, Request, Response, Result, Selection, SideEffects, phrase, view_of,
+};
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
     AutoReload, AutoReloadUpdate, Billing, BillingProfile, Invoices, ProfileUpdate, ReloadCap,
-    TopUp, TopUpMethod, Usd, usd,
+    TopUp, TopUpMethod,
 };
 use crate::commands::credits::{AmountPath, shown_in_credits};
 use crate::commands::files::write_output_file;
 use crate::commands::{
-    Printed, dry_run_requests, failed_part, gamma, halpha, list, print_body, print_with,
+    Decided, Printed, failed_part, gamma, halpha, list, print_body, print_with, read_then_write,
+    sent_fields,
 };
-use crate::context::{Context, Gate, Step, Write};
-
-const PROFILE: &str = "/billing/profile/";
-const AUTO_RELOAD: &str = "/billing/auto-reload/";
+use crate::context::{Context, Gate, WritePlan};
+use crate::units::{Usd, usd};
 
 pub(crate) fn run(ctx: &Context<'_>, command: &Billing) -> Result<Printed> {
     // The config file is read only once a command needs a client, after its argv checks, such
@@ -38,31 +41,31 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Billing) -> Result<Printed> {
         Billing::Balance => print_body(
             ctx,
             &client()?,
-            &Request::get("/billing/credits/balance/").about("get the balance"),
+            &Request::to(&billing::BALANCE, []).about("get the balance"),
             Gate::Open,
         ),
         Billing::Stripe => print_body(
             ctx,
             &client()?,
-            &Request::get("/billing/stripe/active-subscription/")
+            &Request::to(&billing::STRIPE_SUBSCRIPTION, [])
                 .about("get the legacy Stripe top-up plan"),
             Gate::Open,
         ),
         Billing::Transactions(args) => list::run(
             ctx,
             &client()?,
-            &Request::get("/billing/transactions/").about("list the transactions"),
+            &Request::to(&billing::TRANSACTIONS, []).about("list the transactions"),
             args,
         ),
         Billing::Subscriptions => subscriptions(ctx, &client()?),
         Billing::Summary => print_in_credits(
             ctx,
             &client()?,
-            &Request::get("/compute/billing/summary/").about("get the compute burn rate"),
+            &Request::to(&routes::compute::BILLING_SUMMARY, []).about("get the compute burn rate"),
             SUMMARY_AMOUNTS,
         ),
         Billing::Usage { month } => {
-            let request = Request::get("/compute/usage/");
+            let request = Request::to(&routes::compute::USAGE, []);
             let request = match month {
                 Some(month) => request
                     .query("month", month)
@@ -74,7 +77,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Billing) -> Result<Printed> {
         Billing::Invoices(Invoices::List(args)) => list::run(
             ctx,
             &client()?,
-            &Request::get("/billing/invoices/").about("list the invoices"),
+            &Request::to(&billing::INVOICES, []).about("list the invoices"),
             args,
         ),
         Billing::Invoices(Invoices::Get {
@@ -95,7 +98,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Billing) -> Result<Printed> {
         // the route does not say (tenet 6).
         Billing::AutoReload(AutoReload::History { limit }) => billing_read(
             ctx,
-            &Request::get("/billing/auto-reload/history/")
+            &Request::to(&billing::AUTO_RELOAD_HISTORY, [])
                 .query("limit", &limit.to_string())
                 .about("list the auto-reload attempts"),
             "an auto-reload history read",
@@ -143,17 +146,17 @@ fn print_in_credits(
 ///
 /// A hAlpha top-up has no rail, so it is `None`: no caller can send hAlpha to a checkout
 /// route, and [`start_top_up`] sends it to [`halpha_top_up`] instead.
-const fn rail(method: TopUpMethod) -> Option<(&'static str, &'static str, Usd, Usd)> {
+const fn rail(method: TopUpMethod) -> Option<(&'static str, &'static Route<0>, Usd, Usd)> {
     match method {
         TopUpMethod::Card => Some((
             "card",
-            "/billing/stripe/create-checkout-session/",
+            &billing::CARD_CHECKOUT,
             Usd::from_cents(10 * 100),
             Usd::from_cents(10_000 * 100),
         )),
         TopUpMethod::Bitcoin => Some((
             "bitcoin",
-            "/billing/btcpay/create-invoice/",
+            &billing::BITCOIN_INVOICE,
             Usd::from_cents(20 * 100),
             Usd::from_cents(100_000 * 100),
         )),
@@ -205,7 +208,7 @@ fn halpha_top_up(ctx: &Context<'_>, top_up: &TopUp) -> Result<Printed> {
 /// passes through a float. No return URL is sent: the server falls back to its own, and
 /// ignores one off the console origin.
 fn start_top_up(ctx: &Context<'_>, top_up: &TopUp) -> Result<Printed> {
-    let Some((name, path, least, most)) = rail(top_up.method) else {
+    let Some((name, route, least, most)) = rail(top_up.method) else {
         return halpha_top_up(ctx, top_up);
     };
     let amount = match (top_up.amount, top_up.alpha) {
@@ -248,8 +251,10 @@ fn start_top_up(ctx: &Context<'_>, top_up: &TopUp) -> Result<Printed> {
         ));
     }
     let client = &ctx.load_authed_client()?;
-    let request = Request::new(Method::Post, path)
-        .json(&json!({ "amount": amount.to_string() }))
+    let request = Request::to(route, [])
+        .json(&billing::TopUpBody {
+            amount: &amount.to_string(),
+        })
         .about(format!("start a {name} top-up of `{amount}` USD"));
     require_billing_account(client, &request, "a top-up")?;
     let gate = Gate::Confirm {
@@ -259,10 +264,9 @@ fn start_top_up(ctx: &Context<'_>, top_up: &TopUp) -> Result<Printed> {
         let body = response.document()?;
         // A person may paste the note into a log, so the URL loses its query values there
         // (tenet 9); the whole URL is on stdout.
-        let at = body
-            .get("checkout_url")
-            .and_then(Value::as_str)
-            .map(|url| format!(" at {}", phrase::quote(hippius::without_query_values(url))))
+        let at = view_of::<billing::Checkout>(&body)
+            .checkout_url
+            .map(|url| format!(" at {}", phrase::quote(hippius::without_query_values(&url))))
             .unwrap_or_default();
         ctx.note(&format!(
             "nothing has been paid yet: the balance grows by `{amount}` USD once the \
@@ -316,11 +320,11 @@ fn check_first(error: Error, read: &str) -> Error {
 }
 
 fn read_profile() -> Request {
-    Request::get(PROFILE).about("get the billing profile")
+    Request::to(&billing::PROFILE, []).about("get the billing profile")
 }
 
 fn read_auto_reload() -> Request {
-    Request::get(AUTO_RELOAD).about("get the auto-reload setting")
+    Request::to(&billing::AUTO_RELOAD, []).about("get the auto-reload setting")
 }
 
 /// Starts a Stripe checkout in setup mode that saves the card auto-reload charges, and prints
@@ -332,10 +336,10 @@ fn read_auto_reload() -> Request {
 /// URLs are the console's own pages, and the server falls back to its own without them. The
 /// document gains `next_step`, the command that shows the saved card: tenet 3 allows it on a
 /// document that waits for a person, since JSON mode prints no note. It repeats the run's
-/// selectors, or is left out when one is not a plain word ([`Context::next_command`]).
+/// selectors, or is left out when one is not printable ASCII ([`Context::next_command`]).
 fn card_setup(ctx: &Context<'_>, client: &hippius::Client) -> Result<Printed> {
-    let request = Request::new(Method::Post, format!("{AUTO_RELOAD}card-setup/"))
-        .json(&json!({}))
+    let request = Request::to(&billing::AUTO_RELOAD_CARD_SETUP, [])
+        .json(&routes::EmptyBody {})
         .about("start saving a card for auto-reload");
     require_billing_account(client, &request, "a card setup")?;
     print_with(ctx, client, &request, Gate::Open, |response| {
@@ -354,11 +358,6 @@ fn card_setup(ctx: &Context<'_>, client: &hippius::Client) -> Result<Printed> {
     })
 }
 
-/// The `PUT` of `path` with `body`.
-fn put(path: &str, body: Map<String, Value>) -> Request {
-    Request::new(Method::Put, path).json(&Value::Object(body))
-}
-
 /// `PUT /api/billing/profile/` with only the fields given. Swagger says the `PUT` creates or
 /// replaces the profile and that a field left out keeps its value, so nothing is read first:
 /// no field the caller did not name is sent, and no other client's change in between is
@@ -373,37 +372,63 @@ fn put(path: &str, body: Map<String, Value>) -> Request {
 /// the read and the `PUT` is not seen; the question names the email the read found.
 fn update_profile(ctx: &Context<'_>, args: &ProfileUpdate) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
-    let given: Map<String, Value> = args
-        .fields()
-        .into_iter()
-        .filter_map(|(key, given)| given.map(|value| (key.to_owned(), Value::from(value))))
-        .collect();
-    let named = phrase::ticked(given.keys(), "and");
-    let request = put(PROFILE, given).about(format!("update the billing profile's {named}"));
+    let body = billing::ProfileUpdateBody {
+        company_name: args.company_name.as_deref(),
+        address_line1: args.address_line1.as_deref(),
+        address_line2: args.address_line2.as_deref(),
+        city: args.city.as_deref(),
+        postal_code: args.postal_code.as_deref(),
+        region: args.region.as_deref(),
+        country: args.country.as_deref(),
+        tax_id: args.tax_id.as_deref(),
+        billing_email: args.billing_email.as_deref(),
+    };
+    let named = phrase::ticked(sent_fields(&body).keys(), "and");
+    let request = Request::to(&billing::PROFILE_UPDATE, [])
+        .json(&body)
+        .about(format!("update the billing profile's {named}"));
     require_billing_account(&client, &request, "a billing profile update")?;
     let check = |error| check_first(error, "hipc billing profile get");
     let Some(email) = args.billing_email.as_deref() else {
         return print_body(ctx, &client, &request, Gate::Open).map_err(check);
     };
-    let checked = match ctx.check_write(&client, &request)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(&client, &[&read_profile(), &request])?;
-            return Ok(Printed::Document(doc));
-        }
-        Write::Checked(checked) => checked,
+    let read = read_profile();
+    let decide = || {
+        let current = match ctx.send(&client, &read) {
+            Ok(response) => view_of::<billing::Profile>(&response.document()?)
+                .billing_email
+                .filter(|email| !email.is_empty()),
+            Err(error) if error.code() == Code::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        Ok(email_change(current.as_deref(), email).map_or_else(
+            || Decided::unasked(request.clone()),
+            |action| {
+                let consequence = if email.is_empty() {
+                    "the invoices and billing emails no longer go to that address"
+                } else {
+                    "the invoices and billing emails go to the new address"
+                };
+                Decided::asked_as(request.clone(), action, Some(consequence))
+            },
+        ))
     };
-    let current = match ctx.send(&client, &read_profile()) {
-        Ok(response) => response
-            .document()?
-            .get("billing_email")
-            .and_then(Value::as_str)
-            .filter(|email| !email.is_empty())
-            .map(str::to_owned),
-        Err(error) if error.code() == Code::NotFound => None,
-        Err(error) => return Err(error),
-    };
-    // Clearing an email the profile does not hold sends invoices nowhere new.
-    let action = match (current.as_deref(), email) {
+    let render =
+        |sent: Result<Response>| sent.and_then(|response| response.document()).map_err(check);
+    read_then_write(
+        ctx,
+        &client,
+        &WritePlan::new(&[&read], &request),
+        decide,
+        render,
+    )
+}
+
+/// The question of a billing email change from `current`, the email the profile holds, to
+/// `email`, empty to clear it; `None` when the change sends invoices nowhere new, so it is
+/// not asked about.
+fn email_change(current: Option<&str>, email: &str) -> Option<String> {
+    match (current, email) {
         (Some(old), _) if old == email => None,
         (None, "") => None,
         (Some(old), "") => Some(format!("clear the billing email {}", phrase::quote(old))),
@@ -413,19 +438,7 @@ fn update_profile(ctx: &Context<'_>, args: &ProfileUpdate) -> Result<Printed> {
             phrase::quote(email)
         )),
         (None, _) => Some(format!("set the billing email to {}", phrase::quote(email))),
-    };
-    if let Some(action) = action {
-        let consequence = if email.is_empty() {
-            "the invoices and billing emails no longer go to that address"
-        } else {
-            "the invoices and billing emails go to the new address"
-        };
-        ctx.confirm_write(checked, &action, Some(consequence))?;
     }
-    ctx.send(&client, &request)
-        .and_then(|response| response.document())
-        .map(Printed::Document)
-        .map_err(check)
 }
 
 /// `PUT /api/billing/auto-reload/` with the whole setting: the flags given, and the rest as
@@ -444,124 +457,207 @@ fn update_profile(ctx: &Context<'_>, args: &ProfileUpdate) -> Result<Printed> {
 /// is one, names the whole setting sent.
 fn update_auto_reload(ctx: &Context<'_>, args: &AutoReloadUpdate) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
-    let given = [
-        ("enabled", args.enabled.map(Value::from)),
-        ("threshold", args.threshold.map(dollars)),
-        ("target", args.target.map(dollars)),
-        (
-            "monthly_cap",
-            args.monthly_cap.map(|cap| match cap {
-                ReloadCap::Usd(amount) => dollars(amount),
-                ReloadCap::None => Value::Null,
-            }),
-        ),
-    ];
-    let draft = given
+    let given = ReloadGiven::of(args);
+    let draft = ReloadField::ALL
         .iter()
-        .map(|(key, value)| {
-            let shown = || Value::from(format!("<the setting's {key}>"));
-            ((*key).to_owned(), value.clone().unwrap_or_else(shown))
+        .map(|&field| {
+            let shown = || Value::from(format!("<the setting's {}>", field.key()));
+            (
+                field.key().to_owned(),
+                given.value(field).unwrap_or_else(shown),
+            )
         })
-        .collect();
+        .collect::<Map<String, Value>>();
     let save = "save the auto-reload setting";
-    let draft = put(AUTO_RELOAD, draft).about(save);
+    let draft = Request::to(&billing::AUTO_RELOAD_UPDATE, [])
+        .json(&draft)
+        .about(save);
     require_billing_account(&client, &draft, "an auto-reload update")?;
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(mut doc) => {
-            doc["requests"] = ctx.describe_each(&client, &[&read_auto_reload(), &draft])?;
-            return Ok(Printed::Document(doc));
+    let read = read_auto_reload();
+    let decide = || {
+        let read = ctx.send(&client, &read)?.document()?;
+        let current: billing::AutoReload = view_of(&read);
+        // Swagger: `available: false`, and nothing else, while the feature is off on the
+        // server. No flag can fix that, so it is said before any field is checked.
+        if current.available == Some(false) {
+            return Err(Error::new(
+                Failure::Conflict,
+                "auto-reload is not available on this server: the setting reads `available` \
+                 `false`",
+            ));
         }
-        Write::Checked(checked) => checked,
+        let body = given.kept_from(&current)?;
+        let request = Request::to(&billing::AUTO_RELOAD_UPDATE, []).json(&body);
+        Ok(match charges_more(&read, &current, &body) {
+            Some((action, consequence)) => Decided::asked(request.about(action), Some(consequence)),
+            None => Decided::unasked(request.about(save)),
+        })
     };
-    let current = ctx.send(&client, &read_auto_reload())?.document()?;
-    // Swagger: `available: false`, and nothing else, while the feature is off on the server.
-    // No flag can fix that, so it is said before any field is checked.
-    if current.get("available") == Some(&Value::Bool(false)) {
-        return Err(Error::new(
-            Code::Conflict,
-            "auto-reload is not available on this server: the setting reads `available` \
-             `false`",
-        ));
+    let render = |sent: Result<Response>| {
+        sent.and_then(|response| response.document())
+            .map_err(|error| check_first(error, "hipc billing auto-reload get"))
+    };
+    read_then_write(
+        ctx,
+        &client,
+        &WritePlan::new(&[&read], &draft),
+        decide,
+        render,
+    )
+}
+
+/// A field of the auto-reload setting: its key in the route's body, and the flag that sets
+/// it, which a hint names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReloadField {
+    Enabled,
+    Threshold,
+    Target,
+    MonthlyCap,
+}
+
+impl ReloadField {
+    /// Every field, in the order the body sends them.
+    const ALL: [Self; 4] = [
+        Self::Enabled,
+        Self::Threshold,
+        Self::Target,
+        Self::MonthlyCap,
+    ];
+
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Threshold => "threshold",
+            Self::Target => "target",
+            Self::MonthlyCap => "monthly_cap",
+        }
     }
-    let missing: Vec<&str> = given
-        .iter()
-        .filter(|(key, value)| value.is_none() && kept(&current, key).is_none())
-        .map(|(key, _)| *key)
-        .collect();
-    if !missing.is_empty() {
-        let quoted: Vec<String> = missing.iter().map(|key| format!("`{key}`")).collect();
-        let flags: Vec<String> = missing
-            .iter()
-            .map(|key| format!("`--{}`", key.replace('_', "-")))
+
+    const fn flag(self) -> &'static str {
+        match self {
+            Self::Enabled => "--enabled",
+            Self::Threshold => "--threshold",
+            Self::Target => "--target",
+            Self::MonthlyCap => "--monthly-cap",
+        }
+    }
+}
+
+/// The auto-reload fields the flags give, each `None` when its flag is not given. An amount
+/// is a string of dollars to the cent, as the route takes it, and a `monthly_cap` of `None`
+/// is no limit, sent as `null`.
+#[derive(Debug)]
+#[expect(
+    clippy::option_option,
+    reason = "a cap not given is read from the setting, and one given as none is sent as `null`"
+)]
+struct ReloadGiven {
+    enabled: Option<bool>,
+    threshold: Option<String>,
+    target: Option<String>,
+    monthly_cap: Option<Option<String>>,
+}
+
+impl ReloadGiven {
+    fn of(args: &AutoReloadUpdate) -> Self {
+        Self {
+            enabled: args.enabled,
+            threshold: args.threshold.map(|amount| amount.to_string()),
+            target: args.target.map(|amount| amount.to_string()),
+            monthly_cap: args.monthly_cap.map(|cap| match cap {
+                ReloadCap::Usd(amount) => Some(amount.to_string()),
+                ReloadCap::None => None,
+            }),
+        }
+    }
+
+    /// The value `field` is given, as the body sends it.
+    fn value(&self, field: ReloadField) -> Option<Value> {
+        match field {
+            ReloadField::Enabled => self.enabled.map(Value::from),
+            ReloadField::Threshold => self.threshold.clone().map(Value::from),
+            ReloadField::Target => self.target.clone().map(Value::from),
+            ReloadField::MonthlyCap => self
+                .monthly_cap
+                .clone()
+                .map(|cap| cap.map_or(Value::Null, Value::from)),
+        }
+    }
+
+    /// The whole setting to send: each field given, and each other one as `current`, the
+    /// setting read, holds it in the shape the `PUT` takes (`enabled` a boolean, an amount a
+    /// string, `monthly_cap` a string or `null`; a setting never saved has `null` amounts).
+    ///
+    /// # Errors
+    ///
+    /// `usage` naming every field that is neither given nor held so, and its flag.
+    fn kept_from(self, current: &billing::AutoReload) -> Result<AutoReloadUpdateBody> {
+        let enabled = self.enabled.or(current.enabled);
+        let threshold = self.threshold.or_else(|| current.threshold.clone());
+        let target = self.target.or_else(|| current.target.clone());
+        let monthly_cap = self.monthly_cap.or_else(|| current.monthly_cap.clone());
+        let (Some(enabled), Some(threshold), Some(target), Some(monthly_cap)) =
+            (enabled, &threshold, &target, &monthly_cap)
+        else {
+            let missing: Vec<ReloadField> = [
+                (ReloadField::Enabled, enabled.is_none()),
+                (ReloadField::Threshold, threshold.is_none()),
+                (ReloadField::Target, target.is_none()),
+                (ReloadField::MonthlyCap, monthly_cap.is_none()),
+            ]
+            .into_iter()
+            .filter_map(|(field, missing)| missing.then_some(field))
             .collect();
-        return Err(Error::usage(
-            format!(
-                "the auto-reload setting holds no {} hipc can send back unchanged",
-                phrase::join(&quoted, "or")
-            ),
-            format!(
-                "pass {} to set {}",
-                phrase::join(&flags, "and"),
-                if flags.len() == 1 { "it" } else { "them" }
-            ),
-        ));
+            return Err(not_kept(&missing));
+        };
+        Ok(AutoReloadUpdateBody {
+            enabled,
+            threshold: threshold.clone(),
+            target: target.clone(),
+            monthly_cap: monthly_cap.clone(),
+        })
     }
-    let body: Map<String, Value> = given
-        .into_iter()
-        .map(|(key, value)| {
-            let value = value.or_else(|| kept(&current, key)).unwrap_or_default();
-            (key.to_owned(), value)
-        })
+}
+
+/// The refusal of an update that would have to guess the `missing` fields.
+fn not_kept(missing: &[ReloadField]) -> Error {
+    let quoted: Vec<String> = missing
+        .iter()
+        .map(|field| format!("`{}`", field.key()))
         .collect();
-    let request = match charges_more(&current, &body) {
-        Some((action, consequence)) => {
-            let request = put(AUTO_RELOAD, body).about(action);
-            ctx.confirm_write(checked, &request.action(), Some(consequence))?;
-            request
-        }
-        None => put(AUTO_RELOAD, body).about(save),
-    };
-    ctx.send(&client, &request)
-        .and_then(|response| response.document())
-        .map(Printed::Document)
-        .map_err(|error| check_first(error, "hipc billing auto-reload get"))
-}
-
-/// An amount as the auto-reload route takes it: a string of dollars to the cent.
-fn dollars(amount: Usd) -> Value {
-    Value::from(amount.to_string())
-}
-
-/// The value of `key` in the setting read, to send back unchanged, or `None` when it is not
-/// in the shape the `PUT` takes: `enabled` a boolean, an amount a string, and `monthly_cap` a
-/// string or `null`. A setting never saved has `null` amounts.
-fn kept(current: &Value, key: &str) -> Option<Value> {
-    current
-        .get(key)
-        .filter(|value| match key {
-            "enabled" => value.is_boolean(),
-            "monthly_cap" => value.is_string() || value.is_null(),
-            _ => value.is_string(),
-        })
-        .cloned()
+    let flags: Vec<String> = missing
+        .iter()
+        .map(|field| format!("`{}`", field.flag()))
+        .collect();
+    Error::usage(
+        format!(
+            "the auto-reload setting holds no {} hipc can send back unchanged",
+            phrase::join(&quoted, "or")
+        ),
+        format!(
+            "pass {} to set {}",
+            phrase::join(&flags, "and"),
+            if flags.len() == 1 { "it" } else { "them" }
+        ),
+    )
 }
 
 /// What the auto-reload setting does once `body` is saved, as a question names it.
-fn reload_setting(body: &Map<String, Value>) -> String {
-    let text = |key: &str| phrase::quote(body[key].as_str().unwrap_or_default());
-    let cap = match body["monthly_cap"].as_str() {
+fn reload_setting(body: &AutoReloadUpdateBody) -> String {
+    let cap = match &body.monthly_cap {
         Some(cap) => format!("a monthly cap of {} USD", phrase::quote(cap)),
         None => "no monthly cap".to_owned(),
     };
     format!(
         "charge the card when the balance falls below {} USD, back up to {} USD, with {cap}",
-        text("threshold"),
-        text("target")
+        phrase::quote(&body.threshold),
+        phrase::quote(&body.target)
     )
 }
 
 /// The question an auto-reload update asks, as its action and consequence, or `None` when it
-/// cannot charge more than the setting in force does.
+/// cannot charge more than the setting in force, `current` (read as `read`), does.
 ///
 /// Nothing is asked when `body` leaves auto-reload off. Leaving it on is asked about when the
 /// setting in force is off; when its state is anything but `armed`, since a save closes a
@@ -570,15 +666,20 @@ fn reload_setting(body: &Map<String, Value>) -> String {
 /// the target, or the monthly cap, `null` being no cap and so the highest; and when any of
 /// those cannot be read as the fields compared, so a shape hipc does not know never lets a
 /// raise through unasked.
-fn charges_more(current: &Value, body: &Map<String, Value>) -> Option<(String, &'static str)> {
-    if body["enabled"] != Value::Bool(true) {
+fn charges_more(
+    read: &Value,
+    current: &billing::AutoReload,
+    body: &AutoReloadUpdateBody,
+) -> Option<(String, &'static str)> {
+    if !body.enabled {
         return None;
     }
     let setting = reload_setting(body);
     let on = "the card is then charged whenever the balance falls below the threshold, and the \
               balance is checked at once";
+    // The question quotes what the server sent, whatever its type.
     let unknown = |key: &str| {
-        let shown = current
+        let shown = read
             .get(key)
             .map_or_else(|| "missing".to_owned(), |value| phrase::quote(shown(value)));
         Some((
@@ -589,41 +690,65 @@ fn charges_more(current: &Value, body: &Map<String, Value>) -> Option<(String, &
             "if the setting in force is lower, the card may then be charged more",
         ))
     };
-    match current.get("enabled") {
-        Some(Value::Bool(true)) => {}
-        Some(Value::Bool(false)) => {
+    match current.enabled {
+        Some(true) => {}
+        Some(false) => {
             return Some((format!("turn on auto-reload, to {setting}"), on));
         }
-        _ => return unknown("enabled"),
+        None => return unknown(ReloadField::Enabled.key()),
     }
-    match current.get("state").and_then(Value::as_str) {
-        Some("armed") => {}
+    match &current.state {
+        Some(AutoReloadState::Armed) => {}
         Some(
-            state @ ("off"
-            | "disabled_failures"
-            | "retry_wait"
-            | "in_flight"
-            | "cooldown"
-            | "monthly_cap_reached"),
+            state @ (AutoReloadState::Off
+            | AutoReloadState::DisabledFailures
+            | AutoReloadState::RetryWait
+            | AutoReloadState::InFlight
+            | AutoReloadState::Cooldown
+            | AutoReloadState::MonthlyCapReached),
         ) => {
             return Some((
-                format!("save auto-reload on while its state is `{state}`, to {setting}"),
+                format!(
+                    "save auto-reload on while its state is `{}`, to {setting}",
+                    state.as_str()
+                ),
                 on,
             ));
         }
-        _ => return unknown("state"),
+        Some(AutoReloadState::Other(_)) | None => return unknown("state"),
     }
     let mut raised = Vec::new();
-    for (key, name) in [
-        ("threshold", "threshold"),
-        ("target", "target"),
-        ("monthly_cap", "monthly cap"),
-    ] {
-        let old = current.get(key).and_then(|value| limit(key, value));
-        match (limit(key, &body[key]), old) {
+    let amounts = [
+        (
+            ReloadField::Threshold,
+            "threshold",
+            amount(Some(&body.threshold)),
+            current
+                .threshold
+                .as_deref()
+                .and_then(|old| amount(Some(old))),
+        ),
+        (
+            ReloadField::Target,
+            "target",
+            amount(Some(&body.target)),
+            current.target.as_deref().and_then(|old| amount(Some(old))),
+        ),
+        (
+            ReloadField::MonthlyCap,
+            "monthly cap",
+            amount(body.monthly_cap.as_deref()),
+            current
+                .monthly_cap
+                .as_ref()
+                .and_then(|old| amount(old.as_deref())),
+        ),
+    ];
+    for (field, name, new, old) in amounts {
+        match (new, old) {
             (Some(new), Some(old)) if new > old => raised.push(name),
             (Some(_), Some(_)) => {}
-            _ => return unknown(key),
+            _ => return unknown(field.key()),
         }
     }
     (!raised.is_empty()).then(|| {
@@ -652,14 +777,14 @@ enum Limit {
     NoCap,
 }
 
-/// The amount `key` holds, or `None` for anything that is not an amount to the cent. Only
-/// `monthly_cap` may be `null`: a `null` threshold or target in force is a setting never
-/// saved, which a question must not read as the highest.
-fn limit(key: &str, value: &Value) -> Option<Limit> {
-    match value {
-        Value::Null if key == "monthly_cap" => Some(Limit::NoCap),
-        Value::String(text) => usd(text).ok().map(Limit::Usd),
-        _ => None,
+/// An amount the setting holds: `None` there is no cap, and a text that is not an amount to
+/// the cent is no amount at all. Only `monthly_cap` passes `None`: a `null` threshold or
+/// target in force is a setting never saved, which a question must not read as the highest,
+/// so its caller never asks for it.
+fn amount(text: Option<&str>) -> Option<Limit> {
+    match text {
+        None => Some(Limit::NoCap),
+        Some(text) => usd(text).ok().map(Limit::Usd),
     }
 }
 
@@ -668,7 +793,7 @@ fn limit(key: &str, value: &Value) -> Option<Limit> {
 /// terminal. `path` was checked at parse time to hold nothing; the file is created only
 /// after the PDF arrived, so a failed request leaves nothing behind.
 fn download(ctx: &Context<'_>, client: &hippius::Client, id: u64, path: &Path) -> Result<Printed> {
-    let request = Request::get(format!("/billing/invoices/{id}/pdf/"))
+    let request = Request::to(&billing::INVOICE_PDF, [&id])
         .accept("application/pdf")
         .about(format!("download the invoice `{id}`"))
         .listed_by("hipc billing invoices list");
@@ -680,11 +805,11 @@ fn download(ctx: &Context<'_>, client: &hippius::Client, id: u64, path: &Path) -
 }
 
 /// The four plan lists `hipc billing subscriptions` reads, one per service, in order.
-const LEGS: [(&str, &str); 4] = [
-    ("drive", "/drive/subscription/"),
-    ("s3", "/s3/subscription/"),
-    ("hub", "/registry/subscriptions/"),
-    ("stripe", "/billing/stripe/active-subscription/"),
+const LEGS: [(&str, &Route<0>); 4] = [
+    ("drive", &routes::drive::SUBSCRIPTION),
+    ("s3", &routes::s3::SUBSCRIPTION),
+    ("hub", &routes::hub::SUBSCRIPTIONS),
+    ("stripe", &billing::STRIPE_SUBSCRIPTION),
 ];
 
 /// Reads every plan source and lists them as rows `{service, subscription}`, each with the
@@ -695,29 +820,30 @@ const LEGS: [(&str, &str); 4] = [
 /// rows that succeeded are still printed and the command exits 1 with `partial_failure`.
 /// When every leg fails, the first failure is the error, because then nothing is partial.
 fn subscriptions(ctx: &Context<'_>, client: &hippius::Client) -> Result<Printed> {
-    for (_, path) in LEGS {
-        client.url(&Request::get(path))?;
+    for (_, route) in LEGS {
+        client.url(&Request::to(route, []))?;
+    }
+    let reads = LEGS.map(|(service, route)| {
+        (
+            service,
+            Request::to(route, []).about(format!("get the `{service}` plans")),
+        )
+    });
+    if ctx.dry_run() {
+        let requests: Vec<&Request> = reads.iter().map(|(_, request)| request).collect();
+        return ctx.dry_run_of(client, &requests).map(Printed::from);
     }
     let mut rows = Vec::new();
-    let mut dry_runs = Vec::new();
     let mut failures = Vec::new();
     let mut failed = Vec::new();
     let mut first_error = None;
-    for (service, path) in LEGS {
-        let error = match ctx.call(
-            client,
-            &Request::get(path).about(format!("get the `{service}` plans")),
-            Gate::Open,
-        ) {
-            Ok(Step::Sent(response)) => match response.document() {
-                Ok(body) => {
-                    rows.push(json!({ "service": service, "subscription": body }));
-                    continue;
-                }
-                Err(error) => error,
-            },
-            Ok(Step::DryRun(doc)) => {
-                dry_runs.push(doc);
+    for (service, request) in &reads {
+        let error = match ctx
+            .send(client, request)
+            .and_then(|response| response.document())
+        {
+            Ok(body) => {
+                rows.push(json!({ "service": service, "subscription": body }));
                 continue;
             }
             Err(error) => error,
@@ -725,9 +851,6 @@ fn subscriptions(ctx: &Context<'_>, client: &hippius::Client) -> Result<Printed>
         failures.push(failed_part("service", service, &error));
         failed.push(phrase::quote(service));
         first_error.get_or_insert(error);
-    }
-    if !dry_runs.is_empty() {
-        return Ok(Printed::Document(dry_run_requests(dry_runs)));
     }
     match first_error {
         None => Ok(Printed::List(hippius::envelope(rows))),

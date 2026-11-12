@@ -7,10 +7,11 @@
 
 use std::path::Path;
 
-use hippius::{Error, Method, Request, Result, phrase};
-use serde_json::{Map, Value, json};
+use hippius::routes::hub;
+use hippius::{Error, Request, Result, phrase, view_of};
+use serde_json::{Value, json};
 
-use crate::cli::{HubKeys, KeyCreate};
+use crate::cli::{HubKeys, KeyCreate, OneTimeSecret};
 use crate::commands::files::shown_once;
 use crate::commands::hub::{
     Issued, docker_login_command, issued_robot, with_provision_hint, without_robot_secrets,
@@ -18,9 +19,7 @@ use crate::commands::hub::{
 use crate::commands::{Printed, print_list_with, print_with, require_reveal_or_file};
 use crate::context::{Context, Gate};
 
-const KEYS: &str = "/registry/keys/";
-
-const LIST: &str = "hipc hub keys list";
+const KEYS_LIST_COMMAND: &str = "hipc hub keys list";
 
 pub(crate) fn run(ctx: &Context<'_>, command: &HubKeys) -> Result<Printed> {
     let printed = match command {
@@ -29,9 +28,8 @@ pub(crate) fn run(ctx: &Context<'_>, command: &HubKeys) -> Result<Printed> {
         HubKeys::Create(args) => create(ctx, args),
         HubKeys::Rotate {
             key_id,
-            reveal,
-            secret_file,
-        } => rotate(ctx, *key_id, *reveal, secret_file.path.as_deref()),
+            secret: OneTimeSecret { reveal, path },
+        } => rotate(ctx, *key_id, *reveal, path.as_deref()),
         HubKeys::Delete { key_id } => delete(ctx, *key_id),
     };
     printed.map_err(|error| with_provision_hint(ctx, error))
@@ -40,7 +38,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &HubKeys) -> Result<Printed> {
 /// `GET /api/registry/keys/` (swagger `registry_keys_list`), read whole: swagger lists no
 /// page parameter, so a `next` link is `internal` rather than a list cut short.
 fn list(ctx: &Context<'_>) -> Result<Printed> {
-    let request = Request::get(KEYS).about("list the Hub keys");
+    let request = Request::to(&hub::KEYS, []).about("list the Hub keys");
     print_list_with(ctx, &ctx.load_authed_client()?, &request, |response| {
         let mut page = hippius::page(response.json()?)?;
         page.items = page
@@ -55,8 +53,8 @@ fn list(ctx: &Context<'_>) -> Result<Printed> {
 /// `GET /api/registry/keys/<id>/` (swagger `registry_keys_read`, "show metadata"), printed
 /// as the list prints a row: a preview with `secret: null`.
 fn get(ctx: &Context<'_>, id: u64) -> Result<Printed> {
-    let request = Request::new(Method::Get, format!("{KEYS}{id}/"))
-        .listed_by(LIST)
+    let request = Request::to(&hub::KEY, [&id])
+        .listed_by(KEYS_LIST_COMMAND)
         .about(format!("get the Hub key `{id}`"));
     print_with(
         ctx,
@@ -102,21 +100,18 @@ fn listed_key(row: Value, what: &str) -> Result<Value> {
 /// `POST /api/registry/keys/` (swagger `registry_keys_create`), body `{name, role,
 /// expires_days?}` as swagger's description gives it, `expires_days` only when the flag is.
 fn create(ctx: &Context<'_>, args: &KeyCreate) -> Result<Printed> {
-    require_reveal_or_file(ctx, args.reveal, args.secret_file.path.is_some())?;
-    let mut body = Map::new();
-    body.insert("name".to_owned(), args.name.as_str().into());
-    body.insert("role".to_owned(), args.role.code().into());
-    if let Some(days) = args.expires_in {
-        body.insert("expires_days".to_owned(), days.into());
-    }
-    let request = Request::new(Method::Post, KEYS)
-        .json(&Value::Object(body))
-        .about(format!(
-            "create the Hub key {} with the role `{}`",
-            phrase::quote(&args.name),
-            args.role.code()
-        ));
-    let secret_file = args.secret_file.path.as_deref();
+    require_reveal_or_file(ctx, args.secret.reveal, args.secret.path.is_some())?;
+    let body = hub::KeyCreateBody {
+        name: &args.name,
+        role: &args.role,
+        expires_days: args.expires_in,
+    };
+    let request = Request::to(&hub::KEY_CREATE, []).json(&body).about(format!(
+        "create the Hub key {} with the role `{}`",
+        phrase::quote(&args.name),
+        args.role
+    ));
+    let secret_file = args.secret.path.as_deref();
     let consequence = shown_once("its secret", secret_file);
     let gate = Gate::Confirm {
         consequence: Some(&consequence),
@@ -128,10 +123,8 @@ fn create(ctx: &Context<'_>, args: &KeyCreate) -> Result<Printed> {
         gate,
         |response| {
             let body = response.document()?;
-            // The key's id, for the rotate that issues it a new secret.
-            let rotate = body
-                .get("id")
-                .and_then(Value::as_u64)
+            let rotate = view_of::<hub::Key>(&body)
+                .id
                 .map(|id| format!("hub keys rotate {id} --reveal --yes"));
             issued_robot(
                 ctx,
@@ -150,8 +143,8 @@ fn create(ctx: &Context<'_>, args: &KeyCreate) -> Result<Printed> {
 /// `POST /api/registry/keys/<id>/rotate/` (swagger `registry_keys_rotate_create`), no body.
 fn rotate(ctx: &Context<'_>, id: u64, reveal: bool, secret_file: Option<&Path>) -> Result<Printed> {
     require_reveal_or_file(ctx, reveal, secret_file.is_some())?;
-    let request = Request::new(Method::Post, format!("{KEYS}{id}/rotate/"))
-        .listed_by(LIST)
+    let request = Request::to(&hub::KEY_ROTATE, [&id])
+        .listed_by(KEYS_LIST_COMMAND)
         .about(format!("rotate the secret of the Hub key `{id}`"));
     let consequence = format!(
         "every CI job that uses its old secret stops working, and {}",
@@ -185,8 +178,8 @@ fn rotate(ctx: &Context<'_>, id: u64, reveal: bool, secret_file: Option<&Path>) 
 /// 204. A body the server sends anyway is printed as the key list prints a row, without any
 /// secret field or `docker login` command (tenet 9).
 fn delete(ctx: &Context<'_>, id: u64) -> Result<Printed> {
-    let request = Request::new(Method::Delete, format!("{KEYS}{id}/"))
-        .listed_by(LIST)
+    let request = Request::to(&hub::KEY_DELETE, [&id])
+        .listed_by(KEYS_LIST_COMMAND)
         .about(format!("delete the Hub key `{id}`"));
     let gate = Gate::Confirm {
         consequence: Some(DELETED),

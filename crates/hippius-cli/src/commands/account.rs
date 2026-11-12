@@ -14,22 +14,24 @@
 use std::fmt;
 use std::path::Path;
 
+use hippius::routes::account;
 use hippius::{
-    BillingId, Client, Code, ConfigFile, Error, Given, Method, Overrides, ProjectId, Request,
-    Result, Selection, Settings, Source, phrase, redact_value,
+    BillingId, Client, ConfigFile, Error, Failure, Given, Overrides, ProjectId, Request, Response,
+    Result, Selection, Settings, Source, phrase, redact_value, view_of,
 };
 use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
 
 use crate::cli::{
-    Access, Grant, GrantArg, InviteCreate, Invites, MarketingConsent, MemberUpdate, Members,
-    Notifications,
+    Account, Grant, GrantArg, GrantTarget, InviteCreate, Invites, MarketingConsent, MemberUpdate,
+    Members, Notifications,
 };
 use crate::commands::replace::{Entry, Found, Replace, replace_list};
 use crate::commands::{
-    Input, Printed, print_body, print_body_or, print_keyed_list, store_selection,
+    Decided, Input, Printed, keyed_page, print_body, print_body_or, print_keyed_list, projects,
+    read_then_write, referrals, sent_fields, store_selection,
 };
-use crate::context::{self, Context, Gate, Step, Write};
+use crate::context::{self, Context, DryRun, Gate, Step, WritePlan};
 
 /// The answer to `GET /api/accounts/`, or the `--dry-run` document in its place.
 #[derive(Debug)]
@@ -37,27 +39,33 @@ enum Fetched {
     /// The `accounts` array (the caller's own account, then memberships; see
     /// [`own_account`]), and the answer's other fields, such as `sharing_enabled`.
     Accounts(hippius::Page),
-    DryRun(Value),
+    DryRun(DryRun),
 }
 
-/// The accounts list, `GET /api/accounts/`.
-const ACCOUNTS: &str = "/accounts/";
+/// `GET /api/accounts/`: `hipc account list` and `get`, and the read of the token's own
+/// account before a project transfer.
+pub(crate) fn accounts_request() -> Request {
+    Request::to(&account::ACCOUNTS, []).about("list the accounts the token can act in")
+}
 
 fn accounts(ctx: &Context<'_>, client: &Client) -> Result<Fetched> {
-    let request = Request::get(ACCOUNTS).about("list the accounts the token can act in");
-    let response = match ctx.call(client, &request, Gate::Open)? {
-        Step::Sent(response) => response,
-        Step::DryRun(doc) => return Ok(Fetched::DryRun(doc)),
-    };
-    match response.json()? {
-        Value::Object(mut body) => match body.shift_remove("accounts") {
-            Some(Value::Array(accounts)) => {
-                Ok(Fetched::Accounts(hippius::page_beside(accounts, body)?))
-            }
-            _ => Err(unexpected()),
-        },
-        _ => Err(unexpected()),
+    match ctx.call(client, &accounts_request(), Gate::Open)? {
+        Step::Sent(response) => accounts_page(response.json()?).map(Fetched::Accounts),
+        Step::DryRun(doc) => Ok(Fetched::DryRun(doc)),
     }
+}
+
+/// The `accounts` of an answer of `GET /api/accounts/`, with the answer's other fields
+/// beside them.
+///
+/// # Errors
+///
+/// `internal` when the answer is not an object holding an `accounts` list.
+pub(crate) fn accounts_page(answer: Value) -> Result<hippius::Page> {
+    let Value::Object(body) = answer else {
+        return Err(unexpected());
+    };
+    keyed_page(body, "accounts").ok_or_else(unexpected)?
 }
 
 /// Where the token's own account is in the `accounts` of `GET /api/accounts/`: the one entry
@@ -69,7 +77,7 @@ pub(crate) fn own_account(accounts: &[Value]) -> Option<usize> {
     let mut owned = accounts
         .iter()
         .enumerate()
-        .filter(|(_, account)| account.get("is_owner") == Some(&Value::Bool(true)));
+        .filter(|(_, entry)| view_of::<account::AccountEntry>(entry).is_owner == Some(true));
     match (owned.next(), owned.next()) {
         (Some((at, _)), None) => Some(at),
         _ => None,
@@ -88,31 +96,49 @@ fn unexpected() -> Error {
     Error::internal("the API answered `GET /api/accounts/` without an `accounts` list")
 }
 
+pub(crate) fn run(ctx: &Context<'_>, command: &Account) -> Result<Printed> {
+    match command {
+        Account::List => list(ctx),
+        Account::Get => get(ctx),
+        Account::Notifications(command) => notifications(ctx, command),
+        Account::MarketingConsent(command) => marketing_consent(ctx, command),
+        Account::Use { account_id } => select(ctx, account_id),
+        Account::Members(command) => members(ctx, command),
+        Account::Invites(command) => invites(ctx, command),
+        Account::Projects(command) => projects::projects(ctx, command),
+        Account::ProjectTransfers(command) => projects::project_transfers(ctx, command),
+        Account::BillingAccounts(command) => projects::billing_accounts(ctx, command),
+        Account::Referrals(command) => referrals::run(ctx, command),
+    }
+}
+
 /// `hipc account list`.
-pub(crate) fn list(ctx: &Context<'_>) -> Result<Printed> {
+fn list(ctx: &Context<'_>) -> Result<Printed> {
     Ok(
         match accounts(ctx, &ctx.authed_client(&context::config()?)?)? {
-            Fetched::Accounts(page) => Printed::List(page.complete_envelope(ACCOUNTS)?),
-            Fetched::DryRun(doc) => Printed::Document(doc),
+            Fetched::Accounts(page) => {
+                Printed::List(page.complete_envelope(accounts_request().target())?)
+            }
+            Fetched::DryRun(doc) => doc.into(),
         },
     )
 }
 
 /// `hipc account get`: the selected account, or the caller's own for `self`.
-pub(crate) fn get(ctx: &Context<'_>) -> Result<Printed> {
+fn get(ctx: &Context<'_>) -> Result<Printed> {
     let (settings, client) = ctx.authed(&context::config()?)?;
     let selected = selected_scope(&ctx.overrides()?, &settings);
     let selection = settings.account;
     let mut page = match accounts(ctx, &client)? {
         Fetched::Accounts(page) => page,
-        Fetched::DryRun(doc) => return Ok(Printed::Document(doc)),
+        Fetched::DryRun(doc) => return Ok(doc.into()),
     };
     let found = match &selection {
         Selection::Own => own_account(&page.items),
         Selection::Member(id) => page
             .items
             .iter()
-            .position(|a| a.get("id").and_then(Value::as_str) == Some(id.as_str())),
+            .position(|a| view_of::<account::AccountEntry>(a).id.as_deref() == Some(id.as_str())),
     };
     if let Some(at) = found {
         // The account is on the page read, so a later page cannot change the answer.
@@ -124,12 +150,12 @@ pub(crate) fn get(ctx: &Context<'_>) -> Result<Printed> {
     }
     // Missing from a page that is not the last is no proof the token cannot act in it: a
     // membership on a later page would otherwise be `not_a_member`.
-    page.into_complete(ACCOUNTS)?;
+    page.into_complete(accounts_request().target())?;
     if matches!(selection, Selection::Own) {
         return Err(no_own_account());
     }
     Err(Error::new(
-        Code::NotAMember,
+        Failure::NotAMember,
         format!(
             "the token cannot act in the account `{}`",
             selection.as_str()
@@ -160,21 +186,17 @@ pub(crate) fn selected_scope(overrides: &Overrides, settings: &Settings) -> Map<
     ];
     for (name, given, id) in scopes {
         // An override comes from a flag or a variable ([`Context::overrides`]).
-        let source = given.map_or(id.map(|_| "profile"), |given| {
-            Some(if matches!(given.source, Source::Variable(_)) {
-                "environment"
-            } else {
-                "flag"
-            })
-        });
+        let source = match given {
+            Some(given) if matches!(given.source, Source::Variable(_)) => Some("environment"),
+            Some(_) => Some("flag"),
+            None => id.map(|_| "profile"),
+        };
         fields.insert(format!("selected_{name}"), json!(id));
         fields.insert(format!("selected_{name}_source"), json!(source));
     }
     fields
 }
 
-const NOTIFICATIONS: &str = "/notifications/settings/";
-const MARKETING_CONSENT: &str = "/notifications/marketing-consent/";
 /// The console page where the consent is given, beside the wording it is given to.
 const CONSENT_SETTINGS: &str = "https://console.hippius.com/dashboard/settings";
 
@@ -186,26 +208,30 @@ const CONSENT_SETTINGS: &str = "https://console.hippius.com/dashboard/settings";
 /// keeps its value and nothing is read first. It spends nothing; a repeat sets the same values.
 /// Turning off an email that warns of a problem ([`ALERTS`]) hides that problem from the
 /// user, so that update is confirmed; any other is not.
-pub(crate) fn notifications(ctx: &Context<'_>, command: &Notifications) -> Result<Printed> {
+fn notifications(ctx: &Context<'_>, command: &Notifications) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
     let mut off = Vec::new();
     let request = match command {
-        Notifications::Get => Request::get(NOTIFICATIONS).about("read the notification settings"),
+        Notifications::Get => {
+            Request::to(&account::NOTIFICATIONS, []).about("read the notification settings")
+        }
         Notifications::Update(args) => {
-            off = args
-                .fields()
+            let body = account::NotificationsUpdateBody {
+                email_enabled: args.email_enabled,
+                low_credit_alerts: args.low_credit_alerts,
+                zero_balance_alerts: args.zero_balance_alerts,
+                file_status_updates: args.file_status_updates,
+                marketing_emails: args.marketing_emails,
+                provider_advice_emails: args.provider_advice_emails,
+            };
+            let sent = sent_fields(&body);
+            off = ALERTS
                 .into_iter()
-                .filter(|(key, given)| *given == Some(false) && ALERTS.contains(key))
-                .map(|(key, _)| key)
+                .filter(|key| sent.get(*key) == Some(&Value::Bool(false)))
                 .collect();
-            let given: Map<String, Value> = args
-                .fields()
-                .into_iter()
-                .filter_map(|(key, given)| given.map(|on| (key.to_owned(), Value::from(on))))
-                .collect();
-            let named = phrase::ticked(given.keys(), "and");
-            Request::new(Method::Patch, NOTIFICATIONS)
-                .json(&Value::Object(given))
+            let named = phrase::ticked(sent.keys(), "and");
+            Request::to(&account::NOTIFICATIONS_UPDATE, [])
+                .json(&body)
                 .about(format!("update the notification settings {named}"))
         }
     };
@@ -253,7 +279,7 @@ const ALERTS: [&str; 4] = [
 /// form (its default), so a later default cannot file it as something else. A withdrawal
 /// spends nothing, so nothing is asked; the server appends each `POST` to the consent history,
 /// so a repeat is not a no-op.
-pub(crate) fn marketing_consent(ctx: &Context<'_>, command: &MarketingConsent) -> Result<Printed> {
+fn marketing_consent(ctx: &Context<'_>, command: &MarketingConsent) -> Result<Printed> {
     if let MarketingConsent::Update { granted: true } = command {
         return Err(Error::usage(
             "`--granted true` cannot give the marketing consent from `hipc`: it never shows the \
@@ -264,17 +290,20 @@ pub(crate) fn marketing_consent(ctx: &Context<'_>, command: &MarketingConsent) -
     let client = ctx.load_authed_client()?;
     let request = match command {
         MarketingConsent::Get => {
-            Request::get(MARKETING_CONSENT).about("read the marketing consent")
+            Request::to(&account::MARKETING_CONSENT, []).about("read the marketing consent")
         }
-        MarketingConsent::Update { .. } => Request::new(Method::Post, MARKETING_CONSENT)
-            .json(&json!({ "granted": false, "source": "settings" }))
+        MarketingConsent::Update { .. } => Request::to(&account::MARKETING_CONSENT_UPDATE, [])
+            .json(&account::MarketingConsentUpdateBody {
+                granted: false,
+                source: "settings",
+            })
             .about("withdraw the marketing consent"),
     };
     print_body(ctx, &client, &request, Gate::Open)
 }
 
 /// `hipc account use <account_id>`: stores the selection in the profile. No request is sent.
-pub(crate) fn select(ctx: &Context<'_>, id: &str) -> Result<Printed> {
+fn select(ctx: &Context<'_>, id: &str) -> Result<Printed> {
     let selection = Selection::parse(id, &Source::Argument)?;
     store_selection(
         ctx,
@@ -285,19 +314,15 @@ pub(crate) fn select(ctx: &Context<'_>, id: &str) -> Result<Printed> {
     )
 }
 
-/// The command that lists the member ids, for the hint of a 404 on a member route.
-const MEMBERS: &str = "hipc account members list";
+const MEMBERS_LIST_COMMAND: &str = "hipc account members list";
 
 /// `GET /api/accounts/members/`: every member, with their grants.
 fn members_list() -> Request {
-    Request::get(MEMBERS_PATH).about("list the team members")
+    Request::to(&account::MEMBERS, []).about("list the team members")
 }
 
-/// The members list route.
-const MEMBERS_PATH: &str = "/accounts/members/";
-
 /// `hipc account members`.
-pub(crate) fn members(ctx: &Context<'_>, command: &Members) -> Result<Printed> {
+fn members(ctx: &Context<'_>, command: &Members) -> Result<Printed> {
     match command {
         // The API answers `{members, owner}`; `owner` is kept.
         Members::List => {
@@ -305,8 +330,8 @@ pub(crate) fn members(ctx: &Context<'_>, command: &Members) -> Result<Printed> {
         }
         Members::Update(args) => update_member(ctx, args),
         Members::Delete { member_id } => {
-            let request = Request::new(Method::Delete, format!("/accounts/members/{member_id}/"))
-                .listed_by(MEMBERS)
+            let request = Request::to(&account::MEMBER_DELETE, [member_id])
+                .listed_by(MEMBERS_LIST_COMMAND)
                 .about(format!("remove the member `{member_id}` from the team"));
             let done = json!({ "id": member_id, "deleted": true });
             let client = ctx.load_authed_client()?;
@@ -322,13 +347,13 @@ pub(crate) fn members(ctx: &Context<'_>, command: &Members) -> Result<Printed> {
 }
 
 /// `hipc account invites`.
-pub(crate) fn invites(ctx: &Context<'_>, command: &Invites) -> Result<Printed> {
+fn invites(ctx: &Context<'_>, command: &Invites) -> Result<Printed> {
     match command {
         // The API answers `{invites}`.
         Invites::List => print_keyed_list(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/accounts/invites/").about("list the pending invites"),
+            &Request::to(&account::INVITES, []).about("list the pending invites"),
             "invites",
         ),
         Invites::Create(args) => create_invite(ctx, args),
@@ -345,7 +370,7 @@ pub(crate) fn invites(ctx: &Context<'_>, command: &Invites) -> Result<Printed> {
             accept(ctx, &client, &settings, &invite)
         }
         Invites::Revoke { invite_id } => {
-            let request = Request::new(Method::Delete, format!("/accounts/invites/{invite_id}/"))
+            let request = Request::to(&account::INVITE_REVOKE, [invite_id])
                 .listed_by("hipc account invites list")
                 .about(format!("revoke the invite `{invite_id}`"));
             let done = json!({ "id": invite_id, "revoked": true });
@@ -360,10 +385,6 @@ pub(crate) fn invites(ctx: &Context<'_>, command: &Invites) -> Result<Printed> {
         }
     }
 }
-
-const PREVIEW: &str = "/accounts/invites/preview/";
-
-const ACCEPT: &str = "/accounts/invites/accept/";
 
 /// What a dry run's body shows in place of the invite token.
 const TOKEN_PLACEHOLDER: &str = "<the invite token from --token-file>";
@@ -419,8 +440,8 @@ impl fmt::Debug for InviteToken {
 /// `POST /api/accounts/invites/preview/ {"token"}`, the console's shape. The token is in the
 /// body, so it stays out of access logs.
 fn preview_request(token: &str) -> Request {
-    Request::new(Method::Post, PREVIEW)
-        .json(&json!({ "token": token }))
+    Request::to(&account::INVITE_PREVIEW, [])
+        .json(&account::InvitePreviewBody { token })
         .about("preview the invite")
         .changes_nothing()
 }
@@ -428,10 +449,10 @@ fn preview_request(token: &str) -> Request {
 /// `POST /api/accounts/invites/accept/`, with `confirm_without_email` always false: joining
 /// as a user whose address the invite was not sent to is the console's question to ask.
 fn accept_request(token: &str) -> Request {
-    Request::new(Method::Post, ACCEPT).json(&json!({
-        "token": token,
-        "confirm_without_email": false,
-    }))
+    Request::to(&account::INVITE_ACCEPT, []).json(&account::InviteAcceptBody {
+        token,
+        confirm_without_email: false,
+    })
 }
 
 /// `hipc account invites preview`: what the invite offers, as the server sent it. A dry run
@@ -443,8 +464,8 @@ fn preview(
     invite: &InviteToken,
 ) -> Result<Printed> {
     if ctx.dry_run() {
-        let doc = ctx.dry_run_document(client, &preview_request(TOKEN_PLACEHOLDER))?;
-        return Ok(Printed::Document(doc));
+        let doc = ctx.dry_run_of(client, &[&preview_request(TOKEN_PLACEHOLDER)])?;
+        return Ok(doc.into());
     }
     read_preview(ctx, client, settings, invite).map(Printed::Document)
 }
@@ -488,52 +509,67 @@ fn accept(
     invite: &InviteToken,
 ) -> Result<Printed> {
     let draft = accept_request(TOKEN_PLACEHOLDER);
-    let checked = match ctx.check_write(client, &draft)? {
-        Write::DryRun(mut doc) => {
-            let preview = preview_request(TOKEN_PLACEHOLDER);
-            doc["requests"] = ctx.describe_each(client, &[&preview, &draft])?;
-            return Ok(Printed::Document(doc));
-        }
-        Write::Checked(checked) => checked,
+    let preview = preview_request(TOKEN_PLACEHOLDER);
+    let decide = || {
+        let offer: account::InviteOffer = view_of(&read_preview(ctx, client, settings, invite)?);
+        let action = joined_account(offer)?;
+        let consequence = "the token then acts in that account with the access the invite grants";
+        Ok(Decided::asked(
+            accept_request(&invite.0).about(action),
+            Some(consequence),
+        ))
     };
-    let offer = read_preview(ctx, client, settings, invite)?;
-    // The preview says when an invite can no longer be used (`valid`, with `reason`
-    // `accepted`, `revoked`, or `expired`), so the person is not asked to join an account
-    // the accept would refuse.
-    if offer.get("valid") == Some(&Value::Bool(false)) {
-        let why = match offer.get("reason").and_then(Value::as_str) {
+    let render = |sent: Result<Response>| {
+        let joined = sent
+            .and_then(|response| response.document())
+            .map(|joined| redact_value(joined, &invite.0))
+            .map_err(|error| with_accept_hint(error.redacted(&invite.0)))?;
+        use_note(ctx, &joined);
+        Ok(joined)
+    };
+    read_then_write(
+        ctx,
+        client,
+        &WritePlan::new(&[&preview], &draft),
+        decide,
+        render,
+    )
+}
+
+/// The question's action for `offer`, the invite's preview: the account to join, and who
+/// invited the caller. The preview says when an invite can no longer be used (`valid`, with
+/// `reason` `accepted`, `revoked`, or `expired`), so the person is not asked to join an
+/// account the accept would refuse.
+///
+/// # Errors
+///
+/// `conflict` when the preview says the invite is not valid, and `internal` when it has no
+/// `account_name`.
+fn joined_account(offer: account::InviteOffer) -> Result<String> {
+    if offer.valid == Some(false) {
+        let why = match offer.reason {
             Some(reason) => format!("the API says it is {}", phrase::quote(reason)),
             None => "the API says it is not valid".to_owned(),
         };
         return Err(Error::new(
-            Code::Conflict,
+            Failure::Conflict,
             format!("cannot accept the invite: {why}"),
         ));
     }
-    let Some(account) = offer.get("account_name").and_then(Value::as_str) else {
+    let Some(account) = offer.account_name else {
         return Err(Error::internal(
             "the invite preview has no `account_name`, so the confirmation cannot name the \
              account to join",
         ));
     };
-    let action = match offer.get("invited_by").and_then(Value::as_str) {
+    Ok(match offer.invited_by {
         Some(by) => format!(
             "join the account {}, invited by {}",
             phrase::quote(account),
             phrase::quote(by)
         ),
         None => format!("join the account {}", phrase::quote(account)),
-    };
-    let request = accept_request(&invite.0).about(action);
-    let consequence = "the token then acts in that account with the access the invite grants";
-    ctx.confirm_write(checked, &request.action(), Some(consequence))?;
-    let joined = ctx
-        .send(client, &request)
-        .and_then(|response| response.document())
-        .map(|joined| redact_value(joined, &invite.0))
-        .map_err(|error| with_accept_hint(error.redacted(&invite.0)))?;
-    use_note(ctx, &joined);
-    Ok(Printed::Document(joined))
+    })
 }
 
 /// The note after an invite is accepted: the `hipc account use` that makes later commands act
@@ -547,10 +583,11 @@ fn accept(
 /// invite as a failure. Reading the flags and the environment can only fail as it already
 /// did before the accept, so a failure skips the note instead.
 fn use_note(ctx: &Context<'_>, joined: &Value) {
-    let Some(id) = joined.pointer("/account/id").and_then(Value::as_str) else {
+    let joined: account::InviteAccepted = view_of(joined);
+    let Some(id) = joined.account.and_then(|account| account.id) else {
         return;
     };
-    let Ok(Selection::Member(id)) = Selection::parse(id, &Source::Argument) else {
+    let Ok(Selection::Member(id)) = Selection::parse(&id, &Source::Argument) else {
         return;
     };
     let words = format!("account use {}", id.as_str());
@@ -600,7 +637,6 @@ fn with_accept_hint(error: Error) -> Error {
 /// unless `--remove-others` is passed, so a grant the member has now that the `--grant`s
 /// leave out is refused ([`replace_list`]).
 fn update_member(ctx: &Context<'_>, args: &MemberUpdate) -> Result<Printed> {
-    let mut body = Map::new();
     let mut changes = Vec::new();
     let grants = grant_list(&args.access.grants)?;
     if let Some(grants) = &grants {
@@ -612,15 +648,18 @@ fn update_member(ctx: &Context<'_>, args: &MemberUpdate) -> Result<Printed> {
                 phrase::join(&labels(grants), "and")
             )
         });
-        body.insert("grants".to_owned(), grants_json(grants));
     }
-    for (key, value) in permissions(&args.access) {
-        if let Some(value) = value {
+    let body = account::MemberUpdateBody {
+        grants: grants.as_deref().map(grant_bodies),
+        can_manage_team: args.access.manage_team,
+        can_billing: args.access.billing_permission,
+    };
+    for (key, value) in sent_fields(&body) {
+        if key != "grants" {
             changes.push(format!("set `{key}` to `{value}`"));
-            body.insert(key.to_owned(), value.into());
         }
     }
-    if body.is_empty() {
+    if changes.is_empty() {
         // An empty PATCH changes nothing and only returns the member.
         return Err(Error::usage(
             "`hipc account members update` was given nothing to change",
@@ -628,9 +667,9 @@ fn update_member(ctx: &Context<'_>, args: &MemberUpdate) -> Result<Printed> {
         ));
     }
     let id = args.member_id;
-    let request = Request::new(Method::Patch, format!("/accounts/members/{id}/"))
-        .listed_by(MEMBERS)
-        .json(&Value::Object(body))
+    let request = Request::to(&account::MEMBER_UPDATE, [&id])
+        .listed_by(MEMBERS_LIST_COMMAND)
+        .json(&body)
         .about(format!(
             "update the member `{id}`: {}",
             phrase::join(&changes, "and")
@@ -695,13 +734,13 @@ fn member_grants(answer: &Value, id: u64) -> Option<Result<Vec<Entry>>> {
     else {
         // Missing from a page that is not the last says nothing about a later page.
         let links = hippius::page_beside(Vec::new(), answer.as_object()?.clone());
-        if let Err(error) = links.and_then(|links| links.into_complete(MEMBERS_PATH)) {
+        if let Err(error) = links.and_then(|links| links.into_complete(members_list().target())) {
             return Some(Err(error));
         }
-        let missing = Error::new(Code::NotFound, format!("no member with id `{id}`"));
-        return Some(Err(
-            missing.with_hint(format!("run `{MEMBERS}` to see what exists"))
-        ));
+        let missing = Error::new(Failure::NotFound, format!("no member with id `{id}`"));
+        return Some(Err(missing.with_hint(format!(
+            "run `{MEMBERS_LIST_COMMAND}` to see what exists"
+        ))));
     };
     let grants = member
         .get("grants")?
@@ -743,24 +782,26 @@ fn member_grants(answer: &Value, id: u64) -> Option<Result<Vec<Entry>>> {
 /// `--grant` is an empty list, and a permission not given is `false`.
 fn create_invite(ctx: &Context<'_>, args: &InviteCreate) -> Result<Printed> {
     let grants = grant_list(&args.access.grants)?.unwrap_or_default();
-    let mut body = Map::new();
-    body.insert("email".to_owned(), args.email.as_str().into());
-    body.insert("grants".to_owned(), grants_json(&grants));
+    let body = account::InviteCreateBody {
+        email: &args.email,
+        grants: grant_bodies(&grants),
+        can_manage_team: args.access.manage_team.unwrap_or(false),
+        can_billing: args.access.billing_permission.unwrap_or(false),
+    };
+    // The permissions are the body's other `true` fields.
     let mut given = labels(&grants);
-    for (key, value) in permissions(&args.access) {
-        let value = value.unwrap_or(false);
-        if value {
+    for (key, value) in sent_fields(&body) {
+        if value == Value::Bool(true) {
             given.push(format!("`{key}`"));
         }
-        body.insert(key.to_owned(), value.into());
     }
     let granted = if given.is_empty() {
         "nothing".to_owned()
     } else {
         phrase::join(&given, "and")
     };
-    let request = Request::new(Method::Post, "/accounts/invites/")
-        .json(&Value::Object(body))
+    let request = Request::to(&account::INVITE_CREATE, [])
+        .json(&body)
         .about(format!(
             "email an invite to `{}` that grants {granted}",
             args.email
@@ -774,7 +815,7 @@ fn create_invite(ctx: &Context<'_>, args: &InviteCreate) -> Result<Printed> {
 ///
 /// # Errors
 ///
-/// `usage` for `none` beside another `--grant`, or a scope given twice for the same
+/// `usage` when `none` is beside another `--grant`, or a scope is given twice for the same
 /// account, project, or billing account: either would leave the caller guessing which list
 /// the server keeps.
 fn grant_list(args: &[GrantArg]) -> Result<Option<Vec<Grant>>> {
@@ -812,25 +853,23 @@ fn grant_list(args: &[GrantArg]) -> Result<Option<Vec<Grant>>> {
     Ok((!args.is_empty()).then_some(grants))
 }
 
-/// The two permissions, by their body keys.
-fn permissions(access: &Access) -> [(&'static str, Option<bool>); 2] {
-    [
-        ("can_manage_team", access.manage_team),
-        ("can_billing", access.billing_permission),
-    ]
-}
-
 /// Each grant as the console sends it: `scope` and `level`, and `project` or `billing`
 /// for a grant on one of them.
-fn grants_json(grants: &[Grant]) -> Value {
+fn grant_bodies(grants: &[Grant]) -> Vec<account::GrantBody<'_>> {
     grants
         .iter()
         .map(|g| {
-            let mut grant = json!({ "scope": g.scope, "level": g.level });
-            if let Some((key, id)) = g.target.key_and_id() {
-                grant[key] = id.into();
+            let (project, billing) = match &g.target {
+                GrantTarget::Account => (None, None),
+                GrantTarget::Project(id) => (Some(id.as_str()), None),
+                GrantTarget::Billing(id) => (None, Some(id.as_str())),
+            };
+            account::GrantBody {
+                scope: g.scope,
+                level: g.level,
+                project,
+                billing,
             }
-            grant
         })
         .collect()
 }

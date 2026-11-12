@@ -376,10 +376,10 @@ fn a_secret_that_cannot_be_moved_whole_keeps_the_answer_on_stdout() {
         assert_eq!(run.code(), Some(1), "{answer}: {}", run.stderr());
         // The answer as sent, since the secret is moved before `hipc` adds its login command.
         assert_eq!(run.json(), answer);
-        let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-        assert_eq!(error["error"]["code"], "internal");
-        assert_eq!(error["error"]["side_effects"], "partial");
-        let message = error["error"]["message"].as_str().unwrap();
+        let error = run.error();
+        assert_eq!(error["code"], "internal");
+        assert_eq!(error["side_effects"], "partial");
+        let message = error["message"].as_str().unwrap();
         assert!(message.contains(words), "{message}");
         assert!(std::fs::symlink_metadata(&file).is_err(), "{answer}");
     }
@@ -431,6 +431,36 @@ fn a_create_that_issues_no_secret_writes_no_file() {
     );
 }
 
+/// A namespace create whose secret comes under another of its names (`secret`, `password`,
+/// `token`) and goes to `--secret-file` is followed by the note that names the file, never by
+/// one that says no secret was issued and suggests the rotate that would void the saved one.
+#[test]
+fn a_create_whose_secret_has_another_name_notes_the_file() {
+    let create = issuers().remove(5);
+    for key in ["secret", "Password", "token"] {
+        let answer = format!(r#"{{"robot_name":"robot$team","{key}":"s3cr3t"}}"#);
+        let server = server_for(&create, Reply::json(201, &answer));
+        let home = Home::new();
+        let file = home.path().join("secret.txt");
+        let run = run_into(
+            &home,
+            &server,
+            &create,
+            &file,
+            &["--reveal", "--yes", "--output", "text"],
+        );
+        assert_eq!(run.code(), Some(0), "{}", run.stderr());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "s3cr3t");
+        assert!(
+            run.stderr().starts_with("note: the secret is in ")
+                && !run.stderr().contains("issued")
+                && !run.stderr().contains("rotate"),
+            "{key}: {}",
+            run.stderr()
+        );
+    }
+}
+
 /// An answer that is not an object holds no top-level secret: a secret inside it cannot be
 /// moved whole, so the answer is printed, and one with none writes no file.
 #[test]
@@ -455,7 +485,7 @@ fn no_note_names_a_command_with_a_profile_that_is_not_a_plain_word() {
     let s3 = issuers().remove(0);
     let server = server_for(&s3, Reply::json(201, &s3.answer));
     let home = Home::new();
-    home.write_config("[profiles.\"my work\"]\n");
+    home.write_config("[profiles.\"café\"]\n");
     let file = home.path().join("secret.txt");
     let mut argv = s3.argv.clone();
     let path = file.to_str().expect("the test path is UTF-8");
@@ -468,7 +498,7 @@ fn no_note_names_a_command_with_a_profile_that_is_not_a_plain_word() {
         "text",
     ]);
     let run = Hipc::against(&home, &server)
-        .env("HIPPIUS_PROFILE", "my work")
+        .env("HIPPIUS_PROFILE", "café")
         .run(&argv);
     assert_eq!(run.code(), Some(0), "{}", run.stderr());
     assert_eq!(run.stderr(), "");
@@ -502,10 +532,10 @@ fn a_refused_hub_answer_keeps_the_secret_in_the_file() {
             std::fs::read_to_string(&file).expect("the secret was written"),
             ROBOT_SECRET
         );
-        let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-        assert_eq!(error["error"]["code"], "internal");
-        assert_eq!(error["error"]["side_effects"], "partial");
-        let message = error["error"]["message"].as_str().expect("a message");
+        let error = run.error();
+        assert_eq!(error["code"], "internal");
+        assert_eq!(error["side_effects"], "partial");
+        let message = error["message"].as_str().expect("a message");
         assert!(message.contains(words), "{message}");
         assert!(
             message.ends_with(&format!("; the secret is in `{}`", file.display())),
@@ -539,10 +569,10 @@ fn a_hub_answer_with_a_login_command_is_not_printed_when_the_file_fails() {
     assert_eq!(run.json(), json!({"robot_secret": ROBOT_SECRET}));
     assert!(!run.stdout().contains("docker"), "{}", run.stdout());
     assert!(!run.stderr().contains(ROBOT_SECRET), "{}", run.stderr());
-    let error: Value = serde_json::from_str(run.stderr()).expect("one JSON object");
-    assert_eq!(error["error"]["code"], "internal");
-    assert_eq!(error["error"]["side_effects"], "partial");
-    let message = error["error"]["message"].as_str().expect("a message");
+    let error = run.error();
+    assert_eq!(error["code"], "internal");
+    assert_eq!(error["side_effects"], "partial");
+    let message = error["message"].as_str().expect("a message");
     assert!(
         message.contains("holds a `docker login` command")
             && message.contains("printed only the secret on stdout"),

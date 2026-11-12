@@ -2,11 +2,10 @@
 //! powers it off. The read is the policy fields of the VM; the update is not confirmed, as
 //! `hipc compute vms start` and `stop` are not.
 
+use hippius::routes::compute;
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, draft, route};
-
-const VM: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, VM, draft, route_of};
 
 /// A VM in the shape of swagger `GET /api/compute/vms/{vm_id}/`, with the policy fields; a
 /// pending policy awaits the acknowledgement of the VM's server.
@@ -48,9 +47,9 @@ fn hipc(server: &Server, args: &[&str]) -> Run {
 /// fields are not printed. The route is account-scoped.
 #[test]
 fn get_prints_the_policy_fields_of_the_vm() {
-    let server = Server::start(vec![route(
-        "GET",
-        &vm_path(),
+    let server = Server::start(vec![route_of(
+        &compute::VM,
+        [&VM],
         Reply::json(200, &vm("stop", true)),
     )]);
     let doc = hipc(&server, &["get", VM]).ok();
@@ -69,9 +68,9 @@ fn get_prints_the_policy_fields_of_the_vm() {
     assert_eq!(request.method, "GET");
     assert_eq!(request.path(), vm_path());
 
-    let sparse = Server::start(vec![route(
-        "GET",
-        &vm_path(),
+    let sparse = Server::start(vec![route_of(
+        &compute::VM,
+        [&VM],
         Reply::json(200, r#"{"on_guest_poweroff":"restart"}"#),
     )]);
     let doc = Hipc::against(&Home::new(), &sparse)
@@ -103,12 +102,13 @@ fn get_prints_the_policy_fields_of_the_vm() {
 }
 
 /// The read prints a policy swagger does not list as the server sent it, and fills a `vm_id`
-/// that is `null` with the one asked for; the update compares the policy with the one sent.
+/// that is `null` with the one asked for. `update_refuses_an_answer_with_another_policy`
+/// holds the update to the policy it sent.
 #[test]
 fn get_prints_a_policy_swagger_does_not_list() {
-    let server = Server::start(vec![route(
-        "GET",
-        &vm_path(),
+    let server = Server::start(vec![route_of(
+        &compute::VM,
+        [&VM],
         Reply::json(200, r#"{"vm_id":null,"on_guest_poweroff":"hibernate"}"#),
     )]);
     let doc = hipc(&server, &["get", VM]).ok();
@@ -119,7 +119,7 @@ fn get_prints_a_policy_swagger_does_not_list() {
 /// A 200 with an empty body to the read is `internal`, and nothing was written.
 #[test]
 fn get_refuses_an_empty_answer() {
-    let server = Server::start(vec![route("GET", &vm_path(), Reply::json(200, ""))]);
+    let server = Server::start(vec![route_of(&compute::VM, [&VM], Reply::json(200, ""))]);
     let error = hipc(&server, &["get", VM]).fails(1, "internal");
     assert!(
         error["message"]
@@ -141,7 +141,7 @@ fn get_refuses_an_answer_without_the_policy() {
         r#"{"on_guest_poweroff":1}"#,
         "[]",
     ] {
-        let server = Server::start(vec![route("GET", &vm_path(), Reply::json(200, body))]);
+        let server = Server::start(vec![route_of(&compute::VM, [&VM], Reply::json(200, body))]);
         let error = hipc(&server, &["get", VM]).fails(1, "internal");
         assert_eq!(
             error["message"],
@@ -153,9 +153,9 @@ fn get_refuses_an_answer_without_the_policy() {
         );
         assert_eq!(error["side_effects"], "none");
     }
-    let missing = Server::start(vec![route(
-        "GET",
-        &vm_path(),
+    let missing = Server::start(vec![route_of(
+        &compute::VM,
+        [&VM],
         Reply::json(404, r#"{"detail":"Not found."}"#),
     )]);
     hipc(&missing, &["get", VM]).fails(1, "not_found");
@@ -166,9 +166,9 @@ fn get_refuses_an_answer_without_the_policy() {
 #[test]
 fn update_puts_the_policy_and_prints_it() {
     for value in ["restart", "stop"] {
-        let server = Server::start(vec![route(
-            "PUT",
-            &policy_path(),
+        let server = Server::start(vec![route_of(
+            &compute::VM_POWER_POLICY_UPDATE,
+            [&VM],
             Reply::json(200, &vm(value, false)),
         )]);
         let doc = hipc(&server, &["update", VM, "--on-guest-poweroff", value]).ok();
@@ -195,9 +195,22 @@ fn update_refuses_an_answer_with_another_policy() {
             r#"{"vm_id":"x"}"#.to_owned(),
             "the API answered without `on_guest_poweroff`",
         ),
+        // A policy that is not text is no policy, and `partial` here as after any `PUT`.
+        (
+            r#"{"vm_id":"x","on_guest_poweroff":1}"#.to_owned(),
+            "the API answered without `on_guest_poweroff`",
+        ),
+        (
+            r#"{"vm_id":"x","on_guest_poweroff":null}"#.to_owned(),
+            "the API answered without `on_guest_poweroff`",
+        ),
     ];
     for (body, why) in cases {
-        let server = Server::start(vec![route("PUT", &policy_path(), Reply::json(200, &body))]);
+        let server = Server::start(vec![route_of(
+            &compute::VM_POWER_POLICY_UPDATE,
+            [&VM],
+            Reply::json(200, &body),
+        )]);
         let error =
             hipc(&server, &["update", VM, "--on-guest-poweroff", "stop"]).fails(1, "internal");
         assert_eq!(
@@ -223,7 +236,11 @@ const HOST_UNSUPPORTED: &str = "note: the VM's server does not support `stop` ye
 /// Runs `hipc --output text compute vms power-policy update VM --on-guest-poweroff <policy>`
 /// against a server that answers with `body`, and returns what it printed on stderr.
 fn text_update_notes(policy: &str, body: &str) -> String {
-    let server = Server::start(vec![route("PUT", &policy_path(), Reply::json(200, body))]);
+    let server = Server::start(vec![route_of(
+        &compute::VM_POWER_POLICY_UPDATE,
+        [&VM],
+        Reply::json(200, body),
+    )]);
     let run = Hipc::against(&Home::new(), &server).run(&[
         "--output",
         "text",
@@ -260,9 +277,9 @@ fn update_notes_the_bill_and_a_policy_the_server_has_not_applied() {
     // A pending policy without a reason is on its way, as `awaiting-ack` is.
     let no_reason = r#"{"on_guest_poweroff":"restart","on_guest_poweroff_pending":true}"#;
     assert_eq!(text_update_notes("restart", no_reason), PENDING);
-    let server = Server::start(vec![route(
-        "PUT",
-        &policy_path(),
+    let server = Server::start(vec![route_of(
+        &compute::VM_POWER_POLICY_UPDATE,
+        [&VM],
         Reply::json(200, &vm("stop", true)),
     )]);
     let run = Hipc::against(&Home::new(), &server).run(&[
@@ -291,7 +308,7 @@ fn get_notes_a_pending_policy_by_its_reason() {
         (vm_pending_for("stop", Some("awaiting-ack")), PENDING),
         (vm("stop", false), ""),
     ] {
-        let server = Server::start(vec![route("GET", &vm_path(), Reply::json(200, &body))]);
+        let server = Server::start(vec![route_of(&compute::VM, [&VM], Reply::json(200, &body))]);
         let run = Hipc::against(&Home::new(), &server).run(&[
             "--output",
             "text",
@@ -310,8 +327,7 @@ fn get_notes_a_pending_policy_by_its_reason() {
 #[test]
 fn update_dry_run_is_the_put() {
     let server = Server::start(vec![]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .run(&[
             "--dry-run",
             "compute",
@@ -357,9 +373,9 @@ fn update_refuses_a_bad_policy_or_vm_id() {
 /// `power-policy-unsupported-on-host`; the server's words are quoted, and nothing was set.
 #[test]
 fn update_reports_a_host_without_stop() {
-    let server = Server::start(vec![route(
-        "PUT",
-        &policy_path(),
+    let server = Server::start(vec![route_of(
+        &compute::VM_POWER_POLICY_UPDATE,
+        [&VM],
         Reply::json(409, r#"{"error":"power-policy-unsupported-on-host"}"#),
     )]);
     let error = hipc(&server, &["update", VM, "--on-guest-poweroff", "stop"]).fails(1, "conflict");

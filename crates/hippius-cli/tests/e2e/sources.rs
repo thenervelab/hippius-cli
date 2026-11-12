@@ -1,6 +1,7 @@
 //! Tenet 15, "Name the input, where it came from, and its value": a bad value from a
 //! flag, a variable, a file, stdin, or the config file reads differently for each, with
-//! the fix that belongs to it.
+//! the fix that belongs to it. The project and billing-account selectors' sources are
+//! `projects.rs`'s.
 
 use std::os::unix::fs::PermissionsExt as _;
 

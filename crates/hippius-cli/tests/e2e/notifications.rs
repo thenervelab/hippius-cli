@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, draft, parsed, route};
 
 const SETTINGS: &str = "/api/notifications/settings/";
 const CONSENT: &str = "/api/notifications/marketing-consent/";
@@ -18,10 +18,6 @@ const SAVED: &str = concat!(
 /// The consent in the shape of swagger `MarketingConsentState`.
 const WITHDRAWN: &str = r#"{"state":"no","receives_marketing":false}"#;
 const GIVEN: &str = r#"{"state":"yes","receives_marketing":true}"#;
-
-fn parsed(text: &str) -> Value {
-    serde_json::from_str(text).expect("the fixture is JSON")
-}
 
 fn hipc(server: &Server, args: &[&str]) -> Run {
     let mut argv = vec!["account"];
@@ -163,8 +159,7 @@ fn notifications_update_needs_a_setting_and_a_boolean() {
 #[test]
 fn notifications_update_dry_run_is_one_patch() {
     let server = Server::start(vec![]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .run(&[
             "--dry-run",
             "account",
@@ -341,9 +336,7 @@ fn marketing_consent_cannot_be_given_from_hipc() {
     let runs = [
         Hipc::against(&Home::new(), &server).run(&given),
         Hipc::against(&Home::new(), &server).run(&dry_run),
-        Hipc::new(&Home::new())
-            .env("HIPPIUS_API_URL", server.url())
-            .run(&given),
+        Hipc::tokenless(&Home::new(), &server).run(&given),
     ];
     for run in runs {
         let error = run.fails(2, "usage");
@@ -404,8 +397,7 @@ fn marketing_consent_update_needs_granted_as_a_boolean() {
 #[test]
 fn marketing_consent_update_dry_run_and_failure() {
     let server = Server::start(vec![]);
-    let doc = Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    let doc = Hipc::tokenless(&Home::new(), &server)
         .run(&[
             "--dry-run",
             "account",

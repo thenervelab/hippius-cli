@@ -2,18 +2,28 @@
 
 use std::path::{Path, PathBuf};
 
+use hippius::routes;
 use hippius::{ConfigFile, Error, Given, Overrides, Request, Result, Source, Token, phrase};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
 
-use crate::commands::{Input, Printed, account, local_dry_run};
-use crate::context::{self, Context, Gate, Question, Step};
+use crate::cli::Auth;
+use crate::commands::{Input, Printed, account, local_dry_run, object};
+use crate::context::{self, Context, Question};
 use crate::hidden::{self, Typed};
 use crate::output;
 
 /// `hipc auth login`: `--token-file <path>`, or at a terminal the token typed at a prompt,
 /// stores a token the caller holds.
-pub(crate) fn login(ctx: &Context<'_>, token_file: Option<&Path>) -> Result<Printed> {
+pub(crate) fn run(ctx: &Context<'_>, command: &Auth) -> Result<Printed> {
+    match command {
+        Auth::Login { token_file } => login(ctx, token_file.as_deref()),
+        Auth::Status => status(ctx),
+        Auth::Logout => logout(ctx),
+    }
+}
+
+fn login(ctx: &Context<'_>, token_file: Option<&Path>) -> Result<Printed> {
     let login = Login::new(ctx)?;
     // A token bound to any origin but the default one is sent there from now on. Asked
     // before the hidden prompt, the question says the token comes next: this answer is
@@ -122,16 +132,16 @@ impl Login {
     /// The fields of a dry run that would store `token`. This copy of the file is never
     /// written: storing the token in it only gives the origin as the real run stores it,
     /// normalized.
-    fn dry_run(&self, token: &Token, replaces: bool) -> Result<Value> {
+    fn dry_run(&self, token: &Token, replaces: bool) -> Result<Map<String, Value>> {
         let mut config = ConfigFile::load(self.path.clone())?;
         let origin = config.set_token(&self.profile, token, &self.target.value)?;
-        Ok(json!({
-            "profile": self.profile,
-            "token_stored": true,
-            "replaces_token": replaces,
-            "token_origin": origin,
-            "config_path": config.path().display().to_string(),
-        }))
+        Ok(object([
+            ("profile", self.profile.as_str().into()),
+            ("token_stored", true.into()),
+            ("replaces_token", replaces.into()),
+            ("token_origin", origin.into()),
+            ("config_path", config.path().display().to_string().into()),
+        ]))
     }
 
     /// Asks before the token stored in the profile is replaced by `new`, which names the token
@@ -203,7 +213,6 @@ fn asked_token(ctx: &Context<'_>, ask_first: impl FnOnce() -> Result<()>) -> Res
     let typed = hidden::read_line(|| output::note(TOKEN_PROMPT));
     // Enter was not echoed, so the next line starts here.
     output::note("\n");
-    // The same command again, with the profile and the origin this run was given.
     let retry = format!(
         "run `{}` and paste the token at the prompt, or pass `--token-file <path>`",
         phrase::command(ctx.args())
@@ -242,21 +251,21 @@ fn token_from(typed: std::io::Result<Typed>, retry: &str) -> Result<Token> {
 /// The token check decides the exit code. A failed user read does not undo it: the
 /// command still exits 0, with `user` null and `user_error` saying what failed, and text
 /// mode warns on stderr.
-pub(crate) fn status(ctx: &Context<'_>) -> Result<Printed> {
+fn status(ctx: &Context<'_>) -> Result<Printed> {
     let config = context::config()?;
     let overrides = ctx.overrides()?;
     let (settings, client) = ctx.authed(&config)?;
-    let check = Request::get("/accounts/").about("check the token");
-    let me = Request::get("/users/me/").about("read the signed-in user");
-    if let Step::DryRun(mut doc) = ctx.call(&client, &check, Gate::Open)? {
-        doc["requests"] = ctx.describe_each(&client, &[&check, &me])?;
-        return Ok(Printed::Document(doc));
+    let check = Request::to(&routes::account::ACCOUNTS, []).about("check the token");
+    let me = Request::to(&routes::account::USER, []).about("read the signed-in user");
+    if ctx.dry_run() {
+        return ctx.dry_run_of(&client, &[&check, &me]).map(Printed::from);
     }
+    let _token_works = ctx.send(&client, &check)?;
     let mut doc = json!({
         "profile": settings.profile,
         "account": settings.account.as_str(),
         "token_preview": settings.token().and_then(Token::preview),
-        "token_source": if overrides.token.is_some() { "environment" } else { "config" },
+        "token_source": TokenSource::of(&overrides).as_str(),
         "api_url": settings.api_url,
     });
     if let Value::Object(fields) = &mut doc {
@@ -280,6 +289,32 @@ pub(crate) fn status(ctx: &Context<'_>) -> Result<Printed> {
     Ok(Printed::Document(doc))
 }
 
+/// Where the token a run sends comes from: `HIPPIUS_TOKEN`, which wins, or the profile in
+/// the config file.
+#[derive(Debug, Clone, Copy)]
+enum TokenSource {
+    Environment,
+    Config,
+}
+
+impl TokenSource {
+    fn of(overrides: &Overrides) -> Self {
+        if overrides.token.is_some() {
+            Self::Environment
+        } else {
+            Self::Config
+        }
+    }
+
+    /// The source as `hipc auth status` prints it, in `token_source`.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Environment => "environment",
+            Self::Config => "config",
+        }
+    }
+}
+
 /// The user in an answer of `GET /api/users/me/`, as the server sent it. Swagger
 /// (`users_me`) documents a page of `User` rows, while its description says the route
 /// returns the caller's own record, so both are read: a `User` object, or a page that
@@ -300,7 +335,7 @@ fn user(answer: &Value) -> Result<Value> {
 }
 
 /// `hipc auth logout`: removes the stored token. Nothing is revoked on the server.
-pub(crate) fn logout(ctx: &Context<'_>) -> Result<Printed> {
+fn logout(ctx: &Context<'_>) -> Result<Printed> {
     let path = context::config_path()?;
     let overrides = ctx.overrides()?;
     let config = ConfigFile::load(path.clone())?;
@@ -308,7 +343,7 @@ pub(crate) fn logout(ctx: &Context<'_>) -> Result<Printed> {
     if ctx.dry_run() {
         return Ok(Printed::Document(local_dry_run(
             "remove_token",
-            json!({ "profile": profile, "token_stored": false }),
+            object([("profile", profile.into()), ("token_stored", false.into())]),
         )));
     }
     ctx.confirm(Question {

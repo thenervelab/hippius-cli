@@ -24,12 +24,13 @@ use std::fmt;
 use std::path::Path;
 
 use serde_json::{Map, Value};
-use zeroize::{Zeroize as _, Zeroizing};
+use zeroize::Zeroizing;
 
-use crate::dns::{ObjectFile, clear_owned, load_object, longest_first, secret_spellings};
 use crate::error::{Error, Result};
 use crate::phrase::quote_path;
 use crate::private_file::{Guarded, NamedBy};
+use crate::private_object::load_private_object;
+use crate::secret::{SecretValue, clear_owned};
 
 /// The secrets of an app, loaded from their file. Its `Debug` counts the secrets and shows
 /// neither a name nor a value.
@@ -69,12 +70,8 @@ impl AppSecrets {
                 file_hint(flag),
             )
         };
-        let mut file = match load_object(path, guarded)? {
-            ObjectFile::Object(file) => file,
-            ObjectFile::Missing => return Err(refuse("does not exist")),
-            ObjectFile::Repeated => return Err(refuse("names a secret twice")),
-            ObjectFile::NotAnObject => return Err(refuse("is not a JSON object")),
-        };
+        let mut file = load_private_object(path, guarded, &file_hint(flag))?
+            .map_err(|problem| refuse(&problem.describe("a secret")))?;
         let mut secrets = Vec::with_capacity(file.len());
         let mut not_text = None;
         for (name, value) in std::mem::take(&mut *file) {
@@ -107,14 +104,14 @@ impl AppSecrets {
         self.secrets.iter().map(|(name, _)| name.as_str())
     }
 
-    /// The `secrets` object of the request body.
-    pub fn body(&self) -> Value {
-        Value::Object(
+    /// The `secrets` object of the request body, cleared when dropped.
+    pub fn body(&self) -> SecretValue {
+        SecretValue::new(Value::Object(
             self.secrets
                 .iter()
                 .map(|(name, text)| (name.clone(), Value::from(text.as_str())))
                 .collect(),
-        )
+        ))
     }
 
     /// The `secrets` object a dry run shows: each name with a placeholder, so the dry run says
@@ -145,28 +142,10 @@ impl AppSecrets {
     }
 
     /// The texts to redact from anything an answer or an error repeats, longest first: every
-    /// value in each spelling the DNS credential is redacted in
-    /// (`hippius::DnsCredentials::redactions`). An empty value redacts nothing. They are
-    /// cleared when dropped.
+    /// value in every spelling ([`crate::redactions`]). An empty value redacts nothing.
+    /// They are cleared when dropped.
     pub fn redactions(&self) -> Zeroizing<Vec<String>> {
-        Zeroizing::new(longest_first(
-            self.secrets
-                .iter()
-                .flat_map(|(_, text)| secret_spellings(text))
-                .collect(),
-        ))
-    }
-}
-
-/// Clears every string in `value`, at any depth, in place: for a request body built from
-/// [`AppSecrets::body`] once it is serialized, so its copies of the values are not left in
-/// freed memory. The serialized bytes the request holds are not cleared.
-pub fn clear_strings(value: &mut Value) {
-    match value {
-        Value::String(text) => text.zeroize(),
-        Value::Array(items) => items.iter_mut().for_each(clear_strings),
-        Value::Object(fields) => fields.values_mut().for_each(clear_strings),
-        _ => {}
+        crate::redact::redactions(self.secrets.iter().map(|(_, text)| text.as_str()))
     }
 }
 
@@ -241,8 +220,8 @@ mod tests {
             ["B_KEY", "A_KEY", "C", "bad key"]
         );
         assert_eq!(
-            secrets.body(),
-            serde_json::json!({"B_KEY": " padded \n", "A_KEY": "", "C": "x\u{1b}\u{0}",
+            secrets.body().as_value(),
+            &serde_json::json!({"B_KEY": " padded \n", "A_KEY": "", "C": "x\u{1b}\u{0}",
                                "bad key": "y"})
         );
         // A name the server would not take is described by its place, not printed.
@@ -317,9 +296,14 @@ mod tests {
     #[test]
     fn a_missing_or_open_file_is_refused() {
         let dir = dir("guard");
-        let missing = AppSecrets::load(&dir.join("missing.json"), FLAG).unwrap_err();
-        let message = missing.message();
-        assert!(message.ends_with("does not exist"), "{message}");
+        // A secret passed in place of the path names no file, and is not repeated.
+        let missing = AppSecrets::load(Path::new("hunter2"), FLAG).unwrap_err();
+        assert_eq!(
+            missing.message(),
+            "the secrets file `--secrets-file` names does not exist; the path is not repeated \
+             here, in case it is a secret passed in place of the file"
+        );
+        assert_eq!(missing.hint(), Some(file_hint(FLAG).as_str()));
         let path = file(&dir, "{}");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
         let open = AppSecrets::load(&path, FLAG).unwrap_err();
@@ -329,16 +313,6 @@ mod tests {
             "{message}"
         );
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn clear_strings_empties_every_string_at_any_depth() {
-        let mut body = serde_json::json!({"a": "x", "b": ["y", {"c": "z"}], "n": 1});
-        clear_strings(&mut body);
-        assert_eq!(
-            body,
-            serde_json::json!({"a": "", "b": ["", {"c": ""}], "n": 1})
-        );
     }
 
     #[test]

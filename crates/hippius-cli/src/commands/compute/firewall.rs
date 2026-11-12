@@ -1,14 +1,16 @@
 //! `hipc compute firewall update`: the rules file, read and checked rule by rule, and the
 //! guarded replace of a VM's inbound rules. The rules a file holds and the rules the server
-//! answers are compared as entries ([`rule_entry`]), so a rule the file leaves out is seen.
+//! answers are read by one reader ([`Rule::read`]) and compared as entries ([`Rule::entry`]),
+//! so a rule the file leaves out is seen.
 
 use std::net::Ipv4Addr;
 use std::path::Path;
 
-use hippius::{Error, Method, Request, Result, phrase};
+use hippius::routes::compute::{self, FirewallUpdateBody};
+use hippius::{Error, Request, Result, phrase};
 use serde_json::{Map, Value, json};
 
-use super::{VMS, firewall_get, firewall_path};
+use super::{VMS_LIST_COMMAND, of_vm};
 use crate::cli::FirewallUpdate;
 use crate::commands::replace::{self, Entry, Found, Replace, replace_list};
 use crate::commands::{Input, Printed};
@@ -19,29 +21,31 @@ use crate::context::Context;
 /// run sends nothing.
 const REVISION_PLACEHOLDER: &str = "<the revision the read returns>";
 
-/// `PUT .../firewall/`: the file's `rules` array, unchanged, plus `base_revision`: the one
-/// given, or else the `revision` the guard's read returned (none with `--remove-others`,
-/// which reads nothing). The PUT replaces the whole list, so a file that does not parse,
-/// or any rule that is malformed, refuses the whole update before anything is sent: a list
-/// cut short would close every port it no longer names. A rule the VM has now that the
-/// file leaves out is refused unless `--remove-others` is passed ([`replace_list`]).
+/// `PUT .../firewall/`: the file's `rules` array, unchanged, plus `base_revision`: the one given,
+/// or else the `revision` the guard's read returned, so the server refuses the PUT with 409 if
+/// another client changed the rules after that read, rather than a new rule being deleted unseen.
+/// With `--remove-others` that read compares nothing and comes after the question, for the revision
+/// alone. The PUT replaces the whole list, so a file that does not parse, or any rule that is
+/// malformed, refuses the whole update before anything is sent: a list cut short would close every
+/// port it no longer names. A rule the VM has now that the file leaves out is refused unless
+/// `--remove-others` is passed ([`replace_list`]).
 pub(super) fn update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed> {
-    let (rules, entries) = firewall_rules(&args.rules_file)?;
-    let vm_id = &args.vm_id;
-    let (action, consequence) = firewall_question(vm_id, &args.rules_file, &rules);
+    let (rules, read) = firewall_rules(&args.rules_file)?;
+    let vm_id = &args.vm.vm_id;
+    let (action, consequence) = firewall_question(vm_id.as_str(), &args.rules_file, &read);
     let put_body = |revision: Option<&str>| {
-        let mut body = Map::new();
-        body.insert("rules".to_owned(), Value::Array(rules.clone()));
-        if let Some(revision) = revision {
-            body.insert("base_revision".to_owned(), revision.into());
-        }
-        Value::Object(body)
+        let body = FirewallUpdateBody {
+            rules: &rules,
+            base_revision: revision,
+        };
+        serde_json::to_value(body).expect("a firewall body is plain JSON data")
     };
-    let read = firewall_get(vm_id);
+    let entries = read.iter().map(Rule::entry).collect();
+    let read = firewall_get(vm_id.as_str());
     let read_action = read.action();
     let replace = Replace {
-        write: Request::new(Method::Put, firewall_path(vm_id))
-            .listed_by(VMS)
+        write: Request::to(&compute::FIREWALL_UPDATE, [&vm_id])
+            .listed_by(VMS_LIST_COMMAND)
             .json(&put_body(args.base_revision.as_deref()))
             .about(action.as_str()),
         consequence: Some(consequence),
@@ -56,20 +60,26 @@ pub(super) fn update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed
         noun: "inbound rule",
         owner: format!("the VM `{vm_id}`"),
     };
-    // The guard compared the file with the rules it read, so the PUT is made conditional on
-    // them: without `--base-revision`, it carries the `revision` that read returned, and the
-    // server refuses it with 409 if another client changed the rules in between. Without
-    // that, a rule added after the read would be deleted unseen. A `--base-revision` given
-    // is sent as it is.
     let current = |answer: Value| {
         let unreadable = || crate::commands::unreadable(&read_action);
-        let rules = answer.get("rules").and_then(Value::as_array);
-        let entries = rules
-            .ok_or_else(unreadable)?
-            .iter()
-            .map(firewall_entry)
-            .collect::<Option<Vec<Entry>>>()
-            .ok_or_else(unreadable)?;
+        // `--remove-others` compares nothing, so a server rule `hipc` does not read must not
+        // refuse a replace the person has said yes to: only the revision is read.
+        let entries = if args.remove_others {
+            Vec::new()
+        } else {
+            answer
+                .get("rules")
+                .and_then(Value::as_array)
+                .ok_or_else(unreadable)?
+                .iter()
+                .map(|rule| {
+                    Rule::read(rule, Source::Server)
+                        .ok()
+                        .map(|rule| rule.entry())
+                })
+                .collect::<Option<Vec<Entry>>>()
+                .ok_or_else(unreadable)?
+        };
         let body = if args.base_revision.is_some() {
             None
         } else {
@@ -86,63 +96,136 @@ pub(super) fn update(ctx: &Context<'_>, args: &FirewallUpdate) -> Result<Printed
         // Swagger: a stale `base_revision` is refused with 409 `firewall-changed`. It
         // documents no other 409 on this PUT and no shape for the body, so the status alone
         // decides: matching a body field could drop the hint if the field is not the one
-        // guessed. The GET before it documents no 409.
-        // With neither `--base-revision` nor `--remove-others`, the revision came from the
-        // guard's own read, so running the command again reads the rules again and checks
-        // the file against them. A `--base-revision` given would be sent again and refused
-        // again, and `--remove-others` reads nothing, so those get the get-and-edit hint.
-        let read_revision = args.base_revision.is_none() && !args.remove_others;
+        // guessed. The GET before it documents no 409. A rerun reads a revision the command
+        // read itself afresh, but would send a `--base-revision` given, and be refused, again.
+        let read_revision = args.base_revision.is_none();
         match (error.http_status(), read_revision) {
             (Some(409), false) => error.with_hint(format!(
                 "run `{}`, edit the rules it prints, and pass its `revision` as \
                  `--base-revision`",
-                crate::cli::with_id("compute firewall get", vm_id, "")
+                crate::cli::with_id("compute firewall get", vm_id.as_str(), "")
             )),
             (Some(409), true) => {
                 let again = phrase::command(ctx.args());
-                error.with_hint(format!(
-                    "run `{again}` again, which reads the rules again and checks the file \
-                     against them"
-                ))
+                let checks = if args.remove_others {
+                    "reads the revision of the rules again"
+                } else {
+                    "reads the rules again and checks the file against them"
+                };
+                error.with_hint(format!("run `{again}` again, which {checks}"))
             }
             _ => error,
         }
     })
 }
 
-/// A firewall rule the server answered as one entry of the list ([`rule_entry`]).
-///
-/// `None` for `ports` or `source_cidrs` that are not arrays of strings, or an `enabled` that
-/// is not a boolean: swagger reads an empty list as every port or any source, so reading a
-/// malformed one as empty could match a rule that opens everything.
-fn firewall_entry(rule: &Value) -> Option<Entry> {
-    let rule = rule.as_object()?;
-    let enabled = match rule.get("enabled") {
-        None => true,
-        Some(enabled) => enabled.as_bool()?,
-    };
-    let ports = strings(rule, "ports").ok()?;
-    let sources = strings(rule, "source_cidrs").ok()?;
-    Some(rule_entry(rule.get("protocol"), &ports, &sources, enabled))
+/// Where a rule is read from, which decides how much of it is checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    /// The rules file, which is sent as it is: each key and value is checked.
+    File,
+    /// The server's list: only the shape its entry needs is checked.
+    Server,
 }
 
-/// A firewall rule as one entry of the list: what it accepts, which is its protocol, its
-/// ports and its sources, each as a set ([`accepted_ports`], [`accepted_sources`]), and
-/// whether it is enabled. A rule without `enabled` counts as enabled, so disabling one
-/// closes what it accepted and is a removal. Its `id` (ignored on a PUT) and `description`
-/// are left out, so changing them edits the rule. A rule whose ports or sources change
-/// accepts something else, so it counts as removed.
-///
-/// Two rules have one entry only when they accept the same traffic, so the guard fails safe:
-/// a spelling this does not recognize as equal (overlapping port ranges, a source written
-/// with host bits) counts as a removal and is refused, never let through.
-fn rule_entry(protocol: Option<&Value>, ports: &[&str], sources: &[&str], enabled: bool) -> Entry {
-    Entry::new(json!({
-        "protocol": protocol,
-        "ports": accepted_ports(ports),
-        "source_cidrs": accepted_sources(sources),
-        "enabled": enabled,
-    }))
+/// One firewall rule, as far as what it accepts goes.
+#[derive(Debug)]
+struct Rule {
+    /// `protocol` as it came, absent included.
+    protocol: Option<Value>,
+    ports: Vec<String>,
+    /// `source_cidrs`.
+    sources: Vec<String>,
+    enabled: bool,
+}
+
+impl Rule {
+    /// Reads `rule`, or says what is wrong with it, as the end of a sentence that starts with
+    /// its place in the list.
+    ///
+    /// Either source must be an object whose `ports` and `source_cidrs`, when present, are
+    /// arrays of strings, and whose `enabled`, when present, is a boolean: swagger reads an
+    /// empty list as every port or any source, so reading a malformed one as empty could
+    /// match a rule that opens everything. A rule without `enabled` is enabled.
+    ///
+    /// A file's rule is checked further, in the order of its keys' meaning: a key swagger does
+    /// not list is refused, so a misspelled key cannot quietly change which traffic the rule
+    /// lets in; `protocol` is `tcp`, `udp` or `icmp`; an `icmp` rule has no ports; each port is
+    /// one spelling of a port or range ([`is_port_range`]), and each source an IPv4 CIDR
+    /// ([`is_ipv4_cidr`]). `id` and `description` are the server's to judge. The rule count is
+    /// checked by [`firewall_rules`], against swagger's cap of [`MAX_FIREWALL_RULES`].
+    fn read(rule: &Value, source: Source) -> std::result::Result<Self, String> {
+        let Value::Object(rule) = rule else {
+            return Err("is not a JSON object".to_owned());
+        };
+        let file = source == Source::File;
+        if file && let Some(key) = rule.keys().find(|key| !RULE_KEYS.contains(&key.as_str())) {
+            return Err(format!(
+                "has the key `{key}`, which a firewall rule does not have: a rule has only {}",
+                phrase::ticked(RULE_KEYS, "and")
+            ));
+        }
+        let protocol = rule.get("protocol").and_then(Value::as_str);
+        if file && !matches!(protocol, Some("tcp" | "udp" | "icmp")) {
+            return Err("has no `protocol` of `tcp`, `udp`, or `icmp`".to_owned());
+        }
+        let ports = strings(rule, "ports")?;
+        if file && protocol == Some("icmp") && !ports.is_empty() {
+            return Err("is `icmp`, which has no ports, so its `ports` must be `[]`".to_owned());
+        }
+        if let Some(bad) = ports.iter().find(|p| file && !is_port_range(p)) {
+            return Err(format!(
+                "has the port `{bad}`: a port is `1` to `65535`, or a range such as `8000-8080`"
+            ));
+        }
+        let sources = strings(rule, "source_cidrs")?;
+        if let Some(bad) = sources.iter().find(|c| file && !is_ipv4_cidr(c)) {
+            return Err(format!(
+                "has the source `{bad}`: a source is an IPv4 CIDR, such as `203.0.113.0/24`"
+            ));
+        }
+        let enabled = match rule.get("enabled") {
+            None => true,
+            Some(Value::Bool(enabled)) => *enabled,
+            Some(_) => return Err("has an `enabled` that is not `true` or `false`".to_owned()),
+        };
+        Ok(Self {
+            protocol: rule.get("protocol").cloned(),
+            ports,
+            sources,
+            enabled,
+        })
+    }
+
+    /// The rule as one entry of the list: what it accepts, which is its protocol, its ports
+    /// and its sources, each as a set ([`accepted_ports`], [`accepted_sources`]), and whether
+    /// it is enabled. Disabling a rule closes what it accepted, so it is a removal. Its `id`
+    /// (ignored on a PUT) and `description` are left out, so changing them edits the rule. A
+    /// rule whose ports or sources change accepts something else, so it counts as removed.
+    ///
+    /// Two rules have one entry only when they accept the same traffic, so the guard fails
+    /// safe: a spelling this does not recognize as equal (overlapping port ranges, a source
+    /// written with host bits) counts as a removal and is refused, never let through.
+    fn entry(&self) -> Entry {
+        Entry::new(json!({
+            "protocol": self.protocol,
+            "ports": accepted_ports(&self.ports),
+            "source_cidrs": accepted_sources(&self.sources),
+            "enabled": self.enabled,
+        }))
+    }
+
+    /// Whether the rule accepts every IPv4 address ([`any_source`]).
+    fn accepts_any_source(&self) -> bool {
+        any_source(&self.sources)
+    }
+
+    /// Whether the rule is a TCP or UDP rule that accepts every port: swagger says an empty
+    /// `ports` is every port. An ICMP rule has no ports.
+    fn accepts_every_port(&self) -> bool {
+        let protocol = self.protocol.as_ref().and_then(Value::as_str);
+        matches!(protocol, Some("tcp" | "udp")) && self.ports.is_empty()
+    }
 }
 
 /// `ports` as a set, each without the leading zeros the server's list may hold: `022` is
@@ -152,7 +235,7 @@ fn rule_entry(protocol: Option<&Value>, ports: &[&str], sources: &[&str], enable
 /// change the server may enforce differently, and counts as a removal.
 /// A port that does not read as one (only the server's list can hold one) stays its text,
 /// so it matches no port of a file.
-fn accepted_ports(ports: &[&str]) -> Value {
+fn accepted_ports(ports: &[String]) -> Value {
     let unpadded = |text: &str| match text.split_once('-') {
         Some((low, high)) => port(low)
             .zip(port(high))
@@ -162,7 +245,7 @@ fn accepted_ports(ports: &[&str]) -> Value {
     replace::set(
         ports
             .iter()
-            .map(|&text| Value::from(unpadded(text)))
+            .map(|text| Value::from(unpadded(text)))
             .collect(),
     )
 }
@@ -173,28 +256,35 @@ fn accepted_ports(ports: &[&str]) -> Value {
 /// IPv4 CIDRs (swagger `compute_vms_firewall_update`: "Replace a VM's public-IP firewall
 /// rules", "`source_cidrs` as IPv4 CIDRs (empty = any source)"), so no IPv6 source exists
 /// for `[]` to admit and a `/0` to leave out.
-fn accepted_sources(sources: &[&str]) -> Value {
+fn accepted_sources(sources: &[String]) -> Value {
     if any_source(sources) {
         Value::Array(Vec::new())
     } else {
-        replace::set(sources.iter().copied().map(Value::from).collect())
+        replace::set(
+            sources
+                .iter()
+                .map(|source| Value::from(source.as_str()))
+                .collect(),
+        )
     }
 }
 
 /// Whether `sources` accept every IPv4 address: none are listed, or one has a prefix length
 /// of 0, which covers every address.
-fn any_source(sources: &[&str]) -> bool {
+fn any_source(sources: &[impl AsRef<str>]) -> bool {
     sources.is_empty()
         || sources.iter().any(|cidr| {
-            cidr.rsplit_once('/').is_some_and(|(address, prefix)| {
-                address.parse::<Ipv4Addr>().is_ok() && prefix.parse::<u8>() == Ok(0)
-            })
+            cidr.as_ref()
+                .rsplit_once('/')
+                .is_some_and(|(address, prefix)| {
+                    address.parse::<Ipv4Addr>().is_ok() && prefix.parse::<u8>() == Ok(0)
+                })
         })
 }
 
 /// The action and the consequence a firewall update asks about. A rule that accepts every
 /// IPv4 address is named in the action, so the refusal an agent reads says so too.
-fn firewall_question(vm_id: &str, file: &Path, rules: &[Value]) -> (String, &'static str) {
+fn firewall_question(vm_id: &str, file: &Path, rules: &[Rule]) -> (String, &'static str) {
     let source = Input {
         path: file,
         flag: "--rules-file",
@@ -203,8 +293,14 @@ fn firewall_question(vm_id: &str, file: &Path, rules: &[Value]) -> (String, &'st
     .name();
     // Swagger reads an empty `source_cidrs` as any source and an empty `ports` as every
     // port, so a rule that leaves either out is named, beside how many rules do.
-    let any_source = rules.iter().filter(|rule| from_any_source(rule)).count();
-    let every_port = rules.iter().filter(|rule| on_every_port(rule)).count();
+    let any_source = rules
+        .iter()
+        .filter(|rule| rule.accepts_any_source())
+        .count();
+    let every_port = rules
+        .iter()
+        .filter(|rule| rule.accepts_every_port())
+        .count();
     let clauses: Vec<String> = [
         (
             any_source,
@@ -253,10 +349,10 @@ const MAX_FIREWALL_RULES: usize = 50;
 /// far under this, and the cap stops a wrong path from being read whole.
 const MAX_RULES_FILE_BYTES: u64 = 1024 * 1024;
 
-/// The rule list in `path` (or stdin for `-`), each rule checked, and the entry of each
-/// rule. The list is the `rules` array of a JSON object, the shape `firewall get` prints,
-/// whose other keys are not sent, or a bare array, which `cdn rules update` takes too.
-fn firewall_rules(path: &Path) -> Result<(Vec<Value>, Vec<Entry>)> {
+/// The rule list in `path` (or stdin for `-`), as it is sent, and each rule as it reads
+/// ([`Rule::read`]). The list is the `rules` array of a JSON object, the shape `firewall get`
+/// prints, whose other keys are not sent, or a bare array, which `cdn rules update` takes too.
+fn firewall_rules(path: &Path) -> Result<(Vec<Value>, Vec<Rule>)> {
     let input = Input {
         path,
         flag: "--rules-file",
@@ -282,8 +378,7 @@ fn firewall_rules(path: &Path) -> Result<(Vec<Value>, Vec<Entry>)> {
         },
         _ => return Err(not_rules()),
     };
-    // Swagger: "At most 50 rules". Refused here, so a list the server would reject is not
-    // sent after the confirmation.
+    // Refused before the question, so no one confirms a list the server would reject.
     if rules.len() > MAX_FIREWALL_RULES {
         return Err(Error::usage(
             format!(
@@ -294,19 +389,19 @@ fn firewall_rules(path: &Path) -> Result<(Vec<Value>, Vec<Entry>)> {
             "merge rules that share a protocol and ports",
         ));
     }
-    let entries = rules
+    let read = rules
         .iter()
         .enumerate()
         .map(|(index, rule)| {
-            check_rule(rule).map_err(|problem| {
+            Rule::read(rule, Source::File).map_err(|problem| {
                 Error::usage(
                     format!("`rules[{index}]` from {file} {problem}"),
                     format!("fix `rules[{index}]`; the VM keeps its rules until then"),
                 )
             })
         })
-        .collect::<Result<Vec<Entry>>>()?;
-    Ok((rules, entries))
+        .collect::<Result<Vec<Rule>>>()?;
+    Ok((rules, read))
 }
 
 /// The keys swagger lists for a firewall rule (`PUT .../firewall/`).
@@ -319,85 +414,19 @@ const RULE_KEYS: [&str; 6] = [
     "enabled",
 ];
 
-/// What is wrong with one rule, as the end of a sentence that starts with its place in the
-/// file. A key swagger does not list is `usage`, so a misspelled key cannot quietly change
-/// which traffic the rule lets in. `id` and `description` are the server's to judge. The rule
-/// count is checked by [`firewall_rules`], against swagger's cap of [`MAX_FIREWALL_RULES`]. A rule
-/// that passes is returned as its entry, so the file is read once.
-fn check_rule(rule: &Value) -> std::result::Result<Entry, String> {
-    let Value::Object(rule) = rule else {
-        return Err("is not a JSON object".to_owned());
-    };
-    if let Some(key) = rule.keys().find(|key| !RULE_KEYS.contains(&key.as_str())) {
-        return Err(format!(
-            "has the key `{key}`, which a firewall rule does not have: a rule has only {}",
-            phrase::ticked(RULE_KEYS, "and")
-        ));
-    }
-    let Some(protocol @ ("tcp" | "udp" | "icmp")) = rule.get("protocol").and_then(Value::as_str)
-    else {
-        return Err("has no `protocol` of `tcp`, `udp`, or `icmp`".to_owned());
-    };
-    let ports = strings(rule, "ports")?;
-    if protocol == "icmp" && !ports.is_empty() {
-        return Err("is `icmp`, which has no ports, so its `ports` must be `[]`".to_owned());
-    }
-    if let Some(bad) = ports.iter().find(|p| !is_port_range(p)) {
-        return Err(format!(
-            "has the port `{bad}`: a port is `1` to `65535`, or a range such as `8000-8080`"
-        ));
-    }
-    let sources = strings(rule, "source_cidrs")?;
-    if let Some(bad) = sources.iter().find(|c| !is_ipv4_cidr(c)) {
-        return Err(format!(
-            "has the source `{bad}`: a source is an IPv4 CIDR, such as `203.0.113.0/24`"
-        ));
-    }
-    let enabled = match rule.get("enabled") {
-        None => true,
-        Some(Value::Bool(enabled)) => *enabled,
-        Some(_) => return Err("has an `enabled` that is not `true` or `false`".to_owned()),
-    };
-    Ok(rule_entry(rule.get("protocol"), &ports, &sources, enabled))
-}
-
-/// Whether `rule` accepts every IPv4 address: swagger says an empty `source_cidrs` is any
-/// source, and a prefix length of 0 covers every address. Called on rules `check_rule`
-/// passed, so `source_cidrs` is absent or an array of CIDRs `is_ipv4_cidr` accepted.
-fn from_any_source(rule: &Value) -> bool {
-    let sources = rule
-        .as_object()
-        .and_then(|rule| strings(rule, "source_cidrs").ok())
-        .unwrap_or_default();
-    any_source(&sources)
-}
-
-/// Whether `rule` is a TCP or UDP rule that accepts every port: swagger says an empty
-/// `ports` is every port. An ICMP rule has no ports. Called on rules `check_rule` passed.
-fn on_every_port(rule: &Value) -> bool {
-    let tcp_or_udp = matches!(
-        rule.get("protocol").and_then(Value::as_str),
-        Some("tcp" | "udp")
-    );
-    let no_ports = rule
-        .as_object()
-        .and_then(|rule| strings(rule, "ports").ok())
-        .unwrap_or_default()
-        .is_empty();
-    tcp_or_udp && no_ports
-}
-
 /// The strings of the array `rule[key]`, or an empty list when the key is absent.
-fn strings<'a>(
-    rule: &'a Map<String, Value>,
-    key: &str,
-) -> std::result::Result<Vec<&'a str>, String> {
+fn strings(rule: &Map<String, Value>, key: &str) -> std::result::Result<Vec<String>, String> {
     let Some(value) = rule.get(key) else {
         return Ok(Vec::new());
     };
     value
         .as_array()
-        .and_then(|items| items.iter().map(Value::as_str).collect())
+        .and_then(|items| {
+            items
+                .iter()
+                .map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
         .ok_or_else(|| format!("has a `{key}` that is not an array of strings"))
 }
 
@@ -440,6 +469,10 @@ fn is_ipv4_cidr(text: &str) -> bool {
         && (prefix == "0" || !prefix.starts_with('0'))
         && prefix.parse::<u8>().is_ok_and(|p| p <= 32);
     prefix_ok && address.parse::<Ipv4Addr>().is_ok()
+}
+
+pub(super) fn firewall_get(vm_id: &str) -> Request {
+    of_vm(&compute::FIREWALL, "get the firewall of", &vm_id)
 }
 
 #[cfg(test)]
@@ -508,7 +541,7 @@ mod tests {
 
     #[test]
     fn any_source_is_none_listed_or_a_slash_zero() {
-        assert!(any_source(&[]));
+        assert!(any_source(&[] as &[&str]));
         assert!(any_source(&["10.0.0.0/8", "0.0.0.0/0"]));
         assert!(any_source(&["192.0.2.1/0"]));
         assert!(!any_source(&["10.0.0.0/8"]));
@@ -520,7 +553,12 @@ mod tests {
     /// ports and a `/0` beside other sources read as the file's spelling.
     #[test]
     fn a_rule_entry_is_what_it_accepts() {
-        let entry = |rule: Value| format!("{:?}", firewall_entry(&rule));
+        let read = |rule: &Value| {
+            Rule::read(rule, Source::Server)
+                .ok()
+                .map(|rule| rule.entry())
+        };
+        let entry = |rule: Value| format!("{:?}", read(&rule));
         assert_eq!(
             entry(json!({"protocol": "tcp", "ports": ["022", "08000-08080"]})),
             entry(json!({"protocol": "tcp", "ports": ["8000-8080", "22"], "enabled": true})),
@@ -544,13 +582,13 @@ mod tests {
             json!({"protocol": "tcp", "ports": "22"}),
             json!({"protocol": "tcp", "source_cidrs": [1]}),
         ] {
-            assert!(firewall_entry(&malformed).is_none(), "{malformed}");
+            assert!(read(&malformed).is_none(), "{malformed}");
         }
     }
 
     #[test]
     fn check_rule_names_what_is_wrong() {
-        let problem = |rule: Value| check_rule(&rule).err();
+        let problem = |rule: Value| Rule::read(&rule, Source::File).err();
         assert_eq!(problem(json!({"protocol": "tcp", "ports": ["22"]})), None);
         assert_eq!(problem(json!({"protocol": "icmp"})), None);
         for (rule, says) in [
@@ -590,32 +628,119 @@ mod tests {
         }
     }
 
+    /// Each malformed rule of a file, port, and source is refused with what is wrong; the e2e
+    /// suite pins one of each through `hipc` (`public_ip::a_malformed_rule_refuses_...`).
+    #[test]
+    fn a_malformed_rule_port_or_source_is_refused_with_what_is_wrong() {
+        let problem = |rule: &str| {
+            let rule: Value = serde_json::from_str(rule).expect("each case is JSON");
+            Rule::read(&rule, Source::File).err()
+        };
+        let no_protocol = "has no `protocol` of `tcp`, `udp`, or `icmp`";
+        for (rule, says) in [
+            ("1", "is not a JSON object"),
+            (r#"{"ports":["22"]}"#, no_protocol),
+            (r#"{"protocol":"TCP"}"#, no_protocol),
+            (r#"{"protocol":6}"#, no_protocol),
+            (
+                r#"{"protocol":"tcp","ports":[22]}"#,
+                "has a `ports` that is not an array of strings",
+            ),
+            (
+                r#"{"protocol":"tcp","source_cidrs":"0.0.0.0/0"}"#,
+                "has a `source_cidrs` that is not an array of strings",
+            ),
+        ] {
+            assert_eq!(problem(rule).as_deref(), Some(says), "{rule}");
+        }
+        for port in [
+            "0",
+            "65536",
+            "",
+            "-",
+            "22-",
+            "-22",
+            "80-22",
+            "+22",
+            " 22",
+            "1-2-3",
+            "123456",
+            "ab",
+            "022",
+            "08000-8080",
+            "8000-08080",
+            "00",
+        ] {
+            let rule = format!(r#"{{"protocol":"tcp","ports":["22","{port}"]}}"#);
+            assert_eq!(
+                problem(&rule),
+                Some(format!(
+                    "has the port `{port}`: a port is `1` to `65535`, or a range such as \
+                     `8000-8080`"
+                )),
+                "{port:?}"
+            );
+        }
+        for cidr in [
+            "10.0.0.0",
+            "10.0.0.0/33",
+            "10.0.0.0/",
+            "10.0.0.0/123",
+            "10.0.0.0/+8",
+            "10.0.0/8",
+            "256.0.0.0/8",
+            "::/0",
+            "",
+            "0.0.0.0/00",
+            "10.0.0.0/08",
+        ] {
+            let rule = format!(r#"{{"protocol":"udp","source_cidrs":["{cidr}"]}}"#);
+            assert_eq!(
+                problem(&rule),
+                Some(format!(
+                    "has the source `{cidr}`: a source is an IPv4 CIDR, such as `203.0.113.0/24`"
+                )),
+                "{cidr:?}"
+            );
+        }
+        let edges = r#"{"protocol":"tcp","ports":["1","65535","1-65535","443-443"],
+            "source_cidrs":["0.0.0.0/0","255.255.255.255/32","10.1.2.3/8"]}"#;
+        assert_eq!(problem(edges), None);
+    }
+
     #[test]
     fn every_port_and_any_source_are_told_apart() {
-        assert!(on_every_port(&json!({"protocol": "tcp"})));
-        assert!(on_every_port(&json!({"protocol": "udp", "ports": []})));
-        assert!(!on_every_port(&json!({"protocol": "icmp"})));
-        assert!(!on_every_port(&json!({"protocol": "tcp", "ports": ["22"]})));
-        assert!(from_any_source(&json!({"protocol": "tcp"})));
-        assert!(from_any_source(&json!({"source_cidrs": ["0.0.0.0/0"]})));
-        assert!(!from_any_source(&json!({"source_cidrs": ["10.0.0.0/8"]})));
+        let rule = |rule: Value| Rule::read(&rule, Source::File).unwrap();
+        assert!(rule(json!({"protocol": "tcp"})).accepts_every_port());
+        assert!(rule(json!({"protocol": "udp", "ports": []})).accepts_every_port());
+        assert!(!rule(json!({"protocol": "icmp"})).accepts_every_port());
+        assert!(!rule(json!({"protocol": "tcp", "ports": ["22"]})).accepts_every_port());
+        assert!(rule(json!({"protocol": "tcp"})).accepts_any_source());
+        assert!(
+            rule(json!({"protocol": "tcp", "source_cidrs": ["0.0.0.0/0"]})).accepts_any_source()
+        );
+        assert!(
+            !rule(json!({"protocol": "tcp", "source_cidrs": ["10.0.0.0/8"]})).accepts_any_source()
+        );
     }
 
     /// The question counts the rules, and names those that accept every address or port.
     #[test]
     fn the_question_names_what_the_rules_open() {
         let file = Path::new("rules.json");
-        let tcp = json!({"protocol": "tcp", "ports": ["22"], "source_cidrs": ["10.0.0.0/8"]});
-        let open = json!({"protocol": "tcp"});
+        let rule = |rule: Value| Rule::read(&rule, Source::File).unwrap();
+        let tcp =
+            || rule(json!({"protocol": "tcp", "ports": ["22"], "source_cidrs": ["10.0.0.0/8"]}));
+        let open = || rule(json!({"protocol": "tcp"}));
         let (action, consequence) = firewall_question("vm-1", file, &[]);
         assert_eq!(action, "remove every inbound rule of the VM `vm-1`");
         assert_eq!(consequence, "every port on its public IPv4 closes");
-        let (action, _) = firewall_question("vm-1", file, std::slice::from_ref(&tcp));
+        let (action, _) = firewall_question("vm-1", file, &[tcp()]);
         assert_eq!(
             action,
             "replace every inbound rule of the VM `vm-1` with 1 rule from `rules.json`"
         );
-        let (action, _) = firewall_question("vm-1", file, std::slice::from_ref(&open));
+        let (action, _) = firewall_question("vm-1", file, &[open()]);
         assert!(
             action.ends_with(
                 "with 1 rule from `rules.json`, which accepts every IPv4 \
@@ -624,7 +749,7 @@ mod tests {
             ),
             "{action}"
         );
-        let (action, consequence) = firewall_question("vm-1", file, &[open.clone(), open, tcp]);
+        let (action, consequence) = firewall_question("vm-1", file, &[open(), open(), tcp()]);
         assert!(
             action.ends_with(
                 "with 3 rules from `rules.json`, of which 2 accept every \

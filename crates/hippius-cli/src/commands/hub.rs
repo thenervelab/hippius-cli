@@ -8,23 +8,24 @@
 
 use std::path::{Path, PathBuf};
 
+use hippius::routes::{API_BASE, Paging, Route, hub};
 use hippius::{
-    CHECK_FIRST_HINT, Client, Code, ConfigFile, Error, HubMarker, Method, Request, Result,
-    SideEffects, Source, phrase, without_field,
+    CHECK_FIRST_HINT, Client, Code, ConfigFile, Error, Failure, HubMarker, Request, Result,
+    SideEffects, Source, phrase, view_of,
 };
 use serde_json::{Map, Value, json};
 
-use crate::cli::values::{Charset, Dash, is_word};
 use crate::cli::{
     Hub, HubArtifacts, HubNamespace, HubRepositories, HubRobot, HubSubscribe, HubSubscription,
-    PayFrom, Visibility,
+    Namespace, OneTimeSecret, PayFrom, Visibility,
 };
 use crate::commands::files::{save_secret, shown_once};
+use crate::commands::list;
 use crate::commands::{
     Printed, failed_part, print_body, print_body_or, print_envelope, print_with, require_public,
     require_reveal_or_file, run_hint, set_up_first,
 };
-use crate::context::{self, Context, Gate, Write};
+use crate::context::{self, Context, Gate, Write, WritePlan};
 
 pub(crate) mod keys;
 mod models;
@@ -43,12 +44,12 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Hub) -> Result<Printed> {
         Hub::Plans => print_envelope(
             ctx,
             &ctx.client(&context::config()?)?,
-            &Request::get(PLANS).about("list the Hub plans"),
+            &Request::to(&hub::PLANS, []).about("list the Hub plans"),
         ),
         Hub::Subscription(HubSubscription::Get) => print_envelope(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get(SUBSCRIPTIONS).about("list the Hub subscriptions"),
+            &Request::to(&hub::SUBSCRIPTIONS, []).about("list the Hub subscriptions"),
         ),
         Hub::Subscription(HubSubscription::Subscribe(args)) => subscribe(ctx, args),
         Hub::Subscription(HubSubscription::Cancel { subscription_id }) => {
@@ -70,26 +71,23 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Hub) -> Result<Printed> {
     }
 }
 
-/// The namespace's repositories (`registry_repositories_list`).
-const REPOSITORIES: &str = "/registry/repositories/";
-
 /// `hipc hub repositories`. Swagger lists no page parameter for the list, so it is read
 /// whole: a `next` link is `internal`. It has no GET of one repository either, so `get`
 /// reads the list and picks the row by `name`.
 fn repositories(ctx: &Context<'_>, command: &HubRepositories) -> Result<Printed> {
-    let list = Request::get(REPOSITORIES).about("list the Hub repositories");
+    let list = Request::to(&hub::REPOSITORIES, []).about("list the Hub repositories");
     match command {
         HubRepositories::List => print_envelope(ctx, &ctx.load_authed_client()?, &list),
         HubRepositories::Get { repository } => {
             let client = ctx.load_authed_client()?;
             print_with(ctx, &client, &list, Gate::Open, |response| {
-                let rows = hippius::page(response.json()?)?.into_complete(REPOSITORIES)?;
+                let rows = hippius::page(response.json()?)?.into_complete(list.target())?;
                 repository_named(rows, repository)
             })
         }
         HubRepositories::Delete { repository } => {
             let client = ctx.load_authed_client()?;
-            let request = Request::new(Method::Delete, format!("{REPOSITORIES}{repository}/"))
+            let request = Request::to(&hub::REPOSITORY_DELETE, [repository])
                 .listed_by("hipc hub repositories list")
                 .about(format!(
                     "delete the Hub repository `{repository}` with every artifact and tag in it"
@@ -115,10 +113,10 @@ pub(crate) const PERMANENT: Gate<'static> = Gate::Confirm {
 /// `not_found` when no row has that name.
 fn repository_named(rows: Vec<Value>, wanted: &str) -> Result<Value> {
     rows.into_iter()
-        .find(|row| row.get("name").and_then(Value::as_str) == Some(wanted))
+        .find(|row| view_of::<hub::Repository>(row).name.as_deref() == Some(wanted))
         .ok_or_else(|| {
             Error::new(
-                Code::NotFound,
+                Failure::NotFound,
                 format!("the Hub registry has no repository `{wanted}`"),
             )
             .with_hint("run `hipc hub repositories list` to see each repository's name")
@@ -132,7 +130,7 @@ fn artifacts(ctx: &Context<'_>, command: &HubArtifacts) -> Result<Printed> {
         HubArtifacts::List { repository } => {
             let client = ctx.load_authed_client()?;
             let action = format!("list the artifacts of the Hub repository `{repository}`");
-            let request = Request::get(format!("{REPOSITORIES}{repository}/artifacts/"))
+            let request = Request::to(&hub::ARTIFACTS, [repository])
                 .listed_by("hipc hub repositories list")
                 .about(action);
             print_envelope(ctx, &client, &request)
@@ -142,7 +140,7 @@ fn artifacts(ctx: &Context<'_>, command: &HubArtifacts) -> Result<Printed> {
             reference,
         } => {
             let client = ctx.load_authed_client()?;
-            let request = artifact(repository, reference, Method::Get).about(format!(
+            let request = artifact(&hub::ARTIFACT, repository, reference).about(format!(
                 "get the artifact `{reference}` of the Hub repository `{repository}`"
             ));
             print_body(ctx, &client, &request, Gate::Open)
@@ -153,7 +151,7 @@ fn artifacts(ctx: &Context<'_>, command: &HubArtifacts) -> Result<Printed> {
         } => {
             let client = ctx.load_authed_client()?;
             // Deleting by a tag deletes the artifact it points at, so its other tags go too.
-            let request = artifact(repository, reference, Method::Delete).about(format!(
+            let request = artifact(&hub::ARTIFACT_DELETE, repository, reference).about(format!(
                 "delete the artifact `{reference}` from the Hub repository `{repository}`, \
                  with every tag on it"
             ));
@@ -163,30 +161,63 @@ fn artifacts(ctx: &Context<'_>, command: &HubArtifacts) -> Result<Printed> {
     }
 }
 
-/// A request for one artifact. Both names were checked when argv was parsed, so neither can
-/// change the route, and the hint of a 404 can repeat them as words.
-fn artifact(repository: &str, reference: &str, method: Method) -> Request {
-    Request::new(
-        method,
-        format!("{REPOSITORIES}{repository}/artifacts/{reference}/"),
-    )
-    .listed_by(format!("hipc hub artifacts list {repository}"))
+/// A request to `route`, a read or a delete of one artifact. Both names were checked when
+/// argv was parsed, so neither can change the route, and the hint of a 404 can repeat them as
+/// words.
+fn artifact(route: &Route<2>, repository: &str, reference: &str) -> Request {
+    Request::to(route, [&repository, &reference])
+        .listed_by(format!("hipc hub artifacts list {repository}"))
 }
 
 /// `GET /api/registry/usage/`, an object printed as sent, or with `--repositories` the
-/// per-repository list `GET /api/registry/usage/repositories/` as an envelope. Swagger lists
-/// no page parameter for the list, so it is read whole: a `next` link is `internal`.
+/// per-repository list `GET /api/registry/usage/repositories/`, every page of it, as one
+/// envelope whose `next_page_token` is null.
 fn usage(ctx: &Context<'_>, repositories: bool) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
     let printed = if repositories {
-        let request =
-            Request::get("/registry/usage/repositories/").about("list the Hub usage by repository");
-        print_envelope(ctx, &client, &request)
+        usage_by_repository(ctx, &client)
     } else {
-        let request = Request::get("/registry/usage/").about("get the Hub usage");
+        let request = Request::to(&hub::USAGE, []).about("get the Hub usage");
         print_body(ctx, &client, &request, Gate::Open)
     };
     printed.map_err(|error| with_provision_hint(ctx, error))
+}
+
+/// The usage by repository, read page by page. The server answers `{page, page_size,
+/// repositories}` with neither a `next` link nor a total (seen live 2026-11-11, 100 a page
+/// by default), so a page that is full is followed by the next one ([`Paging::UntilShort`]).
+/// The command takes no page flags, so its route is not marked paged; the first request
+/// carries no parameters, and the server picks the page size.
+fn usage_by_repository(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
+    let first =
+        Request::to(&hub::USAGE_BY_REPOSITORY, []).about("list the Hub usage by repository");
+    if ctx.dry_run() {
+        return ctx.dry_run_of(client, &[&first]).map(Printed::from);
+    }
+    let paging = Paging::UntilShort {
+        items: "repositories",
+    };
+    let mut items = Vec::new();
+    let mut asked = None;
+    list::walk(ctx, client, first.clone(), "1", |answer| {
+        let page = list::read_page(paging, answer)?;
+        // A server that ignores `page` and answers page 1 again would repeat the list on
+        // every page; a later page that names another `page` than the one asked is refused.
+        let start_over = asked.as_ref().map(|_| list::CHANGED_WHILE_READ);
+        list::answered_as_asked(&page, asked.as_deref().unwrap_or("1"), start_over)?;
+        let next = page.next_page_token()?;
+        items.extend(page.items);
+        let Some(number) = next else {
+            return Ok(list::Turn::Done(()));
+        };
+        let request = list::at_page(first.clone(), paging, Some(&number));
+        asked = Some(number.clone());
+        Ok(list::Turn::Next {
+            token: number,
+            request,
+        })
+    })?;
+    Ok(Printed::List(hippius::envelope(items)))
 }
 
 /// Subscribes to a Hub plan without charging twice (tenet 11).
@@ -198,36 +229,28 @@ fn usage(ctx: &Context<'_>, repositories: bool) -> Result<Printed> {
 /// `--dry-run` nothing is read either: a plan given by name shows as a placeholder
 /// `plan_id`, and `requests` lists the reads, the cancel `--replace` may send, and the POST.
 fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
-    // The marker is kept in the profile this client was built from.
     let (settings, client) = ctx.authed(&context::config()?)?;
     // A real run resolves a name after the question, from the catalog it reads then.
     let plan_id = match args.plan.parse::<u64>() {
         Ok(id) => Value::from(id),
         Err(_) => Value::from(format!("<looked up from {}>", args.plan)),
     };
-    let draft =
-        Request::new(Method::Post, "/registry/subscribe/").json(&json!({ "plan_id": plan_id }));
-    // The reads a real run sends after the question, which a dry run lists.
-    let plans = Request::get(PLANS).about("list the Hub plans");
-    let subscriptions = Request::get(SUBSCRIPTIONS).about("list the Hub subscriptions");
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(mut doc) => {
-            // Which subscriptions a real run cancels is known only after it reads them, which
-            // a dry run does not do: the document adds the DELETE it may send first, once per
-            // active paid subscription, with the id left as a placeholder, and lists it in
-            // `requests` between the reads and the POST.
-            // `{subscription_id}` is the one placeholder not written `<...>`: it shipped
-            // before the style was set, and changing a field's value is a break (tenet 7).
-            let cancel = Request::new(Method::Delete, "/registry/subscriptions/{subscription_id}/");
-            let mut requests = vec![&plans, &subscriptions];
-            if args.replace {
-                doc["may_cancel_first"] = ctx.describe(&client, &cancel)?;
-                requests.push(&cancel);
-            }
-            requests.push(&draft);
-            doc["requests"] = ctx.describe_each(&client, &requests)?;
-            return Ok(Printed::Document(doc));
+    let draft = Request::to(&hub::SUBSCRIBE, []).json(&hub::SubscribeBody { plan_id: &plan_id });
+    let plans = Request::to(&hub::PLANS, []).about("list the Hub plans");
+    let subscriptions = Request::to(&hub::SUBSCRIPTIONS, []).about("list the Hub subscriptions");
+    let cancel = any_cancel();
+    let before: &[&Request] = if args.replace {
+        &[&plans, &subscriptions, &cancel]
+    } else {
+        &[&plans, &subscriptions]
+    };
+    // Not `read_then_write`: the reads come after the question, and one question covers the
+    // cancels and the subscribe.
+    let checked = match ctx.check_write(&client, &WritePlan::new(before, &draft))? {
+        Write::DryRun(doc) if args.replace => {
+            return Ok(doc.may_cancel_first(ctx.describe(&client, &cancel)?).into());
         }
+        Write::DryRun(doc) => return Ok(doc.into()),
         Write::Checked(checked) => checked,
     };
     let action = if args.replace {
@@ -238,7 +261,7 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
     } else {
         format!("subscribe to the Hub plan `{}`", args.plan)
     };
-    ctx.confirm_write(checked, &action, Some(PayFrom::Credits.how()))?;
+    let confirmed = ctx.confirm_write(checked, &action, Some(PayFrom::Credits.how()))?;
     let plans = read_list(ctx, &client, &plans)?;
     let plan_id = resolve_plan(&plans, &args.plan)?;
     let subscriptions = read_list(ctx, &client, &subscriptions)?;
@@ -255,20 +278,22 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
     let mark = Mark::set(ctx, &client, &settings.profile, &paid)?;
     let mut cancelled = Vec::new();
     for id in &paid {
-        let request = Request::new(Method::Delete, format!("/registry/subscriptions/{id}/"))
+        let request = Request::to(&hub::SUBSCRIPTION_CANCEL, [id])
             .about(format!("cancel the Hub subscription `{id}`"));
-        if let Err(error) = ctx.send(&client, &request) {
+        if let Err(error) = ctx.send_confirmed(&client, &request, &confirmed) {
             return Err(mark.fail(&cancelled, error, "cancel"));
         }
         cancelled.push(*id);
     }
-    let request = Request::new(Method::Post, "/registry/subscribe/")
-        .json(&json!({ "plan_id": plan_id }))
+    let request = Request::to(&hub::SUBSCRIBE, [])
+        .json(&hub::SubscribeBody {
+            plan_id: &plan_id.into(),
+        })
         .about(format!("subscribe to the Hub plan `{}`", args.plan));
     // A body that is not JSON, or none, goes through `after_cancels` too, so the cancels
     // are named.
     match ctx
-        .send(&client, &request)
+        .send_confirmed(&client, &request, &confirmed)
         .and_then(|response| response.document())
     {
         Ok(body) => {
@@ -341,15 +366,15 @@ impl Mark {
             let in_window: Vec<(String, HubMarker)> = config
                 .hub_markers()
                 .filter(|(_, old)| {
-                    old.key == key
+                    old.key() == key
                         && at
-                            .checked_sub(old.at)
+                            .checked_sub(old.at())
                             .is_none_or(|age| age < MARKER_SECONDS)
                 })
                 .map(|(name, old)| (name.to_owned(), old.clone()))
                 .collect();
             let mut cancels: Vec<u64> = Vec::new();
-            for id in in_window.iter().flat_map(|(_, old)| &old.cancels) {
+            for id in in_window.iter().flat_map(|(_, old)| old.cancels()) {
                 if !cancels.contains(id) {
                     cancels.push(*id);
                 }
@@ -379,7 +404,7 @@ impl Mark {
                 // remove once the list shows the last subscribe.
                 if let Some((owner, _)) = in_window
                     .iter()
-                    .find(|(_, old)| old.at.saturating_sub(at) > MARKER_SECONDS)
+                    .find(|(_, old)| old.at().saturating_sub(at) > MARKER_SECONDS)
                 {
                     let marker = Source::Profile {
                         field: "hub_subscribe",
@@ -422,7 +447,7 @@ impl Mark {
                 )
                 .with_hint("wait a few minutes, then run `hipc hub subscription get`"));
             }
-            let marker = HubMarker { at, key, cancels };
+            let marker = HubMarker::new(at, key, cancels);
             config.set_hub_marker(profile, Some(marker.clone()));
             Ok((previous, marker))
         })?;
@@ -460,6 +485,23 @@ impl Mark {
             Ok(())
         }));
     }
+}
+
+/// The cancel a dry run of `--replace` lists between the reads and the POST: a real run sends it
+/// once for every active paid subscription, which it knows only after the reads. Its
+/// `{subscription_id}` is the one placeholder not written `<...>`: it shipped before the style was
+/// set, and changing a field's value is a break (tenet 15). The template goes as it is:
+/// `Request::to` would percent-encode a stand-in, and the client refuses a path with an encoding.
+fn any_cancel() -> Request {
+    let route = hub::SUBSCRIPTION_CANCEL;
+    Request::new(
+        route.method(),
+        route
+            .endpoint()
+            .template()
+            .strip_prefix(API_BASE)
+            .expect("a route's template starts with the API base"),
+    )
 }
 
 /// The error once a step fails. Before any cancel went through it is that step's own
@@ -503,13 +545,6 @@ fn subscriptions_named(ids: &[u64]) -> String {
     )
 }
 
-/// The Hub plan catalog, which a subscribe reads to resolve the plan and to price the active
-/// subscriptions.
-const PLANS: &str = "/registry/plans/";
-
-/// The caller's Hub subscriptions, which a subscribe reads for the paid-plan guard.
-const SUBSCRIPTIONS: &str = "/registry/subscriptions/";
-
 /// Sends `request`, a GET whose answer is a list, after the command's dry-run check and
 /// confirmation.
 fn read_list(ctx: &Context<'_>, client: &Client, request: &Request) -> Result<Vec<Value>> {
@@ -518,19 +553,19 @@ fn read_list(ctx: &Context<'_>, client: &Client, request: &Request) -> Result<Ve
 
 /// The plan id for a numeric id or a name in any case, from the catalog.
 fn resolve_plan(plans: &[Value], wanted: &str) -> Result<u64> {
-    let id_of = |plan: &Value| plan.get("id").and_then(Value::as_u64);
+    let plans: Vec<hub::Plan> = plans.iter().map(view_of).collect();
     let found = match wanted.parse::<u64>() {
-        Ok(id) => plans.iter().find(|p| id_of(p) == Some(id)),
+        Ok(id) => plans.iter().find(|p| p.id == Some(id)),
         Err(_) => plans.iter().find(|p| {
-            p.get("name")
-                .and_then(Value::as_str)
+            p.name
+                .as_deref()
                 .is_some_and(|name| name.eq_ignore_ascii_case(wanted))
         }),
     };
-    found.and_then(id_of).ok_or_else(|| {
+    found.and_then(|plan| plan.id).ok_or_else(|| {
         let names: Vec<String> = plans
             .iter()
-            .filter_map(|p| p.get("name").and_then(Value::as_str))
+            .filter_map(|p| p.name.as_deref())
             .map(phrase::quote)
             .collect();
         Error::usage(
@@ -548,14 +583,18 @@ fn resolve_plan(plans: &[Value], wanted: &str) -> Result<u64> {
 ///
 /// # Errors
 ///
-/// `internal` for a row whose `active` is not a boolean, or an active paid row whose
+/// `internal` when a row's `active` is not a boolean, or an active paid row's
 /// `subscription_id` is not a number. Skipping such a row would let the subscribe charge
 /// twice; it cannot be cancelled by id either.
 fn active_paid(plans: &[Value], subscriptions: &[Value]) -> Result<Vec<u64>> {
+    let plans: Vec<hub::Plan> = plans.iter().map(view_of).collect();
     let free = |plan_id: u64| {
         plans.iter().any(|p| {
-            p.get("id").and_then(Value::as_u64) == Some(plan_id)
-                && p.get("price_credits").and_then(Value::as_f64) == Some(0.0)
+            p.id == Some(plan_id)
+                && p.price_credits
+                    .as_ref()
+                    .and_then(serde_json::Number::as_f64)
+                    == Some(0.0)
         })
     };
     let unreadable = || {
@@ -566,30 +605,20 @@ fn active_paid(plans: &[Value], subscriptions: &[Value]) -> Result<Vec<u64>> {
         .with_hint("run `hipc hub subscription get` to see the subscriptions as the API sent them")
     };
     let mut paid = Vec::new();
-    for row in subscriptions {
-        let active = row
-            .get("active")
-            .and_then(Value::as_bool)
-            .ok_or_else(unreadable)?;
-        if !active || row.get("plan_id").and_then(Value::as_u64).is_some_and(free) {
+    for row in subscriptions.iter().map(view_of::<hub::PlanSubscription>) {
+        let active = row.active.ok_or_else(unreadable)?;
+        if !active || row.plan_id.is_some_and(free) {
             continue;
         }
-        let id = row
-            .get("subscription_id")
-            .and_then(Value::as_u64)
-            .ok_or_else(unreadable)?;
-        paid.push(id);
+        paid.push(row.subscription_id.ok_or_else(unreadable)?);
     }
     Ok(paid)
 }
 
 fn cancel(ctx: &Context<'_>, client: &Client, subscription_id: u64) -> Result<Printed> {
-    let request = Request::new(
-        Method::Delete,
-        format!("/registry/subscriptions/{subscription_id}/"),
-    )
-    .listed_by("hipc hub subscription get")
-    .about(format!("cancel the Hub subscription `{subscription_id}`"));
+    let request = Request::to(&hub::SUBSCRIPTION_CANCEL, [&subscription_id])
+        .listed_by("hipc hub subscription get")
+        .about(format!("cancel the Hub subscription `{subscription_id}`"));
     let done = json!({ "subscription_id": subscription_id, "status": "cancel_submitted" });
     let gate = Gate::Confirm {
         consequence: Some(CANCELLED),
@@ -600,9 +629,8 @@ fn cancel(ctx: &Context<'_>, client: &Client, subscription_id: u64) -> Result<Pr
 fn namespace(ctx: &Context<'_>, command: &HubNamespace) -> Result<Printed> {
     match command {
         HubNamespace::Availability { namespace } => {
-            check_namespace(namespace)?;
-            let request = Request::get("/registry/namespaces/check/")
-                .query("name", namespace)
+            let request = Request::to(&hub::NAMESPACE_CHECK, [])
+                .query("name", namespace.as_str())
                 .about(format!("check the Hub namespace `{namespace}`"));
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
@@ -610,16 +638,16 @@ fn namespace(ctx: &Context<'_>, command: &HubNamespace) -> Result<Printed> {
         HubNamespace::Status => print_with(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/registry/provision/status/").about("get the Hub namespace status"),
+            &Request::to(&hub::NAMESPACE_STATUS, []).about("get the Hub namespace status"),
             Gate::Open,
-            |r| Ok(without_field(r.document()?, "robot_secret")),
+            |r| namespace_read(r.document()?, "the Hub namespace status"),
         ),
         HubNamespace::Get => print_with(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/registry/me/").about("get the Hub namespace"),
+            &Request::to(&hub::NAMESPACE, []).about("get the Hub namespace"),
             Gate::Open,
-            |r| Ok(without_field(r.document()?, "robot_secret")),
+            |r| namespace_read(r.document()?, "the Hub namespace"),
         )
         .map_err(|error| with_provision_hint(ctx, error)),
         // `hipc` prints a `docker login` command it builds and never runs it: logging in
@@ -627,21 +655,19 @@ fn namespace(ctx: &Context<'_>, command: &HubNamespace) -> Result<Printed> {
         HubNamespace::Robot(HubRobot::Get) => print_with(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get("/registry/me/robot/").about("get the Hub robot login"),
+            &Request::to(&hub::ROBOT, []).about("get the Hub robot login"),
             Gate::Open,
             |r| robot_login(ctx, r.document()?),
         )
         .map_err(|error| with_provision_hint(ctx, error)),
         HubNamespace::Robot(HubRobot::Rotate {
-            reveal,
-            secret_file,
-        }) => rotate_robot(ctx, *reveal, secret_file.path.as_deref())
+            secret: OneTimeSecret { reveal, path },
+        }) => rotate_robot(ctx, *reveal, path.as_deref())
             .map_err(|error| with_provision_hint(ctx, error)),
         HubNamespace::Create {
             namespace,
-            reveal,
-            secret_file,
-        } => provision(ctx, namespace, *reveal, secret_file.path.as_deref()),
+            secret: OneTimeSecret { reveal, path },
+        } => provision(ctx, namespace, *reveal, path.as_deref()),
         HubNamespace::Update { visibility, public } => update_namespace(ctx, *visibility, *public)
             .map_err(|error| with_provision_hint(ctx, error)),
     }
@@ -671,8 +697,8 @@ fn update_namespace(ctx: &Context<'_>, visibility: Visibility, public: bool) -> 
     } else {
         ("private", "only logins with access can pull from it")
     };
-    let request = Request::new(Method::Patch, "/registry/me/publicity/")
-        .json(&json!({ "public": opens }))
+    let request = Request::to(&hub::PUBLICITY_UPDATE, [])
+        .json(&hub::PublicityUpdateBody { public: opens })
         .about(format!("make the Hub namespace {word}"));
     let consequence = format!("{who}, and its storage allowance changes");
     let gate = Gate::Confirm {
@@ -694,7 +720,7 @@ fn update_namespace(ctx: &Context<'_>, visibility: Visibility, public: bool) -> 
 /// `--secret-file` names the file it goes to instead.
 fn rotate_robot(ctx: &Context<'_>, reveal: bool, secret_file: Option<&Path>) -> Result<Printed> {
     require_reveal_or_file(ctx, reveal, secret_file.is_some())?;
-    let request = Request::new(Method::Post, "/registry/robot/rotate/")
+    let request = Request::to(&hub::ROBOT_ROTATE, [])
         .listed_by("hipc hub namespace robot get")
         .about("rotate the Hub robot secret");
     let consequence = format!(
@@ -785,9 +811,7 @@ fn issued_robot(ctx: &Context<'_>, body: Value, issued: Issued<'_>) -> Result<Va
         .as_object()
         .into_iter()
         .flatten()
-        .filter(|(key, value)| {
-            ROBOT_SECRET_KEYS.contains(&key.to_ascii_lowercase().as_str()) && value.is_string()
-        })
+        .filter(|(key, value)| is_issued_secret(key, value))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     // The secret goes to its file before any refusal below, which prints nothing: with
@@ -842,10 +866,6 @@ fn issued_robot(ctx: &Context<'_>, body: Value, issued: Issued<'_>) -> Result<Va
 
 /// The keys the console reads a robot secret from, because Harbor and the Hippius backend
 /// have named it differently over time.
-///
-/// `namespace get` and `status` remove only `robot_secret`, the one name the provision
-/// answer uses. Removing the other three there would drop fields those documents print
-/// today, which tenet 7 allows only in a new major version.
 const ROBOT_SECRET_KEYS: [&str; 4] = ["secret", "password", "robot_secret", "token"];
 
 /// The keys a server `docker login` command may sit under: the robot read's `docker_login`,
@@ -868,8 +888,55 @@ fn without_robot_secrets(value: Value) -> Option<Value> {
     (!holds_a_login_command(&value)).then_some(value)
 }
 
+/// A namespace read (`namespace get` or `status`), `what`, as the robot read prints it
+/// ([`without_robot_secrets`]): the provision answer issues the robot secret, and only that
+/// call prints it (tenet 9, which outranks keeping a field a document printed before).
+///
+/// # Errors
+///
+/// `internal`, with nothing printed, when the answer holds a `docker login` command outside
+/// the keys that are dropped.
+fn namespace_read(body: Value, what: &str) -> Result<Value> {
+    without_robot_secrets(body).ok_or_else(|| {
+        Error::internal(format!(
+            "{what} holds a `docker login` command, which may pass the robot secret, and `hipc` \
+             prints a robot secret only when it is issued"
+        ))
+        .with_hint(format!(
+            "run `hipc hub namespace robot get` for the robot's name, and report the answer at \
+             `{}`",
+            hippius::ISSUES_URL
+        ))
+    })
+}
+
 fn without_secret_keys(value: Value) -> Value {
     without_keys(value, &is_robot_secret)
+}
+
+/// Whether `key` and `value`, a field of an answer that issues a robot or key secret, are
+/// that secret: one of the [`ROBOT_SECRET_KEYS`] in any case, holding a string.
+fn is_issued_secret(key: &str, value: &Value) -> bool {
+    ROBOT_SECRET_KEYS.contains(&key.to_ascii_lowercase().as_str()) && value.is_string()
+}
+
+/// The key under which `body`, an issuing answer as printed, holds the secret, whichever of
+/// its names that is.
+fn issued_secret_key(body: &Value) -> Option<&str> {
+    body.as_object()?
+        .iter()
+        .find(|(key, value)| is_issued_secret(key, value))
+        .map(|(key, _)| key.as_str())
+}
+
+/// Whether `body`, an issuing answer as printed, names the file `--secret-file` moved the
+/// secret to: [`save_secret`] leaves `<key>_file` for each key it moved.
+fn holds_a_saved_secret(body: &Value) -> bool {
+    body.as_object().is_some_and(|fields| {
+        fields.iter().any(|(key, value)| {
+            key.strip_suffix("_file").is_some_and(is_robot_secret) && value.is_string()
+        })
+    })
 }
 
 /// Whether `key` may hold a robot or key secret, or a `docker login` command: one of the
@@ -966,7 +1033,7 @@ fn robot_login(ctx: &Context<'_>, body: Value) -> Result<Value> {
 /// them (`docker -D login`) or a substitution (`$(printf docker) login`) would not hide.
 /// This fails closed: a sentence that names both words is refused as well.
 fn holds_docker_login(text: &str) -> bool {
-    let spaced: String = text
+    let spaced = text
         .chars()
         .filter(|c| !matches!(c, '"' | '\'' | '`' | '\\'))
         .map(|c| match c {
@@ -993,7 +1060,7 @@ fn holds_docker_login(text: &str) -> bool {
 ///
 /// # Errors
 ///
-/// `internal` for a login that starts with `-`: quoting does not stop `docker` reading it
+/// `internal` when the login starts with `-`: quoting does not stop `docker` reading it
 /// as a flag, so the command would not log in as the robot it names.
 fn docker_login_command(login: &str) -> Result<String> {
     if login.starts_with('-') {
@@ -1009,11 +1076,12 @@ fn docker_login_command(login: &str) -> Result<String> {
         phrase::shell_word(login)
     ))
 }
+
 /// `error` with a hint when it is the API's answer to an account that has no Hub namespace yet
 /// ([`set_up_first`]: `You must call /api/registry/provision/ first.`). The hint carries this run's
 /// profile and origin, so the namespace it creates is on the server this run read.
 fn with_provision_hint(ctx: &Context<'_>, error: Error) -> Error {
-    if set_up_first(&error, "/api/registry/provision/") {
+    if set_up_first(&error, hub::NAMESPACE_CREATE.endpoint().template()) {
         let hint = run_hint(
             ctx,
             "hub namespace create <namespace> --reveal --yes",
@@ -1032,14 +1100,15 @@ const ROTATE_ROBOT: &str = "hub namespace robot rotate --reveal --yes";
 /// secret once, so `--reveal` is required before anything is sent (tenet 9).
 fn provision(
     ctx: &Context<'_>,
-    name: &str,
+    name: &Namespace,
     reveal: bool,
     secret_file: Option<&Path>,
 ) -> Result<Printed> {
-    check_namespace(name)?;
     require_reveal_or_file(ctx, reveal, secret_file.is_some())?;
-    let request = Request::new(Method::Post, "/registry/provision/")
-        .json(&json!({ "namespace": name }))
+    let request = Request::to(&hub::NAMESPACE_CREATE, [])
+        .json(&hub::NamespaceCreateBody {
+            namespace: name.as_str(),
+        })
         .about(format!("create the Hub namespace `{name}`"));
     // Without a file the question says nothing of the secret, as it always has.
     let consequence = secret_file.map(|_| shown_once("its robot secret", secret_file));
@@ -1058,53 +1127,38 @@ fn provision(
                 secret_file,
             },
         )?;
-        if body
-            .get("robot_secret_file")
-            .and_then(Value::as_str)
-            .is_some()
-        {
+        let secret = issued_secret_key(&body);
+        if holds_a_saved_secret(&body) {
             // `issued_robot` named the file in its note.
-        } else if body.get("robot_secret").and_then(Value::as_str).is_none() {
+        } else if secret.is_none() {
             let why = "no `robot_secret` was issued, because the namespace already \
                        exists or is pending";
             match ctx.next_command(ROTATE_ROBOT) {
                 Some(rotate) => ctx.note(&format!("{why}; `{rotate}` issues one")),
                 None => ctx.note(why),
             }
-        } else if body.get("robot_name").and_then(Value::as_str).is_some() {
+        } else if let (Some(secret), Some(_)) =
+            (secret, body.get("robot_name").and_then(Value::as_str))
+        {
             // The robot name is not repeated: Harbor names a robot `robot$...`, and a shell
             // expands the `$`, so the person copies it from the output. `hipc` never runs the
             // login itself.
             ctx.note(&format!(
                 "log in to the registry with `docker login {REGISTRY_HOST} --username \
-                 <robot_name> --password-stdin`, giving it `robot_secret` on stdin"
+                 <robot_name> --password-stdin`, giving it `{secret}` on stdin"
             ));
         }
         Ok(body)
     })
     .map_err(|error| match error.code() {
+        // The minimum is the server's to set (tenet 11), so the hint names no amount.
         Code::PaymentRequired => error.with_hint(
-            "top up the balance to at least $10 in the console, which a namespace needs even \
-             on the Free plan, then run the command again",
+            "a namespace needs a balance even on the Free plan, at a minimum the server sets: \
+             run `hipc billing balance` to see yours, top it up with `hipc billing top-up`, then \
+             run the command again",
         ),
         _ => error,
     })
-}
-
-/// Namespace names are 1 to 63 lowercase letters, digits, and dashes, and do not start with
-/// a dash, which a command line would read as a flag.
-fn check_namespace(name: &str) -> Result<()> {
-    if is_word(name, 1..=63, Charset::LowerDash, Dash::Refused) {
-        Ok(())
-    } else {
-        Err(Error::usage(
-            format!(
-                "`{name}` is not a namespace name: a name is 1 to 63 lowercase letters, \
-                 digits, and `-`, and does not start with `-`"
-            ),
-            "pass a namespace name such as `my-team`",
-        ))
-    }
 }
 
 /// What a Hub subscription cancel leaves, for its question and `hipc api`'s. The grace period
@@ -1112,37 +1166,3 @@ fn check_namespace(name: &str) -> Result<()> {
 pub(crate) const CANCELLED: &str = "the namespace stays available for a 30-day grace period, \
                                     and subscribing again within it keeps everything; when it \
                                     ends, the namespace and everything in it are deleted for good";
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The namespace rule: 1 to 63 of `a-z`, `0-9`, and `-`, not starting with `-`.
-    #[test]
-    fn namespace_names_hold_one_rule() {
-        for good in ["a", "my-team", "a-", "0", &"a".repeat(63)] {
-            assert!(check_namespace(good).is_ok(), "{good}");
-        }
-        for bad in [
-            "",
-            &"a".repeat(64),
-            "-a",
-            "..",
-            "a.b",
-            "A",
-            "a_b",
-            "a/b",
-            "a b",
-            "é",
-        ] {
-            let error = check_namespace(bad).expect_err(bad);
-            assert!(
-                error.message().ends_with(
-                    "is not a namespace name: a name is 1 to 63 lowercase letters, digits, and \
-                     `-`, and does not start with `-`"
-                ),
-                "{bad}: {error}"
-            );
-        }
-    }
-}

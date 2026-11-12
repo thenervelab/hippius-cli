@@ -1,0 +1,188 @@
+//! The Hub: plans, the subscription, the namespace and its robot, keys, repositories and
+//! artifacts, events, usage, and the model index.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Number;
+
+use crate::routes::{Guard, Paging, Route, RouteFlag};
+use crate::view::field;
+
+routes! {
+    /// The Hub plans.
+    PLANS: 0 = Route::get("/api/registry/plans/").personal();
+
+    /// The Hub subscriptions.
+    SUBSCRIPTIONS: 0 = Route::get("/api/registry/subscriptions/").own_account();
+
+    /// Subscribes to a Hub plan.
+    SUBSCRIBE: 0 = Route::post("/api/registry/subscribe/")
+        .own_account()
+        .guard(Guard::Refused {
+            why: "it reads no current plan first, so it could start a second paid Hub subscription",
+            hint: "run `hipc hub subscription subscribe`, which refuses a second plan and \
+                   replaces one only with `--replace`",
+        });
+
+    /// Cancels a Hub subscription.
+    SUBSCRIPTION_CANCEL: 1 = Route::delete("/api/registry/subscriptions/{subscription_id}/")
+        .own_account();
+
+    /// The Hub usage.
+    USAGE: 0 = Route::get("/api/registry/usage/").own_account();
+
+    /// The Hub usage by repository.
+    USAGE_BY_REPOSITORY: 0 = Route::get("/api/registry/usage/repositories/").own_account();
+
+    /// Whether a namespace name is free.
+    NAMESPACE_CHECK: 0 = Route::get("/api/registry/namespaces/check/").own_account();
+
+    /// Creates the namespace and its robot login.
+    NAMESPACE_CREATE: 0 = Route::post("/api/registry/provision/").own_account().reveals();
+
+    /// Whether the namespace is set up.
+    NAMESPACE_STATUS: 0 = Route::get("/api/registry/provision/status/").own_account();
+
+    /// The namespace.
+    NAMESPACE: 0 = Route::get("/api/registry/me/").own_account();
+
+    /// Makes the namespace public or private. Without `public` set to `false` the server may
+    /// read the body as a toggle, so `hipc api` needs `--public`, and its refusal names who
+    /// can pull rather than a bucket.
+    PUBLICITY_UPDATE: 0 = Route::patch("/api/registry/me/publicity/")
+        .own_account()
+        .guard(Guard::NeedsUnlessFalse(&[RouteFlag::Public], "public"));
+
+    /// The robot login.
+    ROBOT: 0 = Route::get("/api/registry/me/robot/").own_account();
+
+    /// Rotates the robot login's secret.
+    ROBOT_ROTATE: 0 = Route::post("/api/registry/robot/rotate/").own_account().reveals();
+
+    /// The Hub keys.
+    KEYS: 0 = Route::get("/api/registry/keys/").own_account();
+
+    /// One Hub key.
+    KEY: 1 = Route::get("/api/registry/keys/{key_id}/").own_account();
+
+    /// Creates a Hub key.
+    KEY_CREATE: 0 = Route::post("/api/registry/keys/").own_account().reveals();
+
+    /// Rotates a Hub key.
+    KEY_ROTATE: 1 = Route::post("/api/registry/keys/{key_id}/rotate/").own_account().reveals();
+
+    /// Deletes a Hub key.
+    KEY_DELETE: 1 = Route::delete("/api/registry/keys/{key_id}/").own_account();
+
+    /// The namespace's audit events.
+    EVENTS: 0 = Route::get("/api/registry/events/").own_account();
+
+    /// The repositories.
+    REPOSITORIES: 0 = Route::get("/api/registry/repositories/").own_account();
+
+    /// Deletes a repository.
+    REPOSITORY_DELETE: 1 = Route::delete("/api/registry/repositories/{repository..}/")
+        .own_account()
+        .permanent();
+
+    /// A repository's artifacts.
+    ARTIFACTS: 1 = Route::get("/api/registry/repositories/{repository..}/artifacts/").own_account();
+
+    /// One artifact.
+    ARTIFACT: 2 = Route::get("/api/registry/repositories/{repository..}/artifacts/{reference}/")
+        .own_account();
+
+    /// Deletes an artifact.
+    ARTIFACT_DELETE: 2 = Route::delete("/api/registry/repositories/{repository..}/artifacts/{reference}/")
+        .own_account()
+        .permanent();
+
+    /// The model index.
+    MODELS: 0 = Route::get("/api/models/").own_account().paged(Paging::Totalled { items: "results" });
+
+    /// The model index's filters.
+    MODEL_FORMATS: 0 = Route::get("/api/models/formats/").own_account();
+
+    /// One model, with its versions.
+    MODEL: 1 = Route::get("/api/models/{model..}/").own_account().paged(Paging::Totalled { items: "artifacts" });
+
+    /// One version of a model.
+    MODEL_VERSION: 2 = Route::get("/api/models/{model..}/{reference}/").own_account();
+}
+
+/// The body of [`SUBSCRIBE`]. A dry run shows a plan given by name as a placeholder, so the
+/// id is any JSON value.
+#[derive(Debug, Serialize)]
+pub struct SubscribeBody<'a> {
+    /// The plan's id.
+    pub plan_id: &'a serde_json::Value,
+}
+
+/// The body of [`PUBLICITY_UPDATE`].
+#[derive(Debug, Serialize)]
+pub struct PublicityUpdateBody {
+    /// Whether anyone may pull from the namespace without logging in.
+    pub public: bool,
+}
+
+/// The body of [`NAMESPACE_CREATE`].
+#[derive(Debug, Serialize)]
+pub struct NamespaceCreateBody<'a> {
+    /// The namespace's name.
+    pub namespace: &'a str,
+}
+
+/// The body of [`KEY_CREATE`]: `expires_days` only when it is given.
+#[derive(Debug, Serialize)]
+pub struct KeyCreateBody<'a> {
+    /// The key's name.
+    pub name: &'a str,
+    /// The key's role.
+    pub role: &'a str,
+    /// The days until it expires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_days: Option<u32>,
+}
+
+/// One plan of [`PLANS`], as far as `hipc` decides on it.
+#[derive(Debug, Default, Deserialize)]
+pub struct Plan {
+    /// The plan's id.
+    #[serde(default, deserialize_with = "field")]
+    pub id: Option<u64>,
+    /// The plan's name.
+    #[serde(default, deserialize_with = "field")]
+    pub name: Option<String>,
+    /// Its monthly price in credits, as sent.
+    #[serde(default, deserialize_with = "field")]
+    pub price_credits: Option<Number>,
+}
+
+/// One row of [`SUBSCRIPTIONS`], as far as `hipc` decides on it.
+#[derive(Debug, Default, Deserialize)]
+pub struct PlanSubscription {
+    /// Whether it is active.
+    #[serde(default, deserialize_with = "field")]
+    pub active: Option<bool>,
+    /// The plan it is to.
+    #[serde(default, deserialize_with = "field")]
+    pub plan_id: Option<u64>,
+    /// The id a cancel takes.
+    #[serde(default, deserialize_with = "field")]
+    pub subscription_id: Option<u64>,
+}
+
+/// A key of [`KEY_CREATE`]'s answer, as far as `hipc` decides on it.
+#[derive(Debug, Default, Deserialize)]
+pub struct Key {
+    /// The key's id, which the rotate takes.
+    #[serde(default, deserialize_with = "field")]
+    pub id: Option<u64>,
+}
+
+/// One repository of [`REPOSITORIES`], as far as `hipc` decides on it.
+#[derive(Debug, Default, Deserialize)]
+pub struct Repository {
+    /// The repository's name.
+    #[serde(default, deserialize_with = "field")]
+    pub name: Option<String>,
+}

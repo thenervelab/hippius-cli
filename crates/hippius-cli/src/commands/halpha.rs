@@ -13,20 +13,19 @@
 
 use std::time::{Duration, Instant, SystemTime};
 
-use hippius::{Client, Code, Error, Method, Request, Result, SideEffects, phrase};
+use hippius::routes::billing::{self, PurchaseStatus};
+use hippius::{Client, Error, Failure, Request, Result, SideEffects, phrase, view_of};
+use serde::Deserialize as _;
 use serde_json::{Value, json};
 
-use crate::cli::{CHAIN_MINIMUM, ONE, Planck};
+use crate::cli::CHAIN_MINIMUM;
 use crate::commands::Printed;
 use crate::commands::credits::to_credits;
-use crate::commands::poll::{Next, Schedule, Wait, poll_until};
+use crate::commands::poll::{Schedule, Turn, Wait, poll_until};
 use crate::commands::print_with;
-use crate::context::{Context, Gate, Write};
+use crate::context::{Context, Gate, Write, WritePlan};
 use crate::output::Mode;
-
-const QUOTE: &str = "/billing/native/quote/";
-const BUY: &str = "/billing/native/buy/";
-const PURCHASES: &str = "/billing/native/purchases/";
+use crate::units::{ONE, Planck};
 
 /// How often a purchase is read again: every 3 seconds, as the console reads it.
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
@@ -49,12 +48,9 @@ const IN_FLIGHT_SECONDS: u64 = 15 * 60;
 /// without this floor it would accept any price its `--min-credits` names.
 const RETRY_FLOOR_BPS: u128 = 9_000;
 
-/// The statuses of a purchase still in flight. `completed` and `failed` are final.
-const IN_FLIGHT: [&str; 3] = ["queued", "submitted", "included"];
-
 /// The read of the quote, which a top-up sends first.
 fn quote_request() -> Request {
-    Request::get(QUOTE).about("get the hAlpha quote")
+    Request::to(&billing::NATIVE_QUOTE, []).about("get the hAlpha quote")
 }
 
 /// The fields of a quote that are 18-decimal amounts.
@@ -114,31 +110,28 @@ struct Quote {
 
 impl Quote {
     /// The quote in `answer`, or `internal` when a field a buy depends on is missing or not
-    /// its type.
+    /// its type ([`billing::NativeQuote`]).
     fn read(answer: &Value) -> Result<Self> {
-        let unreadable = || crate::commands::unreadable("get the hAlpha quote");
-        let flag = |name: &str| {
-            answer
-                .get(name)
-                .and_then(Value::as_bool)
-                .ok_or_else(unreadable)
-        };
-        let amount = |name: &str| answer.get(name).and_then(integer).ok_or_else(unreadable);
+        let billing::NativeQuote {
+            enabled,
+            stale,
+            custodial,
+            alpha_price,
+            min_alpha,
+            native_balance,
+            reason,
+            address,
+        } = billing::NativeQuote::deserialize(answer)
+            .map_err(|_| crate::commands::unreadable("get the hAlpha quote"))?;
         Ok(Self {
-            enabled: flag("enabled")?,
-            stale: flag("stale")?,
-            custodial: flag("custodial")?,
-            alpha_price: amount("alpha_price")?,
-            min_alpha: amount("min_alpha")?,
-            native_balance: amount("native_balance")?,
-            reason: answer
-                .get("reason")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            address: answer
-                .get("address")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            enabled,
+            stale,
+            custodial,
+            alpha_price,
+            min_alpha,
+            native_balance,
+            reason,
+            address,
         })
     }
 
@@ -148,14 +141,14 @@ impl Quote {
     /// answers a key it has seen as it answered the first, whatever the quote says now.
     fn check_retry(&self, alpha: Planck, min_credits: Planck) -> Result<()> {
         if !self.custodial {
-            return Err(self_sign(Error::new(Code::Conflict, String::new())));
+            return Err(self_sign(Error::new(Failure::Conflict, String::new())));
         }
         let credits = credits_for(alpha.0, self.alpha_price).unwrap_or(u128::MAX);
         let floor =
             credits / 10_000 * RETRY_FLOOR_BPS + credits % 10_000 * RETRY_FLOOR_BPS / 10_000;
         if min_credits.0 < floor {
             return Err(Error::new(
-                Code::Conflict,
+                Failure::Conflict,
                 format!(
                     "`--min-credits {min_credits}` is below 90 percent of the `{}` credits \
                      `--alpha {alpha}` buys at the quoted price now, and under a key the API has \
@@ -164,8 +157,9 @@ impl Quote {
                 ),
             )
             .with_hint(format!(
-                "run `hipc api GET {PURCHASES}` to find the first buy; if it is not there, top \
-                 up again without `--idempotency-key`"
+                "run `hipc api GET {}` to find the first buy; if it is not there, top up again \
+                 without `--idempotency-key`",
+                purchases_request().target()
             )));
         }
         Ok(())
@@ -183,26 +177,26 @@ impl Quote {
                 .map(|reason| format!(": the API says {}", phrase::quote(reason)))
                 .unwrap_or_default();
             return Err(Error::new(
-                Code::Conflict,
+                Failure::Conflict,
                 format!("hAlpha top-ups are off (`enabled` is `false` in the quote){why}"),
             )
             .with_hint(format!("{again} `enabled` is `true`, then top up again")));
         }
         if self.stale {
             return Err(Error::new(
-                Code::Conflict,
+                Failure::Conflict,
                 "the hAlpha price on chain is stale (`stale` is `true` in the quote), and the \
                  chain refuses a buy at a stale price",
             )
             .with_hint(format!("{again} `stale` is `false`, then top up again")));
         }
         if !self.custodial {
-            return Err(self_sign(Error::new(Code::Conflict, String::new())));
+            return Err(self_sign(Error::new(Failure::Conflict, String::new())));
         }
         if alpha.0 < self.min_alpha {
             let least = Planck(self.min_alpha);
             return Err(Error::new(
-                Code::Conflict,
+                Failure::Conflict,
                 format!("`--alpha {alpha}` is below the quote's `min_alpha` of `{least}` hAlpha"),
             )
             .with_hint(format!("pass `--alpha` of at least `{least}`")));
@@ -212,7 +206,7 @@ impl Quote {
         if alpha.0.saturating_add(CHAIN_MINIMUM.0) > self.native_balance {
             let held = Planck(self.native_balance);
             return Err(Error::new(
-                Code::Conflict,
+                Failure::Conflict,
                 format!(
                     "`--alpha {alpha}` and the `{CHAIN_MINIMUM}` hAlpha kept for the fee are more \
                      than the account's `native_balance` of `{held}` hAlpha"
@@ -233,26 +227,13 @@ impl Quote {
         let least = min_credits(credits);
         if least == 0 {
             return Err(Error::new(
-                Code::Conflict,
+                Failure::Conflict,
                 format!("`--alpha {alpha}` buys no credits at the quoted `alpha_price`"),
             )
             .with_hint("pass a larger `--alpha`"));
         }
         Ok((Planck(credits), Planck(least)))
     }
-}
-
-/// An 18-decimal amount as the API sends it: a string of digits, or a JSON integer.
-fn integer(value: &Value) -> Option<u128> {
-    let text = match value {
-        Value::String(text) => text.clone(),
-        Value::Number(number) => number.to_string(),
-        _ => return None,
-    };
-    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    text.parse().ok()
 }
 
 /// The credits `alpha` buys at `price` (credits per hAlpha, both 18-decimal):
@@ -292,18 +273,18 @@ const SELF_SIGN_HINT: &str = "top up with hAlpha in the console at `https://cons
 
 /// The buy, with the `min_credits` it sends and its key.
 fn buy_request(alpha: Planck, min_credits: &str, key: &str) -> Request {
-    Request::new(Method::Post, BUY)
-        .json(&json!({
-            "alpha_amount": alpha.0.to_string(),
-            "min_credits": min_credits,
-        }))
+    Request::to(&billing::NATIVE_BUY, [])
+        .json(&billing::NativeBuyBody {
+            alpha_amount: &alpha.0.to_string(),
+            min_credits,
+        })
         .idempotency_key(key)
 }
 
 /// The purchases list, newest first: swagger's `ordering` on `created_at`, so the purchase a
 /// run follows, and any other in flight, is on the first page.
 fn purchases_request() -> Request {
-    Request::get(PURCHASES)
+    Request::to(&billing::NATIVE_PURCHASES, [])
         .query("ordering", "-created_at")
         .about("read the hAlpha purchases")
 }
@@ -324,23 +305,28 @@ fn refuse_in_flight(page: &Value, now: u64) -> Result<()> {
         .get("results")
         .and_then(Value::as_array)
         .ok_or_else(|| crate::commands::unreadable("read the hAlpha purchases"))?;
-    let recent = |row: &Value| {
-        row.get("created_at")
-            .and_then(Value::as_str)
+    let recent = |row: &billing::Purchase| {
+        row.created_at
+            .as_deref()
             .and_then(hippius::rfc3339_seconds)
             .is_none_or(|created| now.saturating_sub(created) < IN_FLIGHT_SECONDS)
     };
-    if let Some(row) = rows.iter().find(|row| in_flight(row) && recent(row)) {
-        let id = purchase_id(row).map_or_else(|| "without an id".to_owned(), phrase::quote);
+    let mut rows = rows.iter().map(view_of::<billing::Purchase>);
+    if let Some(row) = rows.find(|row| row.status.in_flight() && recent(row)) {
+        let id = row
+            .id
+            .as_ref()
+            .map_or_else(|| "without an id".to_owned(), phrase::quote);
         return Err(Error::new(
-            Code::Conflict,
+            Failure::Conflict,
             format!(
                 "the purchase {id} is still {}, and a second buy now could spend twice",
-                status_of(row)
+                status_of(&row.status)
             ),
         )
         .with_hint(format!(
-            "run `hipc api GET {PURCHASES}` until it is `completed` or `failed`, then top up again"
+            "run `hipc api GET {}` until it is `completed` or `failed`, then top up again",
+            purchases_request().target()
         )));
     }
     Ok(())
@@ -381,19 +367,17 @@ pub(crate) fn top_up(
         ),
     }
     .about(format!("buy credits with `{alpha}` hAlpha"));
-    let checked = match ctx.check_write(&client, &draft)? {
-        Write::DryRun(mut doc) => {
-            // The quote is read before the question, as a list replace reads its list.
-            doc["reads_first"] = ctx.describe(&client, &read)?;
-            // The polls of the follow are left out, as a VM launch's are (tenet 5).
-            let requests = if retry.is_some() {
-                vec![&read, &draft]
-            } else {
-                vec![&read, &recent, &draft]
-            };
-            doc["requests"] = ctx.describe_each(&client, &requests)?;
-            return Ok(Printed::Document(doc));
-        }
+    // The polls of the follow are left out, as a VM launch's are (tenet 5).
+    let reads: &[&Request] = if retry.is_some() {
+        &[&read]
+    } else {
+        &[&read, &recent]
+    };
+    // Not `read_then_write`: a person's answer can take long enough for another buy to start,
+    // so the purchases are read again after the question.
+    let checked = match ctx.check_write(&client, &WritePlan::new(reads, &draft))? {
+        // The quote is read before the question, as a list replace reads its list.
+        Write::DryRun(doc) => return Ok(doc.reads_first(ctx.describe(&client, &read)?).into()),
         Write::Checked(checked) => checked,
     };
     let quote = Quote::read(&ctx.send(&client, &read)?.document()?)?;
@@ -424,7 +408,7 @@ pub(crate) fn top_up(
     };
     let buy = buy_request(alpha, &least.0.to_string(), &key).about(action);
     let asked = ctx.will_ask();
-    ctx.confirm_write(
+    let confirmed = ctx.confirm_write(
         checked,
         &buy.action(),
         Some("the hAlpha is spent on chain, and a buy cannot be undone"),
@@ -435,7 +419,7 @@ pub(crate) fn top_up(
         check_in_flight(ctx, &client, &recent)?;
     }
     let started = ctx
-        .send(&client, &buy)
+        .send_confirmed(&client, &buy, &confirmed)
         .and_then(|response| response.document())
         .map_err(|error| buy_failed(ctx, error, retry.is_some(), least, &key))?;
     let wait = wait_timeout.map_or(WAIT_TIMEOUT, Duration::from_secs);
@@ -476,24 +460,6 @@ fn buy_failed(ctx: &Context<'_>, error: Error, retried: bool, least: Planck, key
     error
 }
 
-/// The purchase's id as text, which the purchases list is searched for: the console matches
-/// `String(id)`, whether the API sends a number or a string.
-fn purchase_id(row: &Value) -> Option<String> {
-    match row.get("id")? {
-        Value::String(id) => Some(id.clone()),
-        Value::Number(id) => Some(id.to_string()),
-        _ => None,
-    }
-}
-
-/// Whether `row` is still in flight: a status of [`IN_FLIGHT`], or none yet.
-fn in_flight(row: &Value) -> bool {
-    match row.get("status") {
-        None | Some(Value::Null) => true,
-        Some(status) => status.as_str().is_some_and(|s| IN_FLIGHT.contains(&s)),
-    }
-}
-
 /// How a follow ended: with the purchase out of flight, or at the deadline with it printed.
 enum Followed {
     Final(Value),
@@ -521,16 +487,16 @@ impl Purchase<'_> {
 impl Wait for Purchase<'_> {
     type Output = Followed;
 
-    fn next(&mut self) -> Next<Followed> {
-        if in_flight(&self.row) {
-            Next::Poll
+    fn next(&mut self) -> Turn<Followed> {
+        if view_of::<billing::Purchase>(&self.row).status.in_flight() {
+            Turn::Poll
         } else {
-            Next::Stop(Ok(Followed::Final(std::mem::take(&mut self.row))))
+            Turn::Stop(Ok(Followed::Final(std::mem::take(&mut self.row))))
         }
     }
 
-    fn take(&mut self, page: Value) -> Result<()> {
-        if let Some(listed) = find(&page, self.id) {
+    fn take(&mut self, answer: Value) -> Result<()> {
+        if let Some(listed) = find(&answer, self.id) {
             self.row = listed;
             self.found = true;
         }
@@ -547,7 +513,7 @@ impl Wait for Purchase<'_> {
             "the purchase {} was still {} after {}{unseen}; `hipc billing balance` shows the \
              credits once it completes",
             self.quoted,
-            status_of(&self.row),
+            status_of(&view_of::<billing::Purchase>(&self.row).status),
             phrase::count(self.wait.as_secs(), "second")
         ));
         Ok(Followed::Stopped(Printed::Document(self.print())))
@@ -566,7 +532,8 @@ fn print_purchase(ctx: &Context<'_>, row: &Value, key: &str) -> Value {
     shown_as_decimals(ctx, doc, PURCHASE_AMOUNTS)
 }
 
-/// Follows the purchase `started` names until it leaves [`IN_FLIGHT`] or `wait` has passed,
+/// Follows the purchase `started` names until it is no longer in flight
+/// ([`PurchaseStatus::in_flight`]) or `wait` has passed,
 /// and prints the last row with the key. A stop at the deadline is not an error: the buy was
 /// accepted, and the row says where it stands.
 fn follow(
@@ -584,7 +551,7 @@ fn follow(
                 .after_write(json!({ "idempotency_key": key })),
         );
     }
-    let Some(id) = purchase_id(&started) else {
+    let Some(id) = view_of::<billing::Purchase>(&started).id else {
         ctx.warning("the buy answer names no purchase, so it was not followed");
         return Ok(Printed::Document(print(&started)));
     };
@@ -593,10 +560,11 @@ fn follow(
     ctx.note(&format!(
         "the buy was accepted as the purchase {quoted} under the key `{key}`; following it"
     ));
-    let follow_hint =
-        format!("run `hipc api GET {PURCHASES}` to see where the purchase {quoted} stands");
+    let follow_hint = format!(
+        "run `hipc api GET {}` to see where the purchase {quoted} stands",
+        purchases_request().target()
+    );
     let schedule = Schedule {
-        // The first read goes out at once, whatever the deadline.
         first: Duration::ZERO,
         interval: POLL_INTERVAL,
         deadline: Instant::now() + wait,
@@ -615,8 +583,9 @@ fn follow(
         Followed::Final(row) => row,
         Followed::Stopped(printed) => return Ok(printed),
     };
-    match row.get("status").and_then(Value::as_str) {
-        Some("completed") => {
+    let purchase: billing::Purchase = view_of(&row);
+    match purchase.status {
+        PurchaseStatus::Completed => {
             ctx.note(&format!(
                 "the purchase {quoted} completed; `hipc billing balance` shows the credits"
             ));
@@ -624,12 +593,12 @@ fn follow(
         }
         // The buy was accepted and the chain refused it: part of the command went through,
         // so stdout holds the purchase and `details` the chain's error.
-        Some("failed") => {
-            let error = row.get("error").and_then(Value::as_str).unwrap_or_default();
+        PurchaseStatus::Failed => {
+            let error = purchase.error.unwrap_or_default();
             let why = if error.is_empty() {
                 String::new()
             } else {
-                format!(": the API says {}", phrase::quote(error))
+                format!(": the API says {}", phrase::quote(&error))
             };
             Err(Error::partial_failure(
                 format!("the purchase {quoted} failed on chain{why}"),
@@ -639,9 +608,15 @@ fn follow(
             )
             .with_hint("run `hipc billing native-quote` to check the price and the hAlpha"))
         }
-        // A status `hipc` does not know may be a refusal: not reported as a success.
-        _ => {
-            let status = status_of(&row);
+        // A status `hipc` does not know may be a refusal: not reported as a success. One in
+        // flight never gets here: the follow stops only on a status out of flight.
+        PurchaseStatus::Unset
+        | PurchaseStatus::Queued
+        | PurchaseStatus::Submitted
+        | PurchaseStatus::Included
+        | PurchaseStatus::Other(_)
+        | PurchaseStatus::NotText => {
+            let status = status_of(&purchase.status);
             Err(Error::partial_failure(
                 format!("the purchase {quoted} is {status}, a status `hipc` does not know"),
                 print(&row),
@@ -653,10 +628,10 @@ fn follow(
     }
 }
 
-/// The row's status as a message names it.
-fn status_of(row: &Value) -> String {
-    row.get("status")
-        .and_then(Value::as_str)
+/// A purchase's status as a message names it.
+fn status_of(status: &PurchaseStatus) -> String {
+    status
+        .as_str()
         .map_or_else(|| "without a status".to_owned(), phrase::quote)
 }
 
@@ -665,12 +640,14 @@ fn find(page: &Value, id: &str) -> Option<Value> {
     page.get("results")?
         .as_array()?
         .iter()
-        .find(|row| purchase_id(row).as_deref() == Some(id))
+        .find(|row| view_of::<billing::Purchase>(row).id.as_deref() == Some(id))
         .cloned()
 }
 
 #[cfg(test)]
 mod tests {
+    use hippius::Code;
+
     use super::*;
 
     #[test]
@@ -749,54 +726,31 @@ mod tests {
 
     #[test]
     fn ids_and_statuses_of_another_type_are_not_read() {
-        let row = json!({"id": true, "status": 3});
-        assert_eq!(purchase_id(&row), None);
+        let read = |row: Value| view_of::<billing::Purchase>(&row);
+        let row = read(json!({"id": true, "status": 3}));
+        assert_eq!(row.id, None);
         assert!(
-            !in_flight(&row),
+            !row.status.in_flight(),
             "a status that is not text has left the known ones"
         );
-        assert!(in_flight(&json!({"status": null})));
-        assert!(in_flight(&json!({})));
-        assert_eq!(purchase_id(&json!({"id": 7})).as_deref(), Some("7"));
-    }
-
-    #[test]
-    fn rfc3339_times_read_as_seconds_since_1970() {
-        for (text, seconds) in [
-            ("1970-01-01T00:00:00Z", 0),
-            ("2026-11-03T10:00:00Z", 1_793_700_000),
-            ("2026-11-03T10:00:00.123456Z", 1_793_700_000),
-            ("2026-11-03T12:00:00+02:00", 1_793_700_000),
-            ("2026-11-03T05:30:00-04:30", 1_793_700_000),
-            ("2024-02-29T23:59:60Z", 1_709_251_200),
+        assert_eq!(status_of(&row.status), "without a status");
+        assert!(read(json!({"status": null})).status.in_flight());
+        assert!(read(json!({})).status.in_flight());
+        assert!(read(json!("not a row")).status.in_flight());
+        assert_eq!(read(json!({"id": 7})).id.as_deref(), Some("7"));
+        let unknown = read(json!({"status": "paused"})).status;
+        assert!(!unknown.in_flight());
+        assert_eq!(status_of(&unknown), "`paused`");
+        for (status, in_flight) in [
+            ("queued", true),
+            ("submitted", true),
+            ("included", true),
+            ("completed", false),
+            ("failed", false),
         ] {
-            assert_eq!(hippius::rfc3339_seconds(text), Some(seconds), "{text}");
-        }
-        for bad in [
-            "",
-            "2026-11-03",
-            "2026-11-03T10:00:00",
-            "1969-12-31T23:59:59Z",
-            "1970-01-01T00:00:00+00:01",
-            "2026-13-03T10:00:00Z",
-            "2026-00-03T10:00:00Z",
-            "2026-11-32T10:00:00Z",
-            "2026-11-00T10:00:00Z",
-            "2026-11-03T24:00:00Z",
-            "2026-11-03T10:60:00Z",
-            "2026-11-03T10:00:61Z",
-            "2026-11-03T10:00:00.Z",
-            "2026-11-03T10:00:00.1aZ",
-            "2026-11-03T10:00Z",
-            "2026-11-03T10:00:00+0200",
-            "2026-11-03T10:00:00+xx:00",
-            "2026-11-03T10:00:00+02:xx",
-            "2026-x1-03T10:00:00Z",
-            "2026-11-03T1x:00:00Z",
-            "2026-11-03T10:00:00Q",
-            "2026-11-03T10:00:00Z02:00",
-        ] {
-            assert_eq!(hippius::rfc3339_seconds(bad), None, "{bad}");
+            let read = read(json!({ "status": status })).status;
+            assert_eq!(read.in_flight(), in_flight, "{status}");
+            assert_eq!(read.as_str(), Some(status));
         }
     }
 
@@ -832,9 +786,25 @@ mod tests {
     }
 
     #[test]
-    fn integers_are_digits_only() {
-        assert_eq!(integer(&Value::from("10000000000000000")), Some(ONE / 100));
-        assert_eq!(integer(&json!(12)), Some(12));
+    fn quote_amounts_are_digits_only() {
+        let quote = |price: Value| {
+            Quote::read(&json!({
+                "enabled": true,
+                "stale": false,
+                "custodial": true,
+                "alpha_price": price,
+                "min_alpha": "1",
+                "native_balance": 2,
+                "reason": 5,
+            }))
+        };
+        let read = quote(Value::from("10000000000000000")).unwrap();
+        assert_eq!(
+            (read.alpha_price, read.min_alpha, read.native_balance),
+            (ONE / 100, 1, 2)
+        );
+        assert_eq!(read.reason, None, "a reason that is not text is not read");
+        assert_eq!(quote(json!(12)).unwrap().alpha_price, 12);
         for bad in [
             Value::from(""),
             Value::from("-1"),
@@ -845,7 +815,10 @@ mod tests {
             Value::Null,
             Value::from("1".repeat(40)),
         ] {
-            assert_eq!(integer(&bad), None, "{bad}");
+            let error = quote(bad.clone()).unwrap_err();
+            assert_eq!(error.code(), Code::Internal, "{bad}");
         }
+        let error = Quote::read(&json!({"enabled": "yes"})).unwrap_err();
+        assert_eq!(error.code(), Code::Internal);
     }
 }

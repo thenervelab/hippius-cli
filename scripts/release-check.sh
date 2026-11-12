@@ -25,13 +25,9 @@
 #   prints SKIP when the account has none.
 set -euo pipefail
 
-# Tracing would print the token the moment it is read, and every command that holds it.
-case "$-" in
-*x*)
-  echo "release-check: refusing to run with xtrace (bash -x or SHELLOPTS=xtrace): it prints the token" >&2
-  exit 2
-  ;;
-esac
+# shellcheck source=lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+refuse_xtrace release-check
 
 # Byte semantics for the 300-byte cut and for grep on raw output.
 export LC_ALL=C
@@ -110,6 +106,10 @@ pass=0
 fail=0
 skip=0
 n=0
+# The accounts the caller owns and is a member of, which account_checks reads for the
+# groups after it.
+OWN=""
+MEMBER=""
 
 result() {
   local status="$1" name="$2" detail="$3"
@@ -271,14 +271,49 @@ local_write() {
   shift 2
   path="$(command_path "$@")"
   case "$path" in
-  "auth logout" | "s3 configure" | "billing invoices get") ;;
+  "auth logout" | "s3 configure") ;;
+  "billing invoices get")
+    # It runs with the real token on the real origin, so it is held to the read-only guard
+    # by what it sends, not by its name: its dry run, writing to a path that does not exist,
+    # must list GETs alone.
+    local methods
+    methods="$(dry_run_methods "$@")"
+    if [[ "$methods" != GET ]]; then
+      n=$((n + 1))
+      : >"$OUT/$n.out" && : >"$OUT/$n.err"
+      result FAIL "$name" "not run: its dry run lists ${methods:-no request}, not only GET"
+      return
+    fi
+    ;;
   *)
+    n=$((n + 1))
+    : >"$OUT/$n.out" && : >"$OUT/$n.err"
     result FAIL "$name" "not run: \`$path\` is not a local write"
     return
     ;;
   esac
   covered "$@"
   capture "$name" "$want" "$HIPC" "$@"
+}
+
+# dry_run_methods <hipc args...>: the methods the argv's dry run lists, each once, joined by
+# commas, with any --output-file pointed at a path that does not exist; nothing when the dry
+# run fails or prints no request. It runs as `offline` does, with the fake token against the
+# dead origin: a dry run needs neither, so a `hipc` that ignored --dry-run sends nothing real.
+dry_run_methods() {
+  local arg next=0 dry=()
+  for arg in "$@"; do
+    if [[ "$next" == 1 ]]; then
+      next=0
+      dry+=("$WORK/dry-run-never-written")
+      continue
+    fi
+    [[ "$arg" == --output-file ]] && next=1
+    dry+=("$arg")
+  done
+  HIPPIUS_TOKEN="$FAKE_TOKEN" HIPPIUS_TOKEN_ORIGIN="$DEAD_ORIGIN" "$HIPC" --api-url "$DEAD_ORIGIN" \
+    --output json --dry-run "${dry[@]}" 2>/dev/null </dev/null |
+    jq -r '[.requests[]?.method] | unique | join(",")' 2>/dev/null || true
 }
 
 skip_check() {
@@ -300,6 +335,12 @@ expect() {
 expect_dry_run() {
   expect "$1" "(.requests[-1] + .) | ($2)"
 }
+
+# route <command path> <method> [value...] and route_ending <command path> <method> <ending>
+# [value...]: the routes of the binary under test, as `schema_route` and
+# `schema_route_ending` in lib.sh give them.
+route() { schema_route "$HIPC" "$@"; }
+route_ending() { schema_route_ending "$HIPC" "$@"; }
 
 # expect_requests <name> <"METHOD /path">...: the last dry run's `requests`, in order, each
 # as its method and its URL without the origin.
@@ -329,13 +370,33 @@ stderr_has() {
   fi
 }
 
+# debug_line <name> <method> <route> [query]: the last stderr holds, as a whole line, the
+# `--debug` line of the request to <route> on the live origin, with [query] after it. <route>
+# is a `route` or `route_ending` lookup, which must give exactly one path: an empty lookup
+# would leave a pattern every `--debug` GET line holds, and two paths would let either pass.
+debug_line() {
+  local name="$1" line
+  if [[ -z "$3" || "$3" == *$'\n'* ]]; then
+    result FAIL "$name" "the schema gives no one route for it, but '${3//$'\n'/ and }'"
+    return
+  fi
+  line="debug: $2 $ORIGIN$3${4-}"
+  if grep -qxF -- "$line" "$OUT/$n.err"; then
+    result PASS "$name" "stderr has the line '$line'"
+  else
+    result FAIL "$name" "stderr lacks the line '$line': $(redacted "$OUT/$n.err")"
+  fi
+}
+
 check() {
   local name="$1" detail="$2"
   shift 2
   if "$@"; then result PASS "$name" "$detail"; else result FAIL "$name" "$detail"; fi
 }
 
-mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
+# The mode of a file, or `missing`: a bare assignment of a failed substitution would end the
+# run under `set -e`, before the summary and the token scan.
+mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || echo missing; }
 
 last_out() { cat -- "$OUT/$n.out"; }
 
@@ -379,7 +440,7 @@ baseline() {
   offline "version" 0 version
   expect "version and target" ".version == \"$VERSION\" and .target == \"$TARGET\""
   offline "schema" 0 schema
-  expect "schema effects" '.schema_version == 3 and (.commands | length > 0) and
+  expect "schema effects" '.schema_version == 4 and (.commands | length > 0) and
     all(.commands[]; .effect | IN("read_only", "idempotent", "non_idempotent"))'
   expect "schema arguments and flags" '(.global_flags | map(.name) | index("--yes") != null)
     and all(.commands[]; (.args | type) == "array" and (.flags | type) == "array")
@@ -447,8 +508,8 @@ auth_checks() {
   expect "status names the user" '(.user.username | type) == "string" and
     (has("user_error") | not)'
   online "auth status --debug" 0 auth status --debug
-  stderr_has "debug shows the URL" "debug: GET $ORIGIN/api/accounts/"
-  stderr_has "debug shows the user read" "debug: GET $ORIGIN/api/users/me/"
+  debug_line "debug shows the URL" GET "$(route_ending "auth status" GET /accounts/)"
+  debug_line "debug shows the user read" GET "$(route_ending "auth status" GET /me/)"
 }
 
 account_checks() {
@@ -512,6 +573,11 @@ account_checks() {
     '(.enabled | type) == "boolean" and (.stale | type) == "boolean" and (.custodial | type) == "boolean"'
   expect "the quote keeps amounts as exact strings" \
     '[.alpha_price, .min_alpha, .native_balance] | all(type == "string" and test("^[0-9]+$"))'
+  gamma_read "billing gamma get" "gamma document" 'type == "object"' billing gamma get
+  gamma_read "billing gamma conversions list" "gamma conversions envelope" \
+    'has("items") and has("next_page_token")' billing gamma conversions list
+  online "a missing gamma conversion" 1 billing gamma conversions get "$MISSING_UUID"
+  expect_code "missing gamma conversion is not_found" not_found
   online "billing subscriptions" 0 billing subscriptions
   expect "four plan sources in order" '[.items[].service] == ["drive", "s3", "hub", "stripe"]'
   online "billing transactions --limit 2" 0 billing transactions --limit 2
@@ -530,7 +596,7 @@ account_checks() {
   online "billing usage" 0 billing usage
   expect "usage month" 'has("month") and (.hours | type) == "array"'
   online "billing usage --month --debug" 0 billing usage --month 2026-09 --debug
-  stderr_has "usage URL" "debug: GET $ORIGIN/api/compute/usage/?month=<redacted>"
+  debug_line "usage URL" GET "$(route "billing usage" GET)" "?month=<redacted>"
   online "billing auto-reload get" 0 billing auto-reload get
   expect "auto-reload document" 'has("available")'
   online "billing auto-reload history --limit 5" 0 billing auto-reload history --limit 5
@@ -587,6 +653,8 @@ storage_checks() {
   expect_code "missing drive checkout is not_found" not_found
   online "s3 plans" 0 s3 plans
   expect "s3 catalog" '(.plans | length) > 0'
+  # A plan purchase or change checks its code against plans[].code before it buys.
+  expect "each s3 plan has the code a purchase checks" 'all(.plans[]; (.code | type) == "string")'
   online "s3 subscription get" 0 s3 subscription get
   expect "s3 mode" 'has("mode")'
   online "s3 subscription history" 0 s3 subscription history --limit 5
@@ -626,7 +694,7 @@ storage_checks() {
   online "hub plans" 0 hub plans
   expect "hub catalog" '(.items | length) > 0 and all(.items[]; has("id") and has("name"))'
   online "hub plans --debug" 0 hub plans --debug
-  stderr_has "hub plans URL" "debug: GET $ORIGIN/api/registry/plans/"
+  debug_line "hub plans URL" GET "$(route "hub plans" GET)"
   online "hub subscription get" 0 hub subscription get
   expect "hub subscriptions envelope" 'has("items") and .next_page_token == null'
   online "hub namespace availability" 0 hub namespace availability hipc-release-check-zz
@@ -760,6 +828,21 @@ hub_project_read() {
   fi
 }
 
+# gamma_read <name> <check name> <jq filter> <hipc args...>: a gamma read, which answers 404
+# "Gamma payments are not available." until gamma is enabled on the server; the shape is
+# checked once it is.
+gamma_read() {
+  local name="$1" check_name="$2" filter="$3"
+  shift 3
+  online "$name" "0|1" "$@"
+  if jq -e '.error.http_status == 404 and (.error.message | test("not available"))' \
+    "$OUT/$n.err" >/dev/null 2>&1; then
+    result SKIP "$check_name" "gamma payments are not enabled on the server"
+  else
+    expect "$check_name" "$filter"
+  fi
+}
+
 compute_catalog_checks() {
   echo "== compute (live, read-only) =="
   online "compute prices" 0 compute prices
@@ -797,6 +880,9 @@ compute_catalog_checks() {
   expect "public IP availability" 'has("regions")'
   online "compute backups options" 0 compute backups options
   expect "backup options" 'has("intervals")'
+  # A backup policy update checks its interval against intervals[].seconds before it sends.
+  expect "each backup interval has the seconds a policy update checks" \
+    'all(.intervals[]; (.seconds | type) == "number")'
   online "compute runners settings get" 0 compute runners settings get
   expect "runner settings" 'has("enabled")'
   online "compute runners installations list" 0 compute runners installations list
@@ -812,6 +898,8 @@ compute_catalog_checks() {
       '.error.code == "not_found" and (.error.hint | test("not enabled on this server"))'
   else
     expect "runner limit has its cap in credits" 'has("monthly_cap_credits")'
+    # limit update reads monthly_cap too, a name no API document gives.
+    expect "runner limit names its base-unit cap monthly_cap" 'has("monthly_cap")'
   fi
   online "compute ssh-keys list" 0 compute ssh-keys list
   expect "ssh keys envelope" 'has("items") and has("next_page_token")'
@@ -830,7 +918,7 @@ compute_catalog_checks() {
   online "compute account-ssh-keys" 0 compute account-ssh-keys
   expect "account ssh keys envelope" 'has("items") and .next_page_token == null'
   online "compute databases refusals" 0 compute databases refusals
-  expect "database refusals" 'has("refusals")'
+  expect "database refusals" 'has("items") and .next_page_token == null'
   online "cdn prices" 0 cdn prices
   expect "cdn prices" 'has("regions")'
   online "cdn regions" 0 cdn regions
@@ -855,7 +943,7 @@ vm_checks() {
     "compute backups restore-status"
   )
   online "compute vms list --debug" 0 compute vms list --debug
-  stderr_has "vms URL" "debug: GET $ORIGIN/api/compute/vms/"
+  debug_line "vms URL" GET "$(route "compute vms list" GET)"
   expect "vms envelope" 'has("items") and .next_page_token == null'
   local vm read
   vm="$(field '.items[0].vm_id')"
@@ -877,8 +965,11 @@ vm_checks() {
 database_checks() {
   online "compute databases list" 0 compute databases list
   expect "databases envelope" 'has("items")'
-  local db read
+  local db live read
   db="$(field '.items[0].id')"
+  # A decommissioned database's backup bucket is gone (seen live 2026-11-11), so the bucket's
+  # name is checked on a live one only.
+  live="$(field '[.items[] | select(.status != "decommissioned")][0].id')"
   for read in "compute databases get" "compute databases events" \
     "compute databases metrics"; do
     # shellcheck disable=SC2086 # the command's words are separate arguments
@@ -891,6 +982,22 @@ database_checks() {
       result SKIP "$read" "the account has no database"
     fi
   done
+  # The delete question and note name the backup bucket and token the server makes for a
+  # database by a pattern seen once live; these rows show whether it still holds.
+  if [[ -n "$live" ]]; then
+    online "s3 buckets list, for the backup bucket of a database" 0 s3 buckets list
+    expect "the database's backup bucket is named hippius-db-<id>-backups" \
+      "any(.items[]; .name == \"hippius-db-$live-backups\")"
+  else
+    result SKIP "database backup bucket name" "the account has no live database"
+  fi
+  if [[ -n "$db" ]]; then
+    online "s3 tokens list, for the backup token of a database" 0 s3 tokens list
+    expect "the database's backup token is named db-<id>-backup-writer" \
+      "any(.items[]; .name == \"db-$db-backup-writer\")"
+  else
+    result SKIP "database backup token name" "the account has no database"
+  fi
 }
 
 # Every Kubernetes read, once on a cluster id that does not exist (404, which needs no state),
@@ -918,6 +1025,16 @@ kubernetes_checks() {
       if [[ "$read" == "compute kubernetes clusters events" ]]; then
         expect "cluster events envelope" \
           '(.items | type) == "array" and has("next_page_token") and .next_page_token == null'
+      fi
+      # A scale signs as many adds as the console's projection of the pool's size counts,
+      # from these fields; the server is not known to count the same way.
+      if [[ "$read" == "compute kubernetes node-pools list" ]]; then
+        expect "each pool has the fields the scale projection counts" \
+          'all(.items[]; has("name") and all((.nodes // [])[]; has("name") and has("state")))'
+      fi
+      if [[ "$read" == "compute kubernetes operations list" ]]; then
+        expect "each operation has the fields the scale projection counts" \
+          'all(.items[]; has("kind") and has("state"))'
       fi
     else
       result SKIP "$read" "the account has no Kubernetes cluster"
@@ -987,36 +1104,32 @@ kubernetes_key_checks() {
   local key="$WORK/hippius-cluster-check.key" open="$WORK/open.key"
   (
     umask 077
-    printf '%s\n' '{"version":1,"kind":"hippius-k8s-cluster-key",
-      "sign_secret_key":"CwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJicoKSo=",
-      "sign_public_key":"VCgh6VKd0a0kO/3/XGQKZRlLSBaYemUN6GHXzp5BemM=",
-      "box_secret_key":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
-      "box_public_key":"B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw="}' >"$key"
+    write_test_cluster_key "$key"
   )
   cp -- "$key" "$open" && chmod 644 "$open"
   offline "kubeconfig --dry-run" 0 --dry-run compute kubernetes clusters kubeconfig 7 \
     --cluster-key-file "$key" --output-file "$WORK/kubeconfig"
+  local kubeconfig="compute kubernetes clusters kubeconfig"
   expect_requests "kubeconfig reads the cluster, then its secrets" \
-    "GET /api/kubernetes/clusters/7/" "GET /api/kubernetes/clusters/7/secrets/"
+    "GET $(route_ending "$kubeconfig" GET "{cluster_id}/" 7)" \
+    "GET $(route_ending "$kubeconfig" GET /secrets/ 7)"
   check "a dry run writes no kubeconfig" "" test ! -e "$WORK/kubeconfig"
   offline "node-pools scale --dry-run" 0 --dry-run compute kubernetes node-pools scale 7 3 \
     --count 2 --cluster-key-file "$key"
+  local scale="compute kubernetes node-pools scale" cluster pools operations
+  cluster="GET $(route_ending "$scale" GET "{cluster_id}/" 7)"
+  pools="GET $(route_ending "$scale" GET /node-pools/ 7)"
+  operations="GET $(route_ending "$scale" GET /operations/ 7)"
   expect_requests "scale reads the cluster, its pools, and its operations, the last two twice" \
-    "GET /api/kubernetes/clusters/7/" "GET /api/kubernetes/clusters/7/node-pools/" \
-    "GET /api/kubernetes/clusters/7/operations/" \
-    "GET /api/kubernetes/clusters/7/node-pools/" \
-    "GET /api/kubernetes/clusters/7/operations/" \
-    "POST /api/kubernetes/clusters/7/node-pools/3/scale/"
+    "$cluster" "$pools" "$operations" "$pools" "$operations" \
+    "POST $(route "$scale" POST 7 3)"
   expect "scale signs nothing in a dry run" \
     '.requests[5].body.count == 2 and (.requests[5].body.operations | test("^<"))'
   offline "nodes replace --dry-run" 0 --dry-run compute kubernetes nodes replace 7 work-1 \
     --cluster-key-file "$key"
   expect_requests "replace reads the cluster, its pools, and its operations, the last two twice" \
-    "GET /api/kubernetes/clusters/7/" "GET /api/kubernetes/clusters/7/node-pools/" \
-    "GET /api/kubernetes/clusters/7/operations/" \
-    "GET /api/kubernetes/clusters/7/node-pools/" \
-    "GET /api/kubernetes/clusters/7/operations/" \
-    "POST /api/kubernetes/clusters/7/nodes/work-1/replace/"
+    "$cluster" "$pools" "$operations" "$pools" "$operations" \
+    "POST $(route_ending "compute kubernetes nodes replace" POST /replace/ 7 work-1)"
   offline "key file open to others" 2 compute kubernetes nodes replace 7 work-1 \
     --cluster-key-file "$open" --yes
   expect_err "an open key file is usage with a chmod hint" \
@@ -1086,6 +1199,12 @@ waf_checks() {
     if [[ -n "$zone" ]]; then
       # shellcheck disable=SC2086 # the command's words are separate arguments
       online "$read" 0 $read "$zone"
+      # An update sends the version it read as If-Match. The docs give 0 before the first
+      # publish; a null there would make every update of an unpublished zone fail.
+      if [[ "$read" == "cdn waf rules get" || "$read" == "cdn waf rate-limits get" ]]; then
+        expect "$read has a whole version, 0 before the first publish" \
+          '(.version | type) == "number" and .version >= 0 and (.version | floor) == .version'
+      fi
     else
       result SKIP "$read" "the account has no CDN zone"
     fi
@@ -1169,23 +1288,25 @@ network_checks() {
       "the account has no VPC network"
   fi
   offline "network get --dry-run" 0 --dry-run network get
-  expect_requests "network get is one GET" "GET /api/network/me/"
+  expect_requests "network get is one GET" "GET $(route "network get" GET)"
   offline "network get without --yes" 2 network get
   expect_code "network get is confirmation_required" confirmation_required
   offline "network create --dry-run" 0 --dry-run network create
   expect_dry_run "network create is a POST of provision with no body" \
-    ".method == \"POST\" and .url == \"$DEAD_ORIGIN/api/network/provision/\" and
-    .body == null"
+    ".method == \"POST\" and
+    .url == \"$DEAD_ORIGIN$(route "network create" POST)\" and .body == null"
   offline "network create without --yes" 2 network create
   expect_code "network create is confirmation_required" confirmation_required
   offline "network peers update --dry-run" 0 --dry-run network peers update 12 --name hipc-check
   expect_dry_run "peer rename is a PATCH of the name" \
-    ".method == \"PATCH\" and .url == \"$DEAD_ORIGIN/api/network/peers/12/\" and
+    ".method == \"PATCH\" and
+    .url == \"$DEAD_ORIGIN$(route "network peers update" PATCH 12)\" and
     .body == {\"name\":\"hipc-check\"}"
   offline "network peers update without --yes" 2 network peers update 12 --name hipc-check
   expect_code "peer rename is confirmation_required" confirmation_required
   offline "network peers delete --dry-run" 0 --dry-run network peers delete 12
-  expect_requests "peer remove is one DELETE" "DELETE /api/network/peers/12/"
+  expect_requests "peer remove is one DELETE" \
+    "DELETE $(route "network peers delete" DELETE 12)"
   offline "network peers delete without --yes" 2 network peers delete 12
   expect_code "peer remove is confirmation_required" confirmation_required
   offline "network peer id with a slash" 2 network peers get ../12
@@ -1204,7 +1325,7 @@ membership_checks() {
     return
   fi
   online "membership on compute vms list" 0 --account "$MEMBER" compute vms list --debug
-  stderr_has "membership vms URL" "debug: GET $ORIGIN/api/compute/vms/"
+  debug_line "membership vms URL" GET "$(route "compute vms list" GET)"
   online "membership on personal ssh-keys" 0 --account "$MEMBER" api GET /ssh-keys/
   online "membership on personal notifications" 0 --account "$MEMBER" account notifications get
   online "membership on personal marketing consent" 0 --account "$MEMBER" \
@@ -1214,135 +1335,149 @@ membership_checks() {
 
 # Every command that writes, under --dry-run, then without the flag that gates it. Columns:
 # the refusal the second run must meet (or `-` for a command with no gate, or one whose
-# gate comes after a read, which needs a server), the method, the path under the origin,
-# the body, and the arguments. @DIR@ is the directory of the input files. Rows pass 100
-# columns on purpose: one row per command keeps each one whole for grep and for the
-# "every command" check, and a here-doc row cannot be continued on the next line. The ticket
-# close is `-` because it reads the ticket before it asks, and offline that read fails
-# before `confirmation_required` could be met.
+# gate comes after a read, which needs a server), the method, the values of the route's
+# placeholders in order (`-` for none, a last word starting with `?` is the query, and a
+# first word starting with `~` is the end of the route's template), the body, and the
+# arguments. The route itself is the one `hipc schema` lists for the command with that
+# method, that many placeholders, and that ending, so no path is copied here; a row that
+# leaves several routes, or none, fails. @DIR@ is
+# the directory of the input files. Rows pass 100 columns on purpose: one row per command
+# keeps each one whole for grep and for the "every command" check, and a here-doc row cannot
+# be continued on the next line. The ticket close is `-` because it reads the ticket before
+# it asks, and offline that read fails before `confirmation_required` could be met.
 dry_run_table() {
   cat <<'EOF'
-confirmation_required|POST|/api/accounts/invites/preview/|{"token":"<the invite token from --token-file>"}|account invites preview --token-file @DIR@/invite
-confirmation_required|POST|/api/accounts/invites/accept/|{"token":"<the invite token from --token-file>","confirm_without_email":false}|account invites accept --token-file @DIR@/invite
-confirmation_required|PATCH|/api/accounts/members/12/|{"grants":[{"scope":"vms","level":"operator"}],"can_billing":true}|account members update 12 --grant vms=operator --billing-permission true --remove-others
-confirmation_required|DELETE|/api/accounts/members/12/|null|account members delete 12
-confirmation_required|POST|/api/accounts/invites/|{"email":"a@example.com","grants":[{"scope":"vms","level":"viewer"}],"can_manage_team":false,"can_billing":false}|account invites create --email a@example.com --grant vms=viewer
-confirmation_required|DELETE|/api/accounts/invites/34/|null|account invites revoke 34
--|POST|/api/accounts/projects/|{"name":"hipc-release-check","billing":null}|account projects create --name hipc-release-check
--|PATCH|/api/accounts/projects/proj_0a1b2c3d4e5f60718293/|{"name":"hipc-release-check"}|account projects update proj_0a1b2c3d4e5f60718293 --name hipc-release-check
-confirmation_required|DELETE|/api/accounts/projects/proj_0a1b2c3d4e5f60718293/|null|account projects delete proj_0a1b2c3d4e5f60718293
--|POST|/api/accounts/projects/proj_0a1b2c3d4e5f60718293/transfer/|{"to_account":"acct_ffffffffffffffffffff"}|account projects transfer proj_0a1b2c3d4e5f60718293 --to-account acct_ffffffffffffffffffff
-confirmation_required|PUT|/api/accounts/projects/proj_0a1b2c3d4e5f60718293/budget/|{"monthly_limit":"100.00","thresholds":[50,90],"block_launch_over":true}|account projects budget update proj_0a1b2c3d4e5f60718293 --monthly-limit 100 --alert-at 90 --alert-at 50 --block-launches true
-confirmation_required|DELETE|/api/accounts/projects/proj_0a1b2c3d4e5f60718293/budget/|null|account projects budget delete proj_0a1b2c3d4e5f60718293
-confirmation_required|PATCH|/api/accounts/projects/proj_0a1b2c3d4e5f60718293/quota/|{"limits":{"vms":5,"memory_gb":null}}|account projects quota update proj_0a1b2c3d4e5f60718293 --vms 5 --memory none
--|POST|/api/accounts/project-transfers/5/accept/|{"billing":"bill_9f8e7d6c5b4a39281706"}|account project-transfers accept 5 --bill-to bill_9f8e7d6c5b4a39281706
--|POST|/api/accounts/project-transfers/5/decline/|null|account project-transfers decline 5
--|DELETE|/api/accounts/project-transfers/5/|null|account project-transfers cancel 5
--|POST|/api/accounts/billing-accounts/|{"name":"hipc-release-check"}|account billing-accounts create --name hipc-release-check
--|PATCH|/api/accounts/billing-accounts/bill_9f8e7d6c5b4a39281706/|{"name":"hipc-release-check"}|account billing-accounts update bill_9f8e7d6c5b4a39281706 --name hipc-release-check
-confirmation_required|POST|/api/billing/stripe/create-checkout-session/|{"amount":"50.00"}|billing top-up --amount 50 --method card
-confirmation_required|POST|/api/billing/btcpay/create-invoice/|{"amount":"20.50"}|billing top-up --amount 20.5 --method bitcoin
-confirmation_required|PATCH|/api/notifications/settings/|{"low_credit_alerts":false,"marketing_emails":true}|account notifications update --low-credit-alerts false --marketing-emails true
--|POST|/api/notifications/marketing-consent/|{"granted":false,"source":"settings"}|account marketing-consent update --granted false
--|PUT|/api/billing/profile/|{"city":"Paris","country":"FR"}|billing profile update --city Paris --country fr
--|PUT|/api/billing/auto-reload/|{"enabled":false,"threshold":"<the setting's threshold>","target":"<the setting's target>","monthly_cap":null}|billing auto-reload update --enabled false --monthly-cap none
--|POST|/api/billing/auto-reload/card-setup/|{}|billing auto-reload card-setup
-confirmation_required|POST|/api/drive/subscription/|{"plan":"solo","payment":"credits"}|drive subscription subscribe --plan solo
-confirmation_required|PATCH|/api/drive/subscription/|{"plan":"duo","period":"annual"}|drive subscription change --plan duo --period annual
-confirmation_required|PATCH|/api/drive/subscription/|{"funding":"card"}|drive subscription change --pay-from card
-confirmation_required|DELETE|/api/drive/subscription/|null|drive subscription cancel
-confirmation_required|POST|/api/s3/subscription/|{"plan":"pro","rail":"credits"}|s3 subscription subscribe --plan pro
-confirmation_required|PATCH|/api/s3/subscription/|{"plan":"business"}|s3 subscription change --plan business
-confirmation_required|PATCH|/api/s3/subscription/|{"storage_cap_bytes":null}|s3 subscription change --storage-cap default
-confirmation_required|DELETE|/api/s3/subscription/|null|s3 subscription cancel
-confirmation_required|POST|/api/objectstore/buckets/|{"name":"hipc-dry-run-check"}|s3 buckets create hipc-dry-run-check
-confirmation_required|DELETE|/api/objectstore/buckets/hipc-dry-run-check/|null|s3 buckets delete hipc-dry-run-check
-public_required|PUT|/api/objectstore/buckets/hipc-dry-run-check/acl/set/|{"policy":{"Statement":[]}}|s3 buckets acl update hipc-dry-run-check --policy-file @DIR@/policy.json
-reveal_required|POST|/api/objectstore/master-tokens/|{}|s3 tokens create --kind master
-reveal_required|GET|/api/objectstore/buckets/hipc-dry-run-check/presigned-url/?key=a.txt|null|s3 buckets objects presign hipc-dry-run-check a.txt
-reveal_required|POST|/api/objectstore/sub-tokens/|{"scope_type":"single_bucket","bucket_names":["b"]}|s3 tokens create --kind sub --bucket b --scope-type single-bucket
-confirmation_required|POST|/api/objectstore/sub-tokens/@UUID@/revoke/|null|s3 tokens revoke --kind sub @UUID@
-reveal_required|POST|/api/objectstore/master-tokens/@UUID@/rotate/|null|s3 tokens rotate --kind master @UUID@
-confirmation_required|POST|/api/registry/subscribe/|{"plan_id":1}|hub subscription subscribe --plan 1
-confirmation_required|DELETE|/api/registry/subscriptions/7/|null|hub subscription cancel 7
-reveal_required|POST|/api/registry/provision/|{"namespace":"hipc-dry-run-check"}|hub namespace create hipc-dry-run-check
-public_required|PATCH|/api/registry/me/publicity/|{"public":true}|hub namespace update --visibility public
-confirmation_required|PATCH|/api/registry/me/publicity/|{"public":false}|hub namespace update --visibility private
-reveal_required|POST|/api/registry/robot/rotate/|null|hub namespace robot rotate
-reveal_required|POST|/api/registry/keys/|{"name":"hipc-dry-run-check","role":"read","expires_days":1}|hub keys create --name hipc-dry-run-check --role read --expires-in 1
-reveal_required|POST|/api/registry/keys/7/rotate/|null|hub keys rotate 7
-confirmation_required|DELETE|/api/registry/keys/7/|null|hub keys delete 7
-confirmation_required|DELETE|/api/registry/repositories/hipc-check/app/|null|hub repositories delete hipc-check/app
-confirmation_required|DELETE|/api/registry/repositories/hipc-check/app/artifacts/v1/|null|hub artifacts delete hipc-check/app v1
-confirmation_required|POST|/api/compute/vms/|{"flavor":"small","region":"FR","ssh_key_ids":[1,2]}|compute vms create --flavor small --ssh-key-id 1 --ssh-key-id 2 --region FR
-confirmation_required|POST|/api/compute/vms/|{"flavor":"small","ssh_public_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReleaseCheck hipc@check"}|compute vms create --flavor small --ssh-public-key-file @DIR@/id.pub
-confirmation_required|POST|/api/compute/vms/|{"flavor":"small","ssh_key_ids":[1],"ssh_public_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReleaseCheck hipc@check","public_ip":true}|compute vms create --flavor small --ssh-key-id 1 --ssh-public-key-file @DIR@/id.pub --public-ip
-confirmation_required|POST|/api/compute/vms/|{"flavor":"small","ssh_key_ids":[1],"os_disk_tier":"hdd","backup_interval_s":3600}|compute vms create --flavor small --ssh-key-id 1 --os-disk-tier hdd --backup-interval 3600
-confirmation_required|POST|/api/compute/vms/|{"flavor":"small","ssh_key_ids":[1],"dedicated_disks":{"tier":"hdd","count":2,"min_size_gb":2000},"pinned_ack":true}|compute vms create --flavor small --ssh-key-id 1 --dedicated-disk 2000:hdd --dedicated-disk 2000:hdd
--|POST|/api/compute/vms/@UUID@/start/|null|compute vms start @UUID@
-confirmation_required|POST|/api/compute/vms/@UUID@/stop/|null|compute vms stop @UUID@
-confirmation_required|POST|/api/compute/vms/@UUID@/reboot/|null|compute vms reboot @UUID@
-confirmation_required|POST|/api/compute/vms/@UUID@/resize/|{"flavor":"medium"}|compute vms resize @UUID@ --flavor medium
--|PUT|/api/compute/vms/@UUID@/power-policy/|{"on_guest_poweroff":"stop"}|compute vms power-policy update @UUID@ --on-guest-poweroff stop
--|DELETE|/api/compute/vms/@UUID@/|null|compute vms delete @UUID@
-confirmation_required|POST|/api/compute/vms/@UUID@/public-ip/|null|compute public-ip create @UUID@
-confirmation_required|DELETE|/api/compute/vms/@UUID@/public-ip/|null|compute public-ip delete @UUID@
-confirmation_required|PUT|/api/compute/vms/@UUID@/firewall/|{"rules":[]}|compute firewall update @UUID@ --rules-file @DIR@/rules.json --remove-others
-confirmation_required|POST|/api/compute/vms/@UUID@/expose/|{"port":443}|compute exposures create @UUID@ --port 443
-confirmation_required|DELETE|/api/compute/vms/@UUID@/expose/5/|null|compute exposures delete @UUID@ 5
-confirmation_required|PUT|/api/compute/vms/@UUID@/backup/|{"interval_s":3600}|compute backups policy update @UUID@ --interval 3600
-confirmation_required|DELETE|/api/compute/vms/@UUID@/backup/|null|compute backups policy delete @UUID@
--|POST|/api/compute/vms/@UUID@/backups/restore/|{"point_id":"9","mode":"in_place","confirm":"<the VM's name>"}|compute backups restore @UUID@ --run-id 9
--|PUT|/api/runners/settings/|{"enabled":true}|compute runners settings update --enabled true
-confirmation_required|DELETE|/api/runners/installations/3/|null|compute runners installations delete 3
--|POST|/api/runners/github/connect/|null|compute runners connect
--|POST|/api/compute/app-engine/validate/|{"compose":"services:\n  web:\n    image: nginx\n"}|compute app-engine validate --compose-file @DIR@/compose.yaml
--|POST|/api/compute/app-engine/apps/|{"flavor":"small","compose":"services:\n  web:\n    image: nginx\n","secrets":{"DB_PASSWORD":"<the DB_PASSWORD from --secrets-file>"},"region":"FR","backup_interval_s":3600}|compute app-engine apps create --flavor small --compose-file @DIR@/compose.yaml --secrets-file @DIR@/app-secrets.json --region FR --backup-interval 3600
--|POST|/api/compute/app-engine/fix/|{"compose":"services:\n  web:\n    image: nginx\n"}|compute app-engine fix --compose-file @DIR@/compose.yaml --output-file @DIR@/fixed.yaml
--|PUT|/api/runners/limit/|{"monthly_cap":"5"}|compute runners limit update --monthly-cap 5
-confirmation_required|POST|/api/ssh-keys/|{"name":"hipc-dry","public_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReleaseCheck hipc@check"}|compute ssh-keys create --name hipc-dry --public-key-file @DIR@/id.pub
-confirmation_required|DELETE|/api/ssh-keys/1/|null|compute ssh-keys delete 1
-reveal_required|POST|/api/databases/|{"tier":"starter","size":"s","engine_version":"17"}|compute databases create --tier starter --size s --engine-version 17
-confirmation_required|DELETE|/api/databases/56/|null|compute databases delete 56
-confirmation_required|POST|/api/databases/56/restart/|null|compute databases restart 56
-reveal_required|POST|/api/databases/56/restore/|null|compute databases restore 56
-confirmation_required|POST|/api/databases/56/expose/|null|compute databases exposure create 56
-confirmation_required|DELETE|/api/databases/56/expose/|null|compute databases exposure delete 56
-reveal_required|GET|/api/kubernetes/clusters/7/backups/|null|compute kubernetes backups list 7
--|DELETE|/api/kubernetes/clusters/7/|null|compute kubernetes clusters delete 7
--|POST|/api/kubernetes/clusters/7/node-pools/|{"name":"hipc-dry","flavor":"medium","labels":{"tier":"web"},"taints":["spot:NoSchedule"]}|compute kubernetes node-pools create 7 --name hipc-dry --flavor medium --label tier=web --taint spot:NoSchedule
--|POST|/api/kubernetes/clusters/7/operations/12/cancel/|{}|compute kubernetes operations cancel 7 12
--|POST|/api/kubernetes/clusters/7/operations/12/resume/|{}|compute kubernetes operations resume 7 12
-confirmation_required|POST|/api/kubernetes/clusters/7/nodes/work-1/remove/|{}|compute kubernetes nodes delete 7 work-1
--|POST|/api/cdn/estimate/|{"gb":{"FR":100}}|cdn estimate --traffic FR=100
-public_required|POST|/api/cdn/zones/|{"name":"z","origin":{"kind":"s3","bucket":"b"}}|cdn zones create --name z --bucket b
-confirmation_required|PATCH|/api/cdn/zones/@ZONE@/|{"name":"z2"}|cdn zones update @ZONE@ --name z2
-confirmation_required|PATCH|/api/cdn/zones/@ZONE@/|{"cors":{"allow_origins":["https://app.example.com"]}}|cdn zones update @ZONE@ --cors-file @DIR@/cors.json
-confirmation_required|DELETE|/api/cdn/zones/@ZONE@/|null|cdn zones delete @ZONE@
--|PATCH|/api/cdn/zones/@ZONE@/cap/|{"monthly_cap":"5"}|cdn cap update @ZONE@ --monthly-cap 5
-confirmation_required|POST|/api/cdn/zones/@ZONE@/hostnames/|{"hostname":"cdn.example.com"}|cdn hostnames create @ZONE@ cdn.example.com
--|POST|/api/cdn/zones/@ZONE@/hostnames/cdn.example.com/verify/|null|cdn hostnames verify @ZONE@ cdn.example.com
-confirmation_required|POST|/api/cdn/zones/@ZONE@/hostnames/cdn.example.com/dns-setup/|{"provider":"cloudflare","credentials":{"api_token":"<the api_token from --credentials-file>"}}|cdn hostnames dns-setup @ZONE@ cdn.example.com --provider cloudflare --credentials-file @DIR@/dns.json
-confirmation_required|DELETE|/api/cdn/zones/@ZONE@/hostnames/cdn.example.com/|null|cdn hostnames delete @ZONE@ cdn.example.com
--|POST|/api/cdn/zones/@ZONE@/purge/|{"all":true}|cdn purges create @ZONE@ --everything
-confirmation_required|PUT|/api/cdn/zones/@ZONE@/rules/|{"rules":[]}|cdn rules update @ZONE@ --rules-file @DIR@/rules.json --remove-others
--|POST|/api/cdn/estimate/|{"waf":{"standard":1}}|cdn estimate --waf standard=1
-confirmation_required|PATCH|/api/cdn/zones/@ZONE@/waf/|{"mode":"on"}|cdn waf update @ZONE@ --mode on
--|POST|/api/cdn/zones/@ZONE@/waf/test/|{"request":{"path":"/"}}|cdn waf test @ZONE@ --request-file @DIR@/waf-request.json
-confirmation_required|PUT|/api/cdn/zones/@ZONE@/waf/rules/|{"rules":[]}|cdn waf rules update @ZONE@ --rules-file @DIR@/rules.json --remove-others
-confirmation_required|PUT|/api/cdn/zones/@ZONE@/waf/rate-limits/|{"rules":[]}|cdn waf rate-limits update @ZONE@ --rules-file @DIR@/rules.json --remove-others
-confirmation_required|POST|/api/cdn/zones/@ZONE@/waf/versions/1/rollback/|{}|cdn waf versions rollback @ZONE@ 1
--|POST|/api/cdn/lists/|{"name":"hip_dry_run_check","kind":"ip"}|cdn lists create hip_dry_run_check --kind ip
--|PATCH|/api/cdn/lists/hip_dry_run_check/|{"description":"d"}|cdn lists update hip_dry_run_check --description d
-confirmation_required|DELETE|/api/cdn/lists/hip_dry_run_check/|null|cdn lists delete hip_dry_run_check
-confirmation_required|POST|/api/cdn/lists/hip_dry_run_check/items/|{"items":["192.0.2.1"]}|cdn lists items create hip_dry_run_check --items-file @DIR@/items.txt
-confirmation_required|PUT|/api/cdn/lists/hip_dry_run_check/items/|{"items":["192.0.2.1"]}|cdn lists items update hip_dry_run_check --items-file @DIR@/items.txt --remove-others
-confirmation_required|DELETE|/api/cdn/lists/hip_dry_run_check/items/|{"items":["192.0.2.1"]}|cdn lists items delete hip_dry_run_check --items-file @DIR@/items.txt
-confirmation_required|POST|/api/support/tickets/|{"subject":"hipc-release-check","description":"release check message\n","priority":"low"}|support tickets create --subject hipc-release-check --priority low --body-file @DIR@/message
--|POST|/api/support/tickets/7/messages/|{"body":"release check message\n"}|support tickets reply 7 --body-file @DIR@/message
--|PATCH|/api/support/tickets/7/|{"status":"closed"}|support tickets update 7 --status closed
--|POST|/api/referral-codes/|{"name":"hipc-release-check"}|account referrals create --name hipc-release-check
--|PATCH|/api/referral-codes/4/|{"name":"hipc-release-check"}|account referrals update 4 --name hipc-release-check
+confirmation_required|POST|~/preview/|{"token":"<the invite token from --token-file>"}|account invites preview --token-file @DIR@/invite
+confirmation_required|POST|~/accept/|{"token":"<the invite token from --token-file>","confirm_without_email":false}|account invites accept --token-file @DIR@/invite
+confirmation_required|PATCH|12|{"grants":[{"scope":"vms","level":"operator"}],"can_billing":true}|account members update 12 --grant vms=operator --billing-permission true --remove-others
+confirmation_required|DELETE|12|null|account members delete 12
+confirmation_required|POST|-|{"email":"a@example.com","grants":[{"scope":"vms","level":"viewer"}],"can_manage_team":false,"can_billing":false}|account invites create --email a@example.com --grant vms=viewer
+confirmation_required|DELETE|34|null|account invites revoke 34
+-|POST|-|{"name":"hipc-release-check","billing":null}|account projects create --name hipc-release-check
+-|PATCH|proj_0a1b2c3d4e5f60718293|{"name":"hipc-release-check"}|account projects update proj_0a1b2c3d4e5f60718293 --name hipc-release-check
+confirmation_required|DELETE|proj_0a1b2c3d4e5f60718293|null|account projects delete proj_0a1b2c3d4e5f60718293
+-|POST|proj_0a1b2c3d4e5f60718293|{"to_account":"acct_ffffffffffffffffffff"}|account projects transfer proj_0a1b2c3d4e5f60718293 --to-account acct_ffffffffffffffffffff
+confirmation_required|PUT|proj_0a1b2c3d4e5f60718293|{"monthly_limit":"100.00","thresholds":[50,90],"block_launch_over":true}|account projects budget update proj_0a1b2c3d4e5f60718293 --monthly-limit 100 --alert-at 90 --alert-at 50 --block-launches true
+confirmation_required|DELETE|proj_0a1b2c3d4e5f60718293|null|account projects budget delete proj_0a1b2c3d4e5f60718293
+confirmation_required|PATCH|proj_0a1b2c3d4e5f60718293|{"limits":{"vms":5,"memory_gb":null}}|account projects quota update proj_0a1b2c3d4e5f60718293 --vms 5 --memory none
+-|POST|5|{"billing":"bill_9f8e7d6c5b4a39281706"}|account project-transfers accept 5 --bill-to bill_9f8e7d6c5b4a39281706
+-|POST|5|null|account project-transfers decline 5
+-|DELETE|5|null|account project-transfers cancel 5
+-|POST|-|{"name":"hipc-release-check"}|account billing-accounts create --name hipc-release-check
+-|PATCH|bill_9f8e7d6c5b4a39281706|{"name":"hipc-release-check"}|account billing-accounts update bill_9f8e7d6c5b4a39281706 --name hipc-release-check
+confirmation_required|POST|~/create-checkout-session/|{"amount":"50.00"}|billing top-up --amount 50 --method card
+confirmation_required|POST|~/create-invoice/|{"amount":"20.50"}|billing top-up --amount 20.5 --method bitcoin
+-|POST|~/hotkeys/|{"nonce":"<the challenge's nonce>","signature":"<the hotkey's sr25519 signature of the challenge message>"}|billing gamma hotkeys create --hotkey-file @DIR@/hotkey
+confirmation_required|DELETE|5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty|null|billing gamma hotkeys delete 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty
+confirmation_required|POST|-|{"hotkey":"5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty","amount":"10"}|billing gamma conversions create --hotkey 5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty --amount 10
+confirmation_required|PATCH|-|{"low_credit_alerts":false,"marketing_emails":true}|account notifications update --low-credit-alerts false --marketing-emails true
+-|POST|-|{"granted":false,"source":"settings"}|account marketing-consent update --granted false
+-|PUT|-|{"city":"Paris","country":"FR"}|billing profile update --city Paris --country fr
+-|PUT|-|{"enabled":false,"threshold":"<the setting's threshold>","target":"<the setting's target>","monthly_cap":null}|billing auto-reload update --enabled false --monthly-cap none
+-|POST|-|{}|billing auto-reload card-setup
+confirmation_required|POST|-|{"plan":"solo","payment":"credits"}|drive subscription subscribe --plan solo
+confirmation_required|PATCH|-|{"plan":"duo","period":"annual"}|drive subscription change --plan duo --period annual
+confirmation_required|PATCH|-|{"funding":"card"}|drive subscription change --pay-from card
+confirmation_required|DELETE|-|null|drive subscription cancel
+confirmation_required|POST|-|{"plan":"pro","rail":"credits"}|s3 subscription subscribe --plan pro
+confirmation_required|PATCH|-|{"plan":"business"}|s3 subscription change --plan business
+confirmation_required|PATCH|-|{"storage_cap_bytes":null}|s3 subscription change --storage-cap default
+confirmation_required|DELETE|-|null|s3 subscription cancel
+confirmation_required|POST|-|{"name":"hipc-dry-run-check"}|s3 buckets create hipc-dry-run-check
+confirmation_required|DELETE|hipc-dry-run-check|null|s3 buckets delete hipc-dry-run-check
+public_required|PUT|hipc-dry-run-check|{"policy":{"Statement":[]}}|s3 buckets acl update hipc-dry-run-check --policy-file @DIR@/policy.json
+reveal_required|POST|~/master-tokens/|{}|s3 tokens create --kind master
+reveal_required|GET|hipc-dry-run-check ?key=a.txt|null|s3 buckets objects presign hipc-dry-run-check a.txt
+reveal_required|POST|~/sub-tokens/|{"scope_type":"single_bucket","bucket_names":["b"]}|s3 tokens create --kind sub --bucket b --scope-type single-bucket
+confirmation_required|POST|~sub-tokens/{token_id}/revoke/ @UUID@|null|s3 tokens revoke --kind sub @UUID@
+reveal_required|POST|~master-tokens/{token_id}/rotate/ @UUID@|null|s3 tokens rotate --kind master @UUID@
+confirmation_required|POST|-|{"plan_id":1}|hub subscription subscribe --plan 1
+confirmation_required|DELETE|7|null|hub subscription cancel 7
+reveal_required|POST|-|{"namespace":"hipc-dry-run-check"}|hub namespace create hipc-dry-run-check
+public_required|PATCH|-|{"public":true}|hub namespace update --visibility public
+confirmation_required|PATCH|-|{"public":false}|hub namespace update --visibility private
+reveal_required|POST|-|null|hub namespace robot rotate
+reveal_required|POST|-|{"name":"hipc-dry-run-check","role":"read","expires_days":1}|hub keys create --name hipc-dry-run-check --role read --expires-in 1
+reveal_required|POST|7|null|hub keys rotate 7
+confirmation_required|DELETE|7|null|hub keys delete 7
+confirmation_required|DELETE|hipc-check/app|null|hub repositories delete hipc-check/app
+confirmation_required|DELETE|hipc-check/app v1|null|hub artifacts delete hipc-check/app v1
+confirmation_required|POST|-|{"flavor":"small","region":"FR","ssh_key_ids":[1,2]}|compute vms create --flavor small --ssh-key-id 1 --ssh-key-id 2 --region FR
+confirmation_required|POST|-|{"flavor":"small","ssh_public_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReleaseCheck hipc@check"}|compute vms create --flavor small --ssh-public-key-file @DIR@/id.pub
+confirmation_required|POST|-|{"flavor":"small","ssh_key_ids":[1],"ssh_public_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReleaseCheck hipc@check","public_ip":true}|compute vms create --flavor small --ssh-key-id 1 --ssh-public-key-file @DIR@/id.pub --public-ip
+confirmation_required|POST|-|{"flavor":"small","ssh_key_ids":[1],"os_disk_tier":"hdd","backup_interval_s":3600}|compute vms create --flavor small --ssh-key-id 1 --os-disk-tier hdd --backup-interval 3600
+confirmation_required|POST|-|{"flavor":"small","ssh_key_ids":[1],"dedicated_disks":{"tier":"hdd","count":2,"min_size_gb":2000},"pinned_ack":true}|compute vms create --flavor small --ssh-key-id 1 --dedicated-disk 2000:hdd --dedicated-disk 2000:hdd
+-|POST|@UUID@|null|compute vms start @UUID@
+confirmation_required|POST|@UUID@|null|compute vms stop @UUID@
+confirmation_required|POST|@UUID@|null|compute vms reboot @UUID@
+confirmation_required|POST|@UUID@|{"flavor":"medium"}|compute vms resize @UUID@ --flavor medium
+-|PUT|@UUID@|{"on_guest_poweroff":"stop"}|compute vms power-policy update @UUID@ --on-guest-poweroff stop
+-|DELETE|@UUID@|null|compute vms delete @UUID@
+confirmation_required|POST|@UUID@|null|compute public-ip create @UUID@
+confirmation_required|DELETE|@UUID@|null|compute public-ip delete @UUID@
+confirmation_required|PUT|@UUID@|{"rules":[],"base_revision":"<the revision the read returns>"}|compute firewall update @UUID@ --rules-file @DIR@/rules.json --remove-others
+confirmation_required|POST|@UUID@|{"port":443}|compute exposures create @UUID@ --port 443
+confirmation_required|DELETE|@UUID@ 5|null|compute exposures delete @UUID@ 5
+confirmation_required|PUT|@UUID@|{"interval_s":3600}|compute backups policy update @UUID@ --interval 3600
+confirmation_required|DELETE|@UUID@|null|compute backups policy delete @UUID@
+-|POST|@UUID@|{"point_id":"9","mode":"in_place","confirm":"<the VM's name>"}|compute backups restore @UUID@ --run-id 9
+-|PUT|-|{"enabled":true}|compute runners settings update --enabled true
+confirmation_required|DELETE|3|null|compute runners installations delete 3
+-|POST|-|null|compute runners connect
+-|POST|-|{"compose":"services:\n  web:\n    image: nginx\n"}|compute app-engine validate --compose-file @DIR@/compose.yaml
+-|POST|~/apps/|{"flavor":"small","compose":"services:\n  web:\n    image: nginx\n","secrets":{"DB_PASSWORD":"<the DB_PASSWORD from --secrets-file>"},"region":"FR","backup_interval_s":3600}|compute app-engine apps create --flavor small --compose-file @DIR@/compose.yaml --secrets-file @DIR@/app-secrets.json --region FR --backup-interval 3600
+-|POST|-|{"compose":"services:\n  web:\n    image: nginx\n"}|compute app-engine fix --compose-file @DIR@/compose.yaml --output-file @DIR@/fixed.yaml
+-|PUT|-|{"monthly_cap":"5"}|compute runners limit update --monthly-cap 5
+confirmation_required|POST|-|{"name":"hipc-dry","public_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReleaseCheck hipc@check"}|compute ssh-keys create --name hipc-dry --public-key-file @DIR@/id.pub
+confirmation_required|DELETE|1|null|compute ssh-keys delete 1
+reveal_required|POST|-|{"tier":"starter","size":"s","engine_version":"17"}|compute databases create --tier starter --size s --engine-version 17
+confirmation_required|DELETE|56|null|compute databases delete 56
+confirmation_required|POST|56|null|compute databases restart 56
+reveal_required|POST|56|null|compute databases restore 56
+confirmation_required|POST|56|null|compute databases exposure create 56
+confirmation_required|DELETE|56|null|compute databases exposure delete 56
+reveal_required|GET|7|null|compute kubernetes backups list 7
+-|DELETE|7|null|compute kubernetes clusters delete 7
+-|POST|7|{"name":"hipc-dry","flavor":"medium","labels":{"tier":"web"},"taints":["spot:NoSchedule"]}|compute kubernetes node-pools create 7 --name hipc-dry --flavor medium --label tier=web --taint spot:NoSchedule
+-|POST|7 12|{}|compute kubernetes operations cancel 7 12
+-|POST|7 12|{}|compute kubernetes operations resume 7 12
+confirmation_required|POST|7 work-1|{}|compute kubernetes nodes delete 7 work-1
+-|POST|-|{"gb":{"FR":100}}|cdn estimate --traffic FR=100
+public_required|POST|-|{"name":"z","origin":{"kind":"s3","bucket":"b"}}|cdn zones create --name z --bucket b
+confirmation_required|PATCH|@ZONE@|{"name":"z2"}|cdn zones update @ZONE@ --name z2
+confirmation_required|PATCH|@ZONE@|{"cors":{"allow_origins":["https://app.example.com"]}}|cdn zones update @ZONE@ --cors-file @DIR@/cors.json
+confirmation_required|DELETE|@ZONE@|null|cdn zones delete @ZONE@
+-|PATCH|@ZONE@|{"monthly_cap":"5"}|cdn cap update @ZONE@ --monthly-cap 5
+confirmation_required|POST|@ZONE@|{"hostname":"cdn.example.com"}|cdn hostnames create @ZONE@ cdn.example.com
+-|POST|@ZONE@ cdn.example.com|null|cdn hostnames verify @ZONE@ cdn.example.com
+confirmation_required|POST|@ZONE@ cdn.example.com|{"provider":"cloudflare","credentials":{"api_token":"<the api_token from --credentials-file>"}}|cdn hostnames dns-setup @ZONE@ cdn.example.com --provider cloudflare --credentials-file @DIR@/dns.json
+confirmation_required|DELETE|@ZONE@ cdn.example.com|null|cdn hostnames delete @ZONE@ cdn.example.com
+-|POST|@ZONE@|{"all":true}|cdn purges create @ZONE@ --everything
+confirmation_required|PUT|@ZONE@|{"rules":[]}|cdn rules update @ZONE@ --rules-file @DIR@/rules.json --remove-others
+-|POST|-|{"waf":{"standard":1}}|cdn estimate --waf standard=1
+confirmation_required|PATCH|@ZONE@|{"mode":"on"}|cdn waf update @ZONE@ --mode on
+-|POST|@ZONE@|{"request":{"path":"/"}}|cdn waf test @ZONE@ --request-file @DIR@/waf-request.json
+confirmation_required|PUT|@ZONE@|{"rules":[]}|cdn waf rules update @ZONE@ --rules-file @DIR@/rules.json --remove-others
+confirmation_required|PUT|@ZONE@|{"rules":[]}|cdn waf rate-limits update @ZONE@ --rules-file @DIR@/rules.json --remove-others
+confirmation_required|POST|@ZONE@ 1|{}|cdn waf versions rollback @ZONE@ 1
+-|POST|-|{"name":"hip_dry_run_check","kind":"ip"}|cdn lists create hip_dry_run_check --kind ip
+-|PATCH|hip_dry_run_check|{"description":"d"}|cdn lists update hip_dry_run_check --description d
+confirmation_required|DELETE|hip_dry_run_check|null|cdn lists delete hip_dry_run_check
+confirmation_required|POST|hip_dry_run_check|{"items":["192.0.2.1"]}|cdn lists items create hip_dry_run_check --items-file @DIR@/items.txt
+confirmation_required|PUT|hip_dry_run_check|{"items":["192.0.2.1"]}|cdn lists items update hip_dry_run_check --items-file @DIR@/items.txt --remove-others
+confirmation_required|DELETE|hip_dry_run_check|{"items":["192.0.2.1"]}|cdn lists items delete hip_dry_run_check --items-file @DIR@/items.txt
+confirmation_required|POST|-|{"subject":"hipc-release-check","description":"release check message\n","priority":"low"}|support tickets create --subject hipc-release-check --priority low --body-file @DIR@/message
+-|POST|7|{"body":"release check message\n"}|support tickets reply 7 --body-file @DIR@/message
+-|PATCH|7|{"status":"closed"}|support tickets update 7 --status closed
+-|POST|-|{"name":"hipc-release-check"}|account referrals create --name hipc-release-check
+-|PATCH|4|{"name":"hipc-release-check"}|account referrals update 4 --name hipc-release-check
+EOF
+}
+
+# The writes `hipc api` holds back, in the columns of `dry_run_table` but with the path
+# under the origin in place of the values: `hipc api` sends the path it is given.
+api_dry_run_table() {
+  cat <<'EOF'
 confirmation_required|DELETE|/api/ssh-keys/1/|null|api DELETE /ssh-keys/1/
 confirmation_required|DELETE|/api/cdn/lists/hipc-check/items/|{"items":[]}|api DELETE /cdn/lists/hipc-check/items/ --body-file @DIR@/items.json
 confirmation_required|POST|/api/objectstore/buckets/|{"rules":[]}|api POST /objectstore/buckets/ --body-file @DIR@/rules.json
@@ -1429,10 +1564,73 @@ app_create_checks() {
   fi
 }
 
+# route_of_row <arguments> <method> <values>: sets `path` to the route `hipc schema` lists for
+# the command of a `dry_run_table` row, with the row's placeholder values, and its query. A
+# first word starting with `~` is the end of the template, for a command with several routes
+# of one method. Several routes left, or none, leave `path` empty, which fails the row.
+route_of_row() {
+  local argv values query="" ending="" name last routes
+  read -r -a argv <<<"${1//@DIR@/x}"
+  name="$(command_path "${argv[@]}")"
+  read -r -a values <<<"${3//@UUID@/$MISSING_UUID}"
+  values=("${values[@]//@ZONE@/$MISSING_ZONE}")
+  if [[ "${values[0]}" == \~* ]]; then
+    ending="${values[0]#\~}"
+    values=("${values[@]:1}")
+    [[ ${#values[@]} -eq 0 ]] && values=(-)
+  fi
+  last=$((${#values[@]} - 1))
+  if [[ "${values[*]}" == - ]]; then
+    values=()
+  elif [[ "${values[last]}" == \?* ]]; then
+    query="${values[last]}"
+    unset "values[$last]"
+  fi
+  routes="$(route_ending "$name" "$2" "$ending" ${values[@]+"${values[@]}"})"
+  path=""
+  if [[ -n "$routes" && "$routes" != *$'\n'* ]]; then
+    path="$routes$query"
+  fi
+}
+
+# dry_run_row <dir> <refusal> <method> <path> <body> <arguments>: one row of a dry-run table.
+# The dry run must show the method and the path, and the run without the gating flag must
+# meet the refusal.
+dry_run_row() {
+  local dir="$1" refusal="$2" method="$3" path="$4" body="$5" line="$6" args name i
+  line="${line//@UUID@/$MISSING_UUID}"
+  line="${line//@ZONE@/$MISSING_ZONE}"
+  path="${path//@UUID@/$MISSING_UUID}"
+  path="${path//@ZONE@/$MISSING_ZONE}"
+  read -r -a args <<<"$line"
+  # The directory goes in after the split, so a space in its path stays in one word.
+  for i in "${!args[@]}"; do
+    args[i]="${args[i]//@DIR@/$dir}"
+  done
+  name="$(command_path "${args[@]}")"
+  [[ "$name" == api ]] && name="api ${args[1]}"
+  offline "dry-run $name" 0 --dry-run "${args[@]}"
+  expect_dry_run "dry-run $name is $method" \
+    ".dry_run == true and .method == \"$method\" and \"$path\" != \"\" and
+    .url == \"$DEAD_ORIGIN$path\" and .body == $body and has(\"account_header\") and
+    has(\"project_header\") and has(\"billing_header\") and
+    (.requests | all(has(\"dry_run\") | not))"
+  case "$refusal" in
+  confirmation_required) offline "$name without --yes" 2 "${args[@]}" ;;
+  reveal_required) offline "$name without --reveal" 2 "${args[@]}" --yes ;;
+  public_required) offline "$name without --public" 2 "${args[@]}" --yes ;;
+  remove_others_required) offline "$name without --remove-others" 2 "${args[@]}" --yes ;;
+  *) return ;;
+  esac
+  expect_code "$name is $refusal" "$refusal"
+}
+
 dry_run_checks() {
   echo "== every write under --dry-run, then its refusal (nothing sent) =="
   local dir="$WORK/input"
-  mkdir "$dir"
+  # Owner-only whatever the umask: hipc refuses a secrets file in a directory others can
+  # write, and a umask of 002 would make this one group-writable.
+  mkdir -m 700 "$dir"
   printf 'invite-token-for-the-release-check\n' >"$dir/invite"
   printf '{"rules": []}\n' >"$dir/rules.json"
   printf '{"origin": {"bucket": "b"}}\n' >"$dir/origin.json"
@@ -1451,33 +1649,19 @@ dry_run_checks() {
   # The DNS credential is held to the config file's checks, so it is written owner-only.
   (umask 077 && printf '{"api_token": "%s"}\n' "$FAKE_DNS_TOKEN" >"$dir/dns.json")
   (umask 077 && printf '{"DB_PASSWORD": "%s"}\n' "$FAKE_APP_SECRET" >"$dir/app-secrets.json")
-  local refusal method path body line args name i
-  while IFS='|' read -r refusal method path body line; do
-    line="${line//@UUID@/$MISSING_UUID}"
-    line="${line//@ZONE@/$MISSING_ZONE}"
-    path="${path//@UUID@/$MISSING_UUID}"
-    path="${path//@ZONE@/$MISSING_ZONE}"
-    read -r -a args <<<"$line"
-    # The directory goes in after the split, so a space in its path stays in one word.
-    for i in "${!args[@]}"; do
-      args[i]="${args[i]//@DIR@/$dir}"
-    done
-    name="$(command_path "${args[@]}")"
-    [[ "$name" == api ]] && name="api ${args[1]}"
-    offline "dry-run $name" 0 --dry-run "${args[@]}"
-    expect_dry_run "dry-run $name is $method" \
-      ".dry_run == true and .method == \"$method\" and .url == \"$DEAD_ORIGIN$path\" and
-      .body == $body and has(\"account_header\") and has(\"project_header\") and
-      has(\"billing_header\") and (.requests | all(has(\"dry_run\") | not))"
-    case "$refusal" in
-    confirmation_required) offline "$name without --yes" 2 "${args[@]}" ;;
-    reveal_required) offline "$name without --reveal" 2 "${args[@]}" --yes ;;
-    public_required) offline "$name without --public" 2 "${args[@]}" --yes ;;
-    remove_others_required) offline "$name without --remove-others" 2 "${args[@]}" --yes ;;
-    *) continue ;;
-    esac
-    expect_code "$name is $refusal" "$refusal"
+  # The public development phrase of Substrate's test accounts: it holds nothing, and a
+  # hotkey link's dry run reads it only to name the hotkey.
+  (umask 077 && printf 'bottom drive obey lake curtain smoke basket hold race lonely fit walk\n' \
+    >"$dir/hotkey")
+  local refusal method values body line path
+  while IFS='|' read -r refusal method values body line; do
+    path=""
+    route_of_row "$line" "$method" "$values"
+    dry_run_row "$dir" "$refusal" "$method" "$path" "$body" "$line"
   done < <(dry_run_table)
+  while IFS='|' read -r refusal method path body line; do
+    dry_run_row "$dir" "$refusal" "$method" "$path" "$body" "$line"
+  done < <(api_dry_run_table)
   dns_setup_checks "$dir"
   app_create_checks "$dir"
   # A compose goes byte for byte as a JSON string, so one that is not UTF-8 is refused before
@@ -1521,8 +1705,9 @@ dry_run_checks() {
   # A plan name is looked up by a real run only, so the dry run shows a placeholder.
   offline "hub subscribe by name --dry-run" 0 --dry-run hub subscription subscribe --plan Builder
   expect_dry_run "plan name is a placeholder" '.body.plan_id == "<looked up from Builder>"'
-  expect_requests "subscribe lists the reads" "GET /api/registry/plans/" \
-    "GET /api/registry/subscriptions/" "POST /api/registry/subscribe/"
+  local subscribe="hub subscription subscribe"
+  expect_requests "subscribe lists the reads" "GET $(route_ending "$subscribe" GET /plans/)" \
+    "GET $(route_ending "$subscribe" GET /subscriptions/)" "POST $(route "$subscribe" POST)"
   # A bucket ACL set needs --remove-others as well as --public.
   offline "api PUT acl/set with --public only" 2 api PUT \
     /objectstore/buckets/hipc-dry-run-check/acl/set/ --body-file "$dir/grants.json" --public --yes
@@ -1538,35 +1723,41 @@ dry_run_checks() {
   expect_code "acl update with --public only is remove_others_required" remove_others_required
   # The token check, then the signed-in user.
   offline "auth status --dry-run lists both reads" 0 --dry-run auth status
-  expect_requests "status reads the user after the token" "GET /api/accounts/" \
-    "GET /api/users/me/"
+  expect_requests "status reads the user after the token" \
+    "GET $(route_ending "auth status" GET /accounts/)" "GET $(route_ending "auth status" GET /me/)"
   # A restore reads the VM, and an accept previews the invite, before the write.
   offline "restore --dry-run lists the read" 0 --dry-run compute backups restore \
     "$MISSING_UUID" --run-id 9
-  expect_requests "restore reads the VM first" "GET /api/compute/vms/$MISSING_UUID/" \
-    "POST /api/compute/vms/$MISSING_UUID/backups/restore/"
+  expect_requests "restore reads the VM first" \
+    "GET $(route "compute backups restore" GET "$MISSING_UUID")" \
+    "POST $(route "compute backups restore" POST "$MISSING_UUID")"
   # Whether a cap change is confirmed depends on the cap in force, so it reads that first.
   offline "runner limit update --dry-run lists the read" 0 --dry-run compute runners limit \
     update --monthly-cap none
-  expect_requests "runner limit update reads the limit first" "GET /api/runners/limit/" \
-    "PUT /api/runners/limit/"
+  expect_requests "runner limit update reads the limit first" \
+    "GET $(route "compute runners limit update" GET)" \
+    "PUT $(route "compute runners limit update" PUT)"
   expect_dry_run "runner limit removal sends null" '.body == {"monthly_cap": null}'
   # So do a CDN cap update and a runner settings update, and a VM delete reads the VM it names.
   offline "cdn cap update --dry-run lists the read" 0 --dry-run cdn cap update \
     "$MISSING_ZONE" --monthly-cap 5
   expect_requests "cdn cap update reads the cap first" \
-    "GET /api/cdn/zones/$MISSING_ZONE/cap/" "PATCH /api/cdn/zones/$MISSING_ZONE/cap/"
+    "GET $(route "cdn cap update" GET "$MISSING_ZONE")" \
+    "PATCH $(route "cdn cap update" PATCH "$MISSING_ZONE")"
   offline "runner settings update --dry-run lists the read" 0 --dry-run compute runners \
     settings update --enabled false
   expect_requests "runner settings update reads the settings first" \
-    "GET /api/runners/settings/" "PUT /api/runners/settings/"
+    "GET $(route "compute runners settings update" GET)" \
+    "PUT $(route "compute runners settings update" PUT)"
   offline "vms delete --dry-run lists the read" 0 --dry-run compute vms delete "$MISSING_UUID"
-  expect_requests "vms delete reads the VM first" "GET /api/compute/vms/$MISSING_UUID/" \
-    "DELETE /api/compute/vms/$MISSING_UUID/"
+  expect_requests "vms delete reads the VM first" \
+    "GET $(route "compute vms delete" GET "$MISSING_UUID")" \
+    "DELETE $(route "compute vms delete" DELETE "$MISSING_UUID")"
   offline "accept --dry-run lists the preview" 0 --dry-run account invites accept \
     --token-file "$dir/invite"
-  expect_requests "accept previews first" "POST /api/accounts/invites/preview/" \
-    "POST /api/accounts/invites/accept/"
+  expect_requests "accept previews first" \
+    "POST $(route_ending "account invites accept" POST /preview/)" \
+    "POST $(route_ending "account invites accept" POST /accept/)"
   # Without --remove-others a list replace reads the current list before its question, so
   # its dry run names that read; the table rows above pass the flag to reach the question.
   local replace
@@ -1602,7 +1793,8 @@ refusal_checks() {
   offline "membership on hub keys" 2 --account "$other" hub keys list
   expect_code "hub keys refuse a membership" account_scope_unsupported
   # --reveal is not a confirmation: a create with it still needs --yes, and a rotate with
-  # --yes still needs --reveal. A role the Hub client does not offer is usage.
+  # --yes still needs --reveal. A role that is not a lowercase code is usage; which roles exist
+  # is the server's to say.
   offline "hub keys create without --yes" 2 hub keys create --name hipc-dry-run-check \
     --role read --reveal
   expect_code "hub keys create is confirmation_required" confirmation_required
@@ -1619,9 +1811,9 @@ refusal_checks() {
   expect_code "hub events refuse a membership" account_scope_unsupported
   offline "model without its namespace" 2 hub models get llama
   expect_code "a model needs its namespace" usage
-  offline "hub keys create with an unknown role" 2 hub keys create --name hipc-dry-run-check \
-    --role write --reveal --yes
-  expect_code "an unknown key role is usage" usage
+  offline "hub keys create with a role that is no code" 2 hub keys create \
+    --name hipc-dry-run-check --role Read --reveal --yes
+  expect_code "a role that is no code is usage" usage
   offline "membership on hub repositories" 2 --account "$other" hub repositories list
   expect_code "hub repositories refuse a membership" account_scope_unsupported
   offline "membership on a hub delete --dry-run" 2 --account "$other" --dry-run \
@@ -1639,7 +1831,7 @@ refusal_checks() {
   expect_dry_run "invoices account header" ".account_header == \"$other\""
   expect "one request is the one entry of requests" \
     '(.requests | length) == 1 and (.requests[0] | has("dry_run") | not) and
-    (keys == ["dry_run", "requests"])'
+    (keys == ["confirmation", "confirmation_when", "dry_run", "requests"])'
   offline "usage month outside YYYY-MM" 2 billing usage --month 2026-13
   expect_code "a bad month is usage" usage
   offline "invoice to stdout" 2 billing invoices get 1 --output-file -
@@ -1660,13 +1852,16 @@ refusal_checks() {
   expect_code "a top-up dry run refuses a membership" account_scope_unsupported
   offline "top-up --dry-run lists its request" 0 --dry-run \
     billing top-up --amount 50 --method card
-  expect_requests "top-up lists one POST" "POST /api/billing/stripe/create-checkout-session/"
-  offline "hAlpha top-up --dry-run lists its reads, the buy, and the follow" 0 --dry-run \
+  expect_requests "top-up lists one POST" \
+    "POST $(route_ending "billing top-up" POST /create-checkout-session/)"
+  # The polls that follow the buy are left out of a dry run, as a VM launch's are (tenet 5).
+  offline "hAlpha top-up --dry-run lists its reads and the buy" 0 --dry-run \
     billing top-up --method halpha --alpha 1.5
-  expect_requests "hAlpha top-up lists the quote, the list, the buy, and the follow" \
-    "GET /api/billing/native/quote/" "GET /api/billing/native/purchases/?ordering=-created_at" \
-    "POST /api/billing/native/buy/" "GET /api/billing/native/purchases/?ordering=-created_at"
-  expect "the buy sends the exact amount" '.body.alpha_amount == "1500000000000000000"'
+  expect_requests "hAlpha top-up lists the quote, the list, and the buy" \
+    "GET $(route_ending "billing top-up" GET /quote/)" \
+    "GET $(route_ending "billing top-up" GET /purchases/)?ordering=-created_at" \
+    "POST $(route_ending "billing top-up" POST /buy/)"
+  expect_dry_run "the buy sends the exact amount" '.body.alpha_amount == "1500000000000000000"'
   offline "hAlpha below the chain minimum" 2 billing top-up --method halpha --alpha 0.009 --yes
   expect_code "a buy under 0.01 hAlpha is usage" usage
   offline "hAlpha past 18 decimals" 2 billing top-up --method halpha \
@@ -1686,18 +1881,18 @@ refusal_checks() {
   # The profile PUT keeps the fields it leaves out, so the update sends only those given.
   offline "profile update --dry-run is one PUT" 0 --dry-run billing profile update \
     --tax-id GB1
-  expect_requests "profile update reads nothing first" "PUT /api/billing/profile/"
+  expect_requests "profile update reads nothing first" "PUT $(route "billing profile update" PUT)"
   expect_dry_run "profile update sends only the field given" '.body == {"tax_id": "GB1"}'
   # A new billing email is confirmed unless the profile holds it, so that update reads first.
   offline "profile email update --dry-run lists the read" 0 --dry-run billing profile update \
     --billing-email invoices@example.com
-  expect_requests "an email update reads the profile first" "GET /api/billing/profile/" \
-    "PUT /api/billing/profile/"
+  expect_requests "an email update reads the profile first" \
+    "GET $(route "billing profile update" GET)" "PUT $(route "billing profile update" PUT)"
   # The auto-reload PUT takes the whole setting, so the update reads it first.
   offline "auto-reload update --dry-run lists the read" 0 --dry-run billing auto-reload \
     update --threshold 10
-  expect_requests "auto-reload update reads the setting first" "GET /api/billing/auto-reload/" \
-    "PUT /api/billing/auto-reload/"
+  expect_requests "auto-reload update reads the setting first" \
+    "GET $(route "billing auto-reload update" GET)" "PUT $(route "billing auto-reload update" PUT)"
   # Whether it asks depends on the setting in force, so a run without --yes reads first: the
   # dead origin refuses that read, and nothing is written.
   offline "auto-reload update without --yes reads first" 1 billing auto-reload update \
@@ -1759,7 +1954,7 @@ refusal_checks() {
   # The launch options, each checked before anything is sent.
   local vm=(compute vms create --flavor small --ssh-key-id 1)
   offline "os disk tier outside the enum" 2 "${vm[@]}" --os-disk-tier sata --yes
-  offline "launch backup interval outside the set" 2 "${vm[@]}" --backup-interval 600 --yes
+  offline "launch backup interval of no seconds" 2 "${vm[@]}" --backup-interval 0 --yes
   offline "dedicated disk under 1000 GiB" 2 "${vm[@]}" --dedicated-disk 999:hdd --yes
   expect_err "a small dedicated disk is usage" \
     '.error.code == "usage" and (.error.message | test("a dedicated disk is"))'
@@ -1769,8 +1964,8 @@ refusal_checks() {
     --backup-interval 3600 --yes
   offline "feasibility tier outside the enum" 2 compute feasibility --flavor small \
     --os-disk-tier sata
-  offline "backup interval outside the set" 2 \
-    compute backups policy update "$MISSING_UUID" --interval 600 --yes
+  offline "backup interval of no seconds" 2 \
+    compute backups policy update "$MISSING_UUID" --interval 0 --yes
   # The local checks: each refuses before anything is read or sent.
   local typo="$WORK/input/fw-typo.json" cache="$WORK/input/cache-typo.json" keys=() i
   printf '{"rules": [{"protocol": "tcp", "ports": ["22"], "sources": ["0.0.0.0/0"]}]}\n' >"$typo"
@@ -1849,16 +2044,16 @@ refusal_checks() {
   expect_dry_run "a close has no account header" '.account_header == null'
   # The close reads the ticket first, so its question names the subject.
   expect_requests "a close lists the read, then the PATCH" \
-    "GET /api/support/tickets/7/" "PATCH /api/support/tickets/7/"
+    "GET $(route "support tickets update" GET 7)" "PATCH $(route "support tickets update" PATCH 7)"
   offline "membership on a referral create sends no header" 0 --account "$other" --dry-run \
     account referrals create --name hipc-release-check
   expect_dry_run "a referral create has no account header" '.account_header == null'
   offline "ticket create --dry-run lists its request" 0 --dry-run \
     support tickets create --subject hipc-release-check --body-file "$WORK/input/message"
-  expect_requests "ticket create lists the POST" "POST /api/support/tickets/"
+  expect_requests "ticket create lists the POST" "POST $(route "support tickets create" POST)"
   offline "ticket reply --dry-run lists its request" 0 --dry-run \
     support tickets reply 7 --body-file "$WORK/input/message"
-  expect_requests "ticket reply lists the POST" "POST /api/support/tickets/7/messages/"
+  expect_requests "ticket reply lists the POST" "POST $(route "support tickets reply" POST 7)"
   # A whole-ticket update (`PUT`), which the customer console does not send, is not personal:
   # `hipc api` refuses it with a membership. The customer's close (`PATCH`) is, so it goes
   # out without the header.
@@ -2064,24 +2259,41 @@ final_checks() {
   check "no escape byte in any output" "$esc files" test "$esc" = 0
 }
 
-guard_checks
-baseline
-auth_checks
-account_checks
-storage_checks
-compute_catalog_checks
-vm_checks
-database_checks
-kubernetes_checks
-app_engine_checks
-cdn_checks
-support_checks
-network_checks
-membership_checks
-dry_run_checks
-refusal_checks
-s3_configure_checks
-final_checks
+# group <function>: runs one group of checks in a subshell. Inside it `set -e` still stops
+# the group at a command that fails outside a check, but not the run: that failure is one
+# FAIL line, and the next group runs, so every group reports and the final token scan always
+# comes. What the groups share in variables (the counters, the run number that names each
+# capture, and the two account ids) comes back through $WORK/tally, which the subshell
+# writes however it ends.
+group() {
+  local name="$1" status
+  set +e
+  (
+    set -e
+    trap 'printf "%s\n" "$pass" "$fail" "$skip" "$n" "$OWN" "$MEMBER" >"$WORK/tally"' EXIT
+    "$name"
+  )
+  status=$?
+  set -e
+  {
+    read -r pass
+    read -r fail
+    read -r skip
+    read -r n
+    read -r OWN
+    read -r MEMBER
+  } <"$WORK/tally"
+  if [[ "$status" != 0 ]]; then
+    result FAIL "$name" "stopped at a command that failed (exit $status); its later checks did not run"
+  fi
+}
+
+for name in guard_checks baseline auth_checks account_checks storage_checks \
+  compute_catalog_checks vm_checks database_checks kubernetes_checks app_engine_checks \
+  cdn_checks support_checks network_checks membership_checks dry_run_checks \
+  refusal_checks s3_configure_checks final_checks; do
+  group "$name"
+done
 
 echo "== $pass passed, $fail failed, $skip skipped =="
 [[ "$fail" == 0 ]]

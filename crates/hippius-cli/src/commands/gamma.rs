@@ -13,7 +13,8 @@
 
 use std::path::Path;
 
-use hippius::{Error, Hotkey, Method, Request, Result, SideEffects, Source, phrase};
+use hippius::routes::billing;
+use hippius::{Error, Hotkey, Request, Result, SideEffects, Source, phrase, view_of};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
@@ -21,7 +22,6 @@ use crate::cli::{Gamma, GammaConversions, GammaHotkeys};
 use crate::commands::{Input, Printed, list, print_body, print_body_or, print_with};
 use crate::context::{Context, Gate};
 
-const GAMMA: &str = "/billing/gamma/";
 const FLAG: &str = "--hotkey-file";
 
 pub(crate) fn run(ctx: &Context<'_>, command: &Gamma) -> Result<Printed> {
@@ -66,13 +66,13 @@ fn dispatch(ctx: &Context<'_>, command: &Gamma) -> Result<Printed> {
         Gamma::Get => print_body(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get(GAMMA)
+            &Request::to(&billing::GAMMA, [])
                 .about("get the gamma spender and the deposits of the linked hotkeys"),
             Gate::Open,
         ),
         Gamma::Hotkeys(GammaHotkeys::Create { hotkey_file }) => link(ctx, hotkey_file),
         Gamma::Hotkeys(GammaHotkeys::Delete { hotkey }) => {
-            let request = Request::new(Method::Delete, format!("{GAMMA}hotkeys/{hotkey}/"))
+            let request = Request::to(&billing::GAMMA_HOTKEY_DELETE, [hotkey])
                 .about(format!("unlink the hotkey {}", phrase::quote(hotkey)));
             print_body_or(
                 ctx,
@@ -92,13 +92,13 @@ fn dispatch(ctx: &Context<'_>, command: &Gamma) -> Result<Printed> {
         Gamma::Conversions(GammaConversions::List(args)) => list::run(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get(format!("{GAMMA}conversions/")).about("list the gamma conversions"),
+            &Request::to(&billing::GAMMA_CONVERSIONS, []).about("list the gamma conversions"),
             args,
         ),
         Gamma::Conversions(GammaConversions::Get { conversion_id }) => print_body(
             ctx,
             &ctx.load_authed_client()?,
-            &Request::get(format!("{GAMMA}conversions/{conversion_id}/"))
+            &Request::to(&billing::GAMMA_CONVERSION, [conversion_id])
                 .about(format!("get the gamma conversion `{conversion_id}`")),
             Gate::Open,
         ),
@@ -117,7 +117,7 @@ fn hotkey_words(path: &Path) -> Result<(Zeroizing<String>, Source)> {
             flag: FLAG,
             what: "hotkey phrase",
         }
-        .read_cleared_stdin()?
+        .read_secret()?
     } else {
         hippius::read_hotkey_file(path, FLAG)?
     };
@@ -133,15 +133,15 @@ fn link(ctx: &Context<'_>, path: &Path) -> Result<Printed> {
     let hotkey = key.ss58_address().to_owned();
     let hotkey = hotkey.as_str();
     let client = ctx.load_authed_client()?;
-    let challenge = Request::new(Method::Post, format!("{GAMMA}hotkeys/challenge/"))
-        .json(&json!({ "hotkey": hotkey }))
+    let challenge = Request::to(&billing::GAMMA_HOTKEY_CHALLENGE, [])
+        .json(&billing::HotkeyChallengeBody { hotkey })
         .about(format!(
             "ask for a link challenge for the hotkey {}",
             phrase::quote(hotkey)
         ));
     let submit = |nonce: &str, signature: &str| {
-        Request::new(Method::Post, format!("{GAMMA}hotkeys/"))
-            .json(&json!({ "nonce": nonce, "signature": signature }))
+        Request::to(&billing::GAMMA_HOTKEY_CREATE, [])
+            .json(&billing::HotkeyCreateBody { nonce, signature })
             .about(format!("link the hotkey {}", phrase::quote(hotkey)))
     };
     if ctx.dry_run() {
@@ -149,34 +149,32 @@ fn link(ctx: &Context<'_>, path: &Path) -> Result<Printed> {
             "<the challenge's nonce>",
             "<the hotkey's sr25519 signature of the challenge message>",
         );
-        let mut doc = ctx.dry_run_document(&client, &challenge)?;
-        doc["requests"] = json!([
-            ctx.describe(&client, &challenge)?,
-            ctx.describe(&client, &unsigned)?,
-        ]);
-        return Ok(Printed::Document(doc));
+        return ctx
+            .dry_run_of(&client, &[&challenge, &unsigned])
+            .map(Printed::from);
     }
-    let answer = ctx.send(&client, &challenge)?.document()?;
-    let (Some(message), Some(nonce)) = (
-        answer.get("message").and_then(Value::as_str),
-        answer.get("nonce").and_then(Value::as_str),
-    ) else {
+    let answer = view_of(&ctx.send(&client, &challenge)?.document()?);
+    let billing::HotkeyChallenge {
+        message: Some(message),
+        nonce: Some(nonce),
+    } = answer
+    else {
         return Err(crate::commands::unreadable(
             "ask for a gamma link challenge",
         ));
     };
-    let signature = key.sign_gamma_link(message, nonce)?;
+    let signature = key.sign_gamma_link(&message, &nonce)?;
     // The keys are not needed for the link itself, so they are cleared before it is sent.
     drop(key);
-    print_body(ctx, &client, &submit(nonce, &signature), Gate::Open)
+    print_body(ctx, &client, &submit(&nonce, &signature), Gate::Open)
 }
 
 /// Burns `amount` gamma of `hotkey`'s deposit for the same amount in USD, once confirmed,
 /// and names the read that follows the conversion.
 fn convert(ctx: &Context<'_>, hotkey: &str, amount: &str) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
-    let request = Request::new(Method::Post, format!("{GAMMA}conversions/"))
-        .json(&json!({ "hotkey": hotkey, "amount": amount }))
+    let request = Request::to(&billing::GAMMA_CONVERSION_CREATE, [])
+        .json(&billing::GammaConversionBody { hotkey, amount })
         .about(format!(
             "burn `{amount}` gamma of the hotkey {} for `{amount}` USD of credits",
             phrase::quote(hotkey)
@@ -189,9 +187,10 @@ fn convert(ctx: &Context<'_>, hotkey: &str, amount: &str) -> Result<Printed> {
     };
     print_with(ctx, &client, &request, gate, |response| {
         let body = response.document()?;
-        let Some(id) = body
-            .get("id")
-            .and_then(Value::as_str)
+        let conversion: billing::GammaConversion = view_of(&body);
+        let Some(id) = conversion
+            .id
+            .as_deref()
             .and_then(|id| crate::cli::as_argument(id, crate::cli::conversion_id))
         else {
             // The API took the conversion, and may burn the gamma, but its answer names no

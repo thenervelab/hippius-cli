@@ -19,6 +19,9 @@ hippius.workspace = true
 # the standard library cannot do, and `hipc auth login` reads a token typed at the terminal
 # with echo off (termios). rustix is already in the tree, through the library.
 rustix = { workspace = true, features = ["termios"] }
+# A route's body type and a view of an answer are the library's; the binary names their traits
+# (`Serialize`, `Deserialize`). Already in the tree, through the library.
+serde.workspace = true
 serde_json.workspace = true
 # The token typed at that prompt, and a hotkey phrase, are cleared from memory. Already in
 # the tree, through the library.
@@ -34,6 +37,12 @@ rustix = { workspace = true, features = ["pty", "event", "net"] }
 # already in the tree, through the library.
 base64ct.workspace = true
 ed25519-dalek.workspace = true
+# The script tests read Cargo.toml and packaging/pypi/pyproject.toml as TOML. Already in the
+# tree, through the library.
+toml.workspace = true
+yaml-rust2.workspace = true
+# Snapshots of `hipc schema`, its error table and the dry-run documents (owner decision D7).
+insta.workspace = true
 
 [lints]
 workspace = true

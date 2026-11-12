@@ -9,22 +9,20 @@
 //! gives a `usage` error before any request; the exclusive create still refuses a file that
 //! appeared after that check.
 //!
-//! The directory is held to the rule of the config directory ([`private_dir`]), at parse time
-//! and again on the open directory when the file is created there: a directory another user
-//! can write lets them swap the file for their own (a CA that a database connection trusts, a
-//! kubeconfig that names their server) or delete it.
+//! The directory is held to [`private_dir`], at parse time and again on the open directory
+//! when the file is created there: a directory another user can write lets them swap the file
+//! for their own (a CA that a database connection trusts, a kubeconfig that names their
+//! server) or delete it.
 
 use std::fs::{File, Metadata, Permissions};
 use std::io::Write as _;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 
-use hippius::{Error, phrase};
+use hippius::{Error, SecretValue, phrase};
 use rustix::fs::{AtFlags, Mode, OFlags};
 use serde_json::Value;
 use zeroize::Zeroizing;
-
-use crate::commands::Cleared;
 
 /// [`write_new`] for the file `--output-file` names, after reads that changed nothing on the
 /// server: a file that cannot be created is `usage`, since the caller names another path, and
@@ -100,10 +98,9 @@ pub(crate) fn private_dir(metadata: &Metadata) -> Result<(), Unsafe> {
     refusal(dir, user).map_or(Ok(()), Err)
 }
 
-/// The rule of the config directory, for the directory `(owner, group, mode)` and the user
-/// `(euid, egid)`: the user (or root) owns it, and no other user can write it. Two kinds of
-/// directory others can write pass too, since no file hipc writes there can be swapped or
-/// removed:
+/// Why the directory `(owner, group, mode)` is unsafe to create a file in for the user `(euid,
+/// egid)`, or `None`: the user (or root) must own it, and no other user may write it. Two kinds of
+/// directory others can write pass too, since no file hipc writes there can be swapped or removed:
 ///
 /// - a sticky one, such as `/tmp`: there only a file's owner may rename or delete it (POSIX
 ///   `rename`, `unlink`), and the exclusive create refuses a file someone made first;
@@ -113,7 +110,9 @@ pub(crate) fn private_dir(metadata: &Metadata) -> Result<(), Unsafe> {
 ///   the current directory of most users there. A primary group shared with others, such as
 ///   `staff` on macOS or `users`, has another id, so its write bit is refused.
 ///
-/// ACL entries are not read: they are the caller's to keep.
+/// ACL entries are not read: they are the caller's to keep. This is looser than the check of
+/// the config directory in `hippius::private_file`, which refuses those two kinds and a
+/// directory root owns.
 fn refusal((owner, group, mode): (u32, u32, u32), (euid, egid): (u32, u32)) -> Option<Unsafe> {
     let private_group = group == egid && group == euid;
     let others_write = mode & 0o002 != 0 || (mode & 0o020 != 0 && !private_group);
@@ -152,7 +151,7 @@ pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), NewFileError> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
+        .unwrap_or_else(|| Path::new("."));
     let (dir, metadata) = rustix::fs::open(
         parent,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
@@ -176,10 +175,11 @@ pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), NewFileError> {
     let mut file = rustix::fs::openat(&dir, file_name, flags, Mode::RUSR | Mode::WUSR)
         .map(File::from)
         .map_err(|e| create(io(e)))?;
-    // The mode passed to open is masked by the umask. Setting it again makes it exact. The
-    // file's bytes are synced, then its name, which lives in the directory (POSIX `fsync`:
-    // https://pubs.opengroup.org/onlinepubs/9799919799/functions/fsync.html), so a file that
-    // holds a key that exists nowhere else lasts once hipc names it.
+    // The umask may have cleared the owner's bits of the mode passed to open; setting the mode
+    // again restores `0600`. The file's bytes are synced, then its name, which lives in the
+    // directory (POSIX `fsync`:
+    // https://pubs.opengroup.org/onlinepubs/9799919799/functions/fsync.html), so a file that holds
+    // a key that exists nowhere else lasts once hipc names it.
     file.set_permissions(Permissions::from_mode(0o600))
         .and_then(|()| file.write_all(bytes))
         .and_then(|()| file.sync_all())
@@ -225,9 +225,9 @@ pub(crate) fn save_secret(
     };
     // Each copy of the secret is cleared when dropped: the copy of the answer, the secrets
     // taken out of it, and, once the file holds the secret, the answer itself.
-    let mut rest = Cleared(answer.clone());
+    let mut rest = SecretValue::new(answer.clone());
     let mut found = Vec::new();
-    if let Value::Object(fields) = &mut rest.0 {
+    if let Value::Object(fields) = rest.as_value_mut() {
         let keys: Vec<String> = fields
             .iter()
             .filter(|(key, value)| is_secret(key) && value.is_string())
@@ -239,7 +239,7 @@ pub(crate) fn save_secret(
             }
         }
     }
-    if holds_secret(&rest.0, is_secret) {
+    if holds_secret(rest.as_value(), is_secret) {
         return Err(refused(
             format!(
                 "the answer holds a secret `hipc` cannot move to {name}, so no file was written"
@@ -261,15 +261,16 @@ pub(crate) fn save_secret(
     {
         return Err(refused(failed, answer));
     }
-    drop(Cleared(answer));
+    drop(SecretValue::new(answer));
     let fields = rest
-        .0
+        .as_value_mut()
         .as_object_mut()
         .expect("a secret was found, so the answer is an object");
     for (key, _) in found {
         fields.insert(format!("{key}_file"), path.to_string_lossy().into());
     }
-    Ok((std::mem::take(&mut rest.0), true))
+    // What is left holds no secret: each was moved to the file above.
+    Ok((std::mem::take(rest.as_value_mut()), true))
 }
 
 /// Where the one-time secret `what` goes, for the question of a command that issues one.

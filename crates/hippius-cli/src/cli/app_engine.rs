@@ -9,10 +9,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
-use crate::cli::{
-    BackupInterval, DiskTier, FailoverMode, GuestPoweroff, examples, flavor, new_file,
-    placement_group, region, vm_id,
-};
+use crate::cli::{AppTarget, LaunchFlags, examples, flavor, new_file, region};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum AppEngine {
@@ -37,14 +34,8 @@ pub(crate) enum AppEngine {
         "hipc compute app-engine validate --compose-file -",
     ]))]
     Validate {
-        /// The compose file, a regular file (not a symlink) of UTF-8 text of at most 1 MiB, sent
-        /// byte for byte; - reads stdin
-        ///
-        /// The server takes a smaller file: at most max_compose_bytes from hipc compute app-engine
-        /// get. /dev/stdin and <(...) are refused, as they are not regular files, so pass - for
-        /// stdin.
-        #[arg(long, value_name = "PATH")]
-        compose_file: PathBuf,
+        #[command(flatten)]
+        compose: ComposeFile,
     },
     /// Rewrite a compose file into the App Engine grammar; saves nothing on the server
     ///
@@ -59,14 +50,8 @@ pub(crate) enum AppEngine {
         "hipc compute app-engine fix --compose-file compose.yaml --output-file fixed.yaml",
     ]))]
     Fix {
-        /// The compose file, a regular file (not a symlink) of UTF-8 text of at most 1 MiB, sent
-        /// byte for byte; - reads stdin
-        ///
-        /// The server takes a smaller file: at most max_compose_bytes from hipc compute app-engine
-        /// get. /dev/stdin and <(...) are refused, as they are not regular files, so pass - for
-        /// stdin.
-        #[arg(long, value_name = "PATH")]
-        compose_file: PathBuf,
+        #[command(flatten)]
+        compose: ComposeFile,
         /// The file to create for fixed_compose; it must not exist yet
         #[arg(long, value_name = "PATH", value_parser = new_compose_file)]
         output_file: Option<PathBuf>,
@@ -104,11 +89,7 @@ pub(crate) enum AppEngineApps {
     /// it to a shell. The answer lists secret_names only: no secret value is ever shown.
     /// The compose is printed whole, inside the JSON document.
     #[command(after_help = examples(&["hipc compute app-engine apps get vm-1a2b"]))]
-    Get {
-        /// The vm_id from hipc compute app-engine apps list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Get(AppTarget),
     /// Launch an app: a VM of the flavor with a public IPv4, running the compose file; spends
     /// money: needs --yes
     ///
@@ -136,31 +117,54 @@ pub(crate) enum AppEngineApps {
     /// fetch evidence for a nonce you pick, use hipc api GET
     /// /compute/app-engine/apps/<vm_id>/evidence/?nonce=<64 hex>.
     #[command(after_help = examples(&["hipc compute app-engine apps runtime vm-1a2b"]))]
-    Runtime {
-        /// The vm_id from hipc compute app-engine apps list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Runtime(AppTarget),
 }
 
 /// The flags of `apps create`. Those it shares with `hipc compute vms create` take the same
 /// values; an app takes no image, SSH key, or dedicated disk (the server refuses them with
 /// `app-field-not-allowed`: the sealed image has no SSH), and no `--public-ip`, since every
 /// app gets one and the server refuses a launch without (`app-public-ip-required`).
+/// The largest compose file `hipc` reads, in bytes. The server's limit is lower
+/// (`max_compose_bytes` in `hipc compute app-engine get`) and it refuses a larger one itself;
+/// this cap, the config file's, only stops a wrong path (a log, an image) from being read whole.
+pub(crate) const MAX_COMPOSE_BYTES: u64 = 1024 * 1024;
+
+/// `--compose-file`, which `validate`, `fix`, and `apps create` read the same way, so its help
+/// is written once, with the limit [`MAX_COMPOSE_BYTES`] says.
+#[derive(Debug, Args)]
+pub(crate) struct ComposeFile {
+    #[arg(
+        id = "compose_file",
+        long = "compose-file",
+        value_name = "PATH",
+        help = compose_help(),
+        long_help = format!(
+            "{}\n\nThe server takes a smaller file: at most max_compose_bytes from hipc compute \
+             app-engine get. /dev/stdin and <(...) are refused, as they are not regular files, \
+             so pass - for stdin.",
+            compose_help()
+        )
+    )]
+    pub(crate) path: PathBuf,
+}
+
+/// The short help of `--compose-file`.
+fn compose_help() -> String {
+    format!(
+        "The compose file, a regular file (not a symlink) of UTF-8 text of at most {} MiB, sent \
+         byte for byte; - reads stdin",
+        MAX_COMPOSE_BYTES / (1024 * 1024)
+    )
+}
+
 #[derive(Debug, Args)]
 pub(crate) struct AppCreate {
     /// The flavor code from hipc compute flavors; hipc compute app-engine get names the
     /// smallest an app takes (min_flavor)
     #[arg(long, value_parser = flavor)]
     pub(crate) flavor: String,
-    /// The compose file, a regular file (not a symlink) of UTF-8 text of at most 1 MiB, sent
-    /// byte for byte; - reads stdin
-    ///
-    /// The server takes a smaller file: at most max_compose_bytes from hipc compute app-engine
-    /// get. /dev/stdin and <(...) are refused, as they are not regular files, so pass - for
-    /// stdin.
-    #[arg(long, value_name = "PATH")]
-    pub(crate) compose_file: PathBuf,
+    #[command(flatten)]
+    pub(crate) compose: ComposeFile,
     /// A JSON object of each secret's name to its value, which the compose declares in
     /// x-hippius.secrets
     ///
@@ -180,53 +184,8 @@ pub(crate) struct AppCreate {
     /// Without it the scheduler chooses.
     #[arg(long, value_name = "CC", value_parser = region)]
     pub(crate) region: Option<String>,
-    /// The OS disk's tier, a minimum: the disk may land on a faster one; the server defaults it
-    /// to nvme
-    ///
-    /// Fixed for the VM's life, and billed at that tier's price, vm_by_os_disk_tier in hipc
-    /// compute prices.
-    #[arg(long, value_name = "TIER", value_enum)]
-    pub(crate) os_disk_tier: Option<DiskTier>,
-    /// The anti-affinity group: two VMs of the account in one group never share a server
-    ///
-    /// A name is 1 to 64 of a-z, 0-9, and -, not starting with -. Fixed for the VM's life.
-    #[arg(long, value_name = "NAME", value_parser = placement_group)]
-    pub(crate) placement_group: Option<String>,
-    /// What a power-off from inside the VM does: restart (the server's default) or stop
-    #[arg(long, value_name = "POLICY", value_enum)]
-    pub(crate) on_guest_poweroff: Option<GuestPoweroff>,
-    /// Turn on scheduled backups once the app runs, at this many seconds between backups
-    ///
-    /// Stored backups are billed per GB-hour at the price hipc compute backups options shows.
-    #[arg(long, value_name = "SECONDS", value_enum)]
-    pub(crate) backup_interval: Option<BackupInterval>,
-    /// The failover of those backups: auto restarts the app on another server from its latest
-    /// backup if its server dies, losing what was written after it; manual, the server's
-    /// default, leaves that to Hippius support
-    #[arg(long, value_name = "MODE", value_enum, requires = "backup_interval")]
-    pub(crate) failover: Option<FailoverMode>,
-    /// Wait for running even when stdout is not a terminal, CI is set, or AI_AGENT is set
-    ///
-    /// The app is running when its status and boot_phase both are. A run killed during the
-    /// wait prints nothing on stdout; a caller that may be killed first omits --wait and
-    /// follows the app with hipc compute app-engine apps get.
-    #[arg(long, conflicts_with = "no_wait")]
-    pub(crate) wait: bool,
-    /// Print the launch answer and exit without waiting for running
-    ///
-    /// The default when stdout is not a terminal, or CI is set, or AI_AGENT is set and not off.
-    #[arg(long, conflicts_with = "wait_timeout")]
-    pub(crate) no_wait: bool,
-    /// Wait for running for this many seconds, 1 to 3600, default 300
-    ///
-    /// It waits as --wait does. A wait that ends before running prints the app on stdout, so
-    /// its vm_id is not lost.
-    #[arg(
-        long,
-        value_name = "SECONDS",
-        value_parser = clap::value_parser!(u64).range(1..=3600)
-    )]
-    pub(crate) wait_timeout: Option<u64>,
+    #[command(flatten)]
+    pub(crate) launch: LaunchFlags,
 }
 
 /// The file `--secrets-file` names. `-` is refused with its own reason: stdin cannot be held
@@ -250,22 +209,14 @@ pub(crate) enum GuestComponents {
     /// release is null on the bare base. needs_operator true means an earlier upgrade failed
     /// and Hippius must recover the VM.
     #[command(after_help = examples(&["hipc compute app-engine guest-components get vm-1a2b"]))]
-    Get {
-        /// The vm_id from hipc compute app-engine apps list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    Get(AppTarget),
     /// The app's latest guest components upgrade: its release, state, and outcome
     ///
     /// job is null when the app was never upgraded.
     #[command(after_help = examples(&[
         "hipc compute app-engine guest-components update-status vm-1a2b",
     ]))]
-    UpdateStatus {
-        /// The vm_id from hipc compute app-engine apps list
-        #[arg(value_parser = vm_id)]
-        vm_id: String,
-    },
+    UpdateStatus(AppTarget),
 }
 
 /// The file `fix --output-file` writes `fixed_compose` to ([`new_file`]). `-` is refused

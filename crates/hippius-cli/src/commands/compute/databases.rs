@@ -1,9 +1,9 @@
 //! `hipc compute databases`: managed PostgreSQL.
 //!
 //! Every route here is under `/api/databases/`, which is account-scoped, so a membership
-//! sends `X-Hippius-Account`. The personal database routes (`/api/databases/metrics/`,
-//! `<n>/backup-token/`, `<n>/members/`) are not wrapped. The series of one database,
-//! `<n>/metrics/`, is account-scoped, and `metrics` reads it.
+//! sends `X-Hippius-Account` (tenet 12). No command here wraps the few personal database
+//! routes the library's account rules list. The series of one database, `<n>/metrics/`, is
+//! account-scoped, and `metrics` reads it.
 //!
 //! The create answer is the one place the server shows a database's `credentials`: the
 //! password, the backup passphrase, and the TLS client key. The server keeps no copy, and
@@ -17,14 +17,16 @@
 
 use std::path::Path;
 
-use hippius::{Error, Method, Request, Response, Result, phrase, without_field};
+use hippius::routes::databases::{self, CreatedDatabase};
+use hippius::{Error, Request, Response, Result, phrase, view_of, without_field};
 use serde_json::{Map, Value, json};
+use zeroize::Zeroizing;
 
 use crate::cli::{
-    CREDENTIALS_JSON, DatabaseCreate, DatabaseExposure, DatabaseRestore, Databases, ENV_FILE,
-    TLS_FILES,
+    CREDENTIALS_JSON, DatabaseCreate, DatabaseExposure, DatabaseRestore, DatabaseTarget, Databases,
+    ENV_FILE, TLS_FILES,
 };
-use crate::commands::compute::balance_hint;
+use crate::commands::compute::launch::balance_hint;
 use crate::commands::files::{NewFileError, write_new};
 use crate::commands::{Printed, keyed_list, print_list_with, print_with, require_reveal_or_file};
 use crate::context::{Context, Gate};
@@ -32,11 +34,11 @@ use crate::context::{Context, Gate};
 /// `DELETE /api/databases/<id>/`, which names in its question and a text-mode note what the
 /// server keeps after it ([`left_after_delete`]).
 fn delete(ctx: &Context<'_>, database_id: u64) -> Result<Printed> {
-    let request = Request::new(Method::Delete, path(database_id))
+    let request = Request::to(&databases::DATABASE_DELETE, [&database_id])
         .about(format!(
             "decommission the database `{database_id}` and every VM behind it"
         ))
-        .listed_by(DATABASES);
+        .listed_by(DATABASES_LIST_COMMAND);
     let left = left_after_delete(database_id);
     let gate = Gate::Confirm {
         consequence: Some(&left),
@@ -81,26 +83,26 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
         // Swagger types the list as a bare array with no page parameters, so it is read
         // whole.
         Databases::List => {
-            let request = Request::get("/databases/").about("list the databases");
+            let request = Request::to(&databases::DATABASES, []).about("list the databases");
             print_list_with(ctx, &ctx.load_authed_client()?, &request, |r| {
                 let list = hippius::page(r.json()?)?.complete_envelope(request.target())?;
                 Ok(without_field(list, CREDENTIALS))
             })
         }
-        Databases::Get { database_id } => print(
-            &Request::get(path(*database_id))
+        Databases::Get(DatabaseTarget { database_id }) => print(
+            &Request::to(&databases::DATABASE, [database_id])
                 .about(format!("get the database `{database_id}`"))
-                .listed_by(DATABASES),
+                .listed_by(DATABASES_LIST_COMMAND),
             Gate::Open,
         ),
         Databases::Create(args) => create(ctx, args),
-        Databases::Delete { database_id } => delete(ctx, *database_id),
-        Databases::Restart { database_id } => {
-            let request = Request::new(Method::Post, format!("{}restart/", path(*database_id)))
+        Databases::Delete(DatabaseTarget { database_id }) => delete(ctx, *database_id),
+        Databases::Restart(DatabaseTarget { database_id }) => {
+            let request = Request::to(&databases::DATABASE_RESTART, [database_id])
                 .about(format!(
                     "restart PostgreSQL on the database `{database_id}`"
                 ))
-                .listed_by(DATABASES);
+                .listed_by(DATABASES_LIST_COMMAND);
             let gate = Gate::Confirm {
                 consequence: Some("its connections end"),
             };
@@ -117,25 +119,25 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
             })
         }
         Databases::Restore(args) => restore(ctx, args),
-        Databases::Exposure(DatabaseExposure::Create { database_id }) => {
+        Databases::Exposure(DatabaseExposure::Create(DatabaseTarget { database_id })) => {
             // Who can reach it is part of the action, so an agent's refusal names it too.
-            let request = Request::new(Method::Post, expose_path(*database_id))
+            let request = Request::to(&databases::DATABASE_EXPOSE, [database_id])
                 .about(format!(
                     "publish the primary of the database `{database_id}` on the public edge, \
                      where anyone can reach it"
                 ))
-                .listed_by(DATABASES);
+                .listed_by(DATABASES_LIST_COMMAND);
             let gate = Gate::Confirm {
                 consequence: Some("the password is still required to connect"),
             };
             print(&request, gate)
         }
-        Databases::Exposure(DatabaseExposure::Delete { database_id }) => {
-            let request = Request::new(Method::Delete, expose_path(*database_id))
+        Databases::Exposure(DatabaseExposure::Delete(DatabaseTarget { database_id })) => {
+            let request = Request::to(&databases::DATABASE_EXPOSURE_DELETE, [database_id])
                 .about(format!(
                     "take the primary of the database `{database_id}` off the public edge"
                 ))
-                .listed_by(DATABASES);
+                .listed_by(DATABASES_LIST_COMMAND);
             let gate = Gate::Confirm { consequence: None };
             // Swagger answers 204, so the document says what was done.
             let client = ctx.load_authed_client()?;
@@ -150,30 +152,30 @@ pub(super) fn run(ctx: &Context<'_>, command: &Databases) -> Result<Printed> {
         }
         // The console reads the journal as `{events: [...]}`; a bare array or a page is read
         // too, and either way it is printed as the list envelope, a `next` link refused.
-        Databases::Events { database_id } => {
-            let request = Request::get(format!("{}events/", path(*database_id)))
+        Databases::Events(DatabaseTarget { database_id }) => {
+            let request = Request::to(&databases::DATABASE_EVENTS, [database_id])
                 .about(format!("list the events of the database `{database_id}`"))
-                .listed_by(DATABASES);
+                .listed_by(DATABASES_LIST_COMMAND);
             print_list(ctx, &request, "events")
         }
         // The metrics answer is an object: `samples`, `latest`, and `agent_last_seen`.
-        Databases::Metrics { database_id } => {
-            let request = Request::get(format!("{}metrics/", path(*database_id)))
+        Databases::Metrics(DatabaseTarget { database_id }) => {
+            let request = Request::to(&databases::DATABASE_METRICS, [database_id])
                 .about(format!("get the metrics of the database `{database_id}`"))
-                .listed_by(DATABASES);
+                .listed_by(DATABASES_LIST_COMMAND);
             print(&request, Gate::Open)
         }
         // Swagger: `{refusals: [...]}`.
         Databases::Refusals => print_list(
             ctx,
-            &Request::get("/databases/refusals/").about("list the refused database requests"),
+            &Request::to(&databases::DATABASE_REFUSALS, [])
+                .about("list the refused database requests"),
             "refusals",
         ),
     }
 }
 
-/// The command that lists the database ids, for the hint of a 404 on a database route.
-const DATABASES: &str = "hipc compute databases list";
+const DATABASES_LIST_COMMAND: &str = "hipc compute databases list";
 
 /// `request`'s answer, a list under `key` (or a bare array or a page), printed as the list
 /// envelope with the answer's other fields beside `items`, and any `credentials` removed.
@@ -194,39 +196,24 @@ fn without_credentials(response: &Response) -> Result<Value> {
     Ok(without_field(response.document()?, CREDENTIALS))
 }
 
-fn path(id: u64) -> String {
-    format!("/databases/{id}/")
-}
-
-fn expose_path(id: u64) -> String {
-    format!("{}expose/", path(id))
-}
-
-/// `POST /api/databases/` with exactly `tier`, `size`, `engine_version`, and `name` when
-/// given (swagger: "nothing else"). The 202 answer is printed as sent, credentials
-/// included, or with the secrets replaced by their files under `--credentials-dir`
-/// ([`save_credentials`]), and the command does not wait for `running`: operations that finish later
-/// get a status read and no new wait, here `get` of the new id. A wait
-/// would be worse: a run killed mid-wait would lose the one-time credentials.
+/// `POST /api/databases/` with exactly `tier`, `size`, `engine_version`, and `name` when given
+/// (swagger: "nothing else"). The 202 answer is printed as sent, credentials included, or with the
+/// secrets replaced by their files under `--credentials-dir` ([`save_credentials`]), and the
+/// command does not wait for `running`: operations that finish later get a status read and no new
+/// wait, here `get` of the new id. A wait would be worse: a run killed mid-wait would lose the
+/// one-time credentials.
 fn create(ctx: &Context<'_>, args: &DatabaseCreate) -> Result<Printed> {
     require_reveal_or_file(ctx, args.reveal, args.credentials_dir.is_some())?;
-    let mut body = Map::new();
-    body.insert("tier".to_owned(), args.tier.code().into());
-    body.insert("size".to_owned(), args.size.code().into());
-    body.insert(
-        "engine_version".to_owned(),
-        args.engine_version.code().into(),
-    );
-    if let Some(name) = &args.name {
-        body.insert("name".to_owned(), name.as_str().into());
-    }
-    let request = Request::new(Method::Post, "/databases/")
-        .json(&Value::Object(body))
+    let request = Request::to(&databases::DATABASE_CREATE, [])
+        .json(&databases::DatabaseCreateBody {
+            tier: &args.tier,
+            size: &args.size,
+            engine_version: &args.engine_version,
+            name: args.name.as_deref(),
+        })
         .about(format!(
             "create a `{}` PostgreSQL {} database of size `{}`",
-            args.tier.code(),
-            args.engine_version.code(),
-            args.size.code()
+            args.tier, args.engine_version, args.size
         ));
     let gate = Gate::Confirm {
         consequence: Some("it is billed until it is deleted"),
@@ -259,6 +246,7 @@ fn credentials(ctx: &Context<'_>, dir: Option<&Path>, response: &Response) -> Re
         ),
         None => (created, "the answer holds no `credentials`".to_owned()),
     };
+    // The id alone, read as the view reads it, so no copy of a credential is made for it.
     match created.get("id").and_then(Value::as_u64) {
         Some(id) => ctx.note(&format!(
             "{shown}; run `hipc compute databases get {id}` to follow the database to \
@@ -295,13 +283,15 @@ fn save_credentials(dir: &Path, created: Value) -> Result<(Value, Vec<String>)> 
             .with_hint(hint)
             .after_write(created))
     };
+    let view: CreatedDatabase = view_of(&created);
+    let tls = view
+        .credentials
+        .as_ref()
+        .and_then(|credentials| credentials.tls.as_ref());
     let mut files = Vec::new();
     for (file, field) in TLS_FILES {
         let path = dir.join(file);
-        let pem = created
-            .pointer(&format!("/{CREDENTIALS}/tls/{field}"))
-            .and_then(Value::as_str);
-        let Some(pem) = pem else {
+        let Some(pem) = tls.and_then(|tls| tls.pem(field)) else {
             let message = format!(
                 "the answer has no `credentials.tls.{field}` to write to {}, so no file was \
                  written; every credential is in the answer on stdout",
@@ -309,13 +299,14 @@ fn save_credentials(dir: &Path, created: Value) -> Result<(Value, Vec<String>)> 
             );
             return refused(message, created);
         };
-        files.push((path, pem.as_bytes().to_vec()));
+        files.push((path, Zeroizing::new(pem.as_bytes().to_vec())));
     }
     let object = &created[CREDENTIALS];
-    let mut json = serde_json::to_vec_pretty(object).expect("a JSON value serializes");
+    let mut json =
+        Zeroizing::new(serde_json::to_vec_pretty(object).expect("a JSON value serializes"));
     json.push(b'\n');
     files.push((dir.join(CREDENTIALS_JSON), json));
-    let env = match env_file(dir, &created) {
+    let mut env = match env_file(dir, &view) {
         Ok(env) => env,
         Err(why) => {
             let message = format!(
@@ -324,7 +315,10 @@ fn save_credentials(dir: &Path, created: Value) -> Result<(Value, Vec<String>)> 
             return refused(message, created);
         }
     };
-    files.push((dir.join(ENV_FILE), env.into_bytes()));
+    files.push((
+        dir.join(ENV_FILE),
+        Zeroizing::new(std::mem::take(&mut *env).into_bytes()),
+    ));
     let mut written = Vec::new();
     for (path, bytes) in &files {
         if let Err(NewFileError::Create(failed) | NewFileError::Write(failed)) =
@@ -357,14 +351,18 @@ fn save_credentials(dir: &Path, created: Value) -> Result<(Value, Vec<String>)> 
     shown.insert("tls".to_owned(), Value::Object(tls));
     shown.insert("json_file".to_owned(), named(&dir.join(CREDENTIALS_JSON)));
     shown.insert("env_file".to_owned(), named(&dir.join(ENV_FILE)));
-    let secrets = withheld(object);
-    let mut saved = created;
+    // Each value in every spelling a field may repeat it in, such as percent-encoded in a URL.
+    // Redacted before the fields `hipc` writes go in, so a short withheld value cannot rewrite
+    // the paths of the files.
+    let withheld = Zeroizing::new(withheld(object));
+    let secrets = hippius::redactions(withheld.iter().map(String::as_str));
+    let mut saved = hippius::redact_value_all(created, &secrets);
     saved[CREDENTIALS] = Value::Object(shown);
-    Ok((redacted(saved, &secrets), written))
+    Ok((saved, written))
 }
 
-/// Every text of `credentials` the document no longer shows, at any depth, longest first:
-/// the password, the backup passphrase, the TLS values, and any new field.
+/// Every text of `credentials` the document no longer shows, at any depth: the password, the
+/// backup passphrase, the TLS values, and any new field.
 fn withheld(object: &Value) -> Vec<String> {
     fn texts(value: &Value, into: &mut Vec<String>) {
         match value {
@@ -380,31 +378,7 @@ fn withheld(object: &Value) -> Vec<String> {
             texts(value, &mut secrets);
         }
     }
-    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
     secrets
-}
-
-/// `value` with every one of `secrets` in its strings replaced by `<redacted>`, all at once
-/// ([`hippius::redact_all`]): a field outside `credentials`, such as a
-/// `connection_string` that embeds the password, must not print what `--credentials-dir`
-/// moved to its files.
-fn redacted(value: Value, secrets: &[String]) -> Value {
-    match value {
-        Value::String(text) => Value::String(hippius::redact_all(text, secrets)),
-        Value::Object(fields) => Value::Object(
-            fields
-                .into_iter()
-                .map(|(key, value)| (key, redacted(value, secrets)))
-                .collect(),
-        ),
-        Value::Array(items) => Value::Array(
-            items
-                .into_iter()
-                .map(|item| redacted(item, secrets))
-                .collect(),
-        ),
-        other => other,
-    }
 }
 
 /// The `.env` `--credentials-dir` writes: the libpq settings a client such as psql reads from
@@ -419,32 +393,31 @@ fn redacted(value: Value, secrets: &[String]) -> Value {
 /// python-dotenv decodes inside single quotes), or a control character, such as a line break,
 /// cannot be written that way, so the file is refused, with the reason. The directory's own
 /// path was held to that rule at parse time.
-fn env_file(dir: &Path, created: &Value) -> std::result::Result<String, String> {
+fn env_file(
+    dir: &Path,
+    created: &CreatedDatabase,
+) -> std::result::Result<Zeroizing<String>, String> {
     // `absolute` fails only when the current directory cannot be read, which the parse-time
     // check of a relative `dir` already needed: the path as given is then the best there is.
-    let dir = std::path::absolute(dir).unwrap_or(dir.to_path_buf());
-    let text = |pointer: &str| created.pointer(pointer).and_then(Value::as_str);
-    let port = created
-        .pointer("/connection/port")
-        .and_then(Value::as_u64)
-        .map(|port| port.to_string());
+    let absolute = std::path::absolute(dir).ok();
+    let dir = absolute.as_deref().unwrap_or(dir);
+    let connection = created.connection.as_ref();
+    let credentials = created.credentials.as_ref();
     let path = |file: &str| dir.join(file).to_string_lossy().into_owned();
     let settings = [
-        ("PGHOST", text("/connection/host").map(str::to_owned)),
-        ("PGPORT", port),
-        ("PGUSER", text("/credentials/username").map(str::to_owned)),
+        ("PGHOST", connection.and_then(|c| c.host.clone())),
         (
-            "PGPASSWORD",
-            text("/credentials/password").map(str::to_owned),
+            "PGPORT",
+            connection.and_then(|c| c.port).map(|port| port.to_string()),
         ),
-        (
-            "PGDATABASE",
-            text("/credentials/database").map(str::to_owned),
-        ),
+        ("PGUSER", credentials.and_then(|c| c.username.clone())),
+        ("PGPASSWORD", credentials.and_then(|c| c.password.clone())),
+        ("PGDATABASE", credentials.and_then(|c| c.database.clone())),
         (
             "PGSSLMODE",
             Some(
-                text("/connection/sslmode")
+                connection
+                    .and_then(|c| c.sslmode.as_deref())
                     .unwrap_or("verify-ca")
                     .to_owned(),
             ),
@@ -453,11 +426,19 @@ fn env_file(dir: &Path, created: &Value) -> std::result::Result<String, String> 
         ("PGSSLCERT", Some(path(TLS_FILES[0].0))),
         ("PGSSLKEY", Some(path(TLS_FILES[1].0))),
     ];
-    let mut env = String::from(
-        "# libpq settings for this database, written once by hipc; add PGHOST and PGPORT from\n\
-         # `hipc compute databases get` when they are missing. Load with: set -a; . ./.env; set +a\n",
-    );
-    for (name, value) in settings {
+    // Each value, the password included, is cleared when dropped, and the file's text is sized
+    // first, so filling it never reallocates and frees a copy nothing clears.
+    let settings = settings.map(|(name, value)| (name, value.map(Zeroizing::new)));
+    let header = "# libpq settings for this database, written once by hipc; add PGHOST and PGPORT \
+                  from\n# `hipc compute databases get` when they are missing. Load with: set -a; \
+                  . ./.env; set +a\n";
+    let size = settings
+        .iter()
+        .filter_map(|(name, value)| Some(name.len() + value.as_ref()?.len() + "=''\n".len()))
+        .sum::<usize>();
+    let mut env = Zeroizing::new(String::with_capacity(header.len() + size));
+    env.push_str(header);
+    for (name, value) in &settings {
         let Some(value) = value else { continue };
         if value.contains(['\'', '\\']) || value.chars().any(char::is_control) {
             return Err(format!(
@@ -465,22 +446,25 @@ fn env_file(dir: &Path, created: &Value) -> std::result::Result<String, String> 
                  which `.env` cannot hold quoted"
             ));
         }
-        env.push_str(&format!("{name}='{value}'\n"));
+        for part in [name, "='", value.as_str(), "'\n"] {
+            env.push_str(part);
+        }
     }
     Ok(env)
 }
 
-/// `POST /api/databases/<id>/restore/`, with `target_time` only when given. The answer is a
-/// new database, whose credentials it may hold once, printed as a create's is
-/// ([`credentials`]), `--credentials-dir` included. It does not
-/// wait: operations that finish later get a status read, here `get` of the new id.
+/// `POST /api/databases/<id>/restore/`, with `target_time` only when given. The answer is a new
+/// database, whose credentials it may hold once, printed as a create's is ([`credentials`]),
+/// `--credentials-dir` included. It does not wait: operations that finish later get a status read,
+/// here `get` of the new id.
 fn restore(ctx: &Context<'_>, args: &DatabaseRestore) -> Result<Printed> {
     require_reveal_or_file(ctx, args.reveal, args.credentials_dir.is_some())?;
-    let id = args.database_id;
-    let request = Request::new(Method::Post, format!("{}restore/", path(id))).listed_by(DATABASES);
+    let id = args.database.database_id;
+    let request =
+        Request::to(&databases::DATABASE_RESTORE, [&id]).listed_by(DATABASES_LIST_COMMAND);
     let (request, point) = match &args.target_time {
         Some(time) => (
-            request.json(&json!({ "target_time": time })),
+            request.json(&databases::DatabaseRestoreBody { target_time: time }),
             format!("as it was at `{time}`"),
         ),
         None => (request, "up to the end of its backups".to_owned()),
@@ -520,20 +504,4 @@ fn document_or_raw(response: &Response) -> Result<Value> {
             )
             .after_write(json!({ "unparsed_answer": String::from_utf8_lossy(cut) }))
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    /// The secrets moved to files are redacted at once: a short one cuts neither a
-    /// longer one that holds it nor the marker a longer one wrote.
-    #[test]
-    fn moved_secrets_are_redacted_in_one_pass() {
-        let secrets = ["acted".to_owned(), "d".to_owned()];
-        assert_eq!(
-            super::redacted(json!({"a": ["acted d", 7], "acted": "x"}), &secrets),
-            json!({"a": ["<redacted> <redacted>", 7], "acted": "x"})
-        );
-    }
 }

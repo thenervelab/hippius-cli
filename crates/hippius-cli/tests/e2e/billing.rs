@@ -1,33 +1,30 @@
 //! `hipc billing balance`, `subscriptions`, `transactions`, and `stripe`.
 
+use hippius::routes::{billing, drive, hub, s3};
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Server, draft, route, route_of};
 
 const DRIVE: &str = r#"{"active":true,"plan":"solo","plan_name":"Starter"}"#;
 const S3: &str = r#"{"active":false,"mode":"pay_as_you_go","used_bytes":0}"#;
 const HUB: &str =
-    r#"[{"subscription_id":7,"plan_id":2,"active":true,"paid_per_month":5000000000000000000}]"#;
+    r#"[{"subscription_id":7,"plan_id":2,"active":true,"paid_per_month":50000000000000000000}]"#;
 const STRIPE: &str = r#"{"subscription":null,"has_subscription":false}"#;
 
 fn all_legs() -> Vec<crate::common::Route> {
     vec![
-        route("GET", "/api/drive/subscription/", Reply::json(200, DRIVE)),
-        route("GET", "/api/s3/subscription/", Reply::json(200, S3)),
-        route("GET", "/api/registry/subscriptions/", Reply::json(200, HUB)),
-        route(
-            "GET",
-            "/api/billing/stripe/active-subscription/",
-            Reply::json(200, STRIPE),
-        ),
+        route_of(&drive::SUBSCRIPTION, [], Reply::json(200, DRIVE)),
+        route_of(&s3::SUBSCRIPTION, [], Reply::json(200, S3)),
+        route_of(&hub::SUBSCRIPTIONS, [], Reply::json(200, HUB)),
+        route_of(&billing::STRIPE_SUBSCRIPTION, [], Reply::json(200, STRIPE)),
     ]
 }
 
 #[test]
 fn balance_is_the_server_body_and_takes_the_account_header() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/billing/credits/balance/",
+    let server = Server::start(vec![route_of(
+        &billing::BALANCE,
+        [],
         Reply::json(
             200,
             r#"{"balance":"12.500000000000000001","last_updated":"t"}"#,
@@ -65,36 +62,32 @@ fn subscriptions_lists_every_plan_source_in_order() {
     assert_eq!(services, ["drive", "s3", "hub", "stripe"]);
     assert_eq!(doc["items"][1]["subscription"]["mode"], "pay_as_you_go");
     assert_eq!(doc["next_page_token"], serde_json::Value::Null);
-    // The raw chain number keeps every digit.
+    // The raw chain number keeps every digit, though it is above `u64::MAX`.
     let raw = Hipc::against(&Home::new(), &server).run(&["billing", "subscriptions"]);
-    assert!(raw.stdout().contains("5000000000000000000"));
+    assert!(raw.stdout().contains("50000000000000000000"));
 }
 
 #[test]
 fn one_failed_leg_still_prints_the_others_and_exits_partial_failure() {
     let server = Server::start(vec![
-        route("GET", "/api/drive/subscription/", Reply::json(200, DRIVE)),
-        route(
-            "GET",
-            "/api/s3/subscription/",
+        route_of(&drive::SUBSCRIPTION, [], Reply::json(200, DRIVE)),
+        route_of(
+            &s3::SUBSCRIPTION,
+            [],
             Reply::json(503, r#"{"error":"Chain unreachable"}"#),
         ),
-        route("GET", "/api/registry/subscriptions/", Reply::json(200, HUB)),
-        route(
-            "GET",
-            "/api/billing/stripe/active-subscription/",
-            Reply::json(200, STRIPE),
-        ),
+        route_of(&hub::SUBSCRIPTIONS, [], Reply::json(200, HUB)),
+        route_of(&billing::STRIPE_SUBSCRIPTION, [], Reply::json(200, STRIPE)),
     ]);
     let run = Hipc::against(&Home::new(), &server).run(&["billing", "subscriptions"]);
     assert_eq!(run.code(), Some(1));
     let done = run.json();
     assert_eq!(done["partial_failure"], true);
     assert_eq!(done["items"].as_array().unwrap().len(), 3);
-    let error: serde_json::Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "partial_failure");
+    let error = run.error();
+    assert_eq!(error["code"], "partial_failure");
     assert_eq!(
-        error["error"]["details"],
+        error["details"],
         json!([{
             "service": "s3",
             "http_status": 503,
@@ -103,28 +96,20 @@ fn one_failed_leg_still_prints_the_others_and_exits_partial_failure() {
             "hint": "wait a few minutes, then run the command again"
         }])
     );
-    assert_eq!(error["error"]["side_effects"], "none");
+    assert_eq!(error["side_effects"], "none");
 }
 
 #[test]
 fn every_leg_failing_is_the_first_legs_error_not_a_partial_failure() {
     let server = Server::start(vec![
-        route(
-            "GET",
-            "/api/drive/subscription/",
+        route_of(
+            &drive::SUBSCRIPTION,
+            [],
             Reply::json(402, r#"{"error":"first"}"#),
         ),
-        route("GET", "/api/s3/subscription/", Reply::json(503, "{}")),
-        route(
-            "GET",
-            "/api/registry/subscriptions/",
-            Reply::json(409, "{}"),
-        ),
-        route(
-            "GET",
-            "/api/billing/stripe/active-subscription/",
-            Reply::json(500, "{}"),
-        ),
+        route_of(&s3::SUBSCRIPTION, [], Reply::json(503, "{}")),
+        route_of(&hub::SUBSCRIPTIONS, [], Reply::json(409, "{}")),
+        route_of(&billing::STRIPE_SUBSCRIPTION, [], Reply::json(500, "{}")),
     ]);
     let error = Hipc::against(&Home::new(), &server)
         .run(&["billing", "subscriptions"])
@@ -140,22 +125,18 @@ fn every_leg_failing_is_the_first_legs_error_not_a_partial_failure() {
 fn an_unreadable_or_empty_leg_is_one_failure_among_the_rest() {
     for body in ["<html>", "", "null"] {
         let server = Server::start(vec![
-            route("GET", "/api/drive/subscription/", Reply::json(200, body)),
-            route("GET", "/api/s3/subscription/", Reply::json(200, S3)),
-            route("GET", "/api/registry/subscriptions/", Reply::json(200, HUB)),
-            route(
-                "GET",
-                "/api/billing/stripe/active-subscription/",
-                Reply::json(200, STRIPE),
-            ),
+            route_of(&drive::SUBSCRIPTION, [], Reply::json(200, body)),
+            route_of(&s3::SUBSCRIPTION, [], Reply::json(200, S3)),
+            route_of(&hub::SUBSCRIPTIONS, [], Reply::json(200, HUB)),
+            route_of(&billing::STRIPE_SUBSCRIPTION, [], Reply::json(200, STRIPE)),
         ]);
         let run = Hipc::against(&Home::new(), &server).run(&["billing", "subscriptions"]);
         assert_eq!(run.code(), Some(1), "{body:?}");
         assert_eq!(run.json()["items"].as_array().unwrap().len(), 3);
-        let error: serde_json::Value = serde_json::from_str(run.stderr()).unwrap();
-        assert_eq!(error["error"]["code"], "partial_failure");
-        assert_eq!(error["error"]["details"][0]["service"], "drive");
-        assert_eq!(error["error"]["details"][0]["code"], "internal");
+        let error = run.error();
+        assert_eq!(error["code"], "partial_failure");
+        assert_eq!(error["details"][0]["service"], "drive");
+        assert_eq!(error["details"][0]["code"], "internal");
     }
 }
 
@@ -210,9 +191,9 @@ fn subscriptions_dry_run_lists_all_four_requests() {
 
 #[test]
 fn transactions_fetch_one_page_with_the_limit_and_the_token() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/billing/transactions/",
+    let server = Server::start(vec![route_of(
+        &billing::TRANSACTIONS,
+        [],
         Reply::json(
             200,
             concat!(
@@ -244,9 +225,9 @@ fn transactions_fetch_one_page_with_the_limit_and_the_token() {
 
 #[test]
 fn transactions_default_to_one_page_of_100_and_never_follow_on_their_own() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/billing/transactions/",
+    let server = Server::start(vec![route_of(
+        &billing::TRANSACTIONS,
+        [],
         Reply::json(
             200,
             r#"{"next":"{base}/api/billing/transactions/?page=2","results":[1]}"#,
@@ -264,9 +245,9 @@ fn transactions_default_to_one_page_of_100_and_never_follow_on_their_own() {
 
 #[test]
 fn transactions_as_a_bare_array_have_no_next_page() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/billing/transactions/",
+    let server = Server::start(vec![route_of(
+        &billing::TRANSACTIONS,
+        [],
         Reply::json(200, r#"[{"id":"a"},{"id":"b"}]"#),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -327,9 +308,9 @@ fn all_refuses_a_page_loop_and_a_next_link_without_a_page_number() {
         .run(&["billing", "transactions", "--all"])
         .fails(1, "internal");
     assert!(error["message"].as_str().unwrap().contains("leads back to"));
-    let cursor = Server::start(vec![route(
-        "GET",
-        "/api/billing/transactions/",
+    let cursor = Server::start(vec![route_of(
+        &billing::TRANSACTIONS,
+        [],
         Reply::json(
             200,
             r#"{"next":"{base}/api/billing/transactions/?cursor=x","results":[1]}"#,
@@ -343,17 +324,16 @@ fn all_refuses_a_page_loop_and_a_next_link_without_a_page_number() {
 #[test]
 fn a_bad_page_token_is_usage_even_without_a_token() {
     let server = Server::start(vec![]);
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&["billing", "transactions", "--page-token", "abc"])
         .fails(2, "usage");
 }
 
 #[test]
 fn all_catches_a_next_link_back_to_the_first_page_before_refetching_it() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/billing/transactions/",
+    let server = Server::start(vec![route_of(
+        &billing::TRANSACTIONS,
+        [],
         Reply::json(
             200,
             r#"{"next":"{base}/api/billing/transactions/?page=1","results":[1]}"#,
@@ -396,9 +376,9 @@ fn transactions_and_stripe_refuse_a_membership_locally() {
 
 #[test]
 fn stripe_is_the_server_body() {
-    let server = Server::start(vec![route(
-        "GET",
-        "/api/billing/stripe/active-subscription/",
+    let server = Server::start(vec![route_of(
+        &billing::STRIPE_SUBSCRIPTION,
+        [],
         Reply::json(200, STRIPE),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -413,8 +393,7 @@ fn stripe_is_the_server_body() {
 #[test]
 fn billing_needs_a_token() {
     let server = Server::start(vec![]);
-    Hipc::new(&Home::new())
-        .env("HIPPIUS_API_URL", server.url())
+    Hipc::tokenless(&Home::new(), &server)
         .run(&["billing", "balance"])
         .fails(1, "auth");
     assert!(server.requests().is_empty());

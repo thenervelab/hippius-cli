@@ -1,0 +1,137 @@
+name: Release build
+description: >-
+  Builds hipc for one release target, as a binary for the tarball or as a PyPI wheel, the way
+  every release build does. release.yml (the tarballs and the wheels) and release-check.yml
+  (the rehearsal of both) all build through this, so the recipe is written once.
+
+inputs:
+  target:
+    description: >-
+      The release target triple: aarch64-apple-darwin or x86_64-apple-darwin on macos-15,
+      x86_64-unknown-linux-musl on ubuntu-24.04, aarch64-unknown-linux-musl on
+      ubuntu-24.04-arm.
+    required: true
+  package:
+    description: >-
+      `tarball` builds target/<target>/release/hipc, checks that a Linux binary is static,
+      and runs it where the runner can. `wheel` builds the PyPI wheel into
+      packaging/pypi/wheels.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Check the inputs
+      shell: bash
+      env:
+        PACKAGE: ${{ inputs.package }}
+      run: |
+        case "${PACKAGE}" in
+          tarball | wheel) ;;
+          *)
+            echo "::error::package is neither tarball nor wheel: ${PACKAGE}"
+            exit 1
+            ;;
+        esac
+
+    # Linux: each musl target is built natively, so the C in ring compiles with musl-gcc and
+    # no cross toolchain, and the static binary runs on any distribution.
+    - name: Install musl-gcc
+      if: runner.os == 'Linux'
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends musl-tools
+
+    - name: Install the toolchain and the target
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: |
+        rustup toolchain install
+        rustup target add "${TARGET}"
+
+    - name: Remap the build paths
+      # The checkout and the cargo home are runner paths that would land in the binary's
+      # panic locations; mapped to fixed names, the same commit builds the same bytes. ring's
+      # C goes through musl-gcc for the musl targets: cc-rs reads the variable for the target
+      # it builds, so the macOS targets ignore both. GITHUB_ENV carries all three to the
+      # build steps below and to any later step of the job, such as the reproducibility
+      # rebuild in release-check.yml.
+      shell: bash
+      run: |
+        {
+          echo "RUSTFLAGS=--remap-path-prefix=${GITHUB_WORKSPACE}=/build --remap-path-prefix=${CARGO_HOME:-${HOME}/.cargo}=/cargo"
+          echo "CC_x86_64_unknown_linux_musl=musl-gcc"
+          echo "CC_aarch64_unknown_linux_musl=musl-gcc"
+        } >> "${GITHUB_ENV}"
+
+    - name: Build
+      if: inputs.package == 'tarball'
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: cargo build --release --locked --target "${TARGET}"
+
+    - name: Static
+      if: inputs.package == 'tarball' && runner.os == 'Linux'
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: |
+        file "target/${TARGET}/release/hipc"
+        file "target/${TARGET}/release/hipc" | grep -Eq 'statically linked|static-pie linked'
+
+    - name: No test seam
+      # A debug build reads HIPC_TEST_POLL_INTERVAL_MS, which the test suite sets to shorten
+      # every wait (crates/hippius-cli/src/commands/poll.rs). The code that reads it is
+      # compiled only with debug assertions, so a release binary that holds the name was
+      # built with them on and would honour it. A missing binary fails too (grep exits 2).
+      if: inputs.package == 'tarball'
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: |
+        status=0
+        grep -qF HIPC_TEST_POLL_INTERVAL_MS "target/${TARGET}/release/hipc" || status=$?
+        if [ "${status}" -eq 0 ]; then
+          echo "::error::the release binary reads HIPC_TEST_POLL_INTERVAL_MS: it was built with debug assertions"
+          exit 1
+        fi
+        [ "${status}" -eq 1 ]
+
+    - name: Runs
+      # Every binary the runner can execute: both Linux targets, and arm64 macOS. Rosetta is
+      # not assumed, so the x86_64 macOS binary is not run.
+      if: inputs.package == 'tarball' && inputs.target != 'x86_64-apple-darwin'
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: |
+        bin="target/${TARGET}/release/hipc"
+        "${bin}" --version
+        "${bin}" version
+        "${bin}" schema > /dev/null
+
+    # maturin-action installs patchelf with pip on Linux, which the runner image's system
+    # Python refuses (PEP 668).
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+      if: inputs.package == 'wheel' && runner.os == 'Linux'
+      with:
+        python-version: '3.13'
+
+    # One binary-only wheel: maturin compiles hipc again from the same commit, toolchain and
+    # musl-gcc as the tarball's build, so the wheel's binary is built the same way but is not
+    # that file. No Docker image: a Linux wheel holds a static musl binary, so it carries both
+    # a manylinux and a musllinux tag and installs on glibc and musl systems alike.
+    - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
+      if: inputs.package == 'wheel'
+      with:
+        command: build
+        target: ${{ inputs.target }}
+        # The version packaging/pypi/pyproject.toml pins, which Dependabot tracks there; a
+        # test fails while the two differ.
+        maturin-version: v1.16.0
+        container: 'off'
+        working-directory: packaging/pypi
+        args: >-
+          --release --locked --out wheels
+          ${{ runner.os == 'Linux' && '--compatibility manylinux_2_17 musllinux_1_2' || '' }}

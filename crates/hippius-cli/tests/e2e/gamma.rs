@@ -1,9 +1,10 @@
 //! `hipc billing gamma`: the subnet 75 gamma deposits, a hotkey link signed with the hotkey's
 //! words, its unlink, and the conversions of gamma into credits.
 
+use hippius::routes::billing;
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Route, SEED_PHRASES, Server, route};
+use crate::common::{Hipc, Home, MEMBER, Reply, Route, SEED_PHRASES, Server, route, route_of};
 
 const OVERVIEW: &str = "/api/billing/gamma/";
 const CHALLENGE: &str = "/api/billing/gamma/hotkeys/challenge/";
@@ -28,12 +29,20 @@ fn challenge_for(hotkey: &str) -> Route {
         "message": message(hotkey),
         "expires_at": "2026-11-09T10:05:00+00:00",
     });
-    route("POST", CHALLENGE, Reply::json(201, &body.to_string()))
+    route_of(
+        &billing::GAMMA_HOTKEY_CHALLENGE,
+        [],
+        Reply::json(201, &body.to_string()),
+    )
 }
 
 fn linked() -> Route {
     let body = json!({"hotkey": HOTKEY, "linked_at": "2026-11-09T10:00:30+00:00"});
-    route("POST", LINK, Reply::json(201, &body.to_string()))
+    route_of(
+        &billing::GAMMA_HOTKEY_CREATE,
+        [],
+        Reply::json(201, &body.to_string()),
+    )
 }
 
 fn conversion(status: &str) -> String {
@@ -58,9 +67,9 @@ fn get_prints_the_spender_and_the_deposits() {
         "hotkeys": [{"hotkey": HOTKEY, "deposit": {"balance": "25.000000000",
                      "spendable": "25.000000000", "names_hippius": true}}],
     });
-    let server = Server::start(vec![route(
-        "GET",
-        OVERVIEW,
+    let server = Server::start(vec![route_of(
+        &billing::GAMMA,
+        [],
         Reply::json(200, &body.to_string()),
     )]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -145,9 +154,9 @@ fn a_challenge_for_another_hotkey_is_never_signed() {
 #[test]
 fn a_challenge_without_its_message_is_unreadable() {
     let home = Home::new();
-    let server = Server::start(vec![route(
-        "POST",
-        CHALLENGE,
+    let server = Server::start(vec![route_of(
+        &billing::GAMMA_HOTKEY_CHALLENGE,
+        [],
         Reply::json(201, &json!({"nonce": NONCE}).to_string()),
     )]);
     let file = hotkey_file(&home);
@@ -274,7 +283,8 @@ fn a_missing_or_unprivate_hotkey_file_is_refused_without_its_words() {
         .fails(2, "usage");
     let text: String = error["message"].as_str().unwrap().to_owned();
     assert!(text.contains("the hotkey file"), "{text}");
-    // A file whose name is a phrase is named by its flag instead, so the words go no further.
+    // A path that holds a phrase is refused with the command line, before the file is read,
+    // so the words go no further.
     let named = home.file(&format!("x {}", SEED_PHRASES[1]), b"\xff\xfe");
     let error = Hipc::new(&home)
         .run(&[
@@ -286,9 +296,12 @@ fn a_missing_or_unprivate_hotkey_file_is_refused_without_its_words() {
             named.to_str().unwrap(),
         ])
         .fails(2, "usage");
-    assert_eq!(
-        error["message"],
-        "the hotkey file `--hotkey-file` names is not UTF-8 text"
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|message| message
+                .starts_with("the command line holds what looks like a seed phrase")),
+        "{error}"
     );
     // A file that is not UTF-8 text is refused by its path, with no byte of it.
     let binary = home.file("binary.txt", b"\xff\xfe abandon");
@@ -360,9 +373,9 @@ fn an_unlink_is_confirmed_and_prints_what_it_did() {
 
 #[test]
 fn a_conversion_is_confirmed_and_names_the_read_that_follows_it() {
-    let server = Server::start(vec![route(
-        "POST",
-        CONVERSIONS,
+    let server = Server::start(vec![route_of(
+        &billing::GAMMA_CONVERSION_CREATE,
+        [],
         Reply::json(202, &conversion("pending")),
     )]);
     let args = [
@@ -396,9 +409,9 @@ fn a_conversion_is_confirmed_and_names_the_read_that_follows_it() {
 
 #[test]
 fn a_conversion_answer_without_an_id_is_a_partial_failure_with_the_answer() {
-    let server = Server::start(vec![route(
-        "POST",
-        CONVERSIONS,
+    let server = Server::start(vec![route_of(
+        &billing::GAMMA_CONVERSION_CREATE,
+        [],
         Reply::json(202, r#"{"status":"pending"}"#),
     )]);
     let run = Hipc::against(&Home::new(), &server).run(&[
@@ -414,11 +427,11 @@ fn a_conversion_answer_without_an_id_is_a_partial_failure_with_the_answer() {
     ]);
     assert_eq!(run.code(), Some(1), "{}", run.stderr());
     assert_eq!(run.json(), json!({"status": "pending"}));
-    let error: serde_json::Value = serde_json::from_str(run.stderr()).unwrap();
-    assert_eq!(error["error"]["code"], "partial_failure");
-    assert_eq!(error["error"]["side_effects"], "partial");
+    let error = run.error();
+    assert_eq!(error["code"], "partial_failure");
+    assert_eq!(error["side_effects"], "partial");
     assert!(
-        error["error"]["hint"]
+        error["hint"]
             .as_str()
             .unwrap()
             .contains("hipc billing gamma conversions list")
@@ -475,7 +488,7 @@ fn the_conversions_are_read_one_or_all() {
         conversion("spent")
     );
     let server = Server::start(vec![
-        route("GET", CONVERSIONS, Reply::json(200, &list)),
+        route_of(&billing::GAMMA_CONVERSIONS, [], Reply::json(200, &list)),
         route("GET", &one, Reply::json(200, &conversion("spent"))),
     ]);
     let doc = Hipc::against(&Home::new(), &server)
@@ -577,10 +590,10 @@ fn the_gamma_refusals_name_what_helps() {
         let server = Server::start(vec![crate::common::any_request(Reply::json(status, &body))]);
         let run = Hipc::against(&Home::new(), &server).run(&args);
         assert_ne!(run.code(), Some(0), "{args:?}");
-        let error: serde_json::Value = serde_json::from_str(run.stderr()).unwrap();
-        assert_eq!(error["error"]["details"]["code"], code, "{args:?}");
+        let error = run.error();
+        assert_eq!(error["details"]["code"], code, "{args:?}");
         assert!(
-            error["error"]["hint"].as_str().unwrap().contains(hint),
+            error["hint"].as_str().unwrap().contains(hint),
             "{args:?}: {error}"
         );
     }
@@ -589,11 +602,21 @@ fn the_gamma_refusals_name_what_helps() {
 #[test]
 fn a_membership_is_refused_before_anything_is_sent() {
     let server = Server::start(vec![]);
-    let id = ID;
+    let home = Home::new();
+    let file = hotkey_file(&home);
     for args in [
         &["billing", "gamma", "get"][..],
         &["billing", "gamma", "conversions", "list"][..],
-        &["billing", "gamma", "conversions", "get", id][..],
+        &["billing", "gamma", "conversions", "get", ID][..],
+        // The one command that reads a secret file is refused too, and quotes none of it.
+        &[
+            "billing",
+            "gamma",
+            "hotkeys",
+            "create",
+            "--hotkey-file",
+            &file,
+        ][..],
         &["billing", "gamma", "hotkeys", "delete", HOTKEY, "--yes"][..],
         &[
             "billing",
@@ -609,7 +632,7 @@ fn a_membership_is_refused_before_anything_is_sent() {
     ] {
         let mut full = vec!["--account", MEMBER];
         full.extend_from_slice(args);
-        Hipc::against(&Home::new(), &server)
+        Hipc::against(&home, &server)
             .run(&full)
             .fails(2, "account_scope_unsupported");
     }
