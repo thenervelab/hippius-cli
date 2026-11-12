@@ -22,4 +22,4 @@ Read this when the user mentions Hippius Hub, a container registry namespace, or
 | `subscribe PLAN` | `hipc hub subscription subscribe --plan Builder --yes` |
 | `subscriptions` | `hipc hub subscription get` |
 
-The keys the console calls CI keys are the `hipc hub keys` commands. Creating a namespace needs a positive balance. A second paid plan needs `--replace`.
+The keys the console calls CI keys are the keys group, as in `hipc hub keys list`. Creating a namespace needs a positive balance. A second paid plan needs `--replace`.

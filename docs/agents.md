@@ -99,7 +99,7 @@ hipc support tickets list
 
 - [Accounts, projects, and billing accounts](agents/accounts.md): acting in a shared account or a project, and the `*_scope_unsupported` refusals.
 - [Secrets](agents/secrets.md): S3 and Hub keys, database credentials, and DNS and App Engine secrets.
-- [Hub](agents/hub.md): how `hippius-hub registry` commands map to `hipc hub`.
+- [Hub](agents/hub.md): how `hippius-hub registry` commands map to `hipc` commands.
 - [hipc api](agents/api.md): what it sends, what it refuses, and when to use it.
 
 ## For the user's own agent file
@@ -109,5 +109,6 @@ To point an agent at `hipc` in a project, add this to the project's `AGENTS.md` 
 ```text
 Hippius (storage, compute, CDN, Hub, billing) is managed with the CLI named hipc
 Read https://github.com/thenervelab/hippius-cli/blob/main/docs/agents.md once.
-Find commands with hipc --help and hipc schema <path>. Dry-run writes; ask before --yes.
+To find a command, start from: hipc --help
+Dry-run every write, and ask the user before adding --yes.
 ```
