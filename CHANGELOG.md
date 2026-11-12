@@ -10,6 +10,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 - `hipc schema` gives each command an `about`, its short help, the line its `-h` opens with, so `hipc schema s3 buckets` alone maps a task to a command. A field is only added, so `schema_version` stays `4`.
 
+### Changed
+
+- The agents paragraph of `hipc --help` names how to find a command: walk the tree with `--help`, read a path's effect, confirmation, and guards with `hipc schema s3 buckets`, and the guide at `docs/agents.md`.
+
 ## [0.16.0] - 2026-11-12
 
 ### Added
