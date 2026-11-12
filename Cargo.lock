@@ -471,7 +471,7 @@ dependencies = [
 
 [[package]]
 name = "hippius"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "base64ct",
  "bip39",
@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "hippius-cli"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "base64ct",
  "clap",

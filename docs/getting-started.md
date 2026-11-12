@@ -13,7 +13,7 @@ curl -q --proto '=https' --tlsv1.2 -fsSL https://github.com/thenervelab/hippius-
 ```
 
 - The Homebrew formula replaces the old IPFS-era `hipc`, so `brew upgrade` moves a machine onto this one.
-- The script installs to `~/.local/bin` (or `$HIPC_INSTALL_DIR`) with no root, checks `SHA256SUMS`, and checks the signature when `cosign` is on `PATH` (`HIPC_INSTALL_REQUIRE_SIGNATURE=1` makes that required). End the pipe with `sh -s -- 0.15.0` to pin a version.
+- The script installs to `~/.local/bin` (or `$HIPC_INSTALL_DIR`) with no root, checks `SHA256SUMS`, and checks the signature when `cosign` is on `PATH` (`HIPC_INSTALL_REQUIRE_SIGNATURE=1` makes that required). End the pipe with `sh -s -- 0.16.0` to pin a version.
 - On PyPI the package is `hippius` and the command it installs is `hipc`, with wheels for macOS and Linux: `pip install hippius`, `uv tool install hippius`, or `pipx install hippius` installs the same `hipc` command. The PyPI project `hipc` is unrelated to Hippius.
 - From source: `cargo install --locked --git https://github.com/thenervelab/hippius-cli hippius-cli`.
 - To uninstall, remove the binary; remove `~/.hippius` too to forget the token.
@@ -29,7 +29,7 @@ If you tested a pre-release build, the command was `hip`. Remove `~/.local/bin/h
 Each release has a tarball per target, `hipc-<target>.tar.gz`, and a `SHA256SUMS` signed by the release workflow. The macOS binaries are not notarized: after a browser download, run `xattr -d com.apple.quarantine ./hipc`. Check a download with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 3.0 or later (each release's notes print these lines filled in):
 
 ```sh
-version=0.15.0                         # the release you downloaded, without the v
+version=0.16.0                         # the release you downloaded, without the v
 file=hipc-aarch64-apple-darwin.tar.gz  # the tarball you downloaded, or install.sh
 cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
   --certificate-identity "https://github.com/thenervelab/hippius-cli/.github/workflows/release.yml@refs/tags/v$version" \
