@@ -74,7 +74,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037  # v2.87.32
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32  # v2.88.0
         with:
           tool: cargo-llvm-cov@0.9.1
           fallback: none
@@ -123,7 +123,7 @@ jobs:
         with:
           persist-credentials: false
       # A prebuilt binary. The cargo-deny action builds a Docker image on every run first.
-      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037  # v2.87.32
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32  # v2.88.0
         with:
           tool: cargo-deny@0.20.2
           fallback: none
@@ -144,7 +144,7 @@ jobs:
       # the pinned shellcheck runs rather than the image's. `fallback: none`, here and at
       # every other use of the action: its default is cargo-binstall, which a version
       # missing from the manifests would run instead, unchecked, with only a warning.
-      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037  # v2.87.32
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32  # v2.88.0
         with:
           tool: shellcheck@0.11.0,shfmt@3.14.1,zizmor@1.31.1
           fallback: none
