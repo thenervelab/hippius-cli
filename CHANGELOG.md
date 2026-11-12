@@ -4,6 +4,12 @@ All notable changes to `hipc`, named `hip` up to 0.14.0, are listed here. The fo
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `hipc schema` gives each command an `about`, its short help, the line its `-h` opens with, so `hipc schema s3 buckets` alone maps a task to a command. A field is only added, so `schema_version` stays `4`.
+
 ## [0.16.0] - 2026-11-12
 
 ### Added

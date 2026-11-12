@@ -355,8 +355,9 @@ pub(crate) enum Command {
     /// whole command path, such as s3 buckets create, lists that command alone. schema_version,
     /// global_flags, and errors are printed as without a path: the path filters commands and
     /// changes nothing else. A name that is not a command at its place is a usage error, exit 2,
-    /// that lists the commands there, and whose hint runs the nearest one. Each command lists
-    /// the routes it may send to in routes, each a method and a path template such as
+    /// that lists the commands there, and whose hint runs the nearest one. Each command's about
+    /// is its short help, the line its -h opens with. Each command lists the routes it may
+    /// send to in routes, each a method and a path template such as
     /// GET /api/compute/vms/{vm_id}/. api sends to the route it is given, so it lists only the
     /// guarded routes no other command sends to.
     #[command(after_help = examples(&[

@@ -146,6 +146,7 @@ fn schema_lists_every_command_with_its_bits() {
             fields,
             [
                 "path",
+                "about",
                 "effect",
                 "confirmation",
                 "reveal",
@@ -344,6 +345,13 @@ fn schema_with_a_path_lists_only_the_commands_under_it() {
     assert_eq!(
         leaf["commands"][0]["path"],
         serde_json::json!(["s3", "buckets", "create"])
+    );
+    // `about` is the sentence the command's `-h` opens with; every command is checked
+    // in-process by `spec::help_agrees::each_about_is_the_line_its_help_opens_with`.
+    let help = hipc(&["s3", "buckets", "create", "-h"]);
+    assert_eq!(
+        text(&help.stdout).lines().next(),
+        leaf["commands"][0]["about"].as_str()
     );
 
     for (args, hint) in [

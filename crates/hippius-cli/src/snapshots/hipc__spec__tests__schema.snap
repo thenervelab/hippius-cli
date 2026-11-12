@@ -132,6 +132,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "path": [
         "version"
       ],
+      "about": "Print the version; does not touch the network",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -149,6 +150,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "path": [
         "status"
       ],
+      "about": "The state of each product for the signed-in user: Hub, Drive, S3, and compute",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -171,6 +173,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "path": [
         "schema"
       ],
+      "about": "Print every command with its effect, or only the commands under a path, as JSON in every output mode; does not touch the network",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -198,6 +201,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "path": [
         "completions"
       ],
+      "about": "Print a shell completion script",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -232,6 +236,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "auth",
         "login"
       ],
+      "about": "Store a console API token in the profile; needs --yes at another API origin or to replace a stored token",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -260,6 +265,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "auth",
         "status"
       ],
+      "about": "Check the token against the API (GET /api/accounts/), and name the signed-in user",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -287,6 +293,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "auth",
         "logout"
       ],
+      "about": "Remove the stored token from the profile; does not revoke it on the server; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -305,6 +312,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "account",
         "list"
       ],
+      "about": "The accounts the token can act in: the token's own first, then memberships",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -328,6 +336,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "account",
         "use"
       ],
+      "about": "Select the account later commands act in; does not touch the network",
       "effect": "idempotent",
       "confirmation": false,
       "reveal": false,
@@ -356,6 +365,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "account",
         "get"
       ],
+      "about": "The selected account",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -380,6 +390,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "notifications",
         "get"
       ],
+      "about": "The signed-in user's email notification settings",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -404,6 +415,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "notifications",
         "update"
       ],
+      "about": "Turn the notification settings given on or off; the others are kept; needs --yes to turn an alert off",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -513,6 +525,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "marketing-consent",
         "get"
       ],
+      "about": "The signed-in user's marketing consent: state is yes, no, or never_asked, and receives_marketing says whether marketing email goes out",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -537,6 +550,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "marketing-consent",
         "update"
       ],
+      "about": "Withdraw the signed-in user's consent to marketing email",
       "effect": "non_idempotent",
       "confirmation": false,
       "reveal": false,
@@ -574,6 +588,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "members",
         "list"
       ],
+      "about": "The members, with the account owner beside them (owner)",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -598,6 +613,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "members",
         "update"
       ],
+      "about": "Replace a member's whole grant list with the --grant flags given; needs --yes, and --remove-others to drop a grant",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -685,6 +701,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "members",
         "delete"
       ],
+      "about": "Remove a member from the team; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -719,6 +736,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "invites",
         "list"
       ],
+      "about": "The pending invites the selected account sent",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -743,6 +761,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "invites",
         "create"
       ],
+      "about": "Email an invite to join the team, with the grants and permissions given; needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -810,6 +829,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "invites",
         "revoke"
       ],
+      "about": "Revoke a pending invite, so its email link stops working; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -844,6 +864,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "invites",
         "preview"
       ],
+      "about": "Show what an emailed invite offers: the account, who sent it, and the access it grants; needs --yes at another API origin",
       "effect": "read_only",
       "confirmation": true,
       "reveal": false,
@@ -878,6 +899,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "invites",
         "accept"
       ],
+      "about": "Join the account an emailed invite is for, as the signed-in user; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -916,6 +938,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "projects",
         "list"
       ],
+      "about": "The account's projects, each with the billing account that pays for it",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -940,6 +963,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "projects",
         "create"
       ],
+      "about": "Create a project in the selected account, billed to the Default billing account",
       "effect": "non_idempotent",
       "confirmation": false,
       "reveal": false,
@@ -974,6 +998,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "projects",
         "update"
       ],
+      "about": "Rename a project",
       "effect": "idempotent",
       "confirmation": false,
       "reveal": false,
@@ -1018,6 +1043,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "projects",
         "delete"
       ],
+      "about": "Archive an empty project; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -1052,6 +1078,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "projects",
         "transfer"
       ],
+      "about": "Offer a project to another account, which accepts or declines it; needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -1105,6 +1132,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "budget",
         "get"
       ],
+      "about": "A project's monthly budget: its limit, alert thresholds, and this month's spend",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -1140,6 +1168,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "budget",
         "update"
       ],
+      "about": "Set a project's monthly budget; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -1206,6 +1235,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "budget",
         "delete"
       ],
+      "about": "Remove a project's monthly budget, so only the account's limits hold; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -1241,6 +1271,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "quota",
         "get"
       ],
+      "about": "A project's own compute limits, what it uses, and the account's limits",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -1276,6 +1307,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "quota",
         "update"
       ],
+      "about": "Change the project's own compute limits given; the others are kept; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -1397,6 +1429,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "projects",
         "use"
       ],
+      "about": "Select the project later commands act in; does not touch the network",
       "effect": "idempotent",
       "confirmation": false,
       "reveal": false,
@@ -1426,6 +1459,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "project-transfers",
         "list"
       ],
+      "about": "The project transfers of the token's own account: offered to it, then offered by it",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -1450,6 +1484,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "project-transfers",
         "accept"
       ],
+      "about": "Accept a project offered to the token's own account; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -1498,6 +1533,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "project-transfers",
         "decline"
       ],
+      "about": "Decline a project offered to the token's own account; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -1536,6 +1572,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "project-transfers",
         "cancel"
       ],
+      "about": "Cancel a pending transfer the token's own account offered; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -1574,6 +1611,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "billing-accounts",
         "list"
       ],
+      "about": "The account's billing accounts, each with the projects it pays for",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -1598,6 +1636,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "billing-accounts",
         "create"
       ],
+      "about": "Create a billing account in the selected account",
       "effect": "non_idempotent",
       "confirmation": false,
       "reveal": false,
@@ -1632,6 +1671,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "billing-accounts",
         "update"
       ],
+      "about": "Rename a billing account",
       "effect": "idempotent",
       "confirmation": false,
       "reveal": false,
@@ -1676,6 +1716,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "billing-accounts",
         "costs"
       ],
+      "about": "What a billing account paid, by project, kind, and day",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -1742,6 +1783,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "billing-accounts",
         "use"
       ],
+      "about": "Select the billing account later commands act on; does not touch the network",
       "effect": "idempotent",
       "confirmation": false,
       "reveal": false,
@@ -1771,6 +1813,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "referrals",
         "list"
       ],
+      "about": "The referral links, each with its name, slug, and code",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -1795,6 +1838,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "referrals",
         "create"
       ],
+      "about": "Add a named referral link; the first one mints the user's referral code",
       "effect": "non_idempotent",
       "confirmation": false,
       "reveal": false,
@@ -1829,6 +1873,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "referrals",
         "update"
       ],
+      "about": "Rename a referral link; the code and slug stay the same",
       "effect": "idempotent",
       "confirmation": false,
       "reveal": false,
@@ -1873,6 +1918,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "referrals",
         "analytics"
       ],
+      "about": "Signups, conversion, and top-up volume the referral code brought, by link",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -1906,6 +1952,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "billing",
         "balance"
       ],
+      "about": "The account's balance (GET /api/billing/credits/balance/)",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -1929,6 +1976,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "billing",
         "subscriptions"
       ],
+      "about": "Every plan in one list: Drive, S3, Hub, and a legacy Stripe top-up plan",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -1964,6 +2012,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "billing",
         "transactions"
       ],
+      "about": "The transaction history, one page at a time",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -2015,6 +2064,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "billing",
         "stripe"
       ],
+      "about": "The legacy Stripe top-up plan, if there is one",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -2038,6 +2088,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "billing",
         "summary"
       ],
+      "about": "What compute burns per hour, and how long the balance lasts at that rate",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -2061,6 +2112,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "billing",
         "usage"
       ],
+      "about": "Every closed UTC hour of compute usage in one month, with its priced lines",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -2095,6 +2147,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "invoices",
         "list"
       ],
+      "about": "The invoices and credit notes, newest first, one page at a time",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -2147,6 +2200,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "invoices",
         "get"
       ],
+      "about": "Download one invoice as a PDF, to a new file",
       "effect": "idempotent",
       "confirmation": false,
       "reveal": false,
@@ -2191,6 +2245,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "auto-reload",
         "get"
       ],
+      "about": "The balance auto-reload setting, and the card it charges",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -2215,6 +2270,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "auto-reload",
         "history"
       ],
+      "about": "The auto-reload attempts, newest first, with their status, credits, and invoice",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -2249,6 +2305,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "auto-reload",
         "update"
       ],
+      "about": "Change the auto-reload setting; spends money when it leaves auto-reload on, and then needs --yes when it turns it on, finds it in a state other than armed, raises the threshold, the target, or the monthly cap, or cannot read the setting in force",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -2327,6 +2384,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "auto-reload",
         "card-setup"
       ],
+      "about": "Start saving the card auto-reload charges, and print its checkout URL",
       "effect": "non_idempotent",
       "confirmation": false,
       "reveal": false,
@@ -2351,6 +2409,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "profile",
         "get"
       ],
+      "about": "The billing profile; every field is empty when none was saved",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -2375,6 +2434,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "profile",
         "update"
       ],
+      "about": "Change the fields given of the billing profile; the others are kept; needs --yes when it changes the billing email",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -2499,6 +2559,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "billing",
         "native-quote"
       ],
+      "about": "The hAlpha price and the account's hAlpha: what a hAlpha top-up would buy",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -2523,6 +2584,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "gamma",
         "get"
       ],
+      "about": "The subnet, the Hippius spender a deposit must name, its service hotkey, the minimum, and each linked hotkey with its deposit read from the chain",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -2548,6 +2610,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "hotkeys",
         "create"
       ],
+      "about": "Link the hotkey whose words --hotkey-file holds: hipc signs the server's challenge with it, and the words go nowhere else",
       "effect": "non_idempotent",
       "confirmation": false,
       "reveal": false,
@@ -2587,6 +2650,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "hotkeys",
         "delete"
       ],
+      "about": "Unlink a hotkey from the account; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -2622,6 +2686,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "conversions",
         "create"
       ],
+      "about": "Burn gamma from a linked hotkey's deposit for the same amount in USD; spends money, and needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -2666,6 +2731,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "conversions",
         "list"
       ],
+      "about": "The account's conversions, newest first, one page at a time",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -2719,6 +2785,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "conversions",
         "get"
       ],
+      "about": "One conversion: its status, its on-chain reference, and the transaction that credited it",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -2752,6 +2819,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "billing",
         "top-up"
       ],
+      "about": "Top up the balance by card, Bitcoin, or hAlpha; needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -2850,6 +2918,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "drive",
         "plans"
       ],
+      "about": "The Drive plan catalog; needs no token",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -2874,6 +2943,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "subscription",
         "get"
       ],
+      "about": "The Drive plan, or {\"active\": false} on Free",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -2898,6 +2968,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "subscription",
         "subscribe"
       ],
+      "about": "Buy a Drive plan; spends money: needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -2961,6 +3032,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "subscription",
         "change"
       ],
+      "about": "Switch the Drive plan, how its renewals are paid, or its overage cap; spends money: needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -3042,6 +3114,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "subscription",
         "cancel"
       ],
+      "about": "Cancel the Drive plan; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -3066,6 +3139,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "subscription",
         "checkout"
       ],
+      "about": "The progress of a card checkout: pending, paid, then fulfilled, or failed",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -3100,6 +3174,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "subscription",
         "history"
       ],
+      "about": "Every event of the Drive plan, newest first: purchases, renewals, changes, cancels, and refunds, one page at a time",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -3151,6 +3226,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "s3",
         "plans"
       ],
+      "about": "The S3 plan catalog and the pay-as-you-go rate; needs no token",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -3175,6 +3251,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "subscription",
         "get"
       ],
+      "about": "The S3 plan, or the pay-as-you-go usage without a plan",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -3199,6 +3276,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "subscription",
         "subscribe"
       ],
+      "about": "Buy an S3 plan: a flat monthly price for a block of storage; spends money: needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -3245,6 +3323,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "subscription",
         "change"
       ],
+      "about": "Switch the S3 plan, how its renewals are paid, or its overage cap; spends money: needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -3309,6 +3388,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "subscription",
         "cancel"
       ],
+      "about": "Cancel the S3 plan; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -3333,6 +3413,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "subscription",
         "checkout"
       ],
+      "about": "The progress of a card checkout: pending, paid, fulfilling, then fulfilled, or failed",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -3367,6 +3448,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "subscription",
         "history"
       ],
+      "about": "Every event of the S3 plan, newest first: purchases, renewals, changes, cancels, and refunds, one page at a time",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -3419,6 +3501,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "buckets",
         "list"
       ],
+      "about": "Every bucket in the account",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -3444,6 +3527,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "acl",
         "list"
       ],
+      "about": "Every bucket, with the sub-token grants (actions and prefixes) that apply to it",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -3469,6 +3553,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "acl",
         "get"
       ],
+      "about": "A bucket's S3 bucket policy",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -3504,6 +3589,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "acl",
         "update"
       ],
+      "about": "Replace a bucket's whole S3 bucket policy; needs --yes, --public, and --remove-others",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -3578,6 +3664,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "objects",
         "list"
       ],
+      "about": "A bucket's objects, with their keys, sizes, and dates, one page at a time",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -3650,6 +3737,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "objects",
         "presign"
       ],
+      "about": "A presigned URL that downloads one object; needs --reveal",
       "effect": "read_only",
       "confirmation": false,
       "reveal": true,
@@ -3712,6 +3800,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "buckets",
         "create"
       ],
+      "about": "Create a bucket; needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -3756,6 +3845,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "buckets",
         "delete"
       ],
+      "about": "Delete an empty bucket; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -3790,6 +3880,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "tokens",
         "list"
       ],
+      "about": "Every S3 token, master and sub",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -3818,6 +3909,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "tokens",
         "create"
       ],
+      "about": "Create a token; needs --yes, and --reveal or --secret-file",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": true,
@@ -3953,6 +4045,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "tokens",
         "revoke"
       ],
+      "about": "Revoke a token; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -4004,6 +4097,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "tokens",
         "rotate"
       ],
+      "about": "Replace a token with a new one and revoke the old one; needs --yes, and --reveal or --secret-file",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": true,
@@ -4072,6 +4166,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "s3",
         "configure"
       ],
+      "about": "Write an AWS CLI profile for s3.hippius.com; does not touch the network; needs --yes to overwrite a profile",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -4135,6 +4230,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "hub",
         "plans"
       ],
+      "about": "The Hub plan catalog; needs no token",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -4159,6 +4255,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "subscription",
         "get"
       ],
+      "about": "The Hub subscriptions, as the last chain sync saw them",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -4183,6 +4280,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "subscription",
         "subscribe"
       ],
+      "about": "Subscribe to a Hub plan, paid from the balance; spends money: needs --yes, and --replace while a paid plan is active",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -4244,6 +4342,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "subscription",
         "cancel"
       ],
+      "about": "Cancel a Hub subscription by its id; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -4278,6 +4377,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "namespace",
         "availability"
       ],
+      "about": "Whether a namespace name is free",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -4312,6 +4412,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "namespace",
         "create"
       ],
+      "about": "Create the registry namespace; needs --yes, and --reveal or --secret-file",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": true,
@@ -4365,6 +4466,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "namespace",
         "status"
       ],
+      "about": "The namespace's provisioning status",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -4389,6 +4491,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "namespace",
         "get"
       ],
+      "about": "The active namespace; never shows a robot secret",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -4413,6 +4516,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "namespace",
         "update"
       ],
+      "about": "Make the namespace public or private; needs --yes, and --public to make it public",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -4466,6 +4570,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "robot",
         "get"
       ],
+      "about": "The docker robot login and the docker login command for it; never shows a robot secret",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -4491,6 +4596,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "robot",
         "rotate"
       ],
+      "about": "Replace the docker robot secret; needs --yes, and --reveal or --secret-file",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": true,
@@ -4533,6 +4639,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "hub",
         "usage"
       ],
+      "about": "The namespace's storage, repository, and artifact counts, with a 7-day history",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -4571,6 +4678,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "keys",
         "list"
       ],
+      "about": "The namespace's CI keys; never shows a secret",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -4595,6 +4703,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "keys",
         "get"
       ],
+      "about": "One CI key, by its id; never shows a secret",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -4629,6 +4738,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "keys",
         "create"
       ],
+      "about": "Create a CI key with a role; needs --yes, and --reveal or --secret-file",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": true,
@@ -4699,6 +4809,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "keys",
         "rotate"
       ],
+      "about": "Replace the secret of a CI key; needs --yes, and --reveal or --secret-file",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": true,
@@ -4752,6 +4863,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "keys",
         "delete"
       ],
+      "about": "Delete a CI key; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -4786,6 +4898,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "repositories",
         "list"
       ],
+      "about": "The namespace's repositories, with their artifact and pull counts",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -4810,6 +4923,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "repositories",
         "get"
       ],
+      "about": "One repository, by its name in the list",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -4844,6 +4958,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "repositories",
         "delete"
       ],
+      "about": "Delete a repository with every artifact and tag in it; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -4878,6 +4993,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "artifacts",
         "list"
       ],
+      "about": "The artifacts in a repository, with their digests, tags, sizes, and push times",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -4912,6 +5028,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "artifacts",
         "get"
       ],
+      "about": "One artifact, by a tag or its digest",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -4955,6 +5072,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "artifacts",
         "delete"
       ],
+      "about": "Delete an artifact with every tag on it; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -4998,6 +5116,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "events",
         "list"
       ],
+      "about": "The namespace's audit events, read whole",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5022,6 +5141,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "models",
         "list"
       ],
+      "about": "The model index, one page at a time: each model with its format, size, and tags",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5074,6 +5194,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "models",
         "formats"
       ],
+      "about": "The formats, architectures, and quantizations the model index knows",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5098,6 +5219,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "models",
         "get"
       ],
+      "about": "One model's indexed versions, newest first, one page at a time, or one version with --reference",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5172,6 +5294,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "compute",
         "prices"
       ],
+      "about": "The account's price list for every VM component, in base units; needs a token",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5195,6 +5318,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "compute",
         "public-prices"
       ],
+      "about": "Everything compute sells, at the public prices in credits; needs no token",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5218,6 +5342,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "compute",
         "quota"
       ],
+      "about": "What the account may launch, what it uses, and the balance runway a launch needs",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5241,6 +5366,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "compute",
         "charge-cap"
       ],
+      "about": "The most the chain charges the account per hour, and the latest request to raise it",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5264,6 +5390,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "compute",
         "flavors"
       ],
+      "about": "The VM sizes; needs a token",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5287,6 +5414,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "compute",
         "images"
       ],
+      "about": "The OS images, with the SSH login (default_user) each one creates",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5310,6 +5438,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "compute",
         "apps"
       ],
+      "about": "The ready-made apps: each pins its image and ports, and lists the fields a launch collects (config_schema)",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5334,6 +5463,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "app-engine",
         "get"
       ],
+      "about": "Whether the account may use App Engine, and its limits: the largest compose, the published ports, the services, and the smallest flavor",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5358,6 +5488,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "app-engine",
         "validate"
       ],
+      "about": "Check a compose file against the App Engine grammar, launching nothing",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5392,6 +5523,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "app-engine",
         "fix"
       ],
+      "about": "Rewrite a compose file into the App Engine grammar; saves nothing on the server",
       "effect": "idempotent",
       "confirmation": false,
       "reveal": false,
@@ -5436,6 +5568,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "apps",
         "list"
       ],
+      "about": "Every app in the account",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5461,6 +5594,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "apps",
         "get"
       ],
+      "about": "One app, with its exact compose and its last 20 revisions, newest first",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5496,6 +5630,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "apps",
         "create"
       ],
+      "about": "Launch an app: a VM of the flavor with a public IPv4, running the compose file; spends money: needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -5661,6 +5796,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "apps",
         "runtime"
       ],
+      "about": "What the app's runner reports about itself, relayed from its VM and cached for 15 seconds; not verified",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5696,6 +5832,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "guest-components",
         "get"
       ],
+      "about": "The guest components release the app's VM runs, the newest one, and whether an upgrade is available",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5731,6 +5868,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "guest-components",
         "update-status"
       ],
+      "about": "The app's latest guest components upgrade: its release, state, and outcome",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5764,6 +5902,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "compute",
         "regions"
       ],
+      "about": "The regions a VM can launch in",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5787,6 +5926,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "compute",
         "placement-groups"
       ],
+      "about": "Whether a launch can name a placement group, and the groups the account's live VMs are in",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5810,6 +5950,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "compute",
         "feasibility"
       ],
+      "about": "Whether a launch of a flavor could land in a region now: verdict yes, not-now, never, or unknown",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5866,6 +6007,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "vms",
         "list"
       ],
+      "about": "Every VM in the account",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5890,6 +6032,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "vms",
         "get"
       ],
+      "about": "One VM",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5924,6 +6067,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "vms",
         "attestation"
       ],
+      "about": "Whether the VM booted as a confidential (AMD SEV-SNP) guest, as the key broker recorded it",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5958,6 +6102,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "vms",
         "failovers"
       ],
+      "about": "Up to the VM's last 10 failovers, newest first: each time it was restarted on another server because its own stopped responding",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -5992,6 +6137,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "vms",
         "create"
       ],
+      "about": "Launch a VM, and at a terminal wait until it is running; spends money: needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -6209,6 +6355,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "vms",
         "start"
       ],
+      "about": "Power a VM on",
       "effect": "idempotent",
       "confirmation": false,
       "reveal": false,
@@ -6243,6 +6390,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "vms",
         "stop"
       ],
+      "about": "Power a VM off; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -6277,6 +6425,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "vms",
         "reboot"
       ],
+      "about": "Restart a VM; needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -6311,6 +6460,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "vms",
         "resize-options"
       ],
+      "about": "The sizes a VM can be resized to, with prices, and why a resize cannot start now (blocked, cooldown_until, in_flight)",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -6345,6 +6495,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "vms",
         "resize"
       ],
+      "about": "Change a VM's vCPU and memory; its disk and data are kept; spends money, as the bill switches to the new size: needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -6389,6 +6540,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "vms",
         "resize-status"
       ],
+      "about": "One resize of a VM: pending, stopping, migrating, relaunching, or rolling_back, then done, or failed (with rolled_back)",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -6433,6 +6585,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "power-policy",
         "get"
       ],
+      "about": "The VM's power policy: on_guest_poweroff, and whether its server applied it yet",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -6468,6 +6621,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "power-policy",
         "update"
       ],
+      "about": "Set what happens when the VM's own operating system powers it off",
       "effect": "idempotent",
       "confirmation": false,
       "reveal": false,
@@ -6515,6 +6669,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "vms",
         "delete"
       ],
+      "about": "Delete a VM and its disks; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -6553,6 +6708,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "public-ip",
         "availability"
       ],
+      "about": "How many public IPv4 addresses are free, overall and per region, and their price",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -6587,6 +6743,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "public-ip",
         "get"
       ],
+      "about": "The public IPv4 attached to a VM (public_ip, null when none), and its price",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -6621,6 +6778,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "public-ip",
         "create"
       ],
+      "about": "Attach a dedicated public IPv4 to a VM; spends money: needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -6655,6 +6813,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "public-ip",
         "delete"
       ],
+      "about": "Detach a VM's public IPv4; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -6689,6 +6848,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "public-ip",
         "usage"
       ],
+      "about": "Bytes in and out of a VM's public IPv4, per step, over the periods it held one",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -6738,6 +6898,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "firewall",
         "get"
       ],
+      "about": "A VM's inbound rules, their revision, and whether the edge enforces them yet",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -6772,6 +6933,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "firewall",
         "update"
       ],
+      "about": "Replace every inbound rule of a VM with the rules in a file; needs --yes, and --remove-others to drop a rule or change its protocol, ports, sources, or enabled flag",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -6844,6 +7006,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "exposures",
         "list"
       ],
+      "about": "A VM's exposures, each with its id, endpoint, mode, and edge_sees_traffic",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -6878,6 +7041,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "exposures",
         "create"
       ],
+      "about": "Make one guest port of a VM reachable from the internet; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -6947,6 +7111,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "exposures",
         "delete"
       ],
+      "about": "Take an exposure down; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -6990,6 +7155,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "backups",
         "options"
       ],
+      "about": "Whether backups are offered, the intervals, how long old backups are kept, the largest disk backed up, and the price per GB-month stored",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -7015,6 +7181,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "policy",
         "get"
       ],
+      "about": "A VM's backup policy: enabled, interval_s, state, the latest restore point, the bytes stored, and the failover mode",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -7050,6 +7217,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "policy",
         "update"
       ],
+      "about": "Turn a VM's backups on, or change their interval; spends money: needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -7111,6 +7279,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "policy",
         "delete"
       ],
+      "about": "Turn a VM's backups off; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -7145,6 +7314,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "backups",
         "list"
       ],
+      "about": "Every backup a VM still holds, newest first, with its size, whether a restore can use it (restorable), and its class",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -7179,6 +7349,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "backups",
         "restore"
       ],
+      "about": "Overwrite a VM's disk with one of its backups; needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -7236,6 +7407,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "backups",
         "restore-status"
       ],
+      "about": "The latest restore of a VM and its progress: pending, staging, stopping, activating, verifying, or settling, then done, failed, or reverted (the VM is back as it was)",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -7271,6 +7443,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "settings",
         "get"
       ],
+      "about": "The runner settings, with effective_max_concurrent (the cap after the quota), active (runners launching or running now), and size_flavors",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -7296,6 +7469,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "settings",
         "update"
       ],
+      "about": "Change the settings given; the others are kept; jobs spend money while runners are enabled: needs --yes when the change may spend more",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -7388,6 +7562,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "installations",
         "list"
       ],
+      "about": "The linked installations, each with its GitHub account_login, status, and settings_url",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -7413,6 +7588,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "installations",
         "delete"
       ],
+      "about": "Unlink an installation from the account; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -7447,6 +7623,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "runners",
         "jobs"
       ],
+      "about": "The runner jobs, newest first, one page at a time",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -7490,6 +7667,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "runners",
         "connect"
       ],
+      "about": "Start linking a GitHub organization or user: prints the URL that installs the Hippius Runners GitHub App",
       "effect": "non_idempotent",
       "confirmation": false,
       "reveal": false,
@@ -7514,6 +7692,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "runners",
         "usage"
       ],
+      "about": "What the account's runners cost over a period, from the compute ledger",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -7539,6 +7718,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "limit",
         "get"
       ],
+      "about": "The monthly runner spend limit",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -7564,6 +7744,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "limit",
         "update"
       ],
+      "about": "Set or remove the monthly runner spend limit; needs --yes when it raises or removes the cap, or when the cap in force is unknown",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -7602,6 +7783,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "ssh-keys",
         "list"
       ],
+      "about": "The stored keys",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -7654,6 +7836,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "ssh-keys",
         "get"
       ],
+      "about": "One stored key",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -7688,6 +7871,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "ssh-keys",
         "create"
       ],
+      "about": "Store a public key; needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -7731,6 +7915,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "ssh-keys",
         "delete"
       ],
+      "about": "Delete a stored key; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -7764,6 +7949,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "compute",
         "account-ssh-keys"
       ],
+      "about": "The SSH keys of the account's owner, which a member launching a VM in the account is offered",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -7788,6 +7974,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "databases",
         "list"
       ],
+      "about": "Every managed database in the account; never shows a credential",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -7812,6 +7999,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "databases",
         "get"
       ],
+      "about": "One database: its status, connection, backups, and edge exposure; never shows a credential",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -7846,6 +8034,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "databases",
         "create"
       ],
+      "about": "Create a database; spends money: needs --yes, and --reveal or --credentials-dir, because the answer holds credentials shown only once",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": true,
@@ -7925,6 +8114,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "databases",
         "delete"
       ],
+      "about": "Decommission a database and every VM behind it; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -7959,6 +8149,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "databases",
         "restart"
       ],
+      "about": "A drained restart of PostgreSQL, not a power cycle; needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -7993,6 +8184,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "databases",
         "restore"
       ],
+      "about": "Create a new database from this one's backups, at a point in time; spends money: needs --yes, and --reveal or --credentials-dir",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": true,
@@ -8056,6 +8248,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "exposure",
         "create"
       ],
+      "about": "Publish the primary on the public edge; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -8091,6 +8284,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "exposure",
         "delete"
       ],
+      "about": "Take the primary off the public edge; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -8125,6 +8319,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "databases",
         "events"
       ],
+      "about": "The guest's journal, newest first",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -8159,6 +8354,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "databases",
         "metrics"
       ],
+      "about": "The samples behind the console's charts, oldest first, the latest one, and when the guest agent last reported",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -8193,6 +8389,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "databases",
         "refusals"
       ],
+      "about": "The launches the platform refused in the last 7 days",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -8218,6 +8415,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "clusters",
         "list"
       ],
+      "about": "Every cluster in the account, each with its status, endpoints, and master nodes",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -8243,6 +8441,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "clusters",
         "get"
       ],
+      "about": "One cluster",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -8278,6 +8477,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "clusters",
         "delete"
       ],
+      "about": "Delete a cluster: every VM in it stops and is decommissioned, with the workloads and the data on it; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -8317,6 +8517,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "clusters",
         "events"
       ],
+      "about": "The cluster's journal: what each node reported, and when",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -8352,6 +8553,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "clusters",
         "refusals"
       ],
+      "about": "The cluster launches the platform refused in the last 7 days",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -8377,6 +8579,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "clusters",
         "kubeconfig"
       ],
+      "about": "Write a cluster's kubeconfig to a new file, opened with the cluster key file; needs --cluster-key-file",
       "effect": "idempotent",
       "confirmation": false,
       "reveal": false,
@@ -8435,6 +8638,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "backups",
         "list"
       ],
+      "about": "A cluster's etcd snapshots in the account's S3, with their signed manifests, sealed keys, and download links; needs --reveal",
       "effect": "read_only",
       "confirmation": false,
       "reveal": true,
@@ -8480,6 +8684,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "node-pools",
         "list"
       ],
+      "about": "The cluster's node pools, the masters' control-plane pool included, each with its nodes",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -8515,6 +8720,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "node-pools",
         "create"
       ],
+      "about": "Create an empty worker node pool",
       "effect": "non_idempotent",
       "confirmation": false,
       "reveal": false,
@@ -8587,6 +8793,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "node-pools",
         "scale"
       ],
+      "about": "Scale a worker node pool to --count nodes; needs --yes, and --cluster-key-file to add nodes, which spends money",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -8662,6 +8869,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "operations",
         "list"
       ],
+      "about": "The cluster's node operations, each with its kind, state, and step",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -8697,6 +8905,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "operations",
         "cancel"
       ],
+      "about": "Cancel a queued, running, or blocked operation; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -8745,6 +8954,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "operations",
         "resume"
       ],
+      "about": "Resume a blocked or queued operation; spends money when it launches a VM: needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -8793,6 +9003,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "nodes",
         "delete"
       ],
+      "about": "Remove a worker node from the cluster: its pods are drained to other nodes, then its VM is decommissioned; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -8837,6 +9048,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "nodes",
         "replace"
       ],
+      "about": "Replace a worker node with a new one of its node pool; spends money: needs --yes and --cluster-key-file",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -8905,6 +9117,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "cdn",
         "prices"
       ],
+      "about": "The CDN price list in force: per GB served by region, per request, per custom hostname, and the WAF tiers; needs no token",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -8928,6 +9141,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "cdn",
         "regions"
       ],
+      "about": "The serving regions, their health, and the CDN's own domain",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -8951,6 +9165,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "cdn",
         "estimate"
       ],
+      "about": "What a month of traffic would cost at today's prices; needs a token",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -9012,6 +9227,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "zones",
         "list"
       ],
+      "about": "The zones of the account, and the server's beta flag (beta)",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -9036,6 +9252,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "zones",
         "get"
       ],
+      "about": "One zone, with its hostnames, cap, and origin",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -9070,6 +9287,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "zones",
         "create"
       ],
+      "about": "Create a zone serving a bucket or a prefix of it; spends money: needs --yes and --public",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -9194,6 +9412,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "zones",
         "update"
       ],
+      "about": "Change a zone: only the flags given are sent; needs --yes, and --public with --bucket or --prefix",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -9335,6 +9554,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "zones",
         "delete"
       ],
+      "about": "Delete a zone; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -9369,6 +9589,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "cap",
         "get"
       ],
+      "about": "The cap, and what the zone spent this month, in base units and in credits",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -9403,6 +9624,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "cap",
         "update"
       ],
+      "about": "Set the monthly spend cap; needs --yes when it raises the cap, or when the cap in force is unknown",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -9451,6 +9673,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "hostnames",
         "list"
       ],
+      "about": "The zone's hostnames: its default one and the custom ones",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -9485,6 +9708,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "hostnames",
         "create"
       ],
+      "about": "Add a custom hostname; spends money: needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -9528,6 +9752,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "hostnames",
         "verify"
       ],
+      "about": "Check the hostname's DNS records now, instead of waiting for the next check",
       "effect": "idempotent",
       "confirmation": false,
       "reveal": false,
@@ -9571,6 +9796,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "hostnames",
         "dns-setup"
       ],
+      "about": "Write the hostname's DNS records at Cloudflare or Route 53; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -9636,6 +9862,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "hostnames",
         "domain-connect"
       ],
+      "about": "A Domain Connect link that publishes the hostname's DNS records at its DNS provider",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -9679,6 +9906,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "hostnames",
         "delete"
       ],
+      "about": "Remove a custom hostname; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -9722,6 +9950,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "purges",
         "create"
       ],
+      "about": "Drop cached copies so the next request fetches from the bucket again",
       "effect": "non_idempotent",
       "confirmation": false,
       "reveal": false,
@@ -9793,6 +10022,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "purges",
         "list"
       ],
+      "about": "The zone's purges",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -9827,6 +10057,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "purges",
         "get"
       ],
+      "about": "One purge: pending until every node has applied it, then done",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -9870,6 +10101,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "rules",
         "get"
       ],
+      "about": "The zone's cache rules",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -9904,6 +10136,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "rules",
         "update"
       ],
+      "about": "Replace the whole rule list with a file's; needs --yes, and --remove-others to drop or move a rule",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -9966,6 +10199,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "cdn",
         "stats"
       ],
+      "about": "A zone's traffic over a window, as a series and totals",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -10041,6 +10275,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "waf",
         "get"
       ],
+      "about": "The zone's WAF settings: its mode, tier, block response, active version, and the tier's limits",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -10075,6 +10310,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "waf",
         "update"
       ],
+      "about": "Change the zone's WAF settings: only the flags given are sent; spends money while the mode is not off: needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -10181,6 +10417,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "waf",
         "status"
       ],
+      "about": "The zone's live cache nodes, and how many of them run the active version",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -10215,6 +10452,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "waf",
         "analytics"
       ],
+      "about": "The zone's WAF matches over a window, as counters",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -10294,6 +10532,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "waf",
         "events"
       ],
+      "about": "Sampled WAF matches, with each visitor's IP address",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -10378,6 +10617,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "waf",
         "test"
       ],
+      "about": "Whether a request matches an expression, or which published rules it matches",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -10432,6 +10672,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "rules",
         "get"
       ],
+      "about": "The zone's custom rules, in order, and the version they are in",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -10467,6 +10708,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "rules",
         "update"
       ],
+      "about": "Replace the whole custom rule list with a file's, publishing a new version; needs --yes, and --remove-others to drop, move, or change a rule; --check only checks the file",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -10540,6 +10782,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "rate-limits",
         "get"
       ],
+      "about": "The zone's rate limits, and the version they are in",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -10575,6 +10818,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "rate-limits",
         "update"
       ],
+      "about": "Replace the whole rate limit list with a file's, publishing a new version; needs --yes, and --remove-others to drop or change a rate limit; --check only checks the file",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -10648,6 +10892,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "versions",
         "list"
       ],
+      "about": "The zone's last 50 WAF versions, newest first",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -10683,6 +10928,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "versions",
         "get"
       ],
+      "about": "One version and its source",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -10727,6 +10973,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "versions",
         "rollback"
       ],
+      "about": "Publish a copy of an older version as the newest one; spends money while the mode it then has is not off: needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -10770,6 +11017,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "lists",
         "list"
       ],
+      "about": "The account's WAF lists",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -10794,6 +11042,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "lists",
         "get"
       ],
+      "about": "One list and its items",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -10828,6 +11077,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "lists",
         "create"
       ],
+      "about": "Create a list of IP addresses and networks, AS numbers, or country codes",
       "effect": "non_idempotent",
       "confirmation": false,
       "reveal": false,
@@ -10894,6 +11144,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "lists",
         "update"
       ],
+      "about": "Change a list's description",
       "effect": "idempotent",
       "confirmation": false,
       "reveal": false,
@@ -10938,6 +11189,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "lists",
         "delete"
       ],
+      "about": "Delete a list; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -10973,6 +11225,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "items",
         "create"
       ],
+      "about": "Add the file's items to the list; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -11018,6 +11271,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "items",
         "update"
       ],
+      "about": "Replace every item of the list with the file's; needs --yes, and --remove-others to drop an item",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -11082,6 +11336,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "items",
         "delete"
       ],
+      "about": "Remove the file's items from the list; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -11126,6 +11381,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "tickets",
         "list"
       ],
+      "about": "The signed-in user's tickets, newest activity first, one page at a time",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -11192,6 +11448,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "tickets",
         "get"
       ],
+      "about": "One ticket, with its messages",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -11226,6 +11483,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "tickets",
         "create"
       ],
+      "about": "Open a ticket that a person on the support team reads; needs --yes",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": false,
@@ -11283,6 +11541,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "tickets",
         "reply"
       ],
+      "about": "Add a message to a ticket",
       "effect": "non_idempotent",
       "confirmation": false,
       "reveal": false,
@@ -11327,6 +11586,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "tickets",
         "update"
       ],
+      "about": "Close a ticket; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -11378,6 +11638,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "messages",
         "list"
       ],
+      "about": "A ticket's public messages, one page at a time",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -11439,6 +11700,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "network",
         "get"
       ],
+      "about": "The private network's summary: its status and counts; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -11462,6 +11724,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "network",
         "create"
       ],
+      "about": "Create the account's private network if it has none; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -11486,6 +11749,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "peers",
         "list"
       ],
+      "about": "The peers in the network",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -11510,6 +11774,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "peers",
         "get"
       ],
+      "about": "One peer",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -11544,6 +11809,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "peers",
         "update"
       ],
+      "about": "Rename a peer; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -11588,6 +11854,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "peers",
         "delete"
       ],
+      "about": "Remove a peer from the network; needs --yes",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -11622,6 +11889,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "groups",
         "list"
       ],
+      "about": "The network's groups of peers, the default group included",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -11646,6 +11914,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "policies",
         "list"
       ],
+      "about": "The network's access policies, each one allowing traffic from one group to another",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -11670,6 +11939,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "vpcs",
         "list"
       ],
+      "about": "The VPC networks, the default one included",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -11695,6 +11965,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "resources",
         "list"
       ],
+      "about": "The resources of a VPC network: the hosts, subnets, and domains it reaches",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -11730,6 +12001,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "routers",
         "list"
       ],
+      "about": "The routers of a VPC network: the peers that route its traffic",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -11762,6 +12034,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "path": [
         "api"
       ],
+      "about": "Call any console API endpoint; a method other than GET or HEAD needs --yes, as does GET or HEAD /network/me/, which may create the network",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": true,
