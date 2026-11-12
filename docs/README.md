@@ -1,13 +1,12 @@
 # hipc documentation
 
-Each layer is short and points to the next. A person starts at the README; a program starts at `hipc schema`.
+Each layer is short and points to the next. A person starts at the README; an agent starts at [agents.md](agents.md). What one command takes and does is in the binary, not here: `--help` at every level, and `hipc schema` for the same as JSON.
 
 | Read | When | Minutes |
 | --- | --- | --- |
 | [README](../README.md) | What `hipc` is, how to install it, how to log in, the first commands | 2 |
 | [getting-started.md](getting-started.md) | Install options, verifying a download, login, text and JSON, accounts and projects, profiles, completions | 5 |
-| [agents.md](agents.md) | The agent playbook: discovery, the output and error contract, confirmations, dry runs, pagination, selectors, secrets, App Engine, a worked loop; written to be pasted into an agent's context | 10 |
-| [commands.md](commands.md) | Every `--help` page, rendered from the binary by `scripts/docs-reference.sh`; a test keeps it current | reference |
+| [agents.md](agents.md) | For agents: how to find a command, the output and error contract, the safety rules, and examples; topic pages under [agents/](agents/) are read only when a task needs them | 2 |
 | [user-journeys.md](user-journeys.md) | Twelve scenarios with their commands in order, which `scripts/manual_test.sh` runs against the live API | reference |
 | [TENETS.md](../TENETS.md) | The contract: output, errors, exit codes, confirmation, secrets, naming, documentation | reference |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | How to build, test, and change `hipc`, and what a pull request carries | contributors |

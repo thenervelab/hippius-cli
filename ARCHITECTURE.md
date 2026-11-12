@@ -304,7 +304,7 @@ refusal's behaviour and both texts. A route only `hipc api` reaches is a row too
 5. An end-to-end test in `crates/hippius-cli/tests/e2e/` against the local server, and a row
    in `scripts/release-check.sh` (read-only against the live API), which reads the route
    from `hipc schema`.
-6. A regenerated `docs/commands.md`, a `CHANGELOG.md` line, and the docs pages that show it.
+6. A `CHANGELOG.md` line, and the docs pages that show it, if any (CONTRIBUTING, "Docs").
 
 ## How to add a route or an API version
 
