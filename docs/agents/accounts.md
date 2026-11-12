@@ -6,11 +6,11 @@ One token can act in the user's own account and in every shared account they bel
 
 | Select | For one run | For every later run | Back to the default |
 | --- | --- | --- | --- |
-| Account | `--account <ID>` or `HIPPIUS_ACCOUNT` | `hipc account use acc_123` | `hipc account use self` |
-| Project | `--project <ID>` or `HIPPIUS_PROJECT` | `hipc account projects use proj_123` | `hipc account projects use default` |
-| Billing account | `--billing <ID>` or `HIPPIUS_BILLING` | `hipc account billing-accounts use ba_123` | `hipc account billing-accounts use default` |
+| Account | `--account <ID>` or `HIPPIUS_ACCOUNT` | `hipc account use acct_0123456789abcdef0123` | `hipc account use self` |
+| Project | `--project <ID>` or `HIPPIUS_PROJECT` | `hipc account projects use proj_0123456789abcdef0123` | `hipc account projects use default` |
+| Billing account | `--billing <ID>` or `HIPPIUS_BILLING` | `hipc account billing-accounts use bill_9f8e7d6c5b4a39281706` | `hipc account billing-accounts use default` |
 
-`hipc account list` shows the accounts. `hipc auth status` shows what a run acts in, and where each selection came from (`flag`, `environment`, `profile`, or none).
+`hipc account list` shows the accounts. `hipc auth status` shows what a run acts in, and where the project and billing account selections came from (`flag`, `environment`, `profile`, or none).
 
 Rules worth knowing before a write:
 

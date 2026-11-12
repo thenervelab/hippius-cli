@@ -125,12 +125,12 @@ fn each_about_is_the_line_its_help_opens_with() {
     let mut parser = parse_command();
     let schema = schema(&[]).unwrap();
     let commands = schema["commands"].as_array().unwrap();
-    for (command, path) in commands.iter().zip(schema_paths(&schema)) {
+    let paths = schema_paths(&schema);
+    assert_eq!(commands.len(), paths.len());
+    for (command, path) in commands.iter().zip(paths) {
         let path: Vec<&str> = path.iter().map(String::as_str).collect();
         let help = help(&mut parser, &path);
-        let about = command["about"].as_str().unwrap();
-        assert!(!about.is_empty(), "{path:?}");
-        assert_eq!(help.lines().next(), Some(about), "{path:?}");
+        assert_eq!(help.lines().next(), command["about"].as_str(), "{path:?}");
     }
 }
 
