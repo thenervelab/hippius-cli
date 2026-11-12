@@ -355,8 +355,9 @@ pub(crate) enum Command {
     /// whole command path, such as s3 buckets create, lists that command alone. schema_version,
     /// global_flags, and errors are printed as without a path: the path filters commands and
     /// changes nothing else. A name that is not a command at its place is a usage error, exit 2,
-    /// that lists the commands there, and whose hint runs the nearest one. Each command lists
-    /// the routes it may send to in routes, each a method and a path template such as
+    /// that lists the commands there, and whose hint runs the nearest one. Each command's about
+    /// is its short help, the line its -h opens with. Each command lists the routes it may
+    /// send to in routes, each a method and a path template such as
     /// GET /api/compute/vms/{vm_id}/. api sends to the route it is given, so it lists only the
     /// guarded routes no other command sends to.
     #[command(after_help = examples(&[
@@ -539,7 +540,7 @@ fn examples(lines: &[&str]) -> String {
 }
 
 /// The end of the top-level help: the examples, the exit codes (tenet 4), how an agent or
-/// CI is detected and where it starts (tenets 3, 5, and 15), where a flag goes, said once
+/// CI is detected and how it finds a command (tenets 3, 5, 7, and 15), where a flag goes, said once
 /// here rather than on each flag that looks global, and where the docs and the issue
 /// tracker are.
 fn top_level_after_help() -> String {
@@ -557,8 +558,10 @@ read first); pass --yes only for the write you meant. hipc network get is one su
 the first call for an account may create its private network. A flag always wins over the
 detection: --output text prints text. AI_AGENT that is empty, or 0, false, no, or off in any
 case and around spaces, counts as unset.
-stdout is also JSON when it is not a terminal, or with --json, and hipc schema lists every
-command, its effect, and every error code with its exit code.
+stdout is also JSON when it is not a terminal, or with --json.
+To find a command, run hipc <group> --help down the tree; hipc schema <path>, such as
+hipc schema s3 buckets, prints each command's effect, confirmation, and guards as JSON,
+and every error code. Guide: https://github.com/thenervelab/hippius-cli/blob/main/docs/agents.md
 
 Flags: the global options go anywhere after hipc. Every other flag, --reveal, --public, and
 --replace included, goes after the command it belongs to.
@@ -1053,8 +1056,8 @@ mod tests {
     /// Every help page, the top level, each group, and each command, has examples;
     /// every example parses, so none goes stale; and the examples of a page run the
     /// command or group it documents, past any leading flag that takes no value, such as
-    /// `--dry-run`. The top-level help ends with the exit codes, where an agent starts, and
-    /// the issue tracker.
+    /// `--dry-run`. The top-level help ends with the exit codes, where an agent starts and
+    /// how it finds a command, and the issue tracker.
     #[test]
     fn every_page_has_examples_that_parse_and_the_top_level_help_says_where_to_go() {
         let mut problems = Vec::new();
@@ -1073,6 +1076,19 @@ mod tests {
         ] {
             assert!(
                 help.contains(part),
+                "{part} missing from the top-level help"
+            );
+        }
+        // The discovery loop an agent follows, whatever the line breaks: the help tree, the
+        // schema of a path, and the guide.
+        let words = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        for part in [
+            "run hipc <group> --help down the tree;",
+            "hipc schema <path>, such as hipc schema s3 buckets, prints",
+            "Guide: https://github.com/thenervelab/hippius-cli/blob/main/docs/agents.md",
+        ] {
+            assert!(
+                words.contains(part),
                 "{part} missing from the top-level help"
             );
         }

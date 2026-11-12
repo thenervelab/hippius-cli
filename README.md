@@ -45,29 +45,16 @@ hipc s3 buckets create photos --dry-run
 - `--dry-run` shows the requests and sends nothing.
 - A command that spends money, deletes, revokes, rotates, or cancels asks first, and needs `--yes` outside a terminal.
 - A command that prints a secret needs `--reveal`.
-- Every `--help` ends with examples. [docs/commands.md](docs/commands.md) is every help page on one page.
+- `--help` works at every level, from `hipc --help` down to one command, and every page ends with examples.
 
 ## For agents
 
-```sh
-hipc schema                                 # every command, its effect, flags, guards, and error codes; JSON, no network
-hipc schema compute app-engine              # only the commands under a path, same fields
-hipc compute vms list --json                # a pipe, CI=1, or AI_AGENT=1 already means JSON
-hipc s3 buckets create photos --dry-run     # the requests a real run would send; needs no token
-hipc s3 buckets create photos --yes         # --yes confirms a write; CI and AI_AGENT never do
-hipc s3 tokens create --kind master --reveal --yes   # --reveal allows an answer that holds a secret
-hipc billing transactions --all             # every page as one array
-# exit 0: done; 1: the API or the runtime failed; 2: change the invocation, nothing was sent
-# a failure is one JSON object on stderr: {"error":{"code":...,"message":...,"hint":...,"retryable":...}}
-```
-
-[docs/agents.md](docs/agents.md) is the playbook, written to paste into an agent's context. `hipc api GET /accounts/` reaches any console endpoint with the same token, rules, and errors.
+Point the agent at [docs/agents.md](docs/agents.md), about 2,000 tokens. From there it finds a command with `hipc --help` and `hipc schema s3 buckets`, previews a write with `--dry-run`, and asks the user before it adds `--yes`. Output is JSON on a pipe, and a failure is one JSON object on stderr with a `code` and a `hint`.
 
 ## Read more
 
 - [docs/getting-started.md](docs/getting-started.md): install options, login, text and JSON, accounts and projects, profiles, completions.
-- [docs/agents.md](docs/agents.md): the agent playbook.
-- [docs/commands.md](docs/commands.md): every `--help` page, generated from the binary.
+- [docs/agents.md](docs/agents.md): how an agent finds and runs a command for its user.
 - [docs/user-journeys.md](docs/user-journeys.md): twelve scenarios with their commands in order.
 - [TENETS.md](TENETS.md): the contract, tenet by tenet.
 

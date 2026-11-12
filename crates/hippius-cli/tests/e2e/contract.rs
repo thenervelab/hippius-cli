@@ -146,6 +146,7 @@ fn schema_lists_every_command_with_its_bits() {
             fields,
             [
                 "path",
+                "about",
                 "effect",
                 "confirmation",
                 "reveal",
@@ -345,6 +346,13 @@ fn schema_with_a_path_lists_only_the_commands_under_it() {
         leaf["commands"][0]["path"],
         serde_json::json!(["s3", "buckets", "create"])
     );
+    // `about` is the sentence the command's `-h` opens with; every command is checked
+    // in-process by `spec::help_agrees::each_about_is_the_line_its_help_opens_with`.
+    let help = hipc(&["s3", "buckets", "create", "-h"]);
+    assert_eq!(
+        text(&help.stdout).lines().next(),
+        leaf["commands"][0]["about"].as_str()
+    );
 
     for (args, hint) in [
         (
@@ -380,10 +388,9 @@ fn schema_with_a_path_lists_only_the_commands_under_it() {
 /// The repository README, read at compile time so an edit to it rebuilds this test.
 const README: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"));
 
-/// The pages that show `hipc` commands and are held to the same scan as the README (tenet
-/// 16): the generated reference is the help itself, and the user journeys show flags before
-/// the path, so neither is here.
-const COMMAND_PAGES: [(&str, &str); 3] = [
+/// The pages that show how to install `hipc`. The agent pages leave that to the person and
+/// show none.
+const INSTALL_PAGES: [(&str, &str); 2] = [
     ("README.md", README),
     (
         "docs/getting-started.md",
@@ -391,10 +398,6 @@ const COMMAND_PAGES: [(&str, &str); 3] = [
             env!("CARGO_MANIFEST_DIR"),
             "/../../docs/getting-started.md"
         )),
-    ),
-    (
-        "docs/agents.md",
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/agents.md")),
     ),
 ];
 
@@ -412,7 +415,7 @@ fn the_install_one_liner_is_the_scripts_own() {
     assert!(script.contains(&format!("#   url={url}\n")));
     assert!(script.contains(&format!("#   {curl} \"$url\" | sh\n")));
     let line = format!("{curl} {url} | sh");
-    for (page, text) in COMMAND_PAGES {
+    for (page, text) in INSTALL_PAGES {
         let shown: Vec<&str> = text
             .lines()
             .filter(|l| l.contains("install.sh") && l.contains("curl"))
@@ -483,11 +486,11 @@ fn a_conflict_marker_is_found_and_a_heading_underline_is_not() {
 
 /// The binary parses a command a page shows, as the in-process check
 /// `spec::doc_commands::page_commands_start_with_a_schema_path_and_parse` does for every
-/// command of the README, `docs/getting-started.md`, and `docs/agents.md`.
+/// command of the README, `docs/getting-started.md`, and the agent pages.
 #[test]
 fn a_readme_command_parses() {
-    assert!(README.contains("hipc billing transactions --all"));
-    let out = hipc(&["billing", "transactions", "--all", "--help"]);
+    assert!(README.contains("hipc compute vms list --json"));
+    let out = hipc(&["compute", "vms", "list", "--json", "--help"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
 }
 

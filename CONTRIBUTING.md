@@ -120,7 +120,9 @@ scenario updates the script and its block in the catalogue together.
 
 Documentation is part of the command (tenet 16). The layers, each short and pointing to the
 next, are listed in [docs/README.md](docs/README.md): the README, `docs/getting-started.md`,
-`docs/agents.md`, `docs/commands.md`, and `docs/user-journeys.md`.
+`docs/agents.md` and its topic pages under `docs/agents/`, and `docs/user-journeys.md`. The
+binary is the reference: what one command takes and does is said by its `--help` and by
+`hipc schema`, never by a page.
 
 - Help text is the contract's prose. The short help is one sentence in sentence case with no
   final period and the flag the command needs at the end (`; needs --yes`); the long help says
@@ -130,19 +132,21 @@ next, are listed in [docs/README.md](docs/README.md): the README, `docs/getting-
   hold the shape (one sentence, sentence case, no final period, no backticks, examples that
   parse); review holds the content (what it sends, reads first, and refuses, and the flag it
   names).
-- `docs/commands.md` is generated. After any change to help text, regenerate it and commit the
-  result; the `docs_reference` test fails while it differs from the built binary:
-
-  ```sh
-  cargo build --locked && scripts/docs-reference.sh target/debug/hipc > docs/commands.md
-  ```
+- A page teaches how to use `hipc`, not what each command takes: the grammar, how to find a
+  command, the output and error contract, the safety rules, and a few examples chosen to show a
+  point. It does not list a command's flags or every command of a group; it says how to ask
+  the binary. So adding or removing a command changes no page unless it changes how an agent
+  starts, or a rule that holds across commands.
+- `docs/agents.md` is what an agent reads first, and it stays under 10 KB; each page under
+  `docs/agents/` stays under 6 KB and is opened only when a task needs it. A test holds both
+  sizes. Before adding a paragraph, check that `--help` or `hipc schema` cannot say it.
 
 - A change to a command's surface (a command, a flag, an effect, a confirmation, a guard, an
-  error code) updates, in the same pull request: `CHANGELOG.md`; the README and
-  `docs/getting-started.md` or `docs/agents.md` where they show the command; and, when an
+  error code) updates, in the same pull request: `CHANGELOG.md`; the pages that show the
+  command, if any; and, when an
   agent's first steps change, the `llms.txt` and the CLI section of docs.hippius.com (once
   it is published), whose source is the public `hippius-doc` repository. The contract tests
-  run every `hipc` command the README, `docs/getting-started.md`, and `docs/agents.md` show,
+  run every `hipc` command the README, `docs/getting-started.md`, and the agent pages show,
   so a renamed command or flag fails until the pages follow.
 - Prose follows tenet 15: plain sentences, literals in backticks, no exclamation marks, no
   "please", and nothing private: no internal repository, file, or person's name.

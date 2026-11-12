@@ -118,6 +118,22 @@ fn every_help_lists_its_own_options_before_the_global_ones() {
     }
 }
 
+/// Each command's `about` in `hipc schema` is the sentence its `-h` opens with, so the
+/// schema alone maps a task to a command in the words the help uses.
+#[test]
+fn each_about_is_the_line_its_help_opens_with() {
+    let mut parser = parse_command();
+    let schema = schema(&[]).unwrap();
+    let commands = schema["commands"].as_array().unwrap();
+    let paths = schema_paths(&schema);
+    assert_eq!(commands.len(), paths.len());
+    for (command, path) in commands.iter().zip(paths) {
+        let path: Vec<&str> = path.iter().map(String::as_str).collect();
+        let help = help(&mut parser, &path);
+        assert_eq!(help.lines().next(), command["about"].as_str(), "{path:?}");
+    }
+}
+
 /// The `-h` headings whose lines are arguments.
 const ARGUMENT_HEADINGS: [&str; 3] = ["Arguments", "Options", "Global options"];
 

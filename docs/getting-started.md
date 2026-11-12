@@ -67,7 +67,7 @@ hipc s3 buckets create photos --yes
 - Reads change nothing. `--dry-run` shows the requests and sends nothing.
 - A command that spends money, deletes, revokes, rotates, or cancels asks first, and needs `--yes` outside a terminal. So do opening or closing a support ticket, `hipc network get` (the first call creates the private network), `hipc hub namespace create`, and `hipc auth logout`.
 - A command that prints a secret needs `--reveal`, and prints it once.
-- Every `--help` ends with examples. [commands.md](commands.md) has every command, App Engine and the private network included, and [user-journeys.md](user-journeys.md) has twelve scenarios in order.
+- `--help` works at every level: `hipc --help` lists the services, `hipc compute --help` the resources of one, and a command's own `--help` its flags, ending with examples. [user-journeys.md](user-journeys.md) has twelve scenarios in order.
 
 ## Text and JSON
 
@@ -128,6 +128,6 @@ hipc completions fish > ~/.config/fish/completions/hipc.fish
 
 ## Next
 
-- [agents.md](agents.md): the output and error contract, and a worked loop.
+- [agents.md](agents.md): how an agent finds and runs a command, and the output and error contract.
 - [user-journeys.md](user-journeys.md): twelve scenarios with their commands in order.
 - [TENETS.md](../TENETS.md): the rules `hipc` keeps.
