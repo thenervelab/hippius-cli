@@ -45,7 +45,7 @@ hipc s3 buckets create photos --dry-run
 - `--dry-run` shows the requests and sends nothing.
 - A command that spends money, deletes, revokes, rotates, or cancels asks first, and needs `--yes` outside a terminal.
 - A command that prints a secret needs `--reveal`.
-- Every `--help` ends with examples. [docs/commands.md](docs/commands.md) is every help page on one page.
+- `--help` works at every level, from `hipc --help` down to one command, and every page ends with examples.
 
 ## For agents
 
