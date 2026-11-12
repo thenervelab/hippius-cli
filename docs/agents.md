@@ -54,7 +54,7 @@ A failure prints one JSON object as the last line of stderr: `{"error":{"code","
 | 2 | `confirmation_required` | Nothing was sent. Ask the user, then add `--yes`. |
 | 2 | `reveal_required`, `public_required`, `remove_others_required`, `replace_required`, `change_isolation_required` | A second risk needs its own flag. See below. |
 | 2 | `account_scope_unsupported`, `project_scope_unsupported`, `billing_scope_unsupported` | This command can't act in the selected account, project, or billing account. Drop that selector. |
-| 1 | `auth` | No token. The user runs `hipc auth login` in their own terminal. |
+| 1 | `auth` | No token for this API origin, or a 401. Follow the hint; for no token, the user runs `hipc auth login` in their own terminal. |
 | 1 | `not_found`, `conflict`, `validation`, `permission`, `payment_required`, and the membership codes such as `owner_only` | The server refused. `details` holds its answer. |
 | 1 | `rate_limited`, `unavailable`, `timeout` | Retry only if `retryable` is true, after `retry_after_ms`. |
 | 1 | `partial_failure`, `internal` | Read stdout and `side_effects` first. |

@@ -2,7 +2,7 @@
 
 Read this before a command that creates or rotates a key, or creates a database.
 
-A secret is printed once, when it is issued, and never again: a later read shows `secret: null` and a short preview. If it is lost, rotate it. A command whose answer holds a secret needs `--reveal`, or it exits 2 `reveal_required` and sends nothing. `hipc schema` marks them with `reveal`.
+An issued S3 or Hub secret is printed once and never again: a later read shows `secret: null` and a short preview. If it is lost, rotate it. A presigned URL and a Kubernetes backup's download links are made fresh on each call, and are secrets too. A command whose answer holds a secret needs `--reveal`, or it exits 2 `reveal_required` and sends nothing. `hipc schema` marks them with `reveal`.
 
 ## Keep it out of the transcript
 
@@ -23,8 +23,8 @@ With `--from-token-file`, `hipc s3 configure` reads the secret from the file the
 
 ## Secrets that go in, not out
 
-- A DNS provider credential (`--credentials-file` of `hipc cdn hostnames dns-setup`) and App Engine secret values (`--secrets-file` of `hipc compute app-engine apps create`) come only from a file that is the user's own, mode 0600, not a symlink, in a directory no one else can write. Ask the user to create it; don't write the values into it yourself.
+- A DNS provider credential (`--credentials-file` of `hipc cdn hostnames dns-setup`) and App Engine secret values (`--secrets-file` of `hipc compute app-engine apps create`) come only from a file that is the user's own, mode 0600, not a symlink, in a directory no one else can write. Ask the user to create it; don't write the values into it yourself. In this beta, Hippius operators can read App Engine secret values.
 - A Bittensor hotkey's words go only in the file `--hotkey-file` names.
-- An S3 secret key (`--secret-key-file` of `hipc s3 configure`) and an invite token (`--token-file` of `hipc account invites accept`) are read from files too. The API token goes only to `hipc auth login`, on the user's machine.
+- An S3 secret key (`--secret-key-file` of `hipc s3 configure`), an invite token (`--token-file` of `hipc account invites accept`), and a Kubernetes cluster key (`--cluster-key-file`) are read from files too. The API token goes only to `hipc auth login`, on the user's machine.
 
 `--debug` prints each request's method, its URL with query values redacted, and its status, never a header or a body, so its lines are safe to show.
