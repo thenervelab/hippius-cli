@@ -497,6 +497,16 @@ fn leaf<'a>(root: &'a clap::Command, path: &[String]) -> &'a clap::Command {
         .expect("a path from command_paths resolves")
 }
 
+/// The short help of `command`, the sentence `-h` prints first. Every command has one:
+/// `cli::tests::every_help_text_is_plain_and_one_sentence_per_short_line` fails on a page
+/// without it.
+fn about(command: &clap::Command) -> String {
+    command
+        .get_about()
+        .map(ToString::to_string)
+        .expect("every command has a short help")
+}
+
 /// The edit distance between `a` and `b`, in characters: the fewest insertions, deletions,
 /// and substitutions that turn one into the other.
 fn distance(a: &str, b: &str) -> usize {
@@ -706,6 +716,9 @@ pub(crate) fn schema(prefix: &[String]) -> hippius::Result<Value> {
             let command = leaf(&root, path);
             Ok(json!({
                 "path": path,
+                // The short help, the line `-h` prints first, so the filtered schema alone maps
+                // a task to its command.
+                "about": about(command),
                 "effect": spec.effect.as_str(),
                 "confirmation": spec.confirmation.asks(),
                 "reveal": spec.reveal.asks(),
@@ -1999,6 +2012,7 @@ mod tests {
             doc["commands"][0],
             json!({
                 "path": ["version"],
+                "about": "Print the version; does not touch the network",
                 "effect": "read_only",
                 "confirmation": false,
                 "reveal": false,
