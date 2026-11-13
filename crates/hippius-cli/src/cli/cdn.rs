@@ -89,11 +89,11 @@ pub(crate) enum Cdn {
     Waf(CdnWaf),
     /// The account's WAF lists of IP addresses and networks, AS numbers, or countries, which
     /// WAF rules name
-    #[command(subcommand, after_help = examples(&[
+    #[command(subcommand, after_help = examples_with_guide(&[
         "hipc cdn lists list",
         "hipc cdn lists create blocked_ips --kind ip --items-file items.txt",
         "hipc cdn lists items create blocked_ips --items-file items.txt --yes",
-    ]))]
+    ], "/use/cdn/firewall"))]
     Lists(CdnLists),
 }
 

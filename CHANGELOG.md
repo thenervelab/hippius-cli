@@ -9,7 +9,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 ### Added
 
 - `hipc schema` gives each command an `about`, its short help, the line its `-h` opens with, so `hipc schema s3 buckets` alone maps a task to a command. A field is only added, so `schema_version` stays `4`.
-- The `--help` of each command group (`auth`, `account`, `billing`, `drive`, `s3`, `hub`, `compute`, `cdn`, `support`, `network`, `api`) and of `compute vms`, `databases`, `kubernetes`, `runners`, `app-engine`, and `cdn waf` ends its examples with a `Guide:` line, the group's guide on docs.hippius.com, for the prices, limits, and recipes the help does not hold.
+- The `--help` of each top-level group (`auth`, `account`, `billing`, `drive`, `s3`, `hub`, `compute`, `cdn`, `support`, `network`, `api`), and of each group below that a guide page covers (`account projects`, `compute app-engine`, `compute vms`, `compute public-ip`, `compute firewall`, `compute exposures`, `compute backups`, `compute runners`, `compute databases`, `compute kubernetes`, `cdn waf`, `cdn lists`, `support tickets`), ends its examples with a `Guide:` line: the group's guide on docs.hippius.com, for what the help does not cover.
 
 ### Changed
 

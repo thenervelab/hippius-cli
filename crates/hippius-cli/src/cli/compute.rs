@@ -138,33 +138,33 @@ pub(crate) enum Compute {
     Vms(Vms),
     /// Attach, read, and detach a VM's dedicated public IPv4, and see what is free
     #[command(subcommand)]
-    #[command(after_help = examples(&[
+    #[command(after_help = examples_with_guide(&[
         "hipc compute public-ip availability",
         "hipc compute public-ip create vm-1a2b --yes",
-    ]))]
+    ], "/use/compute/networking"))]
     PublicIp(PublicIp),
     /// The inbound rules on a VM's public IPv4: every port is closed until a rule opens it
     #[command(subcommand)]
-    #[command(after_help = examples(&[
+    #[command(after_help = examples_with_guide(&[
         "hipc compute firewall get vm-1a2b",
         "hipc compute firewall update vm-1a2b --rules-file rules.json --yes",
-    ]))]
+    ], "/use/compute/networking"))]
     Firewall(Firewall),
     /// Publish a VM's ports on the public edge at a generated hostname, list them, and take them
     /// down
     #[command(subcommand)]
-    #[command(after_help = examples(&[
+    #[command(after_help = examples_with_guide(&[
         "hipc compute exposures list vm-1a2b",
         "hipc compute exposures create vm-1a2b --port 8080 --yes",
-    ]))]
+    ], "/use/compute/networking"))]
     Exposures(Exposures),
     /// A VM's backup policy, its backups, and restoring its disk from one of them
     #[command(subcommand)]
-    #[command(after_help = examples(&[
+    #[command(after_help = examples_with_guide(&[
         "hipc compute backups options",
         "hipc compute backups policy update vm-1a2b --interval 3600 --yes",
         "hipc compute backups list vm-1a2b",
-    ]))]
+    ], "/use/compute/vm-backups"))]
     Backups(Backups),
     /// GitHub Actions runners: a job with runs-on: hippius-small, hippius-medium, or hippius-large,
     /// with an optional -ssd and country suffix, runs on a single-use VM of the account, billed to
