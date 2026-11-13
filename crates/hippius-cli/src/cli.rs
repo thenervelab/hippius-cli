@@ -380,25 +380,25 @@ pub(crate) enum Command {
         shell: clap_complete::Shell,
     },
     /// Store, check, or remove the console API token
-    #[command(subcommand, after_help = examples(AUTH_EXAMPLES))]
+    #[command(subcommand, after_help = examples_with_guide(AUTH_EXAMPLES, "/use/console/settings"))]
     Auth(Auth),
     /// The accounts the token can act in and the one selected, its team, projects, project
     /// transfers, and billing accounts, and the signed-in user's email settings and referral links
-    #[command(subcommand, after_help = examples(ACCOUNT_EXAMPLES))]
+    #[command(subcommand, after_help = examples_with_guide(ACCOUNT_EXAMPLES, "/use/console/team"))]
     Account(Account),
     /// The balance, compute burn rate and usage, every plan in one view, transactions, and
     /// invoices
-    #[command(subcommand, after_help = examples(BILLING_EXAMPLES))]
+    #[command(subcommand, after_help = examples_with_guide(BILLING_EXAMPLES, "/use/console/billing"))]
     Billing(Billing),
     /// Drive plans and the Drive subscription
     ///
     /// Drive files stay in the Drive apps and SDK.
-    #[command(subcommand, after_help = examples(DRIVE_EXAMPLES))]
+    #[command(subcommand, after_help = examples_with_guide(DRIVE_EXAMPLES, "/use/drive"))]
     Drive(Drive),
     /// S3 plans, buckets, and tokens, and an AWS CLI profile for s3.hippius.com
     ///
     /// Object bytes go through the AWS CLI, boto3, or rclone.
-    #[command(subcommand, after_help = examples(S3_EXAMPLES))]
+    #[command(subcommand, after_help = examples_with_guide(S3_EXAMPLES, "/storage/s3/advanced"))]
     S3(S3),
     /// Hub plans, the Hub subscription, the registry namespace, its usage, its repositories and
     /// artifacts, and its CI keys (hipc hub keys)
@@ -411,7 +411,7 @@ pub(crate) enum Command {
     /// its login and its secret on stdin, as the answer's docker_login_command does. hippius-hub
     /// registry rotate-token, like hipc hub namespace robot rotate, replaces the namespace's
     /// docker secret, which every other login uses.
-    #[command(subcommand, after_help = examples(HUB_EXAMPLES))]
+    #[command(subcommand, after_help = examples_with_guide(HUB_EXAMPLES, "/registry"))]
     Hub(Hub),
     /// Virtual machines with their catalog, quota, public IPv4, firewall, exposures, and backups,
     /// App Engine apps, managed databases and Kubernetes, GitHub Actions runners, and SSH keys
@@ -421,7 +421,7 @@ pub(crate) enum Command {
     /// monthly budget, hipc account projects budget update, mails alerts and, with
     /// --block-launches true, refuses new launches that add cost at its limit; it does not stop
     /// a VM that runs.
-    #[command(subcommand, after_help = examples(COMPUTE_EXAMPLES))]
+    #[command(subcommand, after_help = examples_with_guide(COMPUTE_EXAMPLES, "/use/compute"))]
     Compute(Compute),
     /// CDN zones that serve an S3 bucket, with their spend cap, custom hostnames, cache purges
     /// and rules, traffic, and WAF, plus the WAF lists, the regions, the prices, and an estimate
@@ -429,27 +429,27 @@ pub(crate) enum Command {
     /// CDN is billed by usage from the balance, plus a monthly fee per custom hostname, and the
     /// WAF add-on by the hour while its mode is not off; hipc cdn prices is the price list. There
     /// is no CDN plan.
-    #[command(subcommand, after_help = examples(CDN_EXAMPLES))]
+    #[command(subcommand, after_help = examples_with_guide(CDN_EXAMPLES, "/use/cdn"))]
     Cdn(Cdn),
     /// Support tickets: open one, list them, read one, reply, read its messages, and close it
     ///
     /// A ticket is read by a person on the Hippius support team. Attachments and the handoff
     /// from the chat stay on hipc api.
-    #[command(subcommand, after_help = examples(SUPPORT_EXAMPLES))]
+    #[command(subcommand, after_help = examples_with_guide(SUPPORT_EXAMPLES, "/use/console/support"))]
     Support(Support),
     /// The account's private network: its peers, groups, access policies, and VPC networks
     ///
     /// An account's network is created by hipc network create, or by the first hipc network
     /// get; until then the other network commands answer that it is not set up. Enrolling a
     /// device, its enroll keys, and the isolation mode stay on hipc api.
-    #[command(subcommand, after_help = examples(NETWORK_EXAMPLES))]
+    #[command(subcommand, after_help = examples_with_guide(NETWORK_EXAMPLES, "/use/compute/networking#your-private-network"))]
     Network(Network),
     // The help is built from the library's provisioning table ([`api_about`]), as the --reveal
     // help is from the secret table, so a doc comment here would go stale.
     #[command(
         about = api_about(),
         long_about = api_long_about(),
-        after_help = examples(API_EXAMPLES)
+        after_help = examples_with_guide(API_EXAMPLES, "/use/api")
     )]
     Api(Api),
 }
@@ -539,6 +539,18 @@ fn examples(lines: &[&str]) -> String {
     text
 }
 
+/// The docs site. The top-level help links it, and each group's help links its guide there
+/// ([`examples_with_guide`]).
+const DOCS_URL: &str = "https://docs.hippius.com";
+
+/// A group's `Examples:` section, then a line linking its guide, `path` under [`DOCS_URL`]
+/// such as `/use/cdn`. An agent that reads the group's help follows a URL printed there, and
+/// the guide says what the help cannot: the prices, the limits, and the recipes. The line is
+/// not indented, so the examples end before it.
+fn examples_with_guide(lines: &[&str], path: &str) -> String {
+    format!("{}\nGuide: {DOCS_URL}{path}\n", examples(lines))
+}
+
 /// The end of the top-level help: the examples, the exit codes (tenet 4), how an agent or
 /// CI is detected and how it finds a command (tenets 3, 5, 7, and 15), where a flag goes, said once
 /// here rather than on each flag that looks global, and where the docs and the issue
@@ -566,7 +578,7 @@ and every error code. Guide: https://github.com/thenervelab/hippius-cli/blob/mai
 Flags: the global options go anywhere after hipc. Every other flag, --reveal, --public, and
 --replace included, goes after the command it belongs to.
 
-Docs: https://docs.hippius.com
+Docs: {DOCS_URL}
 Issues: {}",
         examples(TOP_EXAMPLES),
         hippius::ISSUES_URL
@@ -1133,6 +1145,56 @@ mod tests {
             sub_path.push(sub.get_name().to_owned());
             examples_of(sub, &sub_path, problems);
         }
+    }
+
+    /// Every top-level group, and `hipc api`, links its guide on the docs site in its help, on
+    /// a line after the examples, so an agent that reads `hipc cdn --help` finds the CDN guide.
+    #[test]
+    fn every_group_help_links_its_guide_after_the_examples() {
+        assert_eq!(
+            examples_with_guide(&["hipc cdn zones list"], "/use/cdn"),
+            "Examples:\n  hipc cdn zones list\n\nGuide: https://docs.hippius.com/use/cdn\n"
+        );
+
+        let mut unlinked = Vec::new();
+        let mut groups = 0;
+        for group in Cli::command()
+            .get_subcommands()
+            .filter(|c| c.has_subcommands() || c.get_name() == "api")
+        {
+            groups += 1;
+            let after = group
+                .get_after_help()
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            let linked = after
+                .split_once("\n\nGuide: https://docs.hippius.com/")
+                .is_some_and(|(examples, path)| {
+                    examples.starts_with("Examples:\n") && !path.trim().is_empty()
+                });
+            if !linked {
+                unlinked.push(group.get_name().to_owned());
+            }
+        }
+        assert_eq!(groups, 11, "the top-level groups, api included");
+        assert!(unlinked.is_empty(), "no guide line: {unlinked:?}");
+
+        // The rendered page keeps the guide between the examples and the global options
+        // pointer that `without_global_help` appends.
+        let mut root = parse_command();
+        let cdn = root
+            .find_subcommand_mut("cdn")
+            .expect("cdn is a top-level group")
+            .render_long_help()
+            .to_string();
+        let guide = cdn
+            .find("\nGuide: https://docs.hippius.com/use/cdn\n")
+            .expect("the cdn help links the CDN guide");
+        assert!(cdn.find("Examples:").is_some_and(|at| at < guide), "{cdn}");
+        assert!(
+            cdn.find(GLOBAL_OPTIONS_POINTER).is_some_and(|at| at > guide),
+            "{cdn}"
+        );
     }
 
     /// The examples check finds a page without examples, an example that does not parse,

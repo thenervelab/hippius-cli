@@ -7,7 +7,8 @@ use clap::{Args, Subcommand, ValueEnum};
 use crate::cli::values::{Charset, Dash, Spaces, label, word};
 use crate::cli::{
     AppEngine, Backups, Databases, Exposures, FailoverMode, Firewall, Kubernetes, ListArgs,
-    RESIZE_ID, Runners, SSH_KEY_ID, VmTarget, backup_interval, examples, number, region,
+    RESIZE_ID, Runners, SSH_KEY_ID, VmTarget, backup_interval, examples, examples_with_guide,
+    number, region,
 };
 
 #[derive(Debug, Subcommand)]
@@ -84,11 +85,11 @@ pub(crate) enum Compute {
     /// operators can read an app's secrets and volumes. An app is a VM, billed as one of its
     /// flavor with a public IPv4.
     #[command(subcommand)]
-    #[command(after_help = examples(&[
+    #[command(after_help = examples_with_guide(&[
         "hipc compute app-engine get",
         "hipc compute app-engine validate --compose-file compose.yaml",
         "hipc compute app-engine apps list",
-    ]))]
+    ], "/use/compute/app-engine"))]
     AppEngine(AppEngine),
     /// The regions a VM can launch in
     #[command(after_help = examples(&[
@@ -129,11 +130,11 @@ pub(crate) enum Compute {
     },
     /// List, launch, and control virtual machines
     #[command(subcommand)]
-    #[command(after_help = examples(&[
+    #[command(after_help = examples_with_guide(&[
         "hipc compute vms list",
         "hipc compute vms create --flavor small --ssh-key-id 1 --yes",
         "hipc compute vms get vm-1a2b",
-    ]))]
+    ], "/use/virtual-machines"))]
     Vms(Vms),
     /// Attach, read, and detach a VM's dedicated public IPv4, and see what is free
     #[command(subcommand)]
@@ -174,11 +175,11 @@ pub(crate) enum Compute {
     /// on the GitHub organization or user and linked to the account: connect prints the install
     /// URL, and the console finishes the link.
     #[command(subcommand)]
-    #[command(after_help = examples(&[
+    #[command(after_help = examples_with_guide(&[
         "hipc compute runners connect",
         "hipc compute runners settings update --enabled true --yes",
         "hipc compute runners jobs",
-    ]))]
+    ], "/use/compute/runners"))]
     Runners(Runners),
     /// The SSH keys stored on the signed-in user, which vms create --ssh-key-id installs
     #[command(subcommand)]
@@ -198,11 +199,11 @@ pub(crate) enum Compute {
     AccountSshKeys,
     /// Managed PostgreSQL 16, 17, and 18 on confidential VMs, billed by usage from the balance
     #[command(subcommand)]
-    #[command(after_help = examples(&[
+    #[command(after_help = examples_with_guide(&[
         "hipc compute databases list",
         "hipc compute databases create --tier starter --size s --engine-version 17 --reveal --yes",
         "hipc compute databases get 7",
-    ]))]
+    ], "/use/compute/databases"))]
     Databases(Databases),
     /// Managed Kubernetes on three confidential masters, billed by usage from the balance: read
     /// clusters, delete them, and manage node pools, operations, and nodes
@@ -212,10 +213,10 @@ pub(crate) enum Compute {
     /// when it created the cluster, passed as --cluster-key-file. Creating a cluster, which
     /// generates that key, stays in the console.
     #[command(subcommand)]
-    #[command(after_help = examples(&[
+    #[command(after_help = examples_with_guide(&[
         "hipc compute kubernetes clusters list",
         "hipc compute kubernetes operations list 7",
-    ]))]
+    ], "/use/compute/kubernetes"))]
     Kubernetes(Kubernetes),
 }
 
