@@ -7,7 +7,8 @@ use clap::{Args, Subcommand, ValueEnum};
 
 use crate::cli::values::{Spaces, label};
 use crate::cli::{
-    CdnLists, CdnWaf, PURGE_ID, TierZones, ZoneTarget, country_code, examples, number, waf,
+    CdnLists, CdnWaf, PURGE_ID, TierZones, ZoneTarget, country_code, examples, examples_with_guide,
+    number, waf,
 };
 use crate::units;
 
@@ -80,19 +81,19 @@ pub(crate) enum Cdn {
     Stats(CdnStats),
     /// A zone's web application firewall: its settings, custom rules, rate limits, and
     /// versions; billed while its mode is not off
-    #[command(subcommand, after_help = examples(&[
+    #[command(subcommand, after_help = examples_with_guide(&[
         "hipc cdn waf get zab12cd34ef56",
         "hipc cdn waf update zab12cd34ef56 --mode log --yes",
         "hipc cdn waf rules get zab12cd34ef56",
-    ]))]
+    ], "/use/cdn/firewall"))]
     Waf(CdnWaf),
     /// The account's WAF lists of IP addresses and networks, AS numbers, or countries, which
     /// WAF rules name
-    #[command(subcommand, after_help = examples(&[
+    #[command(subcommand, after_help = examples_with_guide(&[
         "hipc cdn lists list",
         "hipc cdn lists create blocked_ips --kind ip --items-file items.txt",
         "hipc cdn lists items create blocked_ips --items-file items.txt --yes",
-    ]))]
+    ], "/use/cdn/firewall"))]
     Lists(CdnLists),
 }
 

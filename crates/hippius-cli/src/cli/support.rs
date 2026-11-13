@@ -5,12 +5,13 @@ use std::path::PathBuf;
 use clap::{Args, Subcommand, ValueEnum};
 
 use crate::cli::values::{Spaces, label};
-use crate::cli::{ListArgs, SUPPORT_EXAMPLES, TICKET_ID, examples, number};
+use crate::cli::{ListArgs, SUPPORT_EXAMPLES, TICKET_ID, examples, examples_with_guide, number};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Support {
     /// Open, list, read, reply to, and close support tickets, and read their messages
-    #[command(subcommand, after_help = examples(SUPPORT_EXAMPLES))]
+    #[command(subcommand)]
+    #[command(after_help = examples_with_guide(SUPPORT_EXAMPLES, "/use/console/support"))]
     Tickets(Tickets),
 }
 

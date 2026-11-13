@@ -98,7 +98,7 @@ hipc support tickets list
 
 ## Read on only when the task needs it
 
-- The product guides at https://docs.hippius.com explain each service with step-by-step recipes (S3, CDN, compute, Hub); its index for agents is https://docs.hippius.com/llms.txt.
+- The product guides at https://docs.hippius.com explain each service with step-by-step recipes (S3, CDN, compute, Hub); its index for agents is https://docs.hippius.com/llms.txt. A group's `--help`, such as `hipc cdn --help`, ends with a `Guide:` line naming the guide page for that group.
 
 - [Accounts, projects, and billing accounts](agents/accounts.md): acting in a shared account or a project, and the `*_scope_unsupported` refusals.
 - [Secrets](agents/secrets.md): S3 and Hub keys, database credentials, and DNS and App Engine secrets.
