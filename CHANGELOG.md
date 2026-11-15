@@ -20,6 +20,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 - `docs/commands.md`, the render of every `--help` page, and `scripts/docs-reference.sh`, which made it. `--help` at every level and `hipc schema` with a path give the same, from the installed binary.
 
+### Fixed
+
+- `hipc s3 configure` warns when the AWS credentials file or the AWS config file has another hard link. The rewrite renames a new file over that name, so the other name keeps the old keys. Text mode prints a `warning:` that names the file; JSON adds the same text to `warnings`. A file with one link does not warn, and a dry run writes nothing, so it does not warn either. TENETS tenet 8 says so.
+
 ## [0.16.0] - 2026-11-12
 
 ### Added

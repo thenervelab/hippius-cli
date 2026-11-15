@@ -169,7 +169,7 @@ The config file is `~/.hippius/config.toml`, or the path in `HIPPIUS_CONFIG`. It
 - `hipc s3 configure` holds the AWS files to the same rules.
 - `hipc` never changes a mode for you; the error names the `chmod` that fixes it. Access-control lists are not checked.
 - A key `hipc` does not know, at the top level, in a profile, or in its `hub_subscribe` marker, such as one a newer `hipc` wrote, is accepted, kept as it is when `hipc` rewrites the file, and named once per run that reads the file by where it is in a `warning:` line (a `warnings` entry in JSON), never by its name or value. Two versions of `hipc` can share one file.
-- A change rewrites the whole file, so comments are not kept. The rename splits a hard link: the other name keeps the old contents, tokens included. The change that splits it warns, once; later changes see a file with one link and do not.
+- A change rewrites the whole file, so comments are not kept. The rename splits a hard link: the other name keeps the old contents, tokens included. The change that splits it warns, once, naming the file; later changes see a file with one link and do not. A write to an AWS file warns the same way. A dry run writes nothing, so it does not warn about a hard link.
 - `hipc` clears its own copies of the token from memory when it is done with them, best effort, sets its core dump limit to zero at start, and on Linux marks itself not dumpable, so a crash dump or another process of the user does not get the token from it.
 
 The origin must be `https`, except the loopback addresses `127.0.0.1` and `[::1]`. Redirects are never followed.
@@ -268,7 +268,7 @@ Every stderr line in text mode starts with one of these labels:
 | `error:` | What failed, in one line. | Once per failure. |
 | `hint:` | One change likely to fix it. | Only when `hipc` knows a fix; every exit-2 failure has one. |
 | `note:` | A fact about a result that succeeded. | Text mode; `--quiet` drops it. |
-| `warning:` | It worked, but may not do what the caller expects. | Text mode; `--quiet` drops it. Never changes the exit code. JSON mode puts a config file warning, a deprecated route's warning, and `hipc api`'s warning about a route it does not know in a top-level `warnings` array of texts, on the document or beside `error`; a result with no place for a field, the array `--all` prints, a `hipc api` body, or a document that holds a `warnings` field of its own, which is never overwritten, keeps its shape, and its warnings go on stderr as one `{"warnings":[...]}` object. |
+| `warning:` | It worked, but may not do what the caller expects. | Text mode; `--quiet` drops it. Never changes the exit code. JSON mode puts a config or AWS file warning, a deprecated route's warning, and `hipc api`'s warning about a route it does not know in a top-level `warnings` array of texts, on the document or beside `error`; a result with no place for a field, the array `--all` prints, a `hipc api` body, or a document that holds a `warnings` field of its own, which is never overwritten, keeps its shape, and its warnings go on stderr as one `{"warnings":[...]}` object. |
 | `debug:` | A request or status line, redacted (tenet 9). | Only with `--debug`, in every mode. |
 
 The prompts are the only unlabeled lines. The confirmation prompt is `this will <what>; continue? [y/N] `, and `hipc auth login` asks for the token with ``paste the token from `https://console.hippius.com/dashboard/settings` (it is not shown): ``. Its refusal reuses it: ``this would <what>, and `--yes` was not passed``.

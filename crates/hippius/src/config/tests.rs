@@ -3,6 +3,7 @@ use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as 
 
 use super::*;
 use crate::private_file::MAX_FILE_BYTES;
+use crate::take_split_link_warnings;
 
 /// A fresh directory with mode 0700, whatever the umask. Ubuntu's default umask, 0002,
 /// would leave it writable by the group, which hipc refuses on purpose.
@@ -849,20 +850,37 @@ fn store_token(path: &Path) -> Result<()> {
 fn an_edit_of_a_hard_linked_config_is_noted_once() {
     let dir = temp_dir("hard-link");
     let path = dir.join("config.toml");
-    drop(take_split_link());
+    let warned = format!(
+        "the config file `{}` had another hard link, which still holds its old contents, \
+         tokens included; only this name was changed",
+        path.display()
+    );
+    drop(take_split_link_warnings());
     store_token(&path).unwrap();
-    assert_eq!(take_split_link(), None, "a new file");
+    assert_eq!(
+        take_split_link_warnings(),
+        Vec::<String>::new(),
+        "a new file"
+    );
     store_token(&path).unwrap();
-    assert_eq!(take_split_link(), None, "one link");
+    assert_eq!(take_split_link_warnings(), Vec::<String>::new(), "one link");
     let other = dir.join("dotfiles-copy.toml");
     fs::hard_link(&path, &other).unwrap();
     store_token(&path).unwrap();
-    assert_eq!(take_split_link(), Some(path.clone()));
-    assert_eq!(take_split_link(), None, "taken once");
+    assert_eq!(take_split_link_warnings(), vec![warned]);
+    assert_eq!(
+        take_split_link_warnings(),
+        Vec::<String>::new(),
+        "taken once"
+    );
     assert!(fs::read_to_string(&other).unwrap().contains("t0ken"));
     // The rename split the link, so the next edit has one again.
     store_token(&path).unwrap();
-    assert_eq!(take_split_link(), None);
+    assert_eq!(
+        take_split_link_warnings(),
+        Vec::<String>::new(),
+        "one link again"
+    );
 }
 
 #[test]

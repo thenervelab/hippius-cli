@@ -470,20 +470,6 @@ pub fn config_path(hippius_config: Option<PathBuf>, home: Option<PathBuf>) -> Re
 }
 
 thread_local! {
-    /// The config file the last [`ConfigFile::edit`] on this thread rewrote while it had
-    /// another hard link, until [`take_split_link`] takes it.
-    static SPLIT_LINK: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
-}
-
-/// The config file a [`ConfigFile::edit`] on this thread rewrote while it had another hard
-/// link, once, or `None`. An edit writes a new file and renames it over the old name, so the
-/// other link keeps the old contents, the tokens a logout removed included; the binary warns
-/// (tenet 8). Thread-local, so a test sees only its own edits.
-pub fn take_split_link() -> Option<PathBuf> {
-    SPLIT_LINK.with(|split| split.borrow_mut().take())
-}
-
-thread_local! {
     /// The warning about the keys the last config file loaded on this thread holds and this
     /// `hipc` does not know, until [`take_unknown_keys_warning`] takes it.
     static UNKNOWN_KEYS: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
@@ -571,11 +557,8 @@ impl ConfigFile {
         let _lock = file.lock()?;
         let mut config = Self::parse(path, file.read()?)?;
         let changed = change(&mut config)?;
-        let linked = file.has_other_links();
+        // The write notes a hard link the rename splits. Noting it here would warn twice.
         config.save(&file)?;
-        if linked {
-            SPLIT_LINK.with(|split| *split.borrow_mut() = Some(config.path.clone()));
-        }
         Ok(changed)
     }
 

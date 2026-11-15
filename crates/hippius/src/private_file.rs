@@ -35,6 +35,36 @@ pub fn on_lock_wait(note: impl Fn(&str) + 'static) {
     LOCK_WAIT.with(|hook| *hook.borrow_mut() = Some(Box::new(note)));
 }
 
+thread_local! {
+    /// The warnings for files [`PrivateFile::write`] on this thread replaced while they had
+    /// another hard link, until [`take_split_link_warnings`] takes them.
+    static SPLIT_LINKS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The warning after a write renamed a new file over one that had another hard link
+/// (tenet 8). `what` is how a message names the file, such as "the config file".
+fn split_link_warning(what: &str, path: &Path) -> String {
+    format!(
+        "{what} {} had another hard link, which still holds its old contents, tokens \
+         included; only this name was changed",
+        quote_path(path)
+    )
+}
+
+fn note_split_link(what: &str, path: &Path) {
+    let warning = split_link_warning(what, path);
+    SPLIT_LINKS.with(|links| links.borrow_mut().push(warning));
+}
+
+/// Every warning for a private file this thread replaced while it had another hard link,
+/// in the order of the writes, once. A write renames a new file over the old name, so the
+/// other link keeps the old contents; the binary warns (tenet 8). Empty when no write
+/// split a link. Thread-local, so a test sees only its own writes.
+pub fn take_split_link_warnings() -> Vec<String> {
+    SPLIT_LINKS.with(|links| std::mem::take(&mut *links.borrow_mut()))
+}
+
 /// Creates `dir` and each missing directory above it, each with mode `0700`, and sets that
 /// mode again on each one it created, since `mkdir` masks it with the umask: under `0277`
 /// the directory would be `0500`, and no file could be created in it. A directory that
@@ -329,9 +359,13 @@ impl PrivateFile {
     /// directory, so the write cannot follow a symlink someone planted at that name, and
     /// the rename stays on one file system. The data and then the directory are synced
     /// before success is reported, so a crash leaves the old file or the new one, never a
-    /// mix.
+    /// mix. When the file had another hard link, that link keeps the old contents and the
+    /// write is noted for [`take_split_link_warnings`].
     pub(crate) fn write(&self, bytes: &[u8]) -> Result<()> {
         let temporary = self.sibling(&format!("{}.tmp", std::process::id()));
+        // Before the rename, which leaves the new file with one link, and before the
+        // temporary name is removed: that name can itself be another link to this file.
+        let linked = self.has_other_links();
         // A file left by a crashed process with this pid is ours to replace.
         self.unlink(&temporary);
         if let Err(e) = self.replace(&temporary, bytes, self.owner_mode()) {
@@ -345,6 +379,9 @@ impl PrivateFile {
                 &e,
                 Denied::Chmod("700", dir),
             ));
+        }
+        if linked {
+            note_split_link(self.guarded.what, &self.path);
         }
         Ok(())
     }
@@ -707,5 +744,47 @@ mod tests {
         let other = std::io::Error::other("disk");
         let error = open_error(path, &other, Some(0), 501, CONFIG_FILE);
         assert_eq!(error.code(), crate::Code::Internal);
+    }
+
+    #[test]
+    fn a_split_link_warning_names_the_file() {
+        assert_eq!(
+            split_link_warning("the AWS credentials file", Path::new("/h/.aws/credentials")),
+            "the AWS credentials file `/h/.aws/credentials` had another hard link, which \
+             still holds its old contents, tokens included; only this name was changed"
+        );
+        assert_eq!(take_split_link_warnings(), Vec::<String>::new());
+    }
+
+    /// A write that fails does not warn: the rename did not happen, so the other link does
+    /// not hold an older copy than this name.
+    #[test]
+    fn a_failed_write_of_a_hard_linked_file_is_not_noted() {
+        skip_if_root!();
+        let dir =
+            std::env::temp_dir().join(format!("hipc-private-link-fail-{}", std::process::id()));
+        drop(std::fs::remove_dir_all(&dir));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::hard_link(&path, dir.join("other")).unwrap();
+        let file = PrivateFile::ensure(&path, CONFIG_FILE).unwrap();
+        drop(take_split_link_warnings());
+        // The directory descriptor is already open. Dropping the owner's write bit makes
+        // the rename fail; the owner can still put the bit back.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let error = file.write(b"new");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(error.is_err(), "the directory was not writable");
+        assert_eq!(
+            take_split_link_warnings(),
+            Vec::<String>::new(),
+            "a failed write did not split the link"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"old");
+        assert_eq!(std::fs::read(dir.join("other")).unwrap(), b"old");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

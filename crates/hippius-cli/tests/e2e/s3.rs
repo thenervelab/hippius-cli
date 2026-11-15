@@ -1,6 +1,6 @@
 //! `hipc s3 plans`, `subscription`, `buckets`, `tokens`, and `configure`.
 
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
 use hippius::routes::s3;
 use serde_json::json;
@@ -1631,6 +1631,201 @@ fn configure_dry_run_writes_nothing() {
     assert_eq!(doc["aws_profile"], "hippius");
     assert_eq!(doc["secret_written"], false);
     assert!(!home.path().join(".aws").exists());
+}
+
+/// The note a successful `s3 configure` prints before any warning.
+const CONFIGURE_NOTE: &str =
+    "note: run `aws --profile hippius s3 ls` to list the buckets with it\n";
+
+/// The warning for an AWS file a rename split, without the `warning:` label.
+fn split_link_text(what: &str, path: &std::path::Path) -> String {
+    format!(
+        "{what} `{}` had another hard link, which still holds its old contents, \
+         tokens included; only this name was changed",
+        path.display()
+    )
+}
+
+fn warning_line(what: &str, path: &std::path::Path) -> String {
+    format!("warning: {}\n", split_link_text(what, path))
+}
+
+/// AWS files that already exist, each with one link, plus a private secret file.
+fn aws_files(
+    secret_body: &[u8],
+) -> (
+    Home,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let home = Home::new();
+    let aws = home.path().join(".aws");
+    std::fs::create_dir_all(&aws).expect("create .aws");
+    std::fs::set_permissions(&aws, std::fs::Permissions::from_mode(0o700)).expect("chmod 700");
+    let credentials = home.file(".aws/credentials", b"[work]\naws_access_key_id = AKIAOLD\n");
+    let config = home.file(".aws/config", b"[profile work]\nregion = kept\n");
+    let secret = home.file("secret", secret_body);
+    (home, credentials, config, secret)
+}
+
+fn text_configure(secret: &str) -> [&str; 9] {
+    [
+        "--output",
+        "text",
+        "s3",
+        "configure",
+        "--yes",
+        "--access-key-id",
+        "hip_KEY1",
+        "--secret-key-file",
+        secret,
+    ]
+}
+
+/// A file with one link does not warn, in text or in JSON.
+#[test]
+fn configure_of_an_aws_file_with_one_link_does_not_warn() {
+    let (home, _credentials, _config, secret) = aws_files(b"new-secret\n");
+    let secret = secret.to_str().unwrap();
+    let run = Hipc::new(&home).run(&text_configure(secret));
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(run.stderr(), CONFIGURE_NOTE, "one link");
+    let doc = Hipc::new(&home).run(&[
+        "--json",
+        "s3",
+        "configure",
+        "--yes",
+        "--access-key-id",
+        "hip_KEY1",
+        "--secret-key-file",
+        secret,
+    ]);
+    assert!(doc.ok().get("warnings").is_none(), "one link, JSON");
+}
+
+/// The credentials file's other name keeps the old keys. The next rewrite has one link.
+#[test]
+fn configure_warns_when_the_credentials_file_has_another_hard_link() {
+    let (home, credentials, _config, secret) = aws_files(b"other-secret\n");
+    let copy = home.path().join("credentials-copy");
+    std::fs::hard_link(&credentials, &copy).unwrap();
+    let old = std::fs::read(&copy).unwrap();
+    let secret = secret.to_str().unwrap();
+    let run = Hipc::new(&home).run(&text_configure(secret));
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(
+        run.stderr(),
+        format!(
+            "{CONFIGURE_NOTE}{}",
+            warning_line("the AWS credentials file", &credentials)
+        )
+    );
+    assert_eq!(std::fs::read(&copy).unwrap(), old);
+    let written = std::fs::read_to_string(&credentials).unwrap();
+    let kept = std::fs::read_to_string(&copy).unwrap();
+    assert!(written.contains("other-secret"), "{written}");
+    assert!(!kept.contains("other-secret"), "{kept}");
+    let run = Hipc::new(&home).run(&text_configure(secret));
+    assert_eq!(
+        run.stderr(),
+        CONFIGURE_NOTE,
+        "the rename split the credentials link"
+    );
+}
+
+/// The config file's other name keeps the old endpoint settings.
+#[test]
+fn configure_warns_when_the_config_file_has_another_hard_link() {
+    let (home, _credentials, config, secret) = aws_files(b"other-secret\n");
+    let copy = home.path().join("config-copy");
+    std::fs::hard_link(&config, &copy).unwrap();
+    let old = std::fs::read(&copy).unwrap();
+    let run = Hipc::new(&home).run(&text_configure(secret.to_str().unwrap()));
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(
+        run.stderr(),
+        format!(
+            "{CONFIGURE_NOTE}{}",
+            warning_line("the AWS config file", &config)
+        )
+    );
+    assert_eq!(std::fs::read(&copy).unwrap(), old);
+}
+
+/// Both files warn, the config file first, because it is written first. JSON lists the same
+/// text and prints nothing on stderr.
+#[test]
+fn configure_warns_for_both_hard_linked_aws_files() {
+    let (home, credentials, config, secret) = aws_files(b"other-secret\n");
+    std::fs::hard_link(&config, home.path().join("config-copy")).unwrap();
+    std::fs::hard_link(&credentials, home.path().join("credentials-copy")).unwrap();
+    let secret = secret.to_str().unwrap();
+    let run = Hipc::new(&home).run(&text_configure(secret));
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(
+        run.stderr(),
+        format!(
+            "{CONFIGURE_NOTE}{}{}",
+            warning_line("the AWS config file", &config),
+            warning_line("the AWS credentials file", &credentials)
+        )
+    );
+
+    std::fs::hard_link(&config, home.path().join("config-json")).unwrap();
+    std::fs::hard_link(&credentials, home.path().join("credentials-json")).unwrap();
+    let run = Hipc::new(&home).run(&[
+        "--json",
+        "s3",
+        "configure",
+        "--yes",
+        "--access-key-id",
+        "hip_KEY1",
+        "--secret-key-file",
+        secret,
+    ]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(run.stderr(), "");
+    assert_eq!(
+        run.json()["warnings"],
+        json!([
+            split_link_text("the AWS config file", &config),
+            split_link_text("the AWS credentials file", &credentials),
+        ])
+    );
+    assert!(!run.stdout().contains("other-secret"));
+}
+
+/// A dry run writes nothing, so it does not warn, as a dry run that rewrites no config file
+/// does not. The other name still names the same file.
+#[test]
+fn configure_dry_run_does_not_warn_about_a_hard_link() {
+    let (home, credentials, config, secret) = aws_files(b"new-secret\n");
+    std::fs::hard_link(&credentials, home.path().join("credentials-copy")).unwrap();
+    std::fs::hard_link(&config, home.path().join("config-copy")).unwrap();
+    let before_credentials = std::fs::read(&credentials).unwrap();
+    let before_config = std::fs::read(&config).unwrap();
+    let dry = [
+        "s3",
+        "configure",
+        "--access-key-id",
+        "hip_KEY1",
+        "--secret-key-file",
+        secret.to_str().unwrap(),
+        "--dry-run",
+    ];
+    let doc = Hipc::new(&home).run(&dry).ok();
+    assert!(doc.get("warnings").is_none(), "{doc}");
+    assert_eq!(doc["secret_written"], false);
+    let text_dry: Vec<&str> = ["--output", "text"].into_iter().chain(dry).collect();
+    let run = Hipc::new(&home).run(&text_dry);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(run.stderr(), "");
+    assert!(!run.stdout().contains("hard link"));
+    assert_eq!(std::fs::read(&credentials).unwrap(), before_credentials);
+    assert_eq!(std::fs::read(&config).unwrap(), before_config);
+    assert_eq!(std::fs::metadata(&credentials).unwrap().nlink(), 2);
+    assert_eq!(std::fs::metadata(&config).unwrap().nlink(), 2);
 }
 
 /// A dry run refuses each AWS file a real run refuses, with the same error, before it
