@@ -7,6 +7,9 @@ use crate::cli::{EXPOSURE_ID, VmTarget, examples, number};
 #[derive(Debug, Subcommand)]
 pub(crate) enum Exposures {
     /// A VM's exposures, each with its id, endpoint, mode, and edge_sees_traffic
+    ///
+    /// In http mode the endpoint is an HTTPS hostname such as https://NAME.hpcr.io, where the
+    /// edge terminates TLS and the guest speaks plain HTTP.
     #[command(after_help = examples(&[
         "hipc compute exposures list vm-1a2b",
     ]))]
@@ -14,12 +17,13 @@ pub(crate) enum Exposures {
     /// Make one guest port of a VM reachable from the internet; needs --yes
     ///
     /// The VM is otherwise reachable only on the private overlay. --mode http, the server's
-    /// default, terminates TLS at the edge, so the edge can read the traffic. sni is end to end:
-    /// the edge forwards ciphertext it cannot open, and the guest holds its own certificate. raw
-    /// forwards one TCP or UDP port as the client sent it, on a public port the server picks, so
-    /// the edge sees what the client sent. Exposing the same port and protocol again returns the
-    /// existing exposure. The server refuses some ports, such as 22: SSH goes through the web
-    /// terminal.
+    /// default, is served over HTTPS at a hostname such as https://NAME.hpcr.io, where the
+    /// edge terminates TLS and the guest speaks plain HTTP, so the edge can read the traffic.
+    /// sni is end to end: the edge forwards ciphertext it cannot open, and the guest holds its
+    /// own certificate. raw forwards one TCP or UDP port as the client sent it, on a public
+    /// port the server picks, so the edge sees what the client sent. Exposing the same port
+    /// and protocol again returns the existing exposure. The server refuses some ports, such
+    /// as 22: SSH goes through the web terminal.
     #[command(after_help = examples(&[
         "hipc compute exposures create vm-1a2b --port 8080 --yes",
         "hipc compute exposures create vm-1a2b --port 443 --mode sni --yes",
