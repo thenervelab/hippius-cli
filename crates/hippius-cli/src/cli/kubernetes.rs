@@ -84,15 +84,14 @@ pub(crate) enum Clusters {
     /// Delete a cluster: every VM in it stops and is decommissioned, with the workloads and the
     /// data on it; needs --yes
     ///
-    /// This cannot be undone. Before the question, hipc reads the cluster, whose name the
-    /// question gives; --dry-run reads nothing and lists the read in requests. The command
-    /// returns once the teardown has started. The cluster is closed only after every VM is
-    /// decommissioned; hipc compute kubernetes clusters get shows its status. If the cluster was
-    /// created with backups on, the server keeps each of its backup buckets that holds etcd
-    /// snapshots or Velero backups, billed until it is deleted: their names start with
-    /// hippius-k8s- and end in -etcd or -velero; empty each with an S3 client and delete it with
-    /// hipc s3 buckets delete. The question names them, and so does a note in text mode when
-    /// the command is done.
+    /// This cannot be undone. Before the question, hipc reads the cluster, whose name the question
+    /// gives; --dry-run reads nothing and lists the read in requests. The command returns once the
+    /// teardown has started. The cluster is closed only after every VM is decommissioned; hipc
+    /// compute kubernetes clusters get shows its status. If the cluster was created with backups
+    /// on, the server keeps each of its backup buckets that holds etcd snapshots or Velero backups,
+    /// billed until it is deleted: their names start with hippius-k8s-<cluster_id>- and end in
+    /// -etcd or -velero; empty each with an S3 client and delete it with hipc s3 buckets delete.
+    /// The question names them, and so does a note in text mode when the command is done.
     #[command(after_help = examples(&["hipc compute kubernetes clusters delete 7 --yes"]))]
     Delete(ClusterTarget),
     /// The cluster's journal: what each node reported, and when

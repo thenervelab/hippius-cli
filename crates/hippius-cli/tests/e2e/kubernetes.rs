@@ -859,11 +859,12 @@ fn a_write_without_yes_writes_nothing_and_says_what_it_would_do() {
     );
 }
 
-/// The backup buckets a cluster delete leaves, as its question and its text-mode note name
-/// them (the backups guide: buckets that hold backups are kept).
+/// The backup buckets a delete of cluster 7 leaves, as its question and its text-mode note
+/// name them (the backups guide: buckets that hold backups are kept), by that cluster's own
+/// prefix.
 pub(crate) const LEFT_AFTER_DELETE: &str = "if the cluster was created with backups on, the \
      server keeps each of its backup buckets that holds etcd snapshots or Velero backups in \
-     the account's S3, billed until it is deleted: their names start with `hippius-k8s-` and \
+     the account's S3, billed until it is deleted: their names start with `hippius-k8s-7-` and \
      end in `-etcd` or `-velero`; find them with `hipc s3 buckets list`, empty each with an S3 \
      client, and run `hipc s3 buckets delete` with its name and `--yes`";
 

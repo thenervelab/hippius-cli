@@ -741,7 +741,7 @@ fn a_scale_that_cannot_be_signed_or_changes_nothing_is_refused_after_the_reads()
         "the pool `workers` (`3`) of the Kubernetes cluster `prod` (`42`) already has 2 nodes, \
          counting adds still queued"
     );
-    // The masters' pool has no `signing_params`, so it is not a worker pool, and is refused
+    // The masters' pool is a `control_plane` pool, not a worker pool, and is refused
     // whichever way it is scaled, with or without a key file, and at the size it has.
     let gets_before = server.calls().len();
     for (count, key) in [
@@ -756,9 +756,9 @@ fn a_scale_that_cannot_be_signed_or_changes_nothing_is_refused_after_the_reads()
         let error = hipc(&home, &server, &args).fails(2, "usage");
         assert_eq!(
             message(&error),
-            "the pool `control-plane` (`1`) of the Kubernetes cluster `prod` (`42`) has no \
-             `signing_params`, so it is not a worker pool: hipc scales and replaces only the \
-             nodes of a worker pool",
+            "the pool `control-plane` (`1`) of the Kubernetes cluster `prod` (`42`) is a \
+             `control_plane` pool, not a worker pool: hipc scales and replaces only the nodes \
+             of a worker pool",
             "{args:?}"
         );
         assert_eq!(
@@ -869,7 +869,7 @@ fn a_replacement_signs_an_add_node_that_names_the_node_it_replaces() {
     )
     .fails(2, "usage");
     assert!(
-        message(&error).contains("has no `signing_params`"),
+        message(&error).contains("is a `control_plane` pool, not a worker pool"),
         "{error}"
     );
     assert_eq!(server.requests().len(), 12);

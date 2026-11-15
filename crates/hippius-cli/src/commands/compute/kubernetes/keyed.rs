@@ -16,25 +16,24 @@
 //! since no output holds the secret, and it is not shown once and lost: the key file opens it
 //! again.
 //!
-//! A scale and a replacement read the cluster first, to check the key file against it before
-//! the question, then its pools and its operations, so the question names the pool and the
-//! nodes it gains or loses. A pool that is not a worker pool is refused there, whichever way
-//! it is scaled ([`Target::worker`]). The pool's `signing_params` are checked against the
-//! pool before the question ([`Target::signing_params`]): the signature is what the masters act on and
-//! bill, so an answer whose `signing_params` would sign what the question does not name is
-//! refused with nothing signed. The signatures are made after the question, so a declined
-//! question uses no key. After the question, the pools and the operations are read again: a
-//! scale of a pool that is no longer the size the question named (another `hipc`, or the
-//! console, scaled the pool), a scale up whose pool signs other params now, and a
-//! replacement of a node that another operation now removes or replaces, are refused with
-//! nothing signed or sent. A scale up is refused since each signature the masters receive is
-//! a node they add and bill; a scale down, which signs nothing, since its count is applied to
-//! the pool as it is then: a pool that grew would lose more nodes than the question named,
-//! and one that shrank below the count would be grown by a POST that signs nothing. That
-//! narrows the window, it does not close it: a change between the second read and the POST
-//! still passes here, and only a check by the server against its own count, if it makes one,
-//! closes it. The signatures are dated by the server's clock, the `Date` of that second read,
-//! when it is within five minutes of the local clock.
+//! A scale and a replacement read the cluster first, to check the key file against it before the
+//! question, then its pools and its operations, so the question names the pool and the nodes it
+//! gains or loses. A pool that is not a worker pool is refused there, whichever way it is scaled
+//! ([`Target::worker`]). The pool's `signing_params` are checked against the pool before the
+//! question ([`Target::signing_params`]): the signature is what the masters act on and bill, so an
+//! answer whose `signing_params` would sign what the question does not name is refused with nothing
+//! signed. The signatures are made after the question, so a declined question uses no key. After
+//! the question, the pools and the operations are read again: a scale of a pool that is no longer
+//! the size the question named (another `hipc`, or the console, scaled the pool), a scale up whose
+//! pool signs other params now, and a replacement of a node that another operation now removes or
+//! replaces, are refused with nothing signed or sent. A scale up is refused since each signature
+//! the masters receive is a node they add and bill; a scale down, which signs nothing, since its
+//! count is applied to the pool as it is then: a pool that grew would lose more nodes than the
+//! question named, and one that shrank below the count would be grown by a POST that signs nothing.
+//! That narrows the window, it does not close it: a change between the second read and the POST
+//! still passes here, and only a check by the server against its own count, if it makes one, closes
+//! it. The signatures are dated by the server's clock, the `Date` of that second read, when it is
+//! within five minutes of the local clock.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -386,30 +385,45 @@ impl<'a> Target<'a> {
         )
     }
 
-    /// The pool's `signing_params` as the API gave them, unchecked: only a worker pool has
-    /// them, so a pool without them, such as the masters' control-plane pool, is refused
-    /// before the question, whether it would gain nodes or lose them.
+    /// Refuses a pool that is not a worker pool, such as the masters' control-plane pool,
+    /// before the question, whether it would gain nodes or lose them. The pool's `role` says
+    /// what it is; a pool the API sends without a `role` counts as a worker pool when it has
+    /// `signing_params`, which only a worker pool has. A worker pool with no `signing_params`
+    /// yet, such as a new empty one, is a worker pool: a scale down passes here, and a scale
+    /// up is refused later because no node can be signed ([`Target::signing_params`]).
     ///
     /// # Errors
     ///
-    /// `usage` when the pool has no `signing_params` object.
-    fn worker(&self) -> Result<&'a Map<String, Value>> {
-        self.pool
-            .get("signing_params")
-            .and_then(Value::as_object)
-            .ok_or_else(|| {
-                Error::usage(
-                    format!(
-                        "{} has no `signing_params`, so it is not a worker pool: hipc scales \
-                         and replaces only the nodes of a worker pool",
-                        self.pool_named()
-                    ),
-                    format!(
-                        "pick a worker pool from `hipc compute kubernetes node-pools list {}`",
-                        self.id
-                    ),
-                )
-            })
+    /// `usage` when the pool's `role` is not the text `worker`, or when it has no `role` and
+    /// no `signing_params` object.
+    fn worker(&self) -> Result<()> {
+        let is_worker = match self.pool.get("role") {
+            Some(Value::String(role)) => role == "worker",
+            Some(_) => false,
+            None => self
+                .pool
+                .get("signing_params")
+                .is_some_and(Value::is_object),
+        };
+        if is_worker {
+            return Ok(());
+        }
+        let what = match self.pool.get("role") {
+            Some(Value::String(role)) => format!("is a {} pool", phrase::quote(role)),
+            Some(_) => "has a `role` that is not text".to_owned(),
+            None => "has no `role` and no `signing_params`".to_owned(),
+        };
+        Err(Error::usage(
+            format!(
+                "{} {what}, not a worker pool: hipc scales and replaces only the nodes of a \
+                 worker pool",
+                self.pool_named()
+            ),
+            format!(
+                "pick a worker pool from `hipc compute kubernetes node-pools list {}`",
+                self.id
+            ),
+        ))
     }
 
     /// The pool's `signing_params`, what a node of it signs, checked against the pool they
@@ -426,15 +440,29 @@ impl<'a> Target<'a> {
     ///
     /// # Errors
     ///
-    /// `usage` when the pool is not a worker pool ([`Target::worker`]). `internal` when they
+    /// `usage` when the pool is not a worker pool ([`Target::worker`]) or has no
+    /// `signing_params`. `internal` when they
     /// hold a key other than [`SIGNED`] (`replaces` among them: a scale adds new nodes, and a
     /// replacement names the replaced node itself); when their `pool` is not the pool's
     /// `name`, as a string on both sides; when the pool has a `flavor` and they name another
     /// or none, or they name one that is not text; or when their `labels` or `taints` are not
     /// the pool's own, with a side that is missing or `null` read as none.
     fn signing_params(&self) -> Result<&'a Map<String, Value>> {
-        let signing = self.worker()?;
+        self.worker()?;
         let signing_value = self.pool.get("signing_params");
+        let Some(signing) = signing_value.and_then(Value::as_object) else {
+            return Err(Error::usage(
+                format!(
+                    "{} has no `signing_params`, so hipc cannot sign a node for \
+                     it: only a worker pool gains nodes",
+                    self.pool_named()
+                ),
+                format!(
+                    "pick a worker pool from `hipc compute kubernetes node-pools list {}`",
+                    self.id
+                ),
+            ));
+        };
         let refused = |problem: String, why: &str| {
             Error::internal(format!(
                 "{} {problem}, so no node was signed: {why}",
@@ -702,6 +730,62 @@ fn pool_size(pool: &Pool, operations: &[Operation]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pool is a worker pool by its `role`; only a pool the API sends without a `role`
+    /// falls back to having `signing_params`. A new worker pool with no `signing_params`
+    /// yet is a worker pool, and a control-plane pool is not one whatever it carries.
+    #[test]
+    fn a_worker_pool_is_known_by_its_role() {
+        let cluster = json!({ "id": 42, "name": "prod" });
+        let params = json!({ "pool": "w" });
+        let refused = |pool: &Value| {
+            let target = Target {
+                id: 42,
+                cluster: &cluster,
+                pool,
+            };
+            target
+                .worker()
+                .err()
+                .map(|error| error.message().to_owned())
+        };
+        for pool in [
+            json!({ "id": 3, "name": "w", "role": "worker", "signing_params": null }),
+            json!({ "id": 3, "name": "w", "role": "worker" }),
+            json!({ "id": 3, "name": "w", "role": "worker", "signing_params": params }),
+            json!({ "id": 3, "name": "w", "signing_params": params }),
+        ] {
+            assert_eq!(refused(&pool), None, "{pool}");
+        }
+        for (pool, what) in [
+            (
+                json!({ "id": 1, "name": "cp", "role": "control_plane", "signing_params": params }),
+                "is a `control_plane` pool",
+            ),
+            (
+                json!({ "id": 1, "name": "cp", "role": "control_plane", "signing_params": null }),
+                "is a `control_plane` pool",
+            ),
+            (
+                json!({ "id": 1, "name": "cp", "role": "Worker" }),
+                "is a `Worker` pool",
+            ),
+            (
+                json!({ "id": 1, "name": "cp", "signing_params": null }),
+                "has no `role` and no `signing_params`",
+            ),
+            (
+                json!({ "id": 1, "name": "cp", "role": 7, "signing_params": params }),
+                "has a `role` that is not text",
+            ),
+        ] {
+            let message = refused(&pool).expect("not a worker pool");
+            assert!(
+                message.contains(&format!("{what}, not a worker pool")),
+                "{pool}: {message}"
+            );
+        }
+    }
 
     /// [`pool_size`] of a pool and operations as the API answers them.
     fn size(pool: &Value, operations: &[Value]) -> u64 {
