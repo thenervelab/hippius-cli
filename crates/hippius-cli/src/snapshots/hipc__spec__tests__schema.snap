@@ -733,6 +733,49 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
     {
       "path": [
         "account",
+        "audit-trail"
+      ],
+      "about": "The selected account's audit trail: who changed what, newest first, one page at a time",
+      "effect": "read_only",
+      "confirmation": false,
+      "reveal": false,
+      "pagination": true,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [],
+      "flags": [
+        {
+          "name": "--page-token",
+          "value_name": "TOKEN",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The page to fetch, from a previous answer's next_page_token"
+        },
+        {
+          "name": "--all",
+          "value_name": null,
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "Follow every page: one JSON array, or one table in text mode"
+        }
+      ],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/accounts/audit/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "account",
         "invites",
         "list"
       ],
@@ -2010,9 +2053,10 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
     {
       "path": [
         "billing",
-        "transactions"
+        "transactions",
+        "list"
       ],
-      "about": "The transaction history, one page at a time",
+      "about": "The transaction history, newest first, one page at a time",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -2056,6 +2100,41 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         {
           "method": "GET",
           "path": "/api/billing/transactions/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "billing",
+        "transactions",
+        "get"
+      ],
+      "about": "One transaction: its amount, credits, status, and when it completed",
+      "effect": "read_only",
+      "confirmation": false,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [
+        {
+          "name": "transaction_id",
+          "value_name": "TRANSACTION_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The transaction id, from hipc billing transactions list"
+        }
+      ],
+      "flags": [],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/billing/transactions/{transaction_id}/"
         }
       ]
     },
@@ -2910,6 +2989,40 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         {
           "method": "POST",
           "path": "/api/billing/btcpay/create-invoice/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "billing",
+        "top-up-status"
+      ],
+      "about": "Whether a card top-up was paid, by the transaction_id hipc billing top-up printed",
+      "effect": "read_only",
+      "confirmation": false,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [
+        {
+          "name": "transaction_id",
+          "value_name": "TRANSACTION_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The top-up's transaction_id, as hipc billing top-up --method card printed it"
+        }
+      ],
+      "flags": [],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/billing/stripe/checkout-status/"
         }
       ]
     },

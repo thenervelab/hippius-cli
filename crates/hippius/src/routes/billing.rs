@@ -14,6 +14,10 @@ routes! {
     /// The credit transactions.
     TRANSACTIONS: 0 = Route::get("/api/billing/transactions/").own_account().paged(Paging::Numbered);
 
+    /// One credit transaction. Swagger's answer holds no `client_secret`, which only the
+    /// `POST` of the list route answers.
+    TRANSACTION: 1 = Route::get("/api/billing/transactions/{transaction_id}/").own_account();
+
     /// The invoices.
     INVOICES: 0 = Route::get("/api/billing/invoices/").scoped().billing().paged(Paging::Numbered);
 
@@ -50,6 +54,10 @@ routes! {
     CARD_CHECKOUT: 0 = Route::post("/api/billing/stripe/create-checkout-session/")
         .scoped()
         .billing();
+
+    /// The outcome of a card top-up, by the `transaction_id` its checkout answered. Swagger:
+    /// only a top-up of the wallet the request acts on (`X-Hippius-Billing`); 404 otherwise.
+    CHECKOUT_STATUS: 0 = Route::get("/api/billing/stripe/checkout-status/").scoped().billing();
 
     /// Starts a bitcoin top-up.
     BITCOIN_INVOICE: 0 = Route::post("/api/billing/btcpay/create-invoice/").scoped().billing();

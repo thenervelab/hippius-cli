@@ -2663,3 +2663,32 @@ fn a_retired_route_hints_to_upgrade_hipc() {
          routes the API serves now"
     );
 }
+
+/// The reads `hipc billing transactions get`, `hipc billing top-up-status`, and `hipc account
+/// audit-trail` send are routes `hipc` knows, whose answers hold no secret: `hipc api` reads
+/// them without `--reveal` and without the warning about a route it does not know. Its
+/// `--all` follows `next` links only, so an audit page that names a cursor is `internal`.
+#[test]
+fn the_curated_reads_need_no_reveal_through_api() {
+    let id = "3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42";
+    let transaction = format!("/api/billing/transactions/{id}/");
+    let status = format!("/api/billing/stripe/checkout-status/?transaction_id={id}");
+    let server = Server::start(vec![
+        route("GET", &transaction, Reply::json(200, r#"{"id":"t"}"#)),
+        route("GET", &status, Reply::json(200, r#"{"status":"paid"}"#)),
+        route(
+            "GET",
+            "/api/accounts/audit/",
+            Reply::json(200, r#"{"results":[{"id":2}],"next_before":2}"#),
+        ),
+    ]);
+    for path in [&transaction, &status, &"/api/accounts/audit/".to_owned()] {
+        let run = Hipc::against(&Home::new(), &server).run(&["api", "GET", path]);
+        assert_eq!(run.code(), Some(0), "{path}: {}", run.stderr());
+        assert_eq!(run.stderr(), "", "{path}");
+    }
+    let error = Hipc::against(&Home::new(), &server)
+        .run(&["api", "GET", "/accounts/audit/", "--all"])
+        .fails(1, "internal");
+    assert_eq!(error["side_effects"], "none");
+}

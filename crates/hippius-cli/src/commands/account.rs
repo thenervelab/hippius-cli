@@ -1,8 +1,10 @@
-//! `hipc account`: the accounts one token can act in, and the team of the selected one.
+//! `hipc account`: the accounts one token can act in, and the team of the selected one and
+//! its audit trail.
 //!
 //! `GET /api/accounts/` is personal and never takes `X-Hippius-Account`. The team routes,
-//! `/api/accounts/members/` and `/api/accounts/invites/`, are account-scoped: with a
-//! membership selected, the header names the account whose team is managed. The invite
+//! `/api/accounts/members/` and `/api/accounts/invites/`, and the audit trail,
+//! `/api/accounts/audit/`, are account-scoped: with a membership selected, the header names
+//! the account whose team is managed or read. The invite
 //! preview and accept are personal: they act as the token's own user.
 //!
 //! An invite token, from the invite email's link, is a bearer secret (tenet 9). It is read
@@ -28,8 +30,8 @@ use crate::cli::{
 };
 use crate::commands::replace::{Entry, Found, Replace, replace_list};
 use crate::commands::{
-    Decided, Input, Printed, keyed_page, print_body, print_body_or, print_keyed_list, projects,
-    read_then_write, referrals, sent_fields, store_selection,
+    Decided, Input, Printed, keyed_page, list, print_body, print_body_or, print_keyed_list,
+    projects, read_then_write, referrals, sent_fields, store_selection,
 };
 use crate::context::{self, Context, DryRun, Gate, Step, WritePlan};
 
@@ -104,6 +106,12 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Account) -> Result<Printed> {
         Account::MarketingConsent(command) => marketing_consent(ctx, command),
         Account::Use { account_id } => select(ctx, account_id),
         Account::Members(command) => members(ctx, command),
+        Account::AuditTrail(args) => list::run(
+            ctx,
+            &ctx.load_authed_client()?,
+            &Request::to(&account::AUDIT, []).about("list the audit trail"),
+            args,
+        ),
         Account::Invites(command) => invites(ctx, command),
         Account::Projects(command) => projects::projects(ctx, command),
         Account::ProjectTransfers(command) => projects::project_transfers(ctx, command),

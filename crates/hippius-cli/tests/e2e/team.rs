@@ -1,12 +1,13 @@
-//! `hipc account members` and `hipc account invites` as the team's admin sees them: the
-//! members, and the invites the selected account sends. The invitee's side, `invites preview`
-//! and `accept`, is `invites.rs`.
+//! `hipc account members`, `hipc account invites`, and `hipc account audit-trail` as the
+//! team's admin sees them: the members, the invites the selected account sends, and the audit
+//! trail. The invitee's side, `invites preview` and `accept`, is `invites.rs`.
 
 use hippius::routes::account;
 use serde_json::{Value, json};
 
 use crate::common::{
-    BILLING, Hipc, Home, MEMBER, PROJECT, Recorded, Reply, Route, Run, Server, draft, route_of,
+    BILLING, Hipc, Home, MEMBER, PROJECT, Recorded, Reply, Route, Run, Server, draft, route,
+    route_of,
 };
 
 const MEMBERS: &str = concat!(
@@ -1049,4 +1050,150 @@ fn the_guard_tells_a_grant_on_a_project_from_one_on_the_account() {
     )
     .ok();
     assert_eq!(server.requests().len(), 3);
+}
+
+/// One audit event, as the console's types name its fields.
+const AUDIT_EVENT: &str = concat!(
+    r#"{"id":1000,"actor":"ana@example.com","actor_id":"acct_9f8e7d6c5b4a39281706","#,
+    r#""action":"compute-vm-stop:POST","target_type":"vm_id","target_id":"vm-1","#,
+    r#""detail":{},"ip":"203.0.113.7","created_at":"2026-10-06T10:05:00Z"}"#
+);
+
+/// The audit route answering `body` to the page `query` asks for (`""` or `?before=<n>`).
+fn audit(query: &str, body: &str) -> Route {
+    route(
+        "GET",
+        &format!("/api/accounts/audit/{query}"),
+        Reply::json(200, body),
+    )
+}
+
+#[test]
+fn audit_trail_reads_one_page_by_the_before_cursor() {
+    let first = format!(r#"{{"results":[{AUDIT_EVENT}],"next_before":1000}}"#);
+    let server = Server::start(vec![
+        audit(
+            "?before=1000",
+            r#"{"results":[{"id":999}],"next_before":null}"#,
+        ),
+        audit("", &first),
+    ]);
+    let doc = hipc(&server, &["audit-trail"]).ok();
+    assert_eq!(
+        doc,
+        json!({
+            "items": [serde_json::from_str::<Value>(AUDIT_EVENT).unwrap()],
+            "next_page_token": "1000",
+        })
+    );
+    let next = hipc(&server, &["audit-trail", "--page-token", "1000"]).ok();
+    assert_eq!(
+        next,
+        json!({"items": [{"id": 999}], "next_page_token": null})
+    );
+    let targets: Vec<String> = server.requests().into_iter().map(|r| r.target).collect();
+    assert_eq!(
+        targets,
+        ["/api/accounts/audit/", "/api/accounts/audit/?before=1000"]
+    );
+    let shown = text(&server, &["audit-trail"]);
+    assert_eq!(shown.code(), Some(0), "{}", shown.stderr());
+    assert!(
+        shown.stdout().contains("compute-vm-stop:POST"),
+        "{}",
+        shown.stdout()
+    );
+}
+
+#[test]
+fn audit_trail_all_follows_the_cursor_until_it_is_null() {
+    let server = Server::start(vec![
+        audit("?before=3", r#"{"results":[{"id":2}],"next_before":2}"#),
+        audit("?before=2", r#"{"results":[{"id":1}],"next_before":null}"#),
+        audit("", r#"{"results":[{"id":3}],"next_before":3}"#),
+    ]);
+    let all = hipc(&server, &["audit-trail", "--all"]).ok();
+    assert_eq!(all, json!([{"id": 3}, {"id": 2}, {"id": 1}]));
+    assert_eq!(server.requests().len(), 3);
+}
+
+#[test]
+fn audit_trail_refuses_a_limit_a_bad_token_and_an_answer_that_is_not_a_cursor_page() {
+    let server = Server::start(vec![]);
+    for args in [
+        &["audit-trail", "--limit", "5"][..],
+        &["audit-trail", "--page-token", "abc"],
+        &["audit-trail", "--page-token", "-1"],
+        &["audit-trail", "--page-token", "3", "--all"],
+    ] {
+        hipc(&server, args).fails(2, "usage");
+    }
+    assert!(server.requests().is_empty());
+    for body in [
+        r#"{"results":[],"next_before":"812"}"#,
+        r#"{"results":[]}"#,
+        r#"{"count":0,"next":null,"previous":null,"results":[]}"#,
+        "[]",
+    ] {
+        let odd = Server::start(vec![audit("", body)]);
+        hipc(&odd, &["audit-trail"]).fails(1, "internal");
+    }
+}
+
+/// The trail is the selected account's: a member sends the account, and only the owner or a
+/// member with Manage the team may read it, which the server says by its code.
+#[test]
+fn audit_trail_acts_in_the_selected_account_and_passes_a_refusal_through() {
+    let empty = r#"{"results":[],"next_before":null}"#;
+    let server = Server::start(vec![audit("", empty)]);
+    Hipc::against(&Home::new(), &server)
+        .env("HIPPIUS_ACCOUNT", MEMBER)
+        .run(&["account", "audit-trail"])
+        .ok();
+    assert_eq!(
+        server.only_request().header("x-hippius-account"),
+        Some(MEMBER)
+    );
+    for (code, status) in [("team_management_required", 403), ("not_a_member", 403)] {
+        let refused = Server::start(vec![route(
+            "GET",
+            "/api/accounts/audit/",
+            Reply::json(status, &format!(r#"{{"code":"{code}","error":"no"}}"#)),
+        )]);
+        let error = hipc(&refused, &["audit-trail"]).fails(1, code);
+        assert_eq!(error["http_status"], status);
+        assert_eq!(error["side_effects"], "none");
+    }
+    for (variable, value, code) in [
+        ("HIPPIUS_PROJECT", PROJECT, "project_scope_unsupported"),
+        ("HIPPIUS_BILLING", BILLING, "billing_scope_unsupported"),
+    ] {
+        Hipc::against(&Home::new(), &server)
+            .env(variable, value)
+            .run(&["account", "audit-trail"])
+            .fails(2, code);
+    }
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn audit_trail_needs_a_token_and_dry_runs_its_get() {
+    let server = Server::start(vec![]);
+    Hipc::tokenless(&Home::new(), &server)
+        .run(&["account", "audit-trail"])
+        .fails(1, "auth");
+    for (args, path) in [
+        (&["account", "audit-trail"][..], "/api/accounts/audit/"),
+        (
+            &["account", "audit-trail", "--page-token", "1000"],
+            "/api/accounts/audit/?before=1000",
+        ),
+    ] {
+        let argv = [&["--dry-run"][..], args].concat();
+        let doc = Hipc::tokenless(&Home::new(), &server).run(&argv).ok();
+        assert_eq!(doc["requests"].as_array().unwrap().len(), 1, "{args:?}");
+        assert_eq!(draft(&doc)["method"], "GET");
+        assert_eq!(draft(&doc)["url"], format!("{}{path}", server.url()));
+    }
+    assert!(server.requests().is_empty());
 }

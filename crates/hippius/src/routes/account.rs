@@ -5,7 +5,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::routes::{Change, Guard, Route, RouteFlag};
+use crate::routes::{Change, Guard, Paging, Route, RouteFlag};
 use crate::view::field;
 
 routes! {
@@ -27,6 +27,10 @@ routes! {
     MEMBER_DELETE: 1 = Route::delete("/api/accounts/members/{member_id}/")
         .scoped()
         .guard(Guard::NeedsWhenSet(&[RouteFlag::RemoveOthers], "grants"));
+
+    /// The account's audit trail, newest first. The console reads it by the `before` cursor,
+    /// `{results, next_before}`, a page of 100 events.
+    AUDIT: 0 = Route::get("/api/accounts/audit/").scoped().paged(Paging::Cursor);
 
     /// The pending invites.
     INVITES: 0 = Route::get("/api/accounts/invites/").scoped();
