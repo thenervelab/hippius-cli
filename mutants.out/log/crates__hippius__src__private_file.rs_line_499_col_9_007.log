@@ -1,0 +1,1020 @@
+
+*** crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from(vec![0])))
+
+*** mutation diff:
+--- crates/hippius/src/private_file.rs
++++ replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from(vec![0])))
+@@ -491,94 +491,17 @@
+         }
+         Ok(())
+     }
+ 
+     /// Opens the file without following a symlink, checks it on the open descriptor, and
+     /// reads it, or `None` when it does not exist. [`PrivateFile::ensure`] has checked the
+     /// directory already; [`PrivateFile::load`] checks it after this.
+     pub(crate) fn read(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {
+-        let Guarded {
+-            what,
+-            holds,
+-            named_by,
+-            ..
+-        } = self.guarded;
+-        let path = &self.path;
+-        let file = match open_regular_at(&self.dir, Path::new(&self.name)) {
+-            Ok(file) => file,
+-            Err(OpenRegularError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+-                return Ok(None);
+-            }
+-            Err(OpenRegularError::Symlink) => {
+-                return Err(Error::usage(
+-                    format!(
+-                        "{what} {} is a symlink, and a symlink is never followed",
+-                        quote_path(path)
+-                    ),
+-                    format!("{} the file the symlink points to", named_by.point_at()),
+-                ));
+-            }
+-            Err(OpenRegularError::NotRegular) => {
+-                return Err(Error::usage(
+-                    format!("{what} {} is not a regular file", quote_path(path)),
+-                    format!("{} a regular file", named_by.point_at()),
+-                ));
+-            }
+-            Err(OpenRegularError::Io(e)) => {
+-                // The open is refused before the owner check below can run, so the owner is
+-                // read from the directory entry here.
+-                let owner = rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)
+-                    .ok()
+-                    .map(|stat| stat.st_uid);
+-                let user = rustix::process::geteuid().as_raw();
+-                return Err(open_error(path, &e, owner, user, self.guarded));
+-            }
+-        };
+-        let metadata = file
+-            .metadata()
+-            .map_err(|e| file_error("read", path, &e, Denied::Chmod("600", path)))?;
+-        if metadata.uid() != rustix::process::geteuid().as_raw() {
+-            return Err(another_users_file(path, self.guarded));
+-        }
+-        if metadata.permissions().mode() & 0o077 != 0 {
+-            return Err(Error::usage(
+-                format!(
+-                    "{what} {} has permission bits for the group or others, and it holds {holds}",
+-                    quote_path(path)
+-                ),
+-                format!(
+-                    "run `chmod 600 {}`",
+-                    crate::phrase::shell_word(&path.to_string_lossy())
+-                ),
+-            ));
+-        }
+-        // Sized from `fstat` with a byte to spare, so `read_to_end` sees the end without
+-        // growing the buffer: a growth would free a copy of the bytes that nothing clears.
+-        // That relies on std's `read_to_end` filling spare capacity before it reallocates,
+-        // which it does today but its docs do not promise, and on the file not growing
+-        // between the `fstat` and the read. Cleared when dropped, whoever drops them.
+-        let capacity = usize::try_from(metadata.len())
+-            .map_or(MAX_FILE_BYTES, |len| len.min(MAX_FILE_BYTES))
+-            + 1;
+-        let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));
+-        file.take(MAX_FILE_BYTES as u64 + 1)
+-            .read_to_end(&mut bytes)
+-            .map_err(|e| file_error("read", path, &e, Denied::Chmod("600", path)))?;
+-        if bytes.len() > MAX_FILE_BYTES {
+-            return Err(Error::usage(
+-                format!("{what} {} is larger than 1 MiB", quote_path(path)),
+-                format!(
+-                    "check that {} is {what}, or {} another file",
+-                    quote_path(path),
+-                    named_by.point_at()
+-                ),
+-            ));
+-        }
+-        Ok(Some(bytes))
++        Ok(Some(Zeroizing::from(vec![0]))) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Whether the file at the name has another hard link now, never through a symlink:
+     /// `false` when there is no file there.
+     fn has_other_links(&self) -> bool {
+         rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)
+             .is_ok_and(|stat| stat.st_nlink > 1)
+     }
+
+
+*** /home/radu/.rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=hippius@0.16.0
+       Fresh unicode-ident v1.0.27
+       Fresh typenum v1.20.1
+       Fresh cfg-if v1.0.5
+       Fresh proc-macro2 v1.0.107
+       Fresh version_check v0.9.5
+       Fresh subtle v2.6.1
+       Fresh quote v1.0.47
+       Fresh libc v0.2.191
+       Fresh find-msvc-tools v0.1.15
+       Fresh syn v2.0.119
+       Fresh getrandom v0.2.17
+       Fresh serde_core v1.0.229
+       Fresh shlex v2.0.1
+       Fresh zeroize_derive v1.5.0
+       Fresh rand_core v0.6.4
+       Fresh cc v1.10.0
+       Fresh hybrid-array v0.4.15
+       Fresh cpufeatures v0.2.17
+       Fresh zeroize v1.9.1
+       Fresh semver v1.0.28
+       Fresh cmov v0.5.4
+       Fresh generic-array v0.14.7
+       Fresh rustc_version v0.4.1
+       Fresh ctutils v0.4.6
+       Fresh block-buffer v0.12.1
+       Fresh crypto-common v0.1.7
+       Fresh block-buffer v0.10.4
+       Fresh zerocopy v0.8.63
+       Fresh digest v0.10.7
+       Fresh crypto-common v0.2.2
+       Fresh syn v3.0.9
+       Fresh ppv-lite86 v0.2.21
+       Fresh digest v0.11.3
+       Fresh inout v0.1.4
+       Fresh rustls-pki-types v1.15.1
+       Fresh curve25519-dalek-derive v0.1.1
+       Fresh arrayvec v0.7.8
+       Fresh itoa v1.0.18
+       Fresh untrusted v0.9.0
+       Fresh cipher v0.4.4
+       Fresh curve25519-dalek v4.1.3
+       Fresh ring v0.17.14
+       Fresh rand_chacha v0.3.1
+       Fresh universal-hash v0.5.1
+       Fresh opaque-debug v0.3.1
+       Fresh bytes v1.12.1
+       Fresh log v0.4.34
+       Fresh http v1.5.0
+       Fresh poly1305 v0.8.0
+       Fresh rand v0.8.8
+       Fresh httparse v1.10.1
+       Fresh rustls-webpki v0.103.16
+       Fresh salsa20 v0.10.2
+       Fresh hex-conservative v0.2.3
+       Fresh sha2 v0.10.9
+       Fresh serde_derive v1.0.229
+       Fresh aead v0.5.2
+       Fresh tinyvec v1.13.3
+       Fresh base64 v0.23.1
+       Fresh once_cell v1.21.4
+       Fresh winnow v1.0.4
+       Fresh keccak v0.1.6
+       Fresh byteorder v1.5.0
+       Fresh signature v2.2.0
+       Fresh hashbrown v0.17.1
+       Fresh equivalent v1.0.3
+       Fresh ed25519 v2.2.3
+       Fresh merlin v3.0.0
+       Fresh indexmap v2.14.2
+       Fresh ureq-proto v0.6.5
+       Fresh rustls v0.23.46
+       Fresh toml_parser v1.1.5+spec-1.1.0
+       Fresh unicode-normalization v0.1.26
+       Fresh serde v1.0.229
+       Fresh crypto_secretbox v0.1.1
+       Fresh bitcoin_hashes v0.14.101
+       Fresh getrandom_or_panic v0.0.3
+       Fresh zmij v1.0.23
+       Fresh webpki-roots v1.0.11
+       Fresh hmac v0.13.0
+       Fresh thiserror-impl v2.0.21
+       Fresh blake2 v0.10.6
+       Fresh toml_datetime v1.1.2+spec-1.1.0
+       Fresh serde_bytes v0.11.19
+       Fresh serde_spanned v1.1.2
+       Fresh cpufeatures v0.3.1
+       Fresh bitflags v2.13.2
+       Fresh foldhash v0.2.0
+       Fresh linux-raw-sys v0.12.1
+       Fresh arrayref v0.3.9
+       Fresh percent-encoding v2.3.2
+       Fresh utf8-zero v0.8.1
+       Fresh toml_writer v1.1.3+spec-1.1.0
+       Fresh memchr v2.8.3
+       Fresh ureq v3.5.0
+       Fresh schnorrkel v0.11.5
+       Fresh rustix v1.1.6
+       Fresh toml v1.1.8+spec-1.1.0
+       Fresh serde_json v1.0.154
+       Fresh sha2 v0.11.1
+       Fresh crypto_box v0.9.1
+       Fresh thiserror v2.0.21
+       Fresh pbkdf2 v0.13.0
+       Fresh bip39 v3.0.0
+       Fresh ed25519-dalek v2.2.0
+       Fresh blake2 v0.11.0
+       Fresh base64ct v1.8.3
+       Dirty hippius v0.16.0 (/home/radu/projects/hip-017-aws-links/crates/hippius): the file `crates/hippius/src/private_file.rs` has changed (1794758538.013448388s, 7s after last build at 1794758531.651518532s)
+   Compiling hippius v0.16.0 (/home/radu/projects/hip-017-aws-links/crates/hippius)
+     Running `/home/radu/.rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/rustc --crate-name hippius --edition=2024 crates/hippius/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=rust_2018_idioms '--warn=clippy::pedantic' '--warn=clippy::use_self' '--warn=clippy::unwrap_used' '--warn=clippy::unused_trait_names' --deny=unused_must_use --warn=unused_macro_rules --warn=unused_lifetimes --warn=unused_import_braces --warn=unused_extern_crates --deny=unsafe_op_in_unsafe_fn --forbid=unsafe_code --warn=unreachable_pub '--warn=clippy::unreachable' '--warn=clippy::unnecessary_self_imports' '--warn=clippy::uninlined_format_args' '--deny=clippy::unimplemented' --warn=unexpected_cfgs '--deny=clippy::undocumented_unsafe_blocks' '--warn=clippy::try_err' --warn=trivial_numeric_casts '--deny=clippy::todo' '--warn=clippy::str_to_string' --deny=static_mut_refs '--allow=clippy::similar_names' '--warn=clippy::rest_pat_in_fully_bound_structs' '--warn=clippy::renamed_function_params' '--warn=clippy::ref_patterns' '--warn=clippy::redundant_type_annotations' '--warn=clippy::redundant_clone' '--warn=rustdoc::private_intra_doc_links' '--deny=clippy::print_stdout' '--deny=clippy::print_stderr' '--warn=clippy::partial_pub_fields' '--warn=clippy::or_fun_call' '--warn=clippy::needless_raw_strings' '--allow=clippy::must_use_candidate' '--warn=clippy::multiple_unsafe_ops_per_block' '--warn=clippy::mod_module_files' '--deny=clippy::missing_safety_doc' '--allow=clippy::missing_panics_doc' --warn=missing_docs --warn=missing_debug_implementations '--deny=clippy::mem_forget' '--warn=clippy::let_underscore_must_use' '--warn=clippy::large_stack_frames' '--deny=clippy::large_futures' '--warn=clippy::iter_over_hash_type' '--warn=clippy::if_then_some_else_none' '--warn=clippy::get_unwrap' '--allow=clippy::format_push_string' '--warn=clippy::exit' '--warn=clippy::empty_structs_with_brackets' '--deny=clippy::dbg_macro' '--warn=clippy::clone_on_ref_ptr' '--deny=rustdoc::broken_intra_doc_links' '--deny=clippy::await_holding_lock' '--deny=clippy::allow_attributes_without_reason' '--warn=clippy::allow_attributes' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=51dc7c1e6d85cb8b -C extra-filename=-14098e424505d529 --out-dir /home/radu/projects/hip-017-aws-links/target/debug/deps -C incremental=/home/radu/projects/hip-017-aws-links/target/debug/incremental -L dependency=/home/radu/projects/hip-017-aws-links/target/debug/deps --extern base64ct=/home/radu/projects/hip-017-aws-links/target/debug/deps/libbase64ct-7d0f7e7ba36b7e7a.rlib --extern bip39=/home/radu/projects/hip-017-aws-links/target/debug/deps/libbip39-8406cae260c2b320.rlib --extern blake2=/home/radu/projects/hip-017-aws-links/target/debug/deps/libblake2-bdd9886714d5b1c3.rlib --extern crypto_box=/home/radu/projects/hip-017-aws-links/target/debug/deps/libcrypto_box-191d053d9ae0c0a4.rlib --extern ed25519_dalek=/home/radu/projects/hip-017-aws-links/target/debug/deps/libed25519_dalek-bf00b875af3173be.rlib --extern getrandom=/home/radu/projects/hip-017-aws-links/target/debug/deps/libgetrandom-bd1f0fc3e4a85b91.rlib --extern pbkdf2=/home/radu/projects/hip-017-aws-links/target/debug/deps/libpbkdf2-5ba1d4957d1673cd.rlib --extern rustix=/home/radu/projects/hip-017-aws-links/target/debug/deps/librustix-f0128d27f59d579d.rlib --extern rustls=/home/radu/projects/hip-017-aws-links/target/debug/deps/librustls-6e9473f5db3ec982.rlib --extern schnorrkel=/home/radu/projects/hip-017-aws-links/target/debug/deps/libschnorrkel-ccd05bba36171b14.rlib --extern serde=/home/radu/projects/hip-017-aws-links/target/debug/deps/libserde-93567a73421e3fd1.rlib --extern serde_json=/home/radu/projects/hip-017-aws-links/target/debug/deps/libserde_json-02a87ff57b3e5790.rlib --extern sha2=/home/radu/projects/hip-017-aws-links/target/debug/deps/libsha2-1173a59efac0054a.rlib --extern thiserror=/home/radu/projects/hip-017-aws-links/target/debug/deps/libthiserror-24848c7a8a3fddfe.rlib --extern toml=/home/radu/projects/hip-017-aws-links/target/debug/deps/libtoml-07731875f47a1788.rlib --extern unicode_normalization=/home/radu/projects/hip-017-aws-links/target/debug/deps/libunicode_normalization-b3f39c1f8186d7b9.rlib --extern ureq=/home/radu/projects/hip-017-aws-links/target/debug/deps/libureq-0a4a5b35ecf8004f.rlib --extern zeroize=/home/radu/projects/hip-017-aws-links/target/debug/deps/libzeroize-587b9b5d8d924d40.rlib -L native=/home/radu/projects/hip-017-aws-links/target/debug/build/ring-e6d96faa9439b04f/out`
+     Running `/home/radu/.rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/rustc --crate-name hippius --edition=2024 crates/hippius/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=rust_2018_idioms '--warn=clippy::pedantic' '--warn=clippy::use_self' '--warn=clippy::unwrap_used' '--warn=clippy::unused_trait_names' --deny=unused_must_use --warn=unused_macro_rules --warn=unused_lifetimes --warn=unused_import_braces --warn=unused_extern_crates --deny=unsafe_op_in_unsafe_fn --forbid=unsafe_code --warn=unreachable_pub '--warn=clippy::unreachable' '--warn=clippy::unnecessary_self_imports' '--warn=clippy::uninlined_format_args' '--deny=clippy::unimplemented' --warn=unexpected_cfgs '--deny=clippy::undocumented_unsafe_blocks' '--warn=clippy::try_err' --warn=trivial_numeric_casts '--deny=clippy::todo' '--warn=clippy::str_to_string' --deny=static_mut_refs '--allow=clippy::similar_names' '--warn=clippy::rest_pat_in_fully_bound_structs' '--warn=clippy::renamed_function_params' '--warn=clippy::ref_patterns' '--warn=clippy::redundant_type_annotations' '--warn=clippy::redundant_clone' '--warn=rustdoc::private_intra_doc_links' '--deny=clippy::print_stdout' '--deny=clippy::print_stderr' '--warn=clippy::partial_pub_fields' '--warn=clippy::or_fun_call' '--warn=clippy::needless_raw_strings' '--allow=clippy::must_use_candidate' '--warn=clippy::multiple_unsafe_ops_per_block' '--warn=clippy::mod_module_files' '--deny=clippy::missing_safety_doc' '--allow=clippy::missing_panics_doc' --warn=missing_docs --warn=missing_debug_implementations '--deny=clippy::mem_forget' '--warn=clippy::let_underscore_must_use' '--warn=clippy::large_stack_frames' '--deny=clippy::large_futures' '--warn=clippy::iter_over_hash_type' '--warn=clippy::if_then_some_else_none' '--warn=clippy::get_unwrap' '--allow=clippy::format_push_string' '--warn=clippy::exit' '--warn=clippy::empty_structs_with_brackets' '--deny=clippy::dbg_macro' '--warn=clippy::clone_on_ref_ptr' '--deny=rustdoc::broken_intra_doc_links' '--deny=clippy::await_holding_lock' '--deny=clippy::allow_attributes_without_reason' '--warn=clippy::allow_attributes' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=0bc4f569f828f062 -C extra-filename=-505119cc8ea1df06 --out-dir /home/radu/projects/hip-017-aws-links/target/debug/deps -C incremental=/home/radu/projects/hip-017-aws-links/target/debug/incremental -L dependency=/home/radu/projects/hip-017-aws-links/target/debug/deps --extern base64ct=/home/radu/projects/hip-017-aws-links/target/debug/deps/libbase64ct-7d0f7e7ba36b7e7a.rmeta --extern bip39=/home/radu/projects/hip-017-aws-links/target/debug/deps/libbip39-8406cae260c2b320.rmeta --extern blake2=/home/radu/projects/hip-017-aws-links/target/debug/deps/libblake2-bdd9886714d5b1c3.rmeta --extern crypto_box=/home/radu/projects/hip-017-aws-links/target/debug/deps/libcrypto_box-191d053d9ae0c0a4.rmeta --extern ed25519_dalek=/home/radu/projects/hip-017-aws-links/target/debug/deps/libed25519_dalek-bf00b875af3173be.rmeta --extern getrandom=/home/radu/projects/hip-017-aws-links/target/debug/deps/libgetrandom-bd1f0fc3e4a85b91.rmeta --extern pbkdf2=/home/radu/projects/hip-017-aws-links/target/debug/deps/libpbkdf2-5ba1d4957d1673cd.rmeta --extern rustix=/home/radu/projects/hip-017-aws-links/target/debug/deps/librustix-f0128d27f59d579d.rmeta --extern rustls=/home/radu/projects/hip-017-aws-links/target/debug/deps/librustls-6e9473f5db3ec982.rmeta --extern schnorrkel=/home/radu/projects/hip-017-aws-links/target/debug/deps/libschnorrkel-ccd05bba36171b14.rmeta --extern serde=/home/radu/projects/hip-017-aws-links/target/debug/deps/libserde-93567a73421e3fd1.rmeta --extern serde_json=/home/radu/projects/hip-017-aws-links/target/debug/deps/libserde_json-02a87ff57b3e5790.rmeta --extern sha2=/home/radu/projects/hip-017-aws-links/target/debug/deps/libsha2-1173a59efac0054a.rmeta --extern thiserror=/home/radu/projects/hip-017-aws-links/target/debug/deps/libthiserror-24848c7a8a3fddfe.rmeta --extern toml=/home/radu/projects/hip-017-aws-links/target/debug/deps/libtoml-07731875f47a1788.rmeta --extern unicode_normalization=/home/radu/projects/hip-017-aws-links/target/debug/deps/libunicode_normalization-b3f39c1f8186d7b9.rmeta --extern ureq=/home/radu/projects/hip-017-aws-links/target/debug/deps/libureq-0a4a5b35ecf8004f.rmeta --extern zeroize=/home/radu/projects/hip-017-aws-links/target/debug/deps/libzeroize-587b9b5d8d924d40.rmeta -L native=/home/radu/projects/hip-017-aws-links/target/debug/build/ring-e6d96faa9439b04f/out`
+warning: unused imports: `OpenRegularError` and `open_regular_at`
+  --> crates/hippius/src/private_file.rs:18:22
+   |
+18 | use crate::regular::{OpenRegularError, open_regular_at};
+   |                      ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Read`
+ --> crates/hippius/src/private_file.rs:7:15
+  |
+7 | use std::io::{Read as _, Write as _};
+  |               ^^^^
+
+warning: field `holds` is never read
+   --> crates/hippius/src/private_file.rs:100:16
+    |
+ 98 | pub(crate) struct Guarded {
+    |                   ------- field in this struct
+ 99 |     pub(crate) what: &'static str,
+100 |     pub(crate) holds: &'static str,
+    |                ^^^^^
+    |
+    = note: `Guarded` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `MAX_FILE_BYTES` is never used
+   --> crates/hippius/src/private_file.rs:164:18
+    |
+164 | pub(crate) const MAX_FILE_BYTES: usize = 1 << 20;
+    |                  ^^^^^^^^^^^^^^
+
+warning: function `another_users_file` is never used
+   --> crates/hippius/src/private_file.rs:599:4
+    |
+599 | fn another_users_file(path: &Path, guarded: Guarded) -> Error {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `open_error` is never used
+   --> crates/hippius/src/private_file.rs:619:4
+    |
+619 | fn open_error(
+    |    ^^^^^^^^^^
+
+warning: `hippius` (lib) generated 6 warnings (run `cargo fix --lib -p hippius` to apply 1 suggestion)
+warning: `hippius` (lib test) generated 2 warnings (2 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.42s
+  Executable `/home/radu/projects/hip-017-aws-links/target/debug/deps/hippius-14098e424505d529`
+
+*** result: Success
+
+*** /home/radu/.rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu/bin/cargo test --verbose --package=hippius@0.16.0
+       Fresh unicode-ident v1.0.27
+       Fresh proc-macro2 v1.0.107
+       Fresh typenum v1.20.1
+       Fresh cfg-if v1.0.5
+       Fresh quote v1.0.47
+       Fresh version_check v0.9.5
+       Fresh subtle v2.6.1
+       Fresh syn v2.0.119
+       Fresh libc v0.2.191
+       Fresh shlex v2.0.1
+       Fresh zeroize_derive v1.5.0
+       Fresh getrandom v0.2.17
+       Fresh serde_core v1.0.229
+       Fresh find-msvc-tools v0.1.15
+       Fresh zeroize v1.9.1
+       Fresh rand_core v0.6.4
+       Fresh cc v1.10.0
+       Fresh hybrid-array v0.4.15
+       Fresh cpufeatures v0.2.17
+       Fresh generic-array v0.14.7
+       Fresh semver v1.0.28
+       Fresh cmov v0.5.4
+       Fresh crypto-common v0.1.7
+       Fresh block-buffer v0.10.4
+       Fresh rustc_version v0.4.1
+       Fresh ctutils v0.4.6
+       Fresh digest v0.10.7
+       Fresh zerocopy v0.8.63
+       Fresh crypto-common v0.2.2
+       Fresh block-buffer v0.12.1
+       Fresh syn v3.0.9
+       Fresh ppv-lite86 v0.2.21
+       Fresh inout v0.1.4
+       Fresh digest v0.11.3
+       Fresh rustls-pki-types v1.15.1
+       Fresh curve25519-dalek-derive v0.1.1
+       Fresh arrayvec v0.7.8
+       Fresh itoa v1.0.18
+       Fresh untrusted v0.9.0
+       Fresh curve25519-dalek v4.1.3
+       Fresh cipher v0.4.4
+       Fresh rand_chacha v0.3.1
+       Fresh ring v0.17.14
+       Fresh universal-hash v0.5.1
+       Fresh bytes v1.12.1
+       Fresh log v0.4.34
+       Fresh opaque-debug v0.3.1
+       Fresh httparse v1.10.1
+       Fresh poly1305 v0.8.0
+       Fresh http v1.5.0
+       Fresh rustls-webpki v0.103.16
+       Fresh rand v0.8.8
+       Fresh salsa20 v0.10.2
+       Fresh hex-conservative v0.2.3
+       Fresh serde_derive v1.0.229
+       Fresh sha2 v0.10.9
+       Fresh aead v0.5.2
+       Fresh base64 v0.23.1
+       Fresh once_cell v1.21.4
+       Fresh winnow v1.0.4
+       Fresh keccak v0.1.6
+       Fresh byteorder v1.5.0
+       Fresh signature v2.2.0
+       Fresh hashbrown v0.17.1
+       Fresh equivalent v1.0.3
+       Fresh tinyvec v1.13.3
+       Fresh merlin v3.0.0
+       Fresh unicode-normalization v0.1.26
+       Fresh indexmap v2.14.2
+       Fresh toml_parser v1.1.5+spec-1.1.0
+       Fresh ed25519 v2.2.3
+       Fresh crypto_secretbox v0.1.1
+       Fresh ureq-proto v0.6.5
+       Fresh rustls v0.23.46
+       Fresh serde v1.0.229
+       Fresh getrandom_or_panic v0.0.3
+       Fresh bitcoin_hashes v0.14.101
+       Fresh zmij v1.0.23
+       Fresh hmac v0.13.0
+       Fresh webpki-roots v1.0.11
+       Fresh thiserror-impl v2.0.21
+       Fresh blake2 v0.10.6
+       Fresh serde_bytes v0.11.19
+       Fresh serde_spanned v1.1.2
+       Fresh toml_datetime v1.1.2+spec-1.1.0
+       Fresh foldhash v0.2.0
+       Fresh linux-raw-sys v0.12.1
+       Fresh arrayref v0.3.9
+       Fresh utf8-zero v0.8.1
+       Fresh percent-encoding v2.3.2
+       Fresh toml_writer v1.1.3+spec-1.1.0
+       Fresh memchr v2.8.3
+       Fresh cpufeatures v0.3.1
+       Fresh bitflags v2.13.2
+       Fresh rustix v1.1.6
+       Fresh toml v1.1.8+spec-1.1.0
+       Fresh serde_json v1.0.154
+       Fresh ureq v3.5.0
+       Fresh sha2 v0.11.1
+       Fresh schnorrkel v0.11.5
+       Fresh crypto_box v0.9.1
+       Fresh thiserror v2.0.21
+       Fresh bip39 v3.0.0
+       Fresh pbkdf2 v0.13.0
+       Fresh ed25519-dalek v2.2.0
+       Fresh blake2 v0.11.0
+       Fresh base64ct v1.8.3
+warning: unused imports: `OpenRegularError` and `open_regular_at`
+  --> crates/hippius/src/private_file.rs:18:22
+   |
+18 | use crate::regular::{OpenRegularError, open_regular_at};
+   |                      ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Read`
+ --> crates/hippius/src/private_file.rs:7:15
+  |
+7 | use std::io::{Read as _, Write as _};
+  |               ^^^^
+
+warning: field `holds` is never read
+   --> crates/hippius/src/private_file.rs:100:16
+    |
+ 98 | pub(crate) struct Guarded {
+    |                   ------- field in this struct
+ 99 |     pub(crate) what: &'static str,
+100 |     pub(crate) holds: &'static str,
+    |                ^^^^^
+    |
+    = note: `Guarded` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `MAX_FILE_BYTES` is never used
+   --> crates/hippius/src/private_file.rs:164:18
+    |
+164 | pub(crate) const MAX_FILE_BYTES: usize = 1 << 20;
+    |                  ^^^^^^^^^^^^^^
+
+warning: function `another_users_file` is never used
+   --> crates/hippius/src/private_file.rs:599:4
+    |
+599 | fn another_users_file(path: &Path, guarded: Guarded) -> Error {
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `open_error` is never used
+   --> crates/hippius/src/private_file.rs:619:4
+    |
+619 | fn open_error(
+    |    ^^^^^^^^^^
+
+warning: `hippius` (lib) generated 6 warnings (run `cargo fix --lib -p hippius` to apply 1 suggestion)
+warning: `hippius` (lib test) generated 2 warnings (2 duplicates)
+       Fresh hippius v0.16.0 (/home/radu/projects/hip-017-aws-links/crates/hippius)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running `/home/radu/projects/hip-017-aws-links/target/debug/deps/hippius-14098e424505d529`
+
+running 332 tests
+test account::tests::a_format_suffix_is_the_last_dot_part_of_the_last_segment ... ok
+test account::tests::a_bad_account_id_is_quoted_and_names_its_source ... ok
+test account::tests::a_dotted_bucket_or_host_name_is_classified_as_an_undotted_one ... ok
+test account::tests::a_format_suffix_meets_the_guard_of_its_plain_route ... ok
+test account::tests::a_put_of_one_ticket_is_unsupported_and_the_rest_of_the_tickets_personal ... ok
+test account::tests::a_flag_rule_holds_for_every_write_method_and_letter_case ... ok
+test account::tests::a_request_reaches_its_row_in_any_form ... ok
+test account::tests::a_route_flag_refuses_with_the_code_of_its_flag ... ok
+test account::tests::a_rule_holds_for_its_route_under_another_api_version ... ok
+test account::tests::a_secret_route_issues_a_secret_with_or_without_its_trailing_slash ... ok
+test account::tests::a_hub_delete_is_permanent_and_its_neighbours_are_not ... ok
+test account::tests::a_slashless_path_gets_the_class_of_the_slashed_one ... ok
+test account::tests::a_subscribe_503_did_nothing_with_or_without_the_slash ... ok
+test account::tests::a_secret_route_matches_its_own_method_and_no_other ... ok
+test account::tests::an_app_engine_secrets_rule_matches_its_own_method_and_no_other ... ok
+test account::tests::every_plan_route_family_gets_the_header_its_class_gives ... ok
+test account::tests::every_route_table_matches_in_any_letter_case ... ok
+test account::tests::membership_sends_skips_or_refuses_by_class ... ok
+test account::tests::no_table_entry_is_a_route_a_row_decides ... ok
+test account::tests::own_account_never_sends_the_header ... ok
+test account::tests::parses_self_and_ids_and_rejects_the_rest ... ok
+test account::tests::the_account_refusal_names_where_the_account_came_from ... ok
+test account::tests::the_account_refusal_quotes_no_query_value ... ok
+test account::tests::the_database_create_and_restore_issue_a_secret_and_its_other_routes_do_not ... ok
+test account::tests::an_uncurated_replace_rule_matches_its_own_method_and_every_write ... ok
+test account::tests::the_neighbours_of_a_route_rule_match_no_rule ... ok
+test account::tests::the_network_summary_provisions_on_its_reads_and_nowhere_else ... ok
+test account::tests::the_recurring_card_routes_take_a_membership_only_beside_a_billing_account ... ok
+test account::tests::the_route_classes_are_ordered_from_least_to_most_strict ... ok
+test app_secrets::tests::a_file_of_another_shape_is_refused_without_its_values ... FAILED
+test app_secrets::tests::a_missing_or_open_file_is_refused ... FAILED
+test app_secrets::tests::only_a_plain_name_is_quoted ... ok
+test app_secrets::tests::values_are_kept_exactly_and_shown_nowhere ... FAILED
+test aws::tests::a_bare_name_given_twice_is_one_file_in_the_working_directory ... ok
+test aws::tests::a_config_file_in_a_directory_others_can_write_is_refused ... ok
+test aws::tests::a_failed_create_takes_back_the_file_made_before_it ... ok
+test aws::tests::a_fifo_or_an_aws_file_over_1_mib_is_refused_without_waiting ... FAILED
+test aws::tests::a_file_that_cannot_be_created_is_usage ... ok
+test aws::tests::a_later_duplicate_section_is_removed ... ok
+test aws::tests::a_missing_name_that_differs_only_in_case_is_the_same_file ... ok
+test aws::tests::a_new_section_is_appended_after_a_blank_line ... ok
+test aws::tests::a_path_the_aws_cli_would_expand_is_refused ... ok
+test aws::tests::a_refusal_after_creating_takes_the_created_file_back ... ok
+test aws::tests::a_similar_header_is_not_the_same_section ... ok
+test aws::tests::a_symlink_or_a_non_utf8_file_is_refused ... FAILED
+test aws::tests::a_symlinked_aws_directory_is_refused_and_nothing_is_written ... ok
+test aws::tests::an_aws_file_open_to_others_is_refused_and_kept ... FAILED
+test aws::tests::an_empty_aws_variable_is_refused_not_read_as_unset ... ok
+test aws::tests::an_existing_profile_is_replaced_only_when_confirmed ... FAILED
+test aws::tests::an_existing_section_is_replaced_in_place_and_the_rest_kept_byte_for_byte ... ok
+test aws::tests::configure_notes_each_hard_linked_aws_file_once ... ok
+test aws::tests::configure_waits_for_the_config_files_lock_and_says_so ... ok
+test aws::tests::configure_writes_both_files_with_mode_0600_and_keeps_other_profiles ... FAILED
+test aws::tests::headers_are_matched_as_the_aws_cli_reads_them ... ok
+test aws::tests::key_ids_and_secrets_are_checked_and_secrets_never_printed ... ok
+test aws::tests::one_file_in_a_missing_directory_is_the_same_file_before_it_exists ... ok
+test aws::tests::one_file_named_by_both_variables_is_refused ... ok
+test aws::tests::one_lock_file_named_twice_is_locked_once ... ok
+test aws::tests::one_missing_path_named_twice_is_refused_and_nothing_is_created ... ok
+test aws::tests::paths_follow_the_aws_variables_then_home ... ok
+test aws::tests::profile_names_are_checked ... ok
+test account::tests::a_route_rule_matches_its_own_method_and_a_flag_every_write ... ok
+test aws::tests::the_comments_before_the_next_section_are_kept ... ok
+test client::tests::a_2xx_body_failure_is_maybe_sent_whatever_the_error_says ... ok
+test client::tests::a_403_passes_account_codes_through ... ok
+test client::tests::a_403_passes_the_selector_codes_through_with_their_hints ... ok
+test client::tests::a_body_rule_reads_the_top_level_keys_of_the_body ... ok
+test client::tests::a_bucket_acl_set_needs_both_flags_whatever_the_body ... ok
+test client::tests::a_client_keeps_one_deprecation_warning_per_route_until_taken ... ok
+test client::tests::a_client_requiring_a_token_refuses_to_send_without_one ... ok
+test client::tests::a_cluster_secrets_read_is_left_to_the_kubeconfig_command ... ok
+test client::tests::a_deprecated_route_is_one_warning_with_the_dates_its_headers_hold ... ok
+test client::tests::a_dry_run_always_shows_the_three_scope_headers ... ok
+test client::tests::a_dry_run_refuses_a_target_the_real_run_cannot_send ... ok
+test client::tests::a_field_error_loses_every_value_a_secret_field_sent ... ok
+test client::tests::a_full_url_on_another_origin_is_refused ... ok
+test client::tests::a_hub_delete_is_permanent_on_the_api_origin_only ... ok
+test client::tests::a_json_body_is_written_into_a_buffer_of_its_exact_size ... ok
+test client::tests::a_marked_connection_records_the_first_request_byte_and_forwards_the_rest ... ok
+test client::tests::a_publicity_patch_needs_public_unless_it_makes_the_namespace_private ... ok
+test client::tests::a_recurring_card_route_takes_the_account_beside_a_billing_account ... ok
+test client::tests::a_refusal_names_the_method_sent_and_the_route_of_its_guard ... ok
+test client::tests::a_refused_2xx_carries_its_status_request_id_and_body ... ok
+test client::tests::a_request_that_may_have_landed_is_partial_and_not_retryable_for_a_write ... ok
+test client::tests::a_request_that_never_left_is_retryable_with_no_side_effects ... ok
+test client::tests::a_retired_route_hints_to_upgrade ... ok
+test client::tests::a_route_request_goes_to_its_path_and_names_it_without_the_base ... ok
+test client::tests::a_route_request_takes_access_and_paging_from_its_row ... ok
+test client::tests::a_route_value_is_the_first_row_that_names_the_request ... ok
+test client::tests::a_scope_refusal_with_its_header_names_the_flag ... ok
+test client::tests::a_scope_refusal_without_its_header_names_no_flag ... ok
+test client::tests::a_url_inside_a_query_does_not_make_a_path_a_url ... ok
+test client::tests::a_url_is_refused_one_byte_past_what_the_http_library_builds ... ok
+test client::tests::ambiguous_api_paths_are_refused_before_anything_is_sent ... ok
+test client::tests::an_account_deletion_request_is_left_to_the_console ... ok
+test client::tests::an_app_engine_body_with_secrets_is_refused ... ok
+test client::tests::an_error_body_never_carries_a_one_time_secret_into_details ... ok
+test client::tests::an_if_match_no_header_can_carry_is_internal ... ok
+test client::tests::debug_of_a_client_hides_the_token ... ok
+test client::tests::debug_of_a_request_hides_query_values_and_the_body ... ok
+test client::tests::dry_run_describes_without_header_values ... ok
+test client::tests::dry_run_shows_an_if_match_only_when_set ... ok
+test client::tests::every_account_refusal_passes_through_and_nothing_else_does ... ok
+test client::tests::every_status_maps_to_its_contract_code ... ok
+test client::tests::follow_compares_origins_and_refuses_unusable_links ... ok
+test client::tests::identity_is_the_canonical_origin_and_a_token_fingerprint ... ok
+test client::tests::message_comes_from_error_detail_or_message_else_the_status ... ok
+test client::tests::no_token_names_the_profile_and_file_and_who_signs_in ... ok
+test client::tests::paths_join_under_api_once_and_queries_are_encoded ... ok
+test client::tests::response_document_refuses_an_empty_or_null_body ... ok
+test client::tests::response_json_keeps_large_numbers_and_rejects_non_json ... ok
+test client::tests::retry_after_takes_seconds_only ... ok
+test client::tests::retry_and_side_effects_follow_the_method_and_status ... ok
+test client::tests::server_text_is_cut_on_a_character_and_says_how_much_is_left ... ok
+test client::tests::the_account_token_route_is_refused_before_the_secret_check ... ok
+test client::tests::the_route_flag_ignores_the_account_and_the_query ... ok
+test client::tests::the_selector_refusals_come_billing_first ... ok
+test client::tests::tls_proxy_and_url_failures_are_not_retryable_and_sent_nothing ... ok
+test client::tests::whether_a_read_provisions_ignores_the_selection ... ok
+test client::tests::whether_a_route_issues_a_secret_ignores_the_selected_account ... ok
+test config::tests::a_bad_file_names_the_path_and_not_the_contents ... ok
+test config::tests::a_change_keeps_the_owner_mode_the_file_has ... FAILED
+test config::tests::a_config_directory_that_cannot_be_created_is_usage ... ok
+test config::tests::a_config_directory_that_is_a_file_or_unreachable_is_refused ... ok
+test config::tests::a_config_error_says_what_is_wrong_without_quoting_the_file ... ok
+test config::tests::a_config_file_without_read_permission_is_usage ... FAILED
+test config::tests::a_directory_others_can_write_is_refused_for_reads_and_writes ... FAILED
+test config::tests::a_failed_write_leaves_no_temporary_file_and_reports_the_path ... ok
+test config::tests::a_fifo_or_a_file_over_1_mib_is_refused_without_waiting ... FAILED
+test config::tests::a_file_or_directory_owned_by_another_user_is_refused ... ok
+test config::tests::a_file_that_is_not_utf8_is_a_usage_error ... FAILED
+test config::tests::a_lock_that_cannot_be_created_is_usage_and_nothing_is_written ... ok
+test config::tests::a_malformed_project_or_billing_account_names_where_it_came_from ... ok
+test config::tests::a_missing_file_is_an_empty_config_and_a_directory_is_refused ... FAILED
+test config::tests::a_new_account_clears_the_stored_project_and_billing_account ... ok
+test config::tests::a_path_that_names_no_file_is_refused_before_anything_is_written ... ok
+test config::tests::a_project_is_cleared_only_while_it_is_still_stored ... ok
+test config::tests::a_selection_is_stored_only_for_the_profiles_account ... ok
+test config::tests::a_stored_token_for_another_origin_is_withheld_not_sent ... ok
+test config::tests::a_stored_token_is_compared_trimmed ... ok
+test config::tests::a_symlinked_config_directory_is_refused_for_reads_and_writes ... FAILED
+test config::tests::a_symlinked_config_file_is_refused_and_its_target_is_not_read ... ok
+test config::tests::a_token_must_be_one_word_of_visible_ascii ... ok
+test config::tests::an_edit_of_a_hard_linked_config_is_noted_once ... FAILED
+test config::tests::an_edit_removes_the_temporary_files_a_crashed_writer_left ... FAILED
+test config::tests::another_account_override_leaves_the_stored_project_unread ... ok
+test config::tests::debug_never_prints_a_token ... ok
+test config::tests::every_mode_bit_for_others_or_the_group_is_refused ... FAILED
+test config::tests::flag_then_env_then_profile ... ok
+test config::tests::path_is_hippius_config_else_dot_hippius_in_home ... ok
+test config::tests::save_replaces_a_stale_temporary_file_and_never_follows_a_symlink ... FAILED
+test config::tests::save_writes_mode_0600_in_a_0700_directory_and_round_trips ... FAILED
+test config::tests::the_project_and_billing_account_come_from_an_override_then_the_profile ... ok
+test config::tests::the_token_variable_is_sent_only_to_the_origin_it_is_bound_to ... ok
+test config::tests::unknown_keys_are_kept_and_warned_about_once_without_being_quoted ... ok
+test digest::tests::sha256_is_lowercase_hex_of_the_exact_bytes ... ok
+test dns::tests::debug_names_the_provider_and_no_value ... ok
+test dns::tests::redactions_cover_the_secret_fields_in_every_form_longest_first ... ok
+test dns::tests::the_hint_lists_the_fields_of_the_provider ... ok
+test encode::tests::bytes_encode_as_rfc_3986_says ... ok
+test error::tests::a_partial_failure_carries_stdout_and_details ... ok
+test error::tests::a_redacted_error_holds_the_secret_nowhere ... ok
+test error::tests::an_error_after_a_write_keeps_its_code_and_prints_what_was_done ... ok
+test error::tests::every_code_has_its_own_name ... ok
+test error::tests::exit_2_codes_other_than_usage_name_their_flag ... ok
+test error::tests::hint_display_and_code ... ok
+test error::tests::http_error_carries_status_retry_side_effects_and_details_last ... ok
+test error::tests::local_error_has_every_contract_field_in_order ... ok
+test error::tests::redacting_an_empty_secret_is_a_bug - should panic ... ok
+test error::tests::several_secrets_are_redacted_in_one_pass ... ok
+test error::tests::the_failures_are_the_exit_1_codes ... ok
+test error::tests::the_tenet_4_table_is_the_code_table ... ok
+test error::tests::the_write_guards_repeat_the_command_with_their_flag ... ok
+test error::tests::with_message_replaces_only_the_message ... ok
+test ids::tests::a_uuid_gets_the_version_and_variant_bits ... ok
+test ids::tests::idempotency_keys_are_new_v4_uuids ... ok
+test ids::tests::no_random_bytes_is_internal_and_names_its_purpose ... ok
+test json::tests::a_bare_array_is_one_page ... ok
+test json::tests::a_cursor_field_without_a_next_link_is_refused ... ok
+test json::tests::a_cursor_page_carries_its_cursor_as_a_decimal_token ... ok
+test json::tests::a_cursor_page_keeps_the_other_fields_of_the_answer ... ok
+test json::tests::a_cursor_page_refuses_any_other_shape ... ok
+test json::tests::a_drf_page_keeps_its_other_fields_beside_the_items ... ok
+test json::tests::a_paginated_answer_carries_its_next_link ... ok
+test json::tests::a_quoted_next_link_has_its_query_values_redacted ... ok
+test json::tests::a_token_is_the_next_page_as_it_is ... ok
+test json::tests::envelope_has_items_then_the_token ... ok
+test json::tests::one_page_envelope_carries_the_next_token_or_refuses_a_link_without_one ... ok
+test json::tests::only_a_numeric_page_parameter_is_a_token ... ok
+test json::tests::other_shapes_are_not_lists ... ok
+test json::tests::the_fields_beside_the_items_keep_the_servers_order ... ok
+test kubernetes::tests::a_box_sealed_here_opens_and_the_newest_launch_drop_is_the_one_opened ... FAILED
+test kubernetes::tests::a_cluster_key_spelled_another_way_still_matches ... FAILED
+test kubernetes::tests::a_cluster_without_its_guest_key_or_its_drop_is_not_found_yet ... FAILED
+test kubernetes::tests::a_drop_that_does_not_verify_is_refused_before_it_is_opened ... FAILED
+test kubernetes::tests::a_file_that_is_not_a_version_1_key_file_is_usage ... FAILED
+test kubernetes::tests::a_guest_key_that_changed_between_the_reads_is_refused ... FAILED
+test kubernetes::tests::a_key_file_is_matched_to_its_cluster_by_both_public_keys ... FAILED
+test kubernetes::tests::a_replacement_signs_the_pool_params_with_replaces_added ... FAILED
+test kubernetes::tests::a_signed_drop_that_will_not_open_is_refused ... FAILED
+test kubernetes::tests::a_string_is_escaped_as_python_escapes_it ... ok
+test kubernetes::tests::an_add_node_is_signed_at_the_server_time_of_the_answer ... FAILED
+test kubernetes::tests::an_add_node_is_signed_exactly_as_pynacl_signs_it ... FAILED
+test kubernetes::tests::both_vector_drops_verify_and_are_bound_to_the_cluster_and_the_kind ... ok
+test kubernetes::tests::canonical_json_refuses_what_python_prints_differently ... FAILED
+test kubernetes::tests::debug_shows_the_public_keys_and_never_a_secret_key ... FAILED
+test kubernetes::tests::each_signed_add_node_has_a_fresh_v4_request_id_and_verifies ... FAILED
+test kubernetes::tests::every_character_is_escaped_as_python_escapes_it ... ok
+test kubernetes::tests::non_ascii_nesting_and_escapes_sign_exactly_as_pynacl_signs_them ... FAILED
+test kubernetes::tests::the_drop_message_hashes_the_base64_text ... ok
+test kubernetes::tests::the_issue_time_is_the_server_date_within_five_minutes_then_the_local_clock ... ok
+test kubernetes::tests::the_key_file_is_held_to_the_checks_of_the_config_file ... FAILED
+test kubernetes::tests::the_keys_derive_the_public_keys_pynacl_derives ... FAILED
+test kubernetes::tests::the_newest_launch_drop_is_found_by_its_time_among_those_that_can_be_opened ... FAILED
+test kubernetes::tests::the_vector_kubeconfig_and_server_token_open ... FAILED
+test method::tests::methods_parse_in_any_case_and_know_their_bodies ... ok
+test phrase::tests::a_command_line_gains_the_flag_and_quotes_what_a_shell_would_split ... ok
+test phrase::tests::a_list_takes_the_serial_comma ... ok
+test phrase::tests::a_number_agrees_with_its_noun ... ok
+test phrase::tests::an_io_failure_is_said_in_hips_words_or_quoted ... ok
+test phrase::tests::an_object_is_named_by_its_name_and_its_id ... ok
+test phrase::tests::control_characters_in_a_literal_are_escaped ... ok
+test phrase::tests::literals_are_in_backticks ... ok
+test phrase::tests::plain_text_is_quoted_unchanged ... ok
+test phrase::tests::ticked_items_are_each_in_backticks ... ok
+test private_file::tests::a_denied_open_names_the_fix_its_owner_allows ... ok
+test private_file::tests::a_failed_write_of_a_hard_linked_file_is_not_noted ... ok
+test private_file::tests::a_split_link_warning_names_the_file ... ok
+test project::tests::a_bad_id_names_its_source_and_the_fix_for_it ... ok
+test project::tests::a_format_suffix_keeps_the_selector_rules_of_the_plain_route ... ok
+test account::tests::the_guard_of_a_template_is_the_rule_of_its_path ... ok
+test project::tests::a_refusal_names_the_flag_or_variable_of_the_selection ... ok
+test project::tests::a_row_names_its_project_only_by_its_id ... ok
+test project::tests::a_selection_sends_skips_or_refuses_by_route ... ok
+test project::tests::a_slashless_route_takes_the_selectors_of_the_slashed_one ... ok
+test project::tests::a_stored_billing_account_is_left_off_the_route_that_names_it ... ok
+test project::tests::a_stored_project_is_left_off_a_route_that_names_the_project ... ok
+test project::tests::a_stored_selection_is_left_off_reads_and_refused_on_writes ... ok
+test aws::tests::set_section_keeps_every_other_byte_for_every_small_file ... ok
+test project::tests::ids_compare_by_value_not_by_source ... ok
+test project::tests::parses_default_and_ids_and_rejects_the_rest ... ok
+test project::tests::the_default_selection_sends_no_header_and_refuses_nothing ... ok
+test project::tests::the_recurring_card_routes_name_a_billing_account_only ... ok
+test project::tests::the_refusal_quotes_no_query_value ... ok
+test project::tests::the_s3_plan_reads_take_a_project_on_reads_only ... ok
+test project::tests::the_takes_are_ordered_from_least_to_most_strict ... ok
+test redact::tests::a_field_name_is_redacted_whole_when_it_may_be_a_secret ... ok
+test redact::tests::a_number_is_compared_with_a_secret_by_its_value ... ok
+test redact::tests::a_secret_field_is_known_by_how_its_name_ends_in_any_spelling ... ok
+test redact::tests::a_secret_is_redacted_in_every_string_and_field_name ... ok
+test redact::tests::an_empty_secret_among_several_panics - should panic ... ok
+test redact::tests::an_empty_secret_is_a_bug - should panic ... ok
+test redact::tests::several_secrets_are_redacted_at_once ... ok
+test redact::tests::the_spellings_include_the_rust_and_python_escapes ... ok
+test regular::tests::a_directory_and_a_fifo_are_not_regular ... ok
+test regular::tests::a_missing_file_is_the_io_error ... ok
+test regular::tests::a_regular_file_opens_and_reads ... ok
+test regular::tests::a_symlink_is_refused_even_to_a_regular_file ... ok
+test routes::account::tests::a_body_sends_only_the_keys_given ... ok
+test routes::account::tests::an_invite_body_debugs_without_its_token ... ok
+test routes::billing::tests::an_auto_reload_body_sends_no_cap_as_null_and_card_setup_is_empty ... ok
+test routes::billing::tests::an_auto_reload_state_the_server_adds_is_other ... ok
+test routes::cdn::tests::a_check_with_rules_or_a_version_was_published ... ok
+test routes::cdn::tests::a_dns_setup_body_debug_shows_no_credential ... ok
+test routes::cdn::tests::a_purge_body_sends_one_key ... ok
+test routes::compute::tests::a_launch_body_sends_only_what_is_given ... ok
+test routes::compute::tests::a_refusal_slug_is_read_from_either_field ... ok
+test routes::compute::tests::a_status_the_server_adds_is_other ... ok
+test routes::compute::tests::an_app_body_debug_shows_no_secret ... ok
+test routes::databases::tests::a_new_database_debug_shows_no_secret ... ok
+test routes::databases::tests::a_tls_field_is_read_by_its_name ... ok
+test routes::databases::tests::the_password_and_the_key_are_cleared ... ok
+test routes::kubernetes::tests::a_drop_debug_shows_no_ciphertext ... ok
+test routes::kubernetes::tests::a_replacement_names_its_node_and_a_removed_node_says_so ... ok
+test routes::kubernetes::tests::an_operation_state_or_kind_the_server_adds_is_other ... ok
+test routes::s3::tests::a_token_body_sends_only_the_fields_given ... ok
+test routes::support::tests::a_text_body_debugs_as_its_sizes ... ok
+test routes::tests::a_guard_that_needs_no_flag_is_refused - should panic ... ok
+test routes::tests::a_path_that_stops_before_a_placeholder_is_not_the_route ... ok
+test routes::tests::a_route_outside_the_base_is_refused - should panic ... ok
+test routes::tests::a_route_with_the_wrong_count_is_refused - should panic ... ok
+test routes::tests::a_route_without_a_class_is_refused - should panic ... ok
+test routes::tests::a_template_counts_only_whole_segment_placeholders ... ok
+test routes::tests::a_template_matches_paths_with_a_value_in_each_placeholder ... ok
+test routes::tests::each_builder_method_sets_its_part_of_the_policy ... ok
+test routes::tests::each_paging_style_names_its_queries ... ok
+test project::tests::every_route_family_takes_the_selectors_its_class_gives ... ok
+test routes::tests::every_row_is_the_route_written_out_by_hand ... ok
+test routes::tests::no_route_has_two_rows ... ok
+test routes::tests::placeholders_fill_one_segment_each_percent_encoded ... ok
+test routes::tests::every_row_is_reached_by_its_own_path ... ok
+test routes::tests::the_most_literal_row_wins_and_a_head_reaches_the_get ... ok
+test secret::tests::a_secret_value_changes_in_place_and_shows_nothing ... ok
+test secret::tests::a_value_of_any_shape_is_dropped_cleared ... ok
+test source::tests::each_source_names_where_the_value_came_from ... ok
+test time::tests::a_unix_day_is_its_utc_date ... ok
+test time::tests::an_http_date_is_read_in_the_imf_fixdate_form_only ... ok
+test time::tests::an_rfc3339_time_is_a_real_date_with_a_real_offset ... ok
+test time::tests::each_day_of_the_calendar_is_one_day_after_the_last ... ok
+test time::tests::one_clock_alone_is_the_time ... ok
+test time::tests::rfc3339_times_read_as_seconds_since_1970 ... ok
+test time::tests::two_clocks_give_both_readings_however_close ... ok
+test url::tests::a_default_port_is_the_same_origin ... ok
+test url::tests::a_host_holds_only_letters_digits_hyphens_and_dots ... ok
+test url::tests::an_origin_without_a_host_is_refused ... ok
+test url::tests::host_of_handles_ports_and_ipv6 ... ok
+test url::tests::only_a_port_may_follow_the_host ... ok
+test url::tests::origins_are_https_or_loopback_http ... ok
+test url::tests::urls_in_messages_show_query_names_but_no_values ... ok
+test view::tests::a_field_of_another_type_reads_as_none ... ok
+test view::tests::a_slot_tells_missing_from_null_from_another_type ... ok
+test view::tests::an_array_is_not_read_by_position ... ok
+test view::tests::each_item_of_a_list_is_read_on_its_own ... ok
+test view::tests::text_or_a_number_reads_as_text ... ok
+test wallet::tests::a_bad_phrase_is_refused_without_quoting_it ... ok
+test wallet::tests::a_checked_phrase_is_found_and_prose_is_not ... ok
+test wallet::tests::a_gamma_link_of_another_hotkey_or_another_text_is_not_signed ... ok
+test wallet::tests::a_hotkey_path_that_holds_a_phrase_is_not_quoted ... FAILED
+test wallet::tests::a_phrase_in_argv_is_refused_with_the_hotkey_file ... ok
+test wallet::tests::base58_keeps_leading_zeros ... ok
+test wallet::tests::blake2b512_and_the_ss58_checksum_match_known_vectors ... ok
+test wallet::tests::debug_shows_the_address_only ... ok
+test wallet::tests::only_a_challenge_passes_the_checks ... ok
+test wallet::tests::pbkdf2_hmac_sha512_matches_the_published_vector ... ok
+test wallet::tests::the_gamma_link_signature_verifies_over_the_raw_message ... ok
+test wallet::tests::the_substrate_dev_phrase_derives_the_subkey_address ... ok
+test wallet::tests::the_test_phrase_derives_the_known_address ... ok
+test wallet::tests::twelve_listed_words_in_a_row_are_a_phrase ... ok
+test wallet::tests::whitespace_and_nfkd_forms_derive_the_same_key ... ok
+test account::tests::a_format_suffix_keeps_the_class_of_every_plan_route ... ok
+test routes::tests::the_header_tables_never_contradict_a_row ... ok
+test project::tests::a_format_suffix_keeps_the_take_of_every_route_family ... ok
+
+failures:
+
+---- app_secrets::tests::a_file_of_another_shape_is_refused_without_its_values stdout ----
+
+thread 'app_secrets::tests::a_file_of_another_shape_is_refused_without_its_values' (1218521) panicked at crates/hippius/src/app_secrets.rs:287:13:
+{"A":"one","A":"two"}: the secrets file `/home/radu/.cache/mutants-tmp/hipc-secrets-refused-1218486/secrets.json` is not a JSON object
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- app_secrets::tests::a_missing_or_open_file_is_refused stdout ----
+
+thread 'app_secrets::tests::a_missing_or_open_file_is_refused' (1218522) panicked at crates/hippius/src/app_secrets.rs:302:9:
+assertion `left == right` failed
+  left: "the secrets file `hunter2` is not a JSON object"
+ right: "the secrets file `--secrets-file` names does not exist; the path is not repeated here, in case it is a secret passed in place of the file"
+
+---- app_secrets::tests::values_are_kept_exactly_and_shown_nowhere stdout ----
+
+thread 'app_secrets::tests::values_are_kept_exactly_and_shown_nowhere' (1218524) panicked at crates/hippius/src/app_secrets.rs:217:53:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the secrets file `/home/radu/.cache/mutants-tmp/hipc-secrets-exact-1218486/secrets.json` is not a JSON object", hint: Some("pass `--secrets-file` a mode-0600 JSON object of each secret's name to its value"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- aws::tests::a_fifo_or_an_aws_file_over_1_mib_is_refused_without_waiting stdout ----
+
+thread 'aws::tests::a_fifo_or_an_aws_file_over_1_mib_is_refused_without_waiting' (1218528) panicked at crates/hippius/src/aws.rs:833:58:
+called `Result::unwrap_err()` on an `Ok` value: ()
+
+---- aws::tests::a_symlink_or_a_non_utf8_file_is_refused stdout ----
+
+thread 'aws::tests::a_symlink_or_a_non_utf8_file_is_refused' (1218537) panicked at crates/hippius/src/aws.rs:833:58:
+called `Result::unwrap_err()` on an `Ok` value: ()
+
+---- aws::tests::an_aws_file_open_to_others_is_refused_and_kept stdout ----
+
+thread 'aws::tests::an_aws_file_open_to_others_is_refused_and_kept' (1218539) panicked at crates/hippius/src/aws.rs:833:58:
+called `Result::unwrap_err()` on an `Ok` value: ()
+
+---- aws::tests::an_existing_profile_is_replaced_only_when_confirmed stdout ----
+
+thread 'aws::tests::an_existing_profile_is_replaced_only_when_confirmed' (1218541) panicked at crates/hippius/src/aws.rs:1459:9:
+assertion failed: refused.is_err()
+
+---- aws::tests::configure_writes_both_files_with_mode_0600_and_keeps_other_profiles stdout ----
+
+thread 'aws::tests::configure_writes_both_files_with_mode_0600_and_keeps_other_profiles' (1218546) panicked at crates/hippius/src/aws.rs:863:9:
+assertion `left == right` failed
+  left: "\0\n\n[profile hippius]\nendpoint_url = https://s3.hippius.com\nregion = decentralized\ns3 =\n    addressing_style = path\n"
+ right: "[profile hippius]\nendpoint_url = https://s3.hippius.com\nregion = decentralized\ns3 =\n    addressing_style = path\n"
+
+---- config::tests::a_change_keeps_the_owner_mode_the_file_has stdout ----
+
+thread 'config::tests::a_change_keeps_the_owner_mode_the_file_has' (1218616) panicked at crates/hippius/src/config/tests.rs:492:10:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the config file `/home/radu/.cache/mutants-tmp/hipc-config-keep-mode-1218486/hipc/config.toml` is not valid: line 1 does not parse", hint: Some("fix line 1 of `/home/radu/.cache/mutants-tmp/hipc-config-keep-mode-1218486/hipc/config.toml`"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- config::tests::a_config_file_without_read_permission_is_usage stdout ----
+
+thread 'config::tests::a_config_file_without_read_permission_is_usage' (1218620) panicked at crates/hippius/src/config/tests.rs:1044:5:
+assertion `left == right` failed
+  left: "the config file `/home/radu/.cache/mutants-tmp/hipc-config-unreadable-1218486/config.toml` is not valid: line 1 does not parse"
+ right: "cannot read `/home/radu/.cache/mutants-tmp/hipc-config-unreadable-1218486/config.toml`: permission is denied"
+
+---- config::tests::a_directory_others_can_write_is_refused_for_reads_and_writes stdout ----
+
+thread 'config::tests::a_directory_others_can_write_is_refused_for_reads_and_writes' (1218621) panicked at crates/hippius/src/config/tests.rs:502:51:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the config file `/home/radu/.cache/mutants-tmp/hipc-config-shared-1218486/config.toml` is not valid: line 1 does not parse", hint: Some("fix line 1 of `/home/radu/.cache/mutants-tmp/hipc-config-shared-1218486/config.toml`"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- config::tests::a_fifo_or_a_file_over_1_mib_is_refused_without_waiting stdout ----
+
+thread 'config::tests::a_fifo_or_a_file_over_1_mib_is_refused_without_waiting' (1218623) panicked at crates/hippius/src/config/tests.rs:987:5:
+the config file `/home/radu/.cache/mutants-tmp/hipc-config-fifo-1218486/fifo.toml` is not valid: line 1 does not parse
+
+---- config::tests::a_file_that_is_not_utf8_is_a_usage_error stdout ----
+
+thread 'config::tests::a_file_that_is_not_utf8_is_a_usage_error' (1218626) panicked at crates/hippius/src/config/tests.rs:627:5:
+assertion `left == right` failed
+  left: "the config file `/home/radu/.cache/mutants-tmp/hipc-config-not-utf8-1218486/config.toml` is not valid: line 1 does not parse"
+ right: "the config file `/home/radu/.cache/mutants-tmp/hipc-config-not-utf8-1218486/config.toml` is not UTF-8 text"
+
+---- config::tests::a_missing_file_is_an_empty_config_and_a_directory_is_refused stdout ----
+
+thread 'config::tests::a_missing_file_is_an_empty_config_and_a_directory_is_refused' (1218629) panicked at crates/hippius/src/config/tests.rs:562:56:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the config file `/home/radu/.cache/mutants-tmp/hipc-config-missing-1218486/nope.toml` is not valid: line 1 does not parse", hint: Some("fix line 1 of `/home/radu/.cache/mutants-tmp/hipc-config-missing-1218486/nope.toml`"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- config::tests::a_symlinked_config_directory_is_refused_for_reads_and_writes stdout ----
+
+thread 'config::tests::a_symlinked_config_directory_is_refused_for_reads_and_writes' (1218636) panicked at crates/hippius/src/config/tests.rs:892:44:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the config file `/home/radu/.cache/mutants-tmp/hipc-config-linked-dir-1218486/real/config.toml` is not valid: line 1 does not parse", hint: Some("fix line 1 of `/home/radu/.cache/mutants-tmp/hipc-config-linked-dir-1218486/real/config.toml`"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- config::tests::an_edit_of_a_hard_linked_config_is_noted_once stdout ----
+
+thread 'config::tests::an_edit_of_a_hard_linked_config_is_noted_once' (1218639) panicked at crates/hippius/src/config/tests.rs:859:24:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the config file `/home/radu/.cache/mutants-tmp/hipc-config-hard-link-1218486/config.toml` is not valid: line 1 does not parse", hint: Some("fix line 1 of `/home/radu/.cache/mutants-tmp/hipc-config-hard-link-1218486/config.toml`"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- config::tests::an_edit_removes_the_temporary_files_a_crashed_writer_left stdout ----
+
+thread 'config::tests::an_edit_removes_the_temporary_files_a_crashed_writer_left' (1218640) panicked at crates/hippius/src/config/tests.rs:655:43:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the config file `/home/radu/.cache/mutants-tmp/hipc-config-stale-tmp-1218486/config.toml` is not valid: line 1 does not parse", hint: Some("fix line 1 of `/home/radu/.cache/mutants-tmp/hipc-config-stale-tmp-1218486/config.toml`"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- config::tests::every_mode_bit_for_others_or_the_group_is_refused stdout ----
+
+thread 'config::tests::every_mode_bit_for_others_or_the_group_is_refused' (1218643) panicked at crates/hippius/src/config/tests.rs:528:42:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the config file `/home/radu/.cache/mutants-tmp/hipc-config-modes-1218486/config.toml` is not valid: line 1 does not parse", hint: Some("fix line 1 of `/home/radu/.cache/mutants-tmp/hipc-config-modes-1218486/config.toml`"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- config::tests::save_replaces_a_stale_temporary_file_and_never_follows_a_symlink stdout ----
+
+thread 'config::tests::save_replaces_a_stale_temporary_file_and_never_follows_a_symlink' (1218646) panicked at crates/hippius/src/config/tests.rs:545:51:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the config file `/home/radu/.cache/mutants-tmp/hipc-config-stale-1218486/config.toml` is not valid: line 1 does not parse", hint: Some("fix line 1 of `/home/radu/.cache/mutants-tmp/hipc-config-stale-1218486/config.toml`"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- config::tests::save_writes_mode_0600_in_a_0700_directory_and_round_trips stdout ----
+
+thread 'config::tests::save_writes_mode_0600_in_a_0700_directory_and_round_trips' (1218647) panicked at crates/hippius/src/config/tests.rs:467:5:
+assertion failed: refused.hint().unwrap().contains("chmod 600")
+
+---- kubernetes::tests::a_box_sealed_here_opens_and_the_newest_launch_drop_is_the_one_opened stdout ----
+
+thread 'kubernetes::tests::a_box_sealed_here_opens_and_the_newest_launch_drop_is_the_one_opened' (1218687) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-0/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::a_cluster_key_spelled_another_way_still_matches stdout ----
+
+thread 'kubernetes::tests::a_cluster_key_spelled_another_way_still_matches' (1218688) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-1/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::a_cluster_without_its_guest_key_or_its_drop_is_not_found_yet stdout ----
+
+thread 'kubernetes::tests::a_cluster_without_its_guest_key_or_its_drop_is_not_found_yet' (1218689) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-2/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::a_drop_that_does_not_verify_is_refused_before_it_is_opened stdout ----
+
+thread 'kubernetes::tests::a_drop_that_does_not_verify_is_refused_before_it_is_opened' (1218690) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-3/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::a_file_that_is_not_a_version_1_key_file_is_usage stdout ----
+
+thread 'kubernetes::tests::a_file_that_is_not_a_version_1_key_file_is_usage' (1218691) panicked at crates/hippius/src/kubernetes/tests.rs:987:9:
+repeated: the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-repeated-1218486-6/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved
+
+---- kubernetes::tests::a_guest_key_that_changed_between_the_reads_is_refused stdout ----
+
+thread 'kubernetes::tests::a_guest_key_that_changed_between_the_reads_is_refused' (1218692) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-7/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::a_key_file_is_matched_to_its_cluster_by_both_public_keys stdout ----
+
+thread 'kubernetes::tests::a_key_file_is_matched_to_its_cluster_by_both_public_keys' (1218693) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-8/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::a_replacement_signs_the_pool_params_with_replaces_added stdout ----
+
+thread 'kubernetes::tests::a_replacement_signs_the_pool_params_with_replaces_added' (1218694) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-9/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::a_signed_drop_that_will_not_open_is_refused stdout ----
+
+thread 'kubernetes::tests::a_signed_drop_that_will_not_open_is_refused' (1218695) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-10/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::an_add_node_is_signed_at_the_server_time_of_the_answer stdout ----
+
+thread 'kubernetes::tests::an_add_node_is_signed_at_the_server_time_of_the_answer' (1218697) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-11/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::an_add_node_is_signed_exactly_as_pynacl_signs_it stdout ----
+
+thread 'kubernetes::tests::an_add_node_is_signed_exactly_as_pynacl_signs_it' (1218698) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-12/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::canonical_json_refuses_what_python_prints_differently stdout ----
+
+thread 'kubernetes::tests::canonical_json_refuses_what_python_prints_differently' (1218700) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-13/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::debug_shows_the_public_keys_and_never_a_secret_key stdout ----
+
+thread 'kubernetes::tests::debug_shows_the_public_keys_and_never_a_secret_key' (1218701) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-14/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::each_signed_add_node_has_a_fresh_v4_request_id_and_verifies stdout ----
+
+thread 'kubernetes::tests::each_signed_add_node_has_a_fresh_v4_request_id_and_verifies' (1218702) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-15/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::non_ascii_nesting_and_escapes_sign_exactly_as_pynacl_signs_them stdout ----
+
+thread 'kubernetes::tests::non_ascii_nesting_and_escapes_sign_exactly_as_pynacl_signs_them' (1218704) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-16/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::the_key_file_is_held_to_the_checks_of_the_config_file stdout ----
+
+thread 'kubernetes::tests::the_key_file_is_held_to_the_checks_of_the_config_file' (1218707) panicked at crates/hippius/src/kubernetes/tests.rs:1028:9:
+assertion `left == right` failed
+  left: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-checks-1218486-17/missing.key` is not a JSON object, so it is not a key file the console saved"
+ right: "the cluster key file `--cluster-key-file` names does not exist; the path is not repeated here, in case it is a secret passed in place of the file"
+
+---- kubernetes::tests::the_keys_derive_the_public_keys_pynacl_derives stdout ----
+
+thread 'kubernetes::tests::the_keys_derive_the_public_keys_pynacl_derives' (1218708) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-18/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::the_newest_launch_drop_is_found_by_its_time_among_those_that_can_be_opened stdout ----
+
+thread 'kubernetes::tests::the_newest_launch_drop_is_found_by_its_time_among_those_that_can_be_opened' (1218709) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-19/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- kubernetes::tests::the_vector_kubeconfig_and_server_token_open stdout ----
+
+thread 'kubernetes::tests::the_vector_kubeconfig_and_server_token_open' (1218710) panicked at crates/hippius/src/kubernetes/tests.rs:109:62:
+called `Result::unwrap()` on an `Err` value: Error(Inner { code: Usage, message: "the cluster key file `/home/radu/.cache/mutants-tmp/hipc-kubernetes-vector-1218486-20/hippius-cluster-prod.key` is not a JSON object, so it is not a key file the console saved", hint: Some("pass `--cluster-key-file` the `hippius-cluster-<name>.key` file the console saved when it created the cluster"), request_id: None, http_status: None, retry: No, side_effects: None, details: None, stdout: None, stdout_is_list: false })
+
+---- wallet::tests::a_hotkey_path_that_holds_a_phrase_is_not_quoted stdout ----
+
+thread 'wallet::tests::a_hotkey_path_that_holds_a_phrase_is_not_quoted' (1218815) panicked at crates/hippius/src/wallet.rs:454:65:
+called `Result::unwrap_err()` on an `Ok` value: Zeroizing { .. }
+
+
+failures:
+    app_secrets::tests::a_file_of_another_shape_is_refused_without_its_values
+    app_secrets::tests::a_missing_or_open_file_is_refused
+    app_secrets::tests::values_are_kept_exactly_and_shown_nowhere
+    aws::tests::a_fifo_or_an_aws_file_over_1_mib_is_refused_without_waiting
+    aws::tests::a_symlink_or_a_non_utf8_file_is_refused
+    aws::tests::an_aws_file_open_to_others_is_refused_and_kept
+    aws::tests::an_existing_profile_is_replaced_only_when_confirmed
+    aws::tests::configure_writes_both_files_with_mode_0600_and_keeps_other_profiles
+    config::tests::a_change_keeps_the_owner_mode_the_file_has
+    config::tests::a_config_file_without_read_permission_is_usage
+    config::tests::a_directory_others_can_write_is_refused_for_reads_and_writes
+    config::tests::a_fifo_or_a_file_over_1_mib_is_refused_without_waiting
+    config::tests::a_file_that_is_not_utf8_is_a_usage_error
+    config::tests::a_missing_file_is_an_empty_config_and_a_directory_is_refused
+    config::tests::a_symlinked_config_directory_is_refused_for_reads_and_writes
+    config::tests::an_edit_of_a_hard_linked_config_is_noted_once
+    config::tests::an_edit_removes_the_temporary_files_a_crashed_writer_left
+    config::tests::every_mode_bit_for_others_or_the_group_is_refused
+    config::tests::save_replaces_a_stale_temporary_file_and_never_follows_a_symlink
+    config::tests::save_writes_mode_0600_in_a_0700_directory_and_round_trips
+    kubernetes::tests::a_box_sealed_here_opens_and_the_newest_launch_drop_is_the_one_opened
+    kubernetes::tests::a_cluster_key_spelled_another_way_still_matches
+    kubernetes::tests::a_cluster_without_its_guest_key_or_its_drop_is_not_found_yet
+    kubernetes::tests::a_drop_that_does_not_verify_is_refused_before_it_is_opened
+    kubernetes::tests::a_file_that_is_not_a_version_1_key_file_is_usage
+    kubernetes::tests::a_guest_key_that_changed_between_the_reads_is_refused
+    kubernetes::tests::a_key_file_is_matched_to_its_cluster_by_both_public_keys
+    kubernetes::tests::a_replacement_signs_the_pool_params_with_replaces_added
+    kubernetes::tests::a_signed_drop_that_will_not_open_is_refused
+    kubernetes::tests::an_add_node_is_signed_at_the_server_time_of_the_answer
+    kubernetes::tests::an_add_node_is_signed_exactly_as_pynacl_signs_it
+    kubernetes::tests::canonical_json_refuses_what_python_prints_differently
+    kubernetes::tests::debug_shows_the_public_keys_and_never_a_secret_key
+    kubernetes::tests::each_signed_add_node_has_a_fresh_v4_request_id_and_verifies
+    kubernetes::tests::non_ascii_nesting_and_escapes_sign_exactly_as_pynacl_signs_them
+    kubernetes::tests::the_key_file_is_held_to_the_checks_of_the_config_file
+    kubernetes::tests::the_keys_derive_the_public_keys_pynacl_derives
+    kubernetes::tests::the_newest_launch_drop_is_found_by_its_time_among_those_that_can_be_opened
+    kubernetes::tests::the_vector_kubeconfig_and_server_token_open
+    wallet::tests::a_hotkey_path_that_holds_a_phrase_is_not_quoted
+
+test result: FAILED. 292 passed; 40 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.70s
+
+error: test failed, to rerun pass `-p hippius --lib`
+
+*** result: Failure(101)

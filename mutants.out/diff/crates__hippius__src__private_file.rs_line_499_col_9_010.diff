@@ -1,0 +1,98 @@
+--- crates/hippius/src/private_file.rs
++++ replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from(vec![1])))
+@@ -491,94 +491,17 @@
+         }
+         Ok(())
+     }
+ 
+     /// Opens the file without following a symlink, checks it on the open descriptor, and
+     /// reads it, or `None` when it does not exist. [`PrivateFile::ensure`] has checked the
+     /// directory already; [`PrivateFile::load`] checks it after this.
+     pub(crate) fn read(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {
+-        let Guarded {
+-            what,
+-            holds,
+-            named_by,
+-            ..
+-        } = self.guarded;
+-        let path = &self.path;
+-        let file = match open_regular_at(&self.dir, Path::new(&self.name)) {
+-            Ok(file) => file,
+-            Err(OpenRegularError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+-                return Ok(None);
+-            }
+-            Err(OpenRegularError::Symlink) => {
+-                return Err(Error::usage(
+-                    format!(
+-                        "{what} {} is a symlink, and a symlink is never followed",
+-                        quote_path(path)
+-                    ),
+-                    format!("{} the file the symlink points to", named_by.point_at()),
+-                ));
+-            }
+-            Err(OpenRegularError::NotRegular) => {
+-                return Err(Error::usage(
+-                    format!("{what} {} is not a regular file", quote_path(path)),
+-                    format!("{} a regular file", named_by.point_at()),
+-                ));
+-            }
+-            Err(OpenRegularError::Io(e)) => {
+-                // The open is refused before the owner check below can run, so the owner is
+-                // read from the directory entry here.
+-                let owner = rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)
+-                    .ok()
+-                    .map(|stat| stat.st_uid);
+-                let user = rustix::process::geteuid().as_raw();
+-                return Err(open_error(path, &e, owner, user, self.guarded));
+-            }
+-        };
+-        let metadata = file
+-            .metadata()
+-            .map_err(|e| file_error("read", path, &e, Denied::Chmod("600", path)))?;
+-        if metadata.uid() != rustix::process::geteuid().as_raw() {
+-            return Err(another_users_file(path, self.guarded));
+-        }
+-        if metadata.permissions().mode() & 0o077 != 0 {
+-            return Err(Error::usage(
+-                format!(
+-                    "{what} {} has permission bits for the group or others, and it holds {holds}",
+-                    quote_path(path)
+-                ),
+-                format!(
+-                    "run `chmod 600 {}`",
+-                    crate::phrase::shell_word(&path.to_string_lossy())
+-                ),
+-            ));
+-        }
+-        // Sized from `fstat` with a byte to spare, so `read_to_end` sees the end without
+-        // growing the buffer: a growth would free a copy of the bytes that nothing clears.
+-        // That relies on std's `read_to_end` filling spare capacity before it reallocates,
+-        // which it does today but its docs do not promise, and on the file not growing
+-        // between the `fstat` and the read. Cleared when dropped, whoever drops them.
+-        let capacity = usize::try_from(metadata.len())
+-            .map_or(MAX_FILE_BYTES, |len| len.min(MAX_FILE_BYTES))
+-            + 1;
+-        let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));
+-        file.take(MAX_FILE_BYTES as u64 + 1)
+-            .read_to_end(&mut bytes)
+-            .map_err(|e| file_error("read", path, &e, Denied::Chmod("600", path)))?;
+-        if bytes.len() > MAX_FILE_BYTES {
+-            return Err(Error::usage(
+-                format!("{what} {} is larger than 1 MiB", quote_path(path)),
+-                format!(
+-                    "check that {} is {what}, or {} another file",
+-                    quote_path(path),
+-                    named_by.point_at()
+-                ),
+-            ));
+-        }
+-        Ok(Some(bytes))
++        Ok(Some(Zeroizing::from(vec![1]))) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Whether the file at the name has another hard link now, never through a symlink:
+     /// `false` when there is no file there.
+     fn has_other_links(&self) -> bool {
+         rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)
+             .is_ok_and(|stat| stat.st_nlink > 1)
+     }

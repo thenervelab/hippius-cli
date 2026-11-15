@@ -1,0 +1,1122 @@
+[
+  {
+    "diff": "--- crates/hippius/src/app_secrets.rs\n+++ replace AppSecrets::load -> Result<Self> with Ok(Default::default())\n@@ -54,50 +54,17 @@\n     /// the config file is checked, then its shape (module docs). Sends nothing.\n     ///\n     /// # Errors\n     ///\n     /// `usage` for a file that is missing, a symlink, not a regular file, another user's, open\n     /// to the group or others, in a directory others can write, larger than 1 MiB, or not one\n     /// JSON object of name to string. No message quotes a value.\n     pub fn load(path: &Path, flag: &'static str) -> Result<Self> {\n-        let guarded = Guarded {\n-            what: \"the secrets file\",\n-            holds: \"secret values\",\n-            included: None,\n-            named_by: NamedBy::Flag(flag),\n-        };\n-        let refuse = |problem: &str| {\n-            Error::usage(\n-                format!(\"the secrets file {} {problem}\", quote_path(path)),\n-                file_hint(flag),\n-            )\n-        };\n-        let mut file = load_private_object(path, guarded, &file_hint(flag))?\n-            .map_err(|problem| refuse(&problem.describe(\"a secret\")))?;\n-        let mut secrets = Vec::with_capacity(file.len());\n-        let mut not_text = None;\n-        for (name, value) in std::mem::take(&mut *file) {\n-            match value {\n-                Value::String(text) => secrets.push((name, Zeroizing::new(text))),\n-                // Every string is still taken, so each is cleared on the way out, and so is\n-                // anything else.\n-                other => {\n-                    clear_owned(other);\n-                    not_text = not_text.or(Some(name));\n-                }\n-            }\n-        }\n-        if let Some(name) = not_text {\n-            return Err(refuse(&format!(\n-                \"sets {} to something other than a string\",\n-                quote_name(&name)\n-            )));\n-        }\n-        Ok(Self { flag, secrets })\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Whether the file holds no secret: `{}`.\n     pub fn is_empty(&self) -> bool {\n         self.secrets.is_empty()\n     }\n \n     /// The names of the secrets, in the file's order.\n",
+    "file": "crates/hippius/src/app_secrets.rs",
+    "function": {
+      "function_name": "AppSecrets::load",
+      "return_type": "-> Result<Self>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 96
+        },
+        "start": {
+          "column": 5,
+          "line": 53
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/app_secrets.rs:62:9: replace AppSecrets::load -> Result<Self> with Ok(Default::default())",
+    "package": "hippius",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 35,
+        "line": 95
+      },
+      "start": {
+        "column": 9,
+        "line": 62
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/config.rs\n+++ replace ConfigFile::edit -> Result<T> with Ok(Default::default())\n@@ -548,23 +548,17 @@\n     /// descriptor of the checked directory.\n     ///\n     /// # Errors\n     ///\n     /// The errors of [`ConfigFile::load`], whatever `change` returns, and, when the\n     /// directory cannot be created or the lock or the file cannot be written, `usage` if the\n     /// system denied it and `internal` otherwise.\n     pub fn edit<T>(path: PathBuf, change: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {\n-        let file = PrivateFile::ensure(&path, CONFIG_FILE)?;\n-        let _lock = file.lock()?;\n-        let mut config = Self::parse(path, file.read()?)?;\n-        let changed = change(&mut config)?;\n-        // The write notes a hard link the rename splits. Noting it here would warn twice.\n-        config.save(&file)?;\n-        Ok(changed)\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// The file's path.\n     pub fn path(&self) -> &Path {\n         &self.path\n     }\n \n     /// The profile name the overrides select.\n",
+    "file": "crates/hippius/src/config.rs",
+    "function": {
+      "function_name": "ConfigFile::edit",
+      "return_type": "-> Result<T>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 563
+        },
+        "start": {
+          "column": 5,
+          "line": 544
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/config.rs:556:9: replace ConfigFile::edit -> Result<T> with Ok(Default::default())",
+    "package": "hippius",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 20,
+        "line": 562
+      },
+      "start": {
+        "column": 9,
+        "line": 556
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/dns.rs\n+++ replace DnsCredentials::load -> Result<Self> with Ok(Default::default())\n@@ -85,59 +85,17 @@\n     /// nothing.\n     ///\n     /// # Errors\n     ///\n     /// `usage` for a file that is missing, a symlink, not a regular file, another user's, open\n     /// to the group or others, larger than 1 MiB, or not a JSON object of the provider's\n     /// fields. No message quotes what the file holds.\n     pub fn load(path: &Path, flag: &'static str, provider: DnsProvider) -> Result<Self> {\n-        let guarded = Guarded {\n-            what: \"the DNS credentials file\",\n-            holds: \"a DNS provider credential\",\n-            included: None,\n-            named_by: NamedBy::Flag(flag),\n-        };\n-        let refuse = |problem: &str| {\n-            Error::usage(\n-                format!(\"the DNS credentials file {} {problem}\", quote_path(path)),\n-                file_hint(flag, provider),\n-            )\n-        };\n-        let mut file = load_private_object(path, guarded, &file_hint(flag, provider))?\n-            .map_err(|problem| refuse(&problem.describe(\"a field\")))?;\n-        let (required, optional) = provider.fields();\n-        let mut fields = Vec::new();\n-        for &name in required.iter().chain(optional) {\n-            match take_text(&mut file, name) {\n-                Taken::Text(text) => fields.push((name, text)),\n-                Taken::Missing if optional.contains(&name) => {}\n-                Taken::Missing => {\n-                    return Err(refuse(&format!(\n-                        \"has no `{name}`, which `--provider {}` needs\",\n-                        provider.code()\n-                    )));\n-                }\n-                Taken::NotText => {\n-                    return Err(refuse(&format!(\n-                        \"sets `{name}` to something other than a non-empty string\"\n-                    )));\n-                }\n-            }\n-        }\n-        // What is left was not asked for. Its name is not quoted: a misplaced secret can sit\n-        // in a field name as well as in a value. It is cleared on the way out\n-        // (`private_object::Fields`).\n-        if !file.is_empty() {\n-            return Err(refuse(&format!(\n-                \"has a field that `--provider {}` does not take\",\n-                provider.code()\n-            )));\n-        }\n-        Ok(Self { provider, fields })\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// The `credentials` object of the request body, cleared when dropped.\n     pub fn body(&self) -> SecretValue {\n         SecretValue::new(Value::Object(\n             self.fields\n                 .iter()\n                 .map(|(name, text)| ((*name).to_owned(), Value::from(text.as_str())))\n",
+    "file": "crates/hippius/src/dns.rs",
+    "function": {
+      "function_name": "DnsCredentials::load",
+      "return_type": "-> Result<Self>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 136
+        },
+        "start": {
+          "column": 5,
+          "line": 83
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/dns.rs:93:9: replace DnsCredentials::load -> Result<Self> with Ok(Default::default())",
+    "package": "hippius",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 38,
+        "line": 135
+      },
+      "start": {
+        "column": 9,
+        "line": 93
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/kubernetes.rs\n+++ replace ClusterKey::load -> Result<Self> with Ok(Default::default())\n@@ -123,89 +123,17 @@\n     /// file is checked, then its format (module docs). Sends nothing.\n     ///\n     /// # Errors\n     ///\n     /// `usage` for a file that is missing, a symlink, not a regular file, another user's, open\n     /// to the group or others, larger than 1 MiB, or not a version-1 key file whose public keys\n     /// match its secret keys. No message quotes what the file holds.\n     pub fn load(path: &Path, flag: &'static str) -> Result<Self> {\n-        let guarded = Guarded {\n-            what: \"the cluster key file\",\n-            holds: \"the cluster's private keys\",\n-            included: None,\n-            named_by: NamedBy::Flag(flag),\n-        };\n-        let loaded = load_private_object(path, guarded, &key_file_hint(flag))?;\n-        let not_a_key_file = |problem: &str| {\n-            Error::usage(\n-                format!(\n-                    \"the cluster key file {} {problem}, so it is not a key file the console \\\n-                     saved\",\n-                    quote_path(path)\n-                ),\n-                key_file_hint(flag),\n-            )\n-        };\n-        // A field given twice is refused, as the other private files refuse it: which copy\n-        // counts would depend on the parser.\n-        let mut fields = loaded.map_err(|problem| not_a_key_file(&problem.describe(\"a field\")))?;\n-        // Taken out of the map first, so that each refusal below drops them cleared.\n-        let sign_secret = secret_text(&mut fields, \"sign_secret_key\");\n-        let box_secret = secret_text(&mut fields, \"box_secret_key\");\n-        if fields.get(\"kind\").and_then(Value::as_str) != Some(KIND) {\n-            return Err(not_a_key_file(&format!(\"has no `kind` of `{KIND}`\")));\n-        }\n-        if fields.get(\"version\").and_then(Value::as_u64) != Some(VERSION) {\n-            return Err(Error::usage(\n-                format!(\n-                    \"the cluster key file {} is not of version `{VERSION}`, the one this hipc \\\n-                     reads\",\n-                    quote_path(path)\n-                ),\n-                \"check that the file came from the console, or update hipc\",\n-            ));\n-        }\n-        let key = |field: &str, text: Option<&str>| {\n-            text.and_then(decode_key).ok_or_else(|| {\n-                not_a_key_file(&format!(\n-                    \"has no `{field}` of {KEY_BYTES} bytes in standard base64\"\n-                ))\n-            })\n-        };\n-        let public = |field: &str| key(field, fields.get(field).and_then(Value::as_str));\n-        let sign_secret = key(\n-            \"sign_secret_key\",\n-            sign_secret.as_deref().map(String::as_str),\n-        )?;\n-        let box_secret = key(\"box_secret_key\", box_secret.as_deref().map(String::as_str))?;\n-        let sign_public = public(\"sign_public_key\")?;\n-        let box_public = public(\"box_public_key\")?;\n-        let sign = SigningKey::from_bytes(&sign_secret);\n-        // Compared as public data: neither public key is a secret.\n-        if sign.verifying_key().as_bytes() != &*sign_public\n-            || box_key(&box_secret).public_key().as_bytes() != &*box_public\n-        {\n-            return Err(Error::usage(\n-                format!(\n-                    \"the cluster key file {} is damaged: its public keys do not match its \\\n-                     secret keys\",\n-                    quote_path(path)\n-                ),\n-                key_file_hint(flag),\n-            ));\n-        }\n-        Ok(Self {\n-            sign,\n-            box_secret,\n-            sign_public: *sign_public,\n-            box_public: *box_public,\n-            path: path.to_owned(),\n-            flag,\n-        })\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// The key, checked against `cluster`, the cluster `id` as the API returned it: both\n     /// public keys must be the ones it was created with, as the console checks. The box key\n     /// opens the kubeconfig and the signing key consents to node operations, so a file that\n     /// matches on one only is another cluster's. The keys are compared as the bytes they\n     /// decode to (standard or URL-safe base64, padded or not, line breaks dropped), so a\n     /// server that spells them another way than the console wrote them still matches.\n",
+    "file": "crates/hippius/src/kubernetes.rs",
+    "function": {
+      "function_name": "ClusterKey::load",
+      "return_type": "-> Result<Self>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 204
+        },
+        "start": {
+          "column": 5,
+          "line": 122
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/kubernetes.rs:131:9: replace ClusterKey::load -> Result<Self> with Ok(Default::default())",
+    "package": "hippius",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 11,
+        "line": 203
+      },
+      "start": {
+        "column": 9,
+        "line": 131
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace note_split_link with ()\n@@ -38,18 +38,17 @@\n thread_local! {\n     /// The warnings for files [`PrivateFile::write`] on this thread replaced while they had\n     /// another hard link, until [`take_split_link_warnings`] takes them.\n     static SPLIT_LINKS: std::cell::RefCell<Vec<String>> =\n         const { std::cell::RefCell::new(Vec::new()) };\n }\n \n fn note_split_link(guarded: Guarded, path: &Path) {\n-    let warning = guarded.split_link_warning(path);\n-    SPLIT_LINKS.with(|links| links.borrow_mut().push(warning));\n+    () /* ~ changed by cargo-mutants ~ */\n }\n \n /// Every warning for a private file this thread replaced while it had another hard link,\n /// in the order of the writes, once. A write renames a new file over the old name, so the\n /// other link keeps the old contents; the binary warns (tenet 8). A directory sync that\n /// fails after the rename still notes it: the link is already split. Empty when no write\n /// split a link. Thread-local, so a test sees only its own writes.\n pub fn take_split_link_warnings() -> Vec<String> {\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "note_split_link",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 48
+        },
+        "start": {
+          "column": 1,
+          "line": 45
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:46:5: replace note_split_link with ()",
+    "package": "hippius",
+    "replacement": "()",
+    "span": {
+      "end": {
+        "column": 64,
+        "line": 47
+      },
+      "start": {
+        "column": 5,
+        "line": 46
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace take_split_link_warnings -> Vec<String> with vec![]\n@@ -48,17 +48,17 @@\n }\n \n /// Every warning for a private file this thread replaced while it had another hard link,\n /// in the order of the writes, once. A write renames a new file over the old name, so the\n /// other link keeps the old contents; the binary warns (tenet 8). A directory sync that\n /// fails after the rename still notes it: the link is already split. Empty when no write\n /// split a link. Thread-local, so a test sees only its own writes.\n pub fn take_split_link_warnings() -> Vec<String> {\n-    SPLIT_LINKS.with(|links| std::mem::take(&mut *links.borrow_mut()))\n+    vec![] /* ~ changed by cargo-mutants ~ */\n }\n \n /// Creates `dir` and each missing directory above it, each with mode `0700`, and sets that\n /// mode again on each one it created, since `mkdir` masks it with the umask: under `0277`\n /// the directory would be `0500`, and no file could be created in it. A directory that\n /// another process creates first is left as it is. The mode is set through a descriptor\n /// opened without following a symlink, so a name swapped for a link after the create is\n /// never followed; a umask that also clears the owner's read bit leaves a directory that\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "take_split_link_warnings",
+      "return_type": "-> Vec<String>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 57
+        },
+        "start": {
+          "column": 1,
+          "line": 50
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:56:5: replace take_split_link_warnings -> Vec<String> with vec![]",
+    "package": "hippius",
+    "replacement": "vec![]",
+    "span": {
+      "end": {
+        "column": 71,
+        "line": 56
+      },
+      "start": {
+        "column": 5,
+        "line": 56
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace take_split_link_warnings -> Vec<String> with vec![String::new()]\n@@ -48,17 +48,17 @@\n }\n \n /// Every warning for a private file this thread replaced while it had another hard link,\n /// in the order of the writes, once. A write renames a new file over the old name, so the\n /// other link keeps the old contents; the binary warns (tenet 8). A directory sync that\n /// fails after the rename still notes it: the link is already split. Empty when no write\n /// split a link. Thread-local, so a test sees only its own writes.\n pub fn take_split_link_warnings() -> Vec<String> {\n-    SPLIT_LINKS.with(|links| std::mem::take(&mut *links.borrow_mut()))\n+    vec![String::new()] /* ~ changed by cargo-mutants ~ */\n }\n \n /// Creates `dir` and each missing directory above it, each with mode `0700`, and sets that\n /// mode again on each one it created, since `mkdir` masks it with the umask: under `0277`\n /// the directory would be `0500`, and no file could be created in it. A directory that\n /// another process creates first is left as it is. The mode is set through a descriptor\n /// opened without following a symlink, so a name swapped for a link after the create is\n /// never followed; a umask that also clears the owner's read bit leaves a directory that\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "take_split_link_warnings",
+      "return_type": "-> Vec<String>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 57
+        },
+        "start": {
+          "column": 1,
+          "line": 50
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:56:5: replace take_split_link_warnings -> Vec<String> with vec![String::new()]",
+    "package": "hippius",
+    "replacement": "vec![String::new()]",
+    "span": {
+      "end": {
+        "column": 71,
+        "line": 56
+      },
+      "start": {
+        "column": 5,
+        "line": 56
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace take_split_link_warnings -> Vec<String> with vec![\"xyzzy\".into()]\n@@ -48,17 +48,17 @@\n }\n \n /// Every warning for a private file this thread replaced while it had another hard link,\n /// in the order of the writes, once. A write renames a new file over the old name, so the\n /// other link keeps the old contents; the binary warns (tenet 8). A directory sync that\n /// fails after the rename still notes it: the link is already split. Empty when no write\n /// split a link. Thread-local, so a test sees only its own writes.\n pub fn take_split_link_warnings() -> Vec<String> {\n-    SPLIT_LINKS.with(|links| std::mem::take(&mut *links.borrow_mut()))\n+    vec![\"xyzzy\".into()] /* ~ changed by cargo-mutants ~ */\n }\n \n /// Creates `dir` and each missing directory above it, each with mode `0700`, and sets that\n /// mode again on each one it created, since `mkdir` masks it with the umask: under `0277`\n /// the directory would be `0500`, and no file could be created in it. A directory that\n /// another process creates first is left as it is. The mode is set through a descriptor\n /// opened without following a symlink, so a name swapped for a link after the create is\n /// never followed; a umask that also clears the owner's read bit leaves a directory that\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "take_split_link_warnings",
+      "return_type": "-> Vec<String>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 57
+        },
+        "start": {
+          "column": 1,
+          "line": 50
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:56:5: replace take_split_link_warnings -> Vec<String> with vec![\"xyzzy\".into()]",
+    "package": "hippius",
+    "replacement": "vec![\"xyzzy\".into()]",
+    "span": {
+      "end": {
+        "column": 71,
+        "line": 56
+      },
+      "start": {
+        "column": 5,
+        "line": 56
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace Guarded::split_link_warning -> String with String::new()\n@@ -106,25 +106,17 @@\n     pub(crate) included: Option<&'static str>,\n     pub(crate) named_by: NamedBy,\n }\n \n impl Guarded {\n     /// The warning after a write renamed a new file over one that had another hard link\n     /// (tenet 8). The clause comes from [`Self::included`].\n     fn split_link_warning(self, path: &Path) -> String {\n-        let clause = self\n-            .included\n-            .map_or(String::new(), |noun| format!(\", {noun} included\"));\n-        format!(\n-            \"{} {} had another hard link, which still holds its old contents{clause}; \\\n-             only this name was changed\",\n-            self.what,\n-            quote_path(path)\n-        )\n+        String::new() /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n /// What names a private file's path, which a hint tells the person to change.\n #[derive(Debug, Clone, Copy)]\n pub(crate) enum NamedBy {\n     /// An environment variable, such as `HIPPIUS_CONFIG`.\n     Variable(&'static str),\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "Guarded::split_link_warning",
+      "return_type": "-> String",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 123
+        },
+        "start": {
+          "column": 5,
+          "line": 111
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:114:9: replace Guarded::split_link_warning -> String with String::new()",
+    "package": "hippius",
+    "replacement": "String::new()",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 122
+      },
+      "start": {
+        "column": 9,
+        "line": 114
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace Guarded::split_link_warning -> String with \"xyzzy\".into()\n@@ -106,25 +106,17 @@\n     pub(crate) included: Option<&'static str>,\n     pub(crate) named_by: NamedBy,\n }\n \n impl Guarded {\n     /// The warning after a write renamed a new file over one that had another hard link\n     /// (tenet 8). The clause comes from [`Self::included`].\n     fn split_link_warning(self, path: &Path) -> String {\n-        let clause = self\n-            .included\n-            .map_or(String::new(), |noun| format!(\", {noun} included\"));\n-        format!(\n-            \"{} {} had another hard link, which still holds its old contents{clause}; \\\n-             only this name was changed\",\n-            self.what,\n-            quote_path(path)\n-        )\n+        \"xyzzy\".into() /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n /// What names a private file's path, which a hint tells the person to change.\n #[derive(Debug, Clone, Copy)]\n pub(crate) enum NamedBy {\n     /// An environment variable, such as `HIPPIUS_CONFIG`.\n     Variable(&'static str),\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "Guarded::split_link_warning",
+      "return_type": "-> String",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 123
+        },
+        "start": {
+          "column": 5,
+          "line": 111
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:114:9: replace Guarded::split_link_warning -> String with \"xyzzy\".into()",
+    "package": "hippius",
+    "replacement": "\"xyzzy\".into()",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 122
+      },
+      "start": {
+        "column": 9,
+        "line": 114
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace PrivateFile::write -> Result<()> with Ok(())\n@@ -372,45 +372,17 @@\n     /// directory, so the write cannot follow a symlink someone planted at that name, and\n     /// the rename stays on one file system. The data and then the directory are synced\n     /// before success is reported, so a crash leaves the old file or the new one, never a\n     /// mix. When another name still links the file after the temporary name is removed,\n     /// that name keeps the old contents and the write is noted for\n     /// [`take_split_link_warnings`], including when the directory sync fails after the\n     /// rename: the link is already split.\n     pub(crate) fn write(&self, bytes: &[u8]) -> Result<()> {\n-        let temporary = self.sibling(&format!(\"{}.tmp\", std::process::id()));\n-        // A crashed run can leave this name as the other hard link. Remove it before\n-        // counting: if it was the only other name, no name keeps the old contents, and a\n-        // count taken first would warn about a link this write just removed.\n-        self.unlink(&temporary);\n-        let linked = self.has_other_links();\n-        let replaced = self.replace(&temporary, bytes, self.owner_mode());\n-        // `Ok` means `renameat` already split the link, whether or not the directory\n-        // sync that follows it succeeded. The other name keeps the old contents either way.\n-        if linked && replaced.is_ok() {\n-            note_split_link(self.guarded, &self.path);\n-        }\n-        let error = match replaced {\n-            Ok(Replaced::Synced) => return Ok(()),\n-            Ok(Replaced::SyncFailed(error)) => error,\n-            Err(error) => {\n-                self.unlink(&temporary);\n-                error\n-            }\n-        };\n-        // A directory sync is the last step, so a failure there leaves the new file in\n-        // place but not yet durable. \"write or sync\" covers the earlier steps too.\n-        let dir = directory(&self.path);\n-        Err(file_error(\n-            \"write or sync\",\n-            &self.path,\n-            &error,\n-            Denied::Chmod(\"700\", dir),\n-        ))\n+        Ok(()) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Removes the temporary files that writers killed before their rename left beside the\n     /// file, `.<name>.<pid>.tmp`, each a full copy of it: of the config, every token. A later\n     /// run has another pid, so [`PrivateFile::write`] would never replace them.\n     ///\n     /// [`PrivateFile::lock`] runs it once it holds the lock: every writer takes the lock\n     /// before it creates its temporary file and keeps it past the rename, so while the lock\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "PrivateFile::write",
+      "return_type": "-> Result<()>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 409
+        },
+        "start": {
+          "column": 5,
+          "line": 366
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:380:9: replace PrivateFile::write -> Result<()> with Ok(())",
+    "package": "hippius",
+    "replacement": "Ok(())",
+    "span": {
+      "end": {
+        "column": 11,
+        "line": 408
+      },
+      "start": {
+        "column": 9,
+        "line": 380
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace && with || in PrivateFile::write\n@@ -381,17 +381,17 @@\n         // A crashed run can leave this name as the other hard link. Remove it before\n         // counting: if it was the only other name, no name keeps the old contents, and a\n         // count taken first would warn about a link this write just removed.\n         self.unlink(&temporary);\n         let linked = self.has_other_links();\n         let replaced = self.replace(&temporary, bytes, self.owner_mode());\n         // `Ok` means `renameat` already split the link, whether or not the directory\n         // sync that follows it succeeded. The other name keeps the old contents either way.\n-        if linked && replaced.is_ok() {\n+        if linked || /* ~ changed by cargo-mutants ~ */ replaced.is_ok() {\n             note_split_link(self.guarded, &self.path);\n         }\n         let error = match replaced {\n             Ok(Replaced::Synced) => return Ok(()),\n             Ok(Replaced::SyncFailed(error)) => error,\n             Err(error) => {\n                 self.unlink(&temporary);\n                 error\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "PrivateFile::write",
+      "return_type": "-> Result<()>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 409
+        },
+        "start": {
+          "column": 5,
+          "line": 366
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/hippius/src/private_file.rs:389:19: replace && with || in PrivateFile::write",
+    "package": "hippius",
+    "replacement": "||",
+    "span": {
+      "end": {
+        "column": 21,
+        "line": 389
+      },
+      "start": {
+        "column": 19,
+        "line": 389
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(None)\n@@ -491,94 +491,17 @@\n         }\n         Ok(())\n     }\n \n     /// Opens the file without following a symlink, checks it on the open descriptor, and\n     /// reads it, or `None` when it does not exist. [`PrivateFile::ensure`] has checked the\n     /// directory already; [`PrivateFile::load`] checks it after this.\n     pub(crate) fn read(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {\n-        let Guarded {\n-            what,\n-            holds,\n-            named_by,\n-            ..\n-        } = self.guarded;\n-        let path = &self.path;\n-        let file = match open_regular_at(&self.dir, Path::new(&self.name)) {\n-            Ok(file) => file,\n-            Err(OpenRegularError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {\n-                return Ok(None);\n-            }\n-            Err(OpenRegularError::Symlink) => {\n-                return Err(Error::usage(\n-                    format!(\n-                        \"{what} {} is a symlink, and a symlink is never followed\",\n-                        quote_path(path)\n-                    ),\n-                    format!(\"{} the file the symlink points to\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::NotRegular) => {\n-                return Err(Error::usage(\n-                    format!(\"{what} {} is not a regular file\", quote_path(path)),\n-                    format!(\"{} a regular file\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::Io(e)) => {\n-                // The open is refused before the owner check below can run, so the owner is\n-                // read from the directory entry here.\n-                let owner = rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n-                    .ok()\n-                    .map(|stat| stat.st_uid);\n-                let user = rustix::process::geteuid().as_raw();\n-                return Err(open_error(path, &e, owner, user, self.guarded));\n-            }\n-        };\n-        let metadata = file\n-            .metadata()\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if metadata.uid() != rustix::process::geteuid().as_raw() {\n-            return Err(another_users_file(path, self.guarded));\n-        }\n-        if metadata.permissions().mode() & 0o077 != 0 {\n-            return Err(Error::usage(\n-                format!(\n-                    \"{what} {} has permission bits for the group or others, and it holds {holds}\",\n-                    quote_path(path)\n-                ),\n-                format!(\n-                    \"run `chmod 600 {}`\",\n-                    crate::phrase::shell_word(&path.to_string_lossy())\n-                ),\n-            ));\n-        }\n-        // Sized from `fstat` with a byte to spare, so `read_to_end` sees the end without\n-        // growing the buffer: a growth would free a copy of the bytes that nothing clears.\n-        // That relies on std's `read_to_end` filling spare capacity before it reallocates,\n-        // which it does today but its docs do not promise, and on the file not growing\n-        // between the `fstat` and the read. Cleared when dropped, whoever drops them.\n-        let capacity = usize::try_from(metadata.len())\n-            .map_or(MAX_FILE_BYTES, |len| len.min(MAX_FILE_BYTES))\n-            + 1;\n-        let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));\n-        file.take(MAX_FILE_BYTES as u64 + 1)\n-            .read_to_end(&mut bytes)\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if bytes.len() > MAX_FILE_BYTES {\n-            return Err(Error::usage(\n-                format!(\"{what} {} is larger than 1 MiB\", quote_path(path)),\n-                format!(\n-                    \"check that {} is {what}, or {} another file\",\n-                    quote_path(path),\n-                    named_by.point_at()\n-                ),\n-            ));\n-        }\n-        Ok(Some(bytes))\n+        Ok(None) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Whether the file at the name has another hard link now, never through a symlink:\n     /// `false` when there is no file there.\n     fn has_other_links(&self) -> bool {\n         rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n             .is_ok_and(|stat| stat.st_nlink > 1)\n     }\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "PrivateFile::read",
+      "return_type": "-> Result<Option<Zeroizing<Vec<u8>>>>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 577
+        },
+        "start": {
+          "column": 5,
+          "line": 495
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(None)",
+    "package": "hippius",
+    "replacement": "Ok(None)",
+    "span": {
+      "end": {
+        "column": 24,
+        "line": 576
+      },
+      "start": {
+        "column": 9,
+        "line": 499
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::new()))\n@@ -491,94 +491,17 @@\n         }\n         Ok(())\n     }\n \n     /// Opens the file without following a symlink, checks it on the open descriptor, and\n     /// reads it, or `None` when it does not exist. [`PrivateFile::ensure`] has checked the\n     /// directory already; [`PrivateFile::load`] checks it after this.\n     pub(crate) fn read(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {\n-        let Guarded {\n-            what,\n-            holds,\n-            named_by,\n-            ..\n-        } = self.guarded;\n-        let path = &self.path;\n-        let file = match open_regular_at(&self.dir, Path::new(&self.name)) {\n-            Ok(file) => file,\n-            Err(OpenRegularError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {\n-                return Ok(None);\n-            }\n-            Err(OpenRegularError::Symlink) => {\n-                return Err(Error::usage(\n-                    format!(\n-                        \"{what} {} is a symlink, and a symlink is never followed\",\n-                        quote_path(path)\n-                    ),\n-                    format!(\"{} the file the symlink points to\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::NotRegular) => {\n-                return Err(Error::usage(\n-                    format!(\"{what} {} is not a regular file\", quote_path(path)),\n-                    format!(\"{} a regular file\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::Io(e)) => {\n-                // The open is refused before the owner check below can run, so the owner is\n-                // read from the directory entry here.\n-                let owner = rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n-                    .ok()\n-                    .map(|stat| stat.st_uid);\n-                let user = rustix::process::geteuid().as_raw();\n-                return Err(open_error(path, &e, owner, user, self.guarded));\n-            }\n-        };\n-        let metadata = file\n-            .metadata()\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if metadata.uid() != rustix::process::geteuid().as_raw() {\n-            return Err(another_users_file(path, self.guarded));\n-        }\n-        if metadata.permissions().mode() & 0o077 != 0 {\n-            return Err(Error::usage(\n-                format!(\n-                    \"{what} {} has permission bits for the group or others, and it holds {holds}\",\n-                    quote_path(path)\n-                ),\n-                format!(\n-                    \"run `chmod 600 {}`\",\n-                    crate::phrase::shell_word(&path.to_string_lossy())\n-                ),\n-            ));\n-        }\n-        // Sized from `fstat` with a byte to spare, so `read_to_end` sees the end without\n-        // growing the buffer: a growth would free a copy of the bytes that nothing clears.\n-        // That relies on std's `read_to_end` filling spare capacity before it reallocates,\n-        // which it does today but its docs do not promise, and on the file not growing\n-        // between the `fstat` and the read. Cleared when dropped, whoever drops them.\n-        let capacity = usize::try_from(metadata.len())\n-            .map_or(MAX_FILE_BYTES, |len| len.min(MAX_FILE_BYTES))\n-            + 1;\n-        let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));\n-        file.take(MAX_FILE_BYTES as u64 + 1)\n-            .read_to_end(&mut bytes)\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if bytes.len() > MAX_FILE_BYTES {\n-            return Err(Error::usage(\n-                format!(\"{what} {} is larger than 1 MiB\", quote_path(path)),\n-                format!(\n-                    \"check that {} is {what}, or {} another file\",\n-                    quote_path(path),\n-                    named_by.point_at()\n-                ),\n-            ));\n-        }\n-        Ok(Some(bytes))\n+        Ok(Some(Zeroizing::new())) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Whether the file at the name has another hard link now, never through a symlink:\n     /// `false` when there is no file there.\n     fn has_other_links(&self) -> bool {\n         rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n             .is_ok_and(|stat| stat.st_nlink > 1)\n     }\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "PrivateFile::read",
+      "return_type": "-> Result<Option<Zeroizing<Vec<u8>>>>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 577
+        },
+        "start": {
+          "column": 5,
+          "line": 495
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::new()))",
+    "package": "hippius",
+    "replacement": "Ok(Some(Zeroizing::new()))",
+    "span": {
+      "end": {
+        "column": 24,
+        "line": 576
+      },
+      "start": {
+        "column": 9,
+        "line": 499
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from_iter([vec![]])))\n@@ -491,94 +491,17 @@\n         }\n         Ok(())\n     }\n \n     /// Opens the file without following a symlink, checks it on the open descriptor, and\n     /// reads it, or `None` when it does not exist. [`PrivateFile::ensure`] has checked the\n     /// directory already; [`PrivateFile::load`] checks it after this.\n     pub(crate) fn read(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {\n-        let Guarded {\n-            what,\n-            holds,\n-            named_by,\n-            ..\n-        } = self.guarded;\n-        let path = &self.path;\n-        let file = match open_regular_at(&self.dir, Path::new(&self.name)) {\n-            Ok(file) => file,\n-            Err(OpenRegularError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {\n-                return Ok(None);\n-            }\n-            Err(OpenRegularError::Symlink) => {\n-                return Err(Error::usage(\n-                    format!(\n-                        \"{what} {} is a symlink, and a symlink is never followed\",\n-                        quote_path(path)\n-                    ),\n-                    format!(\"{} the file the symlink points to\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::NotRegular) => {\n-                return Err(Error::usage(\n-                    format!(\"{what} {} is not a regular file\", quote_path(path)),\n-                    format!(\"{} a regular file\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::Io(e)) => {\n-                // The open is refused before the owner check below can run, so the owner is\n-                // read from the directory entry here.\n-                let owner = rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n-                    .ok()\n-                    .map(|stat| stat.st_uid);\n-                let user = rustix::process::geteuid().as_raw();\n-                return Err(open_error(path, &e, owner, user, self.guarded));\n-            }\n-        };\n-        let metadata = file\n-            .metadata()\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if metadata.uid() != rustix::process::geteuid().as_raw() {\n-            return Err(another_users_file(path, self.guarded));\n-        }\n-        if metadata.permissions().mode() & 0o077 != 0 {\n-            return Err(Error::usage(\n-                format!(\n-                    \"{what} {} has permission bits for the group or others, and it holds {holds}\",\n-                    quote_path(path)\n-                ),\n-                format!(\n-                    \"run `chmod 600 {}`\",\n-                    crate::phrase::shell_word(&path.to_string_lossy())\n-                ),\n-            ));\n-        }\n-        // Sized from `fstat` with a byte to spare, so `read_to_end` sees the end without\n-        // growing the buffer: a growth would free a copy of the bytes that nothing clears.\n-        // That relies on std's `read_to_end` filling spare capacity before it reallocates,\n-        // which it does today but its docs do not promise, and on the file not growing\n-        // between the `fstat` and the read. Cleared when dropped, whoever drops them.\n-        let capacity = usize::try_from(metadata.len())\n-            .map_or(MAX_FILE_BYTES, |len| len.min(MAX_FILE_BYTES))\n-            + 1;\n-        let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));\n-        file.take(MAX_FILE_BYTES as u64 + 1)\n-            .read_to_end(&mut bytes)\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if bytes.len() > MAX_FILE_BYTES {\n-            return Err(Error::usage(\n-                format!(\"{what} {} is larger than 1 MiB\", quote_path(path)),\n-                format!(\n-                    \"check that {} is {what}, or {} another file\",\n-                    quote_path(path),\n-                    named_by.point_at()\n-                ),\n-            ));\n-        }\n-        Ok(Some(bytes))\n+        Ok(Some(Zeroizing::from_iter([vec![]]))) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Whether the file at the name has another hard link now, never through a symlink:\n     /// `false` when there is no file there.\n     fn has_other_links(&self) -> bool {\n         rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n             .is_ok_and(|stat| stat.st_nlink > 1)\n     }\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "PrivateFile::read",
+      "return_type": "-> Result<Option<Zeroizing<Vec<u8>>>>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 577
+        },
+        "start": {
+          "column": 5,
+          "line": 495
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from_iter([vec![]])))",
+    "package": "hippius",
+    "replacement": "Ok(Some(Zeroizing::from_iter([vec![]])))",
+    "span": {
+      "end": {
+        "column": 24,
+        "line": 576
+      },
+      "start": {
+        "column": 9,
+        "line": 499
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::new(vec![])))\n@@ -491,94 +491,17 @@\n         }\n         Ok(())\n     }\n \n     /// Opens the file without following a symlink, checks it on the open descriptor, and\n     /// reads it, or `None` when it does not exist. [`PrivateFile::ensure`] has checked the\n     /// directory already; [`PrivateFile::load`] checks it after this.\n     pub(crate) fn read(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {\n-        let Guarded {\n-            what,\n-            holds,\n-            named_by,\n-            ..\n-        } = self.guarded;\n-        let path = &self.path;\n-        let file = match open_regular_at(&self.dir, Path::new(&self.name)) {\n-            Ok(file) => file,\n-            Err(OpenRegularError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {\n-                return Ok(None);\n-            }\n-            Err(OpenRegularError::Symlink) => {\n-                return Err(Error::usage(\n-                    format!(\n-                        \"{what} {} is a symlink, and a symlink is never followed\",\n-                        quote_path(path)\n-                    ),\n-                    format!(\"{} the file the symlink points to\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::NotRegular) => {\n-                return Err(Error::usage(\n-                    format!(\"{what} {} is not a regular file\", quote_path(path)),\n-                    format!(\"{} a regular file\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::Io(e)) => {\n-                // The open is refused before the owner check below can run, so the owner is\n-                // read from the directory entry here.\n-                let owner = rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n-                    .ok()\n-                    .map(|stat| stat.st_uid);\n-                let user = rustix::process::geteuid().as_raw();\n-                return Err(open_error(path, &e, owner, user, self.guarded));\n-            }\n-        };\n-        let metadata = file\n-            .metadata()\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if metadata.uid() != rustix::process::geteuid().as_raw() {\n-            return Err(another_users_file(path, self.guarded));\n-        }\n-        if metadata.permissions().mode() & 0o077 != 0 {\n-            return Err(Error::usage(\n-                format!(\n-                    \"{what} {} has permission bits for the group or others, and it holds {holds}\",\n-                    quote_path(path)\n-                ),\n-                format!(\n-                    \"run `chmod 600 {}`\",\n-                    crate::phrase::shell_word(&path.to_string_lossy())\n-                ),\n-            ));\n-        }\n-        // Sized from `fstat` with a byte to spare, so `read_to_end` sees the end without\n-        // growing the buffer: a growth would free a copy of the bytes that nothing clears.\n-        // That relies on std's `read_to_end` filling spare capacity before it reallocates,\n-        // which it does today but its docs do not promise, and on the file not growing\n-        // between the `fstat` and the read. Cleared when dropped, whoever drops them.\n-        let capacity = usize::try_from(metadata.len())\n-            .map_or(MAX_FILE_BYTES, |len| len.min(MAX_FILE_BYTES))\n-            + 1;\n-        let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));\n-        file.take(MAX_FILE_BYTES as u64 + 1)\n-            .read_to_end(&mut bytes)\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if bytes.len() > MAX_FILE_BYTES {\n-            return Err(Error::usage(\n-                format!(\"{what} {} is larger than 1 MiB\", quote_path(path)),\n-                format!(\n-                    \"check that {} is {what}, or {} another file\",\n-                    quote_path(path),\n-                    named_by.point_at()\n-                ),\n-            ));\n-        }\n-        Ok(Some(bytes))\n+        Ok(Some(Zeroizing::new(vec![]))) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Whether the file at the name has another hard link now, never through a symlink:\n     /// `false` when there is no file there.\n     fn has_other_links(&self) -> bool {\n         rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n             .is_ok_and(|stat| stat.st_nlink > 1)\n     }\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "PrivateFile::read",
+      "return_type": "-> Result<Option<Zeroizing<Vec<u8>>>>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 577
+        },
+        "start": {
+          "column": 5,
+          "line": 495
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::new(vec![])))",
+    "package": "hippius",
+    "replacement": "Ok(Some(Zeroizing::new(vec![])))",
+    "span": {
+      "end": {
+        "column": 24,
+        "line": 576
+      },
+      "start": {
+        "column": 9,
+        "line": 499
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from(vec![])))\n@@ -491,94 +491,17 @@\n         }\n         Ok(())\n     }\n \n     /// Opens the file without following a symlink, checks it on the open descriptor, and\n     /// reads it, or `None` when it does not exist. [`PrivateFile::ensure`] has checked the\n     /// directory already; [`PrivateFile::load`] checks it after this.\n     pub(crate) fn read(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {\n-        let Guarded {\n-            what,\n-            holds,\n-            named_by,\n-            ..\n-        } = self.guarded;\n-        let path = &self.path;\n-        let file = match open_regular_at(&self.dir, Path::new(&self.name)) {\n-            Ok(file) => file,\n-            Err(OpenRegularError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {\n-                return Ok(None);\n-            }\n-            Err(OpenRegularError::Symlink) => {\n-                return Err(Error::usage(\n-                    format!(\n-                        \"{what} {} is a symlink, and a symlink is never followed\",\n-                        quote_path(path)\n-                    ),\n-                    format!(\"{} the file the symlink points to\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::NotRegular) => {\n-                return Err(Error::usage(\n-                    format!(\"{what} {} is not a regular file\", quote_path(path)),\n-                    format!(\"{} a regular file\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::Io(e)) => {\n-                // The open is refused before the owner check below can run, so the owner is\n-                // read from the directory entry here.\n-                let owner = rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n-                    .ok()\n-                    .map(|stat| stat.st_uid);\n-                let user = rustix::process::geteuid().as_raw();\n-                return Err(open_error(path, &e, owner, user, self.guarded));\n-            }\n-        };\n-        let metadata = file\n-            .metadata()\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if metadata.uid() != rustix::process::geteuid().as_raw() {\n-            return Err(another_users_file(path, self.guarded));\n-        }\n-        if metadata.permissions().mode() & 0o077 != 0 {\n-            return Err(Error::usage(\n-                format!(\n-                    \"{what} {} has permission bits for the group or others, and it holds {holds}\",\n-                    quote_path(path)\n-                ),\n-                format!(\n-                    \"run `chmod 600 {}`\",\n-                    crate::phrase::shell_word(&path.to_string_lossy())\n-                ),\n-            ));\n-        }\n-        // Sized from `fstat` with a byte to spare, so `read_to_end` sees the end without\n-        // growing the buffer: a growth would free a copy of the bytes that nothing clears.\n-        // That relies on std's `read_to_end` filling spare capacity before it reallocates,\n-        // which it does today but its docs do not promise, and on the file not growing\n-        // between the `fstat` and the read. Cleared when dropped, whoever drops them.\n-        let capacity = usize::try_from(metadata.len())\n-            .map_or(MAX_FILE_BYTES, |len| len.min(MAX_FILE_BYTES))\n-            + 1;\n-        let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));\n-        file.take(MAX_FILE_BYTES as u64 + 1)\n-            .read_to_end(&mut bytes)\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if bytes.len() > MAX_FILE_BYTES {\n-            return Err(Error::usage(\n-                format!(\"{what} {} is larger than 1 MiB\", quote_path(path)),\n-                format!(\n-                    \"check that {} is {what}, or {} another file\",\n-                    quote_path(path),\n-                    named_by.point_at()\n-                ),\n-            ));\n-        }\n-        Ok(Some(bytes))\n+        Ok(Some(Zeroizing::from(vec![]))) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Whether the file at the name has another hard link now, never through a symlink:\n     /// `false` when there is no file there.\n     fn has_other_links(&self) -> bool {\n         rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n             .is_ok_and(|stat| stat.st_nlink > 1)\n     }\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "PrivateFile::read",
+      "return_type": "-> Result<Option<Zeroizing<Vec<u8>>>>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 577
+        },
+        "start": {
+          "column": 5,
+          "line": 495
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from(vec![])))",
+    "package": "hippius",
+    "replacement": "Ok(Some(Zeroizing::from(vec![])))",
+    "span": {
+      "end": {
+        "column": 24,
+        "line": 576
+      },
+      "start": {
+        "column": 9,
+        "line": 499
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from_iter([vec![0]])))\n@@ -491,94 +491,17 @@\n         }\n         Ok(())\n     }\n \n     /// Opens the file without following a symlink, checks it on the open descriptor, and\n     /// reads it, or `None` when it does not exist. [`PrivateFile::ensure`] has checked the\n     /// directory already; [`PrivateFile::load`] checks it after this.\n     pub(crate) fn read(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {\n-        let Guarded {\n-            what,\n-            holds,\n-            named_by,\n-            ..\n-        } = self.guarded;\n-        let path = &self.path;\n-        let file = match open_regular_at(&self.dir, Path::new(&self.name)) {\n-            Ok(file) => file,\n-            Err(OpenRegularError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {\n-                return Ok(None);\n-            }\n-            Err(OpenRegularError::Symlink) => {\n-                return Err(Error::usage(\n-                    format!(\n-                        \"{what} {} is a symlink, and a symlink is never followed\",\n-                        quote_path(path)\n-                    ),\n-                    format!(\"{} the file the symlink points to\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::NotRegular) => {\n-                return Err(Error::usage(\n-                    format!(\"{what} {} is not a regular file\", quote_path(path)),\n-                    format!(\"{} a regular file\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::Io(e)) => {\n-                // The open is refused before the owner check below can run, so the owner is\n-                // read from the directory entry here.\n-                let owner = rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n-                    .ok()\n-                    .map(|stat| stat.st_uid);\n-                let user = rustix::process::geteuid().as_raw();\n-                return Err(open_error(path, &e, owner, user, self.guarded));\n-            }\n-        };\n-        let metadata = file\n-            .metadata()\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if metadata.uid() != rustix::process::geteuid().as_raw() {\n-            return Err(another_users_file(path, self.guarded));\n-        }\n-        if metadata.permissions().mode() & 0o077 != 0 {\n-            return Err(Error::usage(\n-                format!(\n-                    \"{what} {} has permission bits for the group or others, and it holds {holds}\",\n-                    quote_path(path)\n-                ),\n-                format!(\n-                    \"run `chmod 600 {}`\",\n-                    crate::phrase::shell_word(&path.to_string_lossy())\n-                ),\n-            ));\n-        }\n-        // Sized from `fstat` with a byte to spare, so `read_to_end` sees the end without\n-        // growing the buffer: a growth would free a copy of the bytes that nothing clears.\n-        // That relies on std's `read_to_end` filling spare capacity before it reallocates,\n-        // which it does today but its docs do not promise, and on the file not growing\n-        // between the `fstat` and the read. Cleared when dropped, whoever drops them.\n-        let capacity = usize::try_from(metadata.len())\n-            .map_or(MAX_FILE_BYTES, |len| len.min(MAX_FILE_BYTES))\n-            + 1;\n-        let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));\n-        file.take(MAX_FILE_BYTES as u64 + 1)\n-            .read_to_end(&mut bytes)\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if bytes.len() > MAX_FILE_BYTES {\n-            return Err(Error::usage(\n-                format!(\"{what} {} is larger than 1 MiB\", quote_path(path)),\n-                format!(\n-                    \"check that {} is {what}, or {} another file\",\n-                    quote_path(path),\n-                    named_by.point_at()\n-                ),\n-            ));\n-        }\n-        Ok(Some(bytes))\n+        Ok(Some(Zeroizing::from_iter([vec![0]]))) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Whether the file at the name has another hard link now, never through a symlink:\n     /// `false` when there is no file there.\n     fn has_other_links(&self) -> bool {\n         rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n             .is_ok_and(|stat| stat.st_nlink > 1)\n     }\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "PrivateFile::read",
+      "return_type": "-> Result<Option<Zeroizing<Vec<u8>>>>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 577
+        },
+        "start": {
+          "column": 5,
+          "line": 495
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from_iter([vec![0]])))",
+    "package": "hippius",
+    "replacement": "Ok(Some(Zeroizing::from_iter([vec![0]])))",
+    "span": {
+      "end": {
+        "column": 24,
+        "line": 576
+      },
+      "start": {
+        "column": 9,
+        "line": 499
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::new(vec![0])))\n@@ -491,94 +491,17 @@\n         }\n         Ok(())\n     }\n \n     /// Opens the file without following a symlink, checks it on the open descriptor, and\n     /// reads it, or `None` when it does not exist. [`PrivateFile::ensure`] has checked the\n     /// directory already; [`PrivateFile::load`] checks it after this.\n     pub(crate) fn read(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {\n-        let Guarded {\n-            what,\n-            holds,\n-            named_by,\n-            ..\n-        } = self.guarded;\n-        let path = &self.path;\n-        let file = match open_regular_at(&self.dir, Path::new(&self.name)) {\n-            Ok(file) => file,\n-            Err(OpenRegularError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {\n-                return Ok(None);\n-            }\n-            Err(OpenRegularError::Symlink) => {\n-                return Err(Error::usage(\n-                    format!(\n-                        \"{what} {} is a symlink, and a symlink is never followed\",\n-                        quote_path(path)\n-                    ),\n-                    format!(\"{} the file the symlink points to\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::NotRegular) => {\n-                return Err(Error::usage(\n-                    format!(\"{what} {} is not a regular file\", quote_path(path)),\n-                    format!(\"{} a regular file\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::Io(e)) => {\n-                // The open is refused before the owner check below can run, so the owner is\n-                // read from the directory entry here.\n-                let owner = rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n-                    .ok()\n-                    .map(|stat| stat.st_uid);\n-                let user = rustix::process::geteuid().as_raw();\n-                return Err(open_error(path, &e, owner, user, self.guarded));\n-            }\n-        };\n-        let metadata = file\n-            .metadata()\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if metadata.uid() != rustix::process::geteuid().as_raw() {\n-            return Err(another_users_file(path, self.guarded));\n-        }\n-        if metadata.permissions().mode() & 0o077 != 0 {\n-            return Err(Error::usage(\n-                format!(\n-                    \"{what} {} has permission bits for the group or others, and it holds {holds}\",\n-                    quote_path(path)\n-                ),\n-                format!(\n-                    \"run `chmod 600 {}`\",\n-                    crate::phrase::shell_word(&path.to_string_lossy())\n-                ),\n-            ));\n-        }\n-        // Sized from `fstat` with a byte to spare, so `read_to_end` sees the end without\n-        // growing the buffer: a growth would free a copy of the bytes that nothing clears.\n-        // That relies on std's `read_to_end` filling spare capacity before it reallocates,\n-        // which it does today but its docs do not promise, and on the file not growing\n-        // between the `fstat` and the read. Cleared when dropped, whoever drops them.\n-        let capacity = usize::try_from(metadata.len())\n-            .map_or(MAX_FILE_BYTES, |len| len.min(MAX_FILE_BYTES))\n-            + 1;\n-        let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));\n-        file.take(MAX_FILE_BYTES as u64 + 1)\n-            .read_to_end(&mut bytes)\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if bytes.len() > MAX_FILE_BYTES {\n-            return Err(Error::usage(\n-                format!(\"{what} {} is larger than 1 MiB\", quote_path(path)),\n-                format!(\n-                    \"check that {} is {what}, or {} another file\",\n-                    quote_path(path),\n-                    named_by.point_at()\n-                ),\n-            ));\n-        }\n-        Ok(Some(bytes))\n+        Ok(Some(Zeroizing::new(vec![0]))) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Whether the file at the name has another hard link now, never through a symlink:\n     /// `false` when there is no file there.\n     fn has_other_links(&self) -> bool {\n         rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n             .is_ok_and(|stat| stat.st_nlink > 1)\n     }\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "PrivateFile::read",
+      "return_type": "-> Result<Option<Zeroizing<Vec<u8>>>>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 577
+        },
+        "start": {
+          "column": 5,
+          "line": 495
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::new(vec![0])))",
+    "package": "hippius",
+    "replacement": "Ok(Some(Zeroizing::new(vec![0])))",
+    "span": {
+      "end": {
+        "column": 24,
+        "line": 576
+      },
+      "start": {
+        "column": 9,
+        "line": 499
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from(vec![0])))\n@@ -491,94 +491,17 @@\n         }\n         Ok(())\n     }\n \n     /// Opens the file without following a symlink, checks it on the open descriptor, and\n     /// reads it, or `None` when it does not exist. [`PrivateFile::ensure`] has checked the\n     /// directory already; [`PrivateFile::load`] checks it after this.\n     pub(crate) fn read(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {\n-        let Guarded {\n-            what,\n-            holds,\n-            named_by,\n-            ..\n-        } = self.guarded;\n-        let path = &self.path;\n-        let file = match open_regular_at(&self.dir, Path::new(&self.name)) {\n-            Ok(file) => file,\n-            Err(OpenRegularError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {\n-                return Ok(None);\n-            }\n-            Err(OpenRegularError::Symlink) => {\n-                return Err(Error::usage(\n-                    format!(\n-                        \"{what} {} is a symlink, and a symlink is never followed\",\n-                        quote_path(path)\n-                    ),\n-                    format!(\"{} the file the symlink points to\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::NotRegular) => {\n-                return Err(Error::usage(\n-                    format!(\"{what} {} is not a regular file\", quote_path(path)),\n-                    format!(\"{} a regular file\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::Io(e)) => {\n-                // The open is refused before the owner check below can run, so the owner is\n-                // read from the directory entry here.\n-                let owner = rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n-                    .ok()\n-                    .map(|stat| stat.st_uid);\n-                let user = rustix::process::geteuid().as_raw();\n-                return Err(open_error(path, &e, owner, user, self.guarded));\n-            }\n-        };\n-        let metadata = file\n-            .metadata()\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if metadata.uid() != rustix::process::geteuid().as_raw() {\n-            return Err(another_users_file(path, self.guarded));\n-        }\n-        if metadata.permissions().mode() & 0o077 != 0 {\n-            return Err(Error::usage(\n-                format!(\n-                    \"{what} {} has permission bits for the group or others, and it holds {holds}\",\n-                    quote_path(path)\n-                ),\n-                format!(\n-                    \"run `chmod 600 {}`\",\n-                    crate::phrase::shell_word(&path.to_string_lossy())\n-                ),\n-            ));\n-        }\n-        // Sized from `fstat` with a byte to spare, so `read_to_end` sees the end without\n-        // growing the buffer: a growth would free a copy of the bytes that nothing clears.\n-        // That relies on std's `read_to_end` filling spare capacity before it reallocates,\n-        // which it does today but its docs do not promise, and on the file not growing\n-        // between the `fstat` and the read. Cleared when dropped, whoever drops them.\n-        let capacity = usize::try_from(metadata.len())\n-            .map_or(MAX_FILE_BYTES, |len| len.min(MAX_FILE_BYTES))\n-            + 1;\n-        let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));\n-        file.take(MAX_FILE_BYTES as u64 + 1)\n-            .read_to_end(&mut bytes)\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if bytes.len() > MAX_FILE_BYTES {\n-            return Err(Error::usage(\n-                format!(\"{what} {} is larger than 1 MiB\", quote_path(path)),\n-                format!(\n-                    \"check that {} is {what}, or {} another file\",\n-                    quote_path(path),\n-                    named_by.point_at()\n-                ),\n-            ));\n-        }\n-        Ok(Some(bytes))\n+        Ok(Some(Zeroizing::from(vec![0]))) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Whether the file at the name has another hard link now, never through a symlink:\n     /// `false` when there is no file there.\n     fn has_other_links(&self) -> bool {\n         rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n             .is_ok_and(|stat| stat.st_nlink > 1)\n     }\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "PrivateFile::read",
+      "return_type": "-> Result<Option<Zeroizing<Vec<u8>>>>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 577
+        },
+        "start": {
+          "column": 5,
+          "line": 495
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from(vec![0])))",
+    "package": "hippius",
+    "replacement": "Ok(Some(Zeroizing::from(vec![0])))",
+    "span": {
+      "end": {
+        "column": 24,
+        "line": 576
+      },
+      "start": {
+        "column": 9,
+        "line": 499
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from_iter([vec![1]])))\n@@ -491,94 +491,17 @@\n         }\n         Ok(())\n     }\n \n     /// Opens the file without following a symlink, checks it on the open descriptor, and\n     /// reads it, or `None` when it does not exist. [`PrivateFile::ensure`] has checked the\n     /// directory already; [`PrivateFile::load`] checks it after this.\n     pub(crate) fn read(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {\n-        let Guarded {\n-            what,\n-            holds,\n-            named_by,\n-            ..\n-        } = self.guarded;\n-        let path = &self.path;\n-        let file = match open_regular_at(&self.dir, Path::new(&self.name)) {\n-            Ok(file) => file,\n-            Err(OpenRegularError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {\n-                return Ok(None);\n-            }\n-            Err(OpenRegularError::Symlink) => {\n-                return Err(Error::usage(\n-                    format!(\n-                        \"{what} {} is a symlink, and a symlink is never followed\",\n-                        quote_path(path)\n-                    ),\n-                    format!(\"{} the file the symlink points to\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::NotRegular) => {\n-                return Err(Error::usage(\n-                    format!(\"{what} {} is not a regular file\", quote_path(path)),\n-                    format!(\"{} a regular file\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::Io(e)) => {\n-                // The open is refused before the owner check below can run, so the owner is\n-                // read from the directory entry here.\n-                let owner = rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n-                    .ok()\n-                    .map(|stat| stat.st_uid);\n-                let user = rustix::process::geteuid().as_raw();\n-                return Err(open_error(path, &e, owner, user, self.guarded));\n-            }\n-        };\n-        let metadata = file\n-            .metadata()\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if metadata.uid() != rustix::process::geteuid().as_raw() {\n-            return Err(another_users_file(path, self.guarded));\n-        }\n-        if metadata.permissions().mode() & 0o077 != 0 {\n-            return Err(Error::usage(\n-                format!(\n-                    \"{what} {} has permission bits for the group or others, and it holds {holds}\",\n-                    quote_path(path)\n-                ),\n-                format!(\n-                    \"run `chmod 600 {}`\",\n-                    crate::phrase::shell_word(&path.to_string_lossy())\n-                ),\n-            ));\n-        }\n-        // Sized from `fstat` with a byte to spare, so `read_to_end` sees the end without\n-        // growing the buffer: a growth would free a copy of the bytes that nothing clears.\n-        // That relies on std's `read_to_end` filling spare capacity before it reallocates,\n-        // which it does today but its docs do not promise, and on the file not growing\n-        // between the `fstat` and the read. Cleared when dropped, whoever drops them.\n-        let capacity = usize::try_from(metadata.len())\n-            .map_or(MAX_FILE_BYTES, |len| len.min(MAX_FILE_BYTES))\n-            + 1;\n-        let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));\n-        file.take(MAX_FILE_BYTES as u64 + 1)\n-            .read_to_end(&mut bytes)\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if bytes.len() > MAX_FILE_BYTES {\n-            return Err(Error::usage(\n-                format!(\"{what} {} is larger than 1 MiB\", quote_path(path)),\n-                format!(\n-                    \"check that {} is {what}, or {} another file\",\n-                    quote_path(path),\n-                    named_by.point_at()\n-                ),\n-            ));\n-        }\n-        Ok(Some(bytes))\n+        Ok(Some(Zeroizing::from_iter([vec![1]]))) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Whether the file at the name has another hard link now, never through a symlink:\n     /// `false` when there is no file there.\n     fn has_other_links(&self) -> bool {\n         rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n             .is_ok_and(|stat| stat.st_nlink > 1)\n     }\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "PrivateFile::read",
+      "return_type": "-> Result<Option<Zeroizing<Vec<u8>>>>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 577
+        },
+        "start": {
+          "column": 5,
+          "line": 495
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from_iter([vec![1]])))",
+    "package": "hippius",
+    "replacement": "Ok(Some(Zeroizing::from_iter([vec![1]])))",
+    "span": {
+      "end": {
+        "column": 24,
+        "line": 576
+      },
+      "start": {
+        "column": 9,
+        "line": 499
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::new(vec![1])))\n@@ -491,94 +491,17 @@\n         }\n         Ok(())\n     }\n \n     /// Opens the file without following a symlink, checks it on the open descriptor, and\n     /// reads it, or `None` when it does not exist. [`PrivateFile::ensure`] has checked the\n     /// directory already; [`PrivateFile::load`] checks it after this.\n     pub(crate) fn read(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {\n-        let Guarded {\n-            what,\n-            holds,\n-            named_by,\n-            ..\n-        } = self.guarded;\n-        let path = &self.path;\n-        let file = match open_regular_at(&self.dir, Path::new(&self.name)) {\n-            Ok(file) => file,\n-            Err(OpenRegularError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {\n-                return Ok(None);\n-            }\n-            Err(OpenRegularError::Symlink) => {\n-                return Err(Error::usage(\n-                    format!(\n-                        \"{what} {} is a symlink, and a symlink is never followed\",\n-                        quote_path(path)\n-                    ),\n-                    format!(\"{} the file the symlink points to\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::NotRegular) => {\n-                return Err(Error::usage(\n-                    format!(\"{what} {} is not a regular file\", quote_path(path)),\n-                    format!(\"{} a regular file\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::Io(e)) => {\n-                // The open is refused before the owner check below can run, so the owner is\n-                // read from the directory entry here.\n-                let owner = rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n-                    .ok()\n-                    .map(|stat| stat.st_uid);\n-                let user = rustix::process::geteuid().as_raw();\n-                return Err(open_error(path, &e, owner, user, self.guarded));\n-            }\n-        };\n-        let metadata = file\n-            .metadata()\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if metadata.uid() != rustix::process::geteuid().as_raw() {\n-            return Err(another_users_file(path, self.guarded));\n-        }\n-        if metadata.permissions().mode() & 0o077 != 0 {\n-            return Err(Error::usage(\n-                format!(\n-                    \"{what} {} has permission bits for the group or others, and it holds {holds}\",\n-                    quote_path(path)\n-                ),\n-                format!(\n-                    \"run `chmod 600 {}`\",\n-                    crate::phrase::shell_word(&path.to_string_lossy())\n-                ),\n-            ));\n-        }\n-        // Sized from `fstat` with a byte to spare, so `read_to_end` sees the end without\n-        // growing the buffer: a growth would free a copy of the bytes that nothing clears.\n-        // That relies on std's `read_to_end` filling spare capacity before it reallocates,\n-        // which it does today but its docs do not promise, and on the file not growing\n-        // between the `fstat` and the read. Cleared when dropped, whoever drops them.\n-        let capacity = usize::try_from(metadata.len())\n-            .map_or(MAX_FILE_BYTES, |len| len.min(MAX_FILE_BYTES))\n-            + 1;\n-        let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));\n-        file.take(MAX_FILE_BYTES as u64 + 1)\n-            .read_to_end(&mut bytes)\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if bytes.len() > MAX_FILE_BYTES {\n-            return Err(Error::usage(\n-                format!(\"{what} {} is larger than 1 MiB\", quote_path(path)),\n-                format!(\n-                    \"check that {} is {what}, or {} another file\",\n-                    quote_path(path),\n-                    named_by.point_at()\n-                ),\n-            ));\n-        }\n-        Ok(Some(bytes))\n+        Ok(Some(Zeroizing::new(vec![1]))) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Whether the file at the name has another hard link now, never through a symlink:\n     /// `false` when there is no file there.\n     fn has_other_links(&self) -> bool {\n         rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n             .is_ok_and(|stat| stat.st_nlink > 1)\n     }\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "PrivateFile::read",
+      "return_type": "-> Result<Option<Zeroizing<Vec<u8>>>>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 577
+        },
+        "start": {
+          "column": 5,
+          "line": 495
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::new(vec![1])))",
+    "package": "hippius",
+    "replacement": "Ok(Some(Zeroizing::new(vec![1])))",
+    "span": {
+      "end": {
+        "column": 24,
+        "line": 576
+      },
+      "start": {
+        "column": 9,
+        "line": 499
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from(vec![1])))\n@@ -491,94 +491,17 @@\n         }\n         Ok(())\n     }\n \n     /// Opens the file without following a symlink, checks it on the open descriptor, and\n     /// reads it, or `None` when it does not exist. [`PrivateFile::ensure`] has checked the\n     /// directory already; [`PrivateFile::load`] checks it after this.\n     pub(crate) fn read(&self) -> Result<Option<Zeroizing<Vec<u8>>>> {\n-        let Guarded {\n-            what,\n-            holds,\n-            named_by,\n-            ..\n-        } = self.guarded;\n-        let path = &self.path;\n-        let file = match open_regular_at(&self.dir, Path::new(&self.name)) {\n-            Ok(file) => file,\n-            Err(OpenRegularError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {\n-                return Ok(None);\n-            }\n-            Err(OpenRegularError::Symlink) => {\n-                return Err(Error::usage(\n-                    format!(\n-                        \"{what} {} is a symlink, and a symlink is never followed\",\n-                        quote_path(path)\n-                    ),\n-                    format!(\"{} the file the symlink points to\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::NotRegular) => {\n-                return Err(Error::usage(\n-                    format!(\"{what} {} is not a regular file\", quote_path(path)),\n-                    format!(\"{} a regular file\", named_by.point_at()),\n-                ));\n-            }\n-            Err(OpenRegularError::Io(e)) => {\n-                // The open is refused before the owner check below can run, so the owner is\n-                // read from the directory entry here.\n-                let owner = rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n-                    .ok()\n-                    .map(|stat| stat.st_uid);\n-                let user = rustix::process::geteuid().as_raw();\n-                return Err(open_error(path, &e, owner, user, self.guarded));\n-            }\n-        };\n-        let metadata = file\n-            .metadata()\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if metadata.uid() != rustix::process::geteuid().as_raw() {\n-            return Err(another_users_file(path, self.guarded));\n-        }\n-        if metadata.permissions().mode() & 0o077 != 0 {\n-            return Err(Error::usage(\n-                format!(\n-                    \"{what} {} has permission bits for the group or others, and it holds {holds}\",\n-                    quote_path(path)\n-                ),\n-                format!(\n-                    \"run `chmod 600 {}`\",\n-                    crate::phrase::shell_word(&path.to_string_lossy())\n-                ),\n-            ));\n-        }\n-        // Sized from `fstat` with a byte to spare, so `read_to_end` sees the end without\n-        // growing the buffer: a growth would free a copy of the bytes that nothing clears.\n-        // That relies on std's `read_to_end` filling spare capacity before it reallocates,\n-        // which it does today but its docs do not promise, and on the file not growing\n-        // between the `fstat` and the read. Cleared when dropped, whoever drops them.\n-        let capacity = usize::try_from(metadata.len())\n-            .map_or(MAX_FILE_BYTES, |len| len.min(MAX_FILE_BYTES))\n-            + 1;\n-        let mut bytes = Zeroizing::new(Vec::with_capacity(capacity));\n-        file.take(MAX_FILE_BYTES as u64 + 1)\n-            .read_to_end(&mut bytes)\n-            .map_err(|e| file_error(\"read\", path, &e, Denied::Chmod(\"600\", path)))?;\n-        if bytes.len() > MAX_FILE_BYTES {\n-            return Err(Error::usage(\n-                format!(\"{what} {} is larger than 1 MiB\", quote_path(path)),\n-                format!(\n-                    \"check that {} is {what}, or {} another file\",\n-                    quote_path(path),\n-                    named_by.point_at()\n-                ),\n-            ));\n-        }\n-        Ok(Some(bytes))\n+        Ok(Some(Zeroizing::from(vec![1]))) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Whether the file at the name has another hard link now, never through a symlink:\n     /// `false` when there is no file there.\n     fn has_other_links(&self) -> bool {\n         rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)\n             .is_ok_and(|stat| stat.st_nlink > 1)\n     }\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "PrivateFile::read",
+      "return_type": "-> Result<Option<Zeroizing<Vec<u8>>>>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 577
+        },
+        "start": {
+          "column": 5,
+          "line": 495
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from(vec![1])))",
+    "package": "hippius",
+    "replacement": "Ok(Some(Zeroizing::from(vec![1])))",
+    "span": {
+      "end": {
+        "column": 24,
+        "line": 576
+      },
+      "start": {
+        "column": 9,
+        "line": 499
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace PrivateFile::replace -> std::io::Result<Replaced> with Ok(Default::default())\n@@ -597,30 +597,17 @@\n \n     /// Creates `temporary` with `mode`, writes and syncs `bytes`, renames it over the file,\n     /// and syncs the directory.\n     ///\n     /// `Ok` means `renameat` replaced the name, so another hard link already keeps the old\n     /// contents. [`Replaced::SyncFailed`] is that rename followed by a directory sync that\n     /// failed. That arm cannot be provoked portably; its comment says why.\n     fn replace(&self, temporary: &str, bytes: &[u8], mode: Mode) -> std::io::Result<Replaced> {\n-        let flags = OFlags::WRONLY | CREATE_NEW;\n-        let fd = rustix::fs::openat(&self.dir, temporary, flags | OFlags::CLOEXEC, PRIVATE)?;\n-        // The umask may have removed bits of `mode` at the open; this puts them back.\n-        // The descriptor was opened for writing, so a mode without the owner's write bit\n-        // still lets the write below go through.\n-        rustix::fs::fchmod(&fd, mode)?;\n-        let mut file = fs::File::from(fd);\n-        file.write_all(bytes)?;\n-        file.sync_all()?;\n-        rustix::fs::renameat(&self.dir, temporary, &self.dir, &self.name)?;\n-        match self.dir.sync_all() {\n-            Ok(()) => Ok(Replaced::Synced),\n-            Err(error) => Ok(Replaced::SyncFailed(error)),\n-        }\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Removes `name` from the directory, never through a symlink (`unlinkat` removes the\n     /// link itself). Every caller removes a file whose absence is the goal or that is\n     /// already part of a failure being reported, so a failure here is not reported.\n     fn unlink(&self, name: impl rustix::path::Arg) {\n         let _best_effort = rustix::fs::unlinkat(&self.dir, name, AtFlags::empty());\n     }\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "PrivateFile::replace",
+      "return_type": "-> std::io::Result<Replaced>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 619
+        },
+        "start": {
+          "column": 5,
+          "line": 598
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:605:9: replace PrivateFile::replace -> std::io::Result<Replaced> with Ok(Default::default())",
+    "package": "hippius",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 618
+      },
+      "start": {
+        "column": 9,
+        "line": 605
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/private_file.rs\n+++ replace another_users_file -> Error with Default::default()\n@@ -669,29 +669,17 @@\n             quote_path(dir)\n         ),\n         format!(\"{} a file in a directory\", named_by.point_at()),\n     )\n }\n \n /// The refusal of a private file that belongs to another user.\n fn another_users_file(path: &Path, guarded: Guarded) -> Error {\n-    let Guarded {\n-        what,\n-        holds,\n-        named_by,\n-        ..\n-    } = guarded;\n-    Error::usage(\n-        format!(\n-            \"{what} {} belongs to another user, and it holds {holds}\",\n-            quote_path(path)\n-        ),\n-        format!(\"{} a file of the current user\", named_by.point_at()),\n-    )\n+    Default::default() /* ~ changed by cargo-mutants ~ */\n }\n \n /// The error for a private file that could not be opened for reading: `owner` is its\n /// owner's uid, when its directory entry could be read, and `user` the effective uid. A\n /// denied open of another user's file is refused for its owner, as one that opens is, since a\n /// `chmod` would not fix it; any other failure is [`file_error`]'s.\n fn open_error(\n     path: &Path,\n",
+    "file": "crates/hippius/src/private_file.rs",
+    "function": {
+      "function_name": "another_users_file",
+      "return_type": "-> Error",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 690
+        },
+        "start": {
+          "column": 1,
+          "line": 675
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/private_file.rs:677:5: replace another_users_file -> Error with Default::default()",
+    "package": "hippius",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 6,
+        "line": 689
+      },
+      "start": {
+        "column": 5,
+        "line": 677
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/wallet.rs\n+++ replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::new())\n@@ -184,50 +184,17 @@\n /// MiB, in a directory no one else can write. It holds the BIP-39 words a Bittensor hotkey was\n /// made from, such as `btcli` prints at its creation. The bytes are read into a buffer sized up\n /// front and cleared when dropped. Messages name the hotkey, never the words.\n ///\n /// # Errors\n ///\n /// `usage` when a check refuses the file, it does not exist, or it is not UTF-8 text.\n pub fn read_hotkey_file(path: &Path, flag: &'static str) -> Result<Zeroizing<String>> {\n-    let what = \"the hotkey file\";\n-    let guarded = Guarded {\n-        what,\n-        holds: \"a hotkey phrase\",\n-        included: None,\n-        named_by: NamedBy::Flag(flag),\n-    };\n-    let Some(bytes) = PrivateFile::load(path, guarded)? else {\n-        // A path that is itself a phrase was passed in place of a file: it is not quoted, so\n-        // the words go no further than the argv they are already in.\n-        if path.to_str().is_some_and(holds_phrase) {\n-            return Err(phrase_in_argv());\n-        }\n-        // Nor is a path that names no file, which may be a secret passed in its place.\n-        return Err(Error::usage(\n-            format!(\n-                \"{what} `{flag}` names does not exist; the path is not repeated here, in case \\\n-                 it is the hotkey itself\"\n-            ),\n-            format!(\"pass `{flag}` a file that holds only the hotkey's words\"),\n-        ));\n-    };\n-    // A path that is itself a phrase is named by its flag, as a missing one is.\n-    let named = if path.to_str().is_some_and(holds_phrase) {\n-        format!(\"`{flag}` names\")\n-    } else {\n-        crate::phrase::quote_path(path)\n-    };\n-    utf8_text(bytes).ok_or_else(|| {\n-        Error::usage(\n-            format!(\"{what} {named} is not UTF-8 text\"),\n-            format!(\"pass `{flag}` a file that holds only the hotkey's words\"),\n-        )\n-    })\n+    Ok(Zeroizing::new()) /* ~ changed by cargo-mutants ~ */\n }\n \n /// The fewest words in a row on the English BIP-39 list that [`holds_phrase`] takes for a\n /// seed phrase: the 12 of the shortest phrase.\n const PHRASE_WORDS: usize = 12;\n \n /// Whether `text` holds what looks like a seed phrase, such as a hotkey's words or an\n /// account's access key: 12 or more words in a row, each on the English BIP-39 list, in any\n",
+    "file": "crates/hippius/src/wallet.rs",
+    "function": {
+      "function_name": "read_hotkey_file",
+      "return_type": "-> Result<Zeroizing<String>>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 226
+        },
+        "start": {
+          "column": 1,
+          "line": 182
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/wallet.rs:192:5: replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::new())",
+    "package": "hippius",
+    "replacement": "Ok(Zeroizing::new())",
+    "span": {
+      "end": {
+        "column": 7,
+        "line": 225
+      },
+      "start": {
+        "column": 5,
+        "line": 192
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/wallet.rs\n+++ replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::from_iter([String::new()]))\n@@ -184,50 +184,17 @@\n /// MiB, in a directory no one else can write. It holds the BIP-39 words a Bittensor hotkey was\n /// made from, such as `btcli` prints at its creation. The bytes are read into a buffer sized up\n /// front and cleared when dropped. Messages name the hotkey, never the words.\n ///\n /// # Errors\n ///\n /// `usage` when a check refuses the file, it does not exist, or it is not UTF-8 text.\n pub fn read_hotkey_file(path: &Path, flag: &'static str) -> Result<Zeroizing<String>> {\n-    let what = \"the hotkey file\";\n-    let guarded = Guarded {\n-        what,\n-        holds: \"a hotkey phrase\",\n-        included: None,\n-        named_by: NamedBy::Flag(flag),\n-    };\n-    let Some(bytes) = PrivateFile::load(path, guarded)? else {\n-        // A path that is itself a phrase was passed in place of a file: it is not quoted, so\n-        // the words go no further than the argv they are already in.\n-        if path.to_str().is_some_and(holds_phrase) {\n-            return Err(phrase_in_argv());\n-        }\n-        // Nor is a path that names no file, which may be a secret passed in its place.\n-        return Err(Error::usage(\n-            format!(\n-                \"{what} `{flag}` names does not exist; the path is not repeated here, in case \\\n-                 it is the hotkey itself\"\n-            ),\n-            format!(\"pass `{flag}` a file that holds only the hotkey's words\"),\n-        ));\n-    };\n-    // A path that is itself a phrase is named by its flag, as a missing one is.\n-    let named = if path.to_str().is_some_and(holds_phrase) {\n-        format!(\"`{flag}` names\")\n-    } else {\n-        crate::phrase::quote_path(path)\n-    };\n-    utf8_text(bytes).ok_or_else(|| {\n-        Error::usage(\n-            format!(\"{what} {named} is not UTF-8 text\"),\n-            format!(\"pass `{flag}` a file that holds only the hotkey's words\"),\n-        )\n-    })\n+    Ok(Zeroizing::from_iter([String::new()])) /* ~ changed by cargo-mutants ~ */\n }\n \n /// The fewest words in a row on the English BIP-39 list that [`holds_phrase`] takes for a\n /// seed phrase: the 12 of the shortest phrase.\n const PHRASE_WORDS: usize = 12;\n \n /// Whether `text` holds what looks like a seed phrase, such as a hotkey's words or an\n /// account's access key: 12 or more words in a row, each on the English BIP-39 list, in any\n",
+    "file": "crates/hippius/src/wallet.rs",
+    "function": {
+      "function_name": "read_hotkey_file",
+      "return_type": "-> Result<Zeroizing<String>>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 226
+        },
+        "start": {
+          "column": 1,
+          "line": 182
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/wallet.rs:192:5: replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::from_iter([String::new()]))",
+    "package": "hippius",
+    "replacement": "Ok(Zeroizing::from_iter([String::new()]))",
+    "span": {
+      "end": {
+        "column": 7,
+        "line": 225
+      },
+      "start": {
+        "column": 5,
+        "line": 192
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/wallet.rs\n+++ replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::new(String::new()))\n@@ -184,50 +184,17 @@\n /// MiB, in a directory no one else can write. It holds the BIP-39 words a Bittensor hotkey was\n /// made from, such as `btcli` prints at its creation. The bytes are read into a buffer sized up\n /// front and cleared when dropped. Messages name the hotkey, never the words.\n ///\n /// # Errors\n ///\n /// `usage` when a check refuses the file, it does not exist, or it is not UTF-8 text.\n pub fn read_hotkey_file(path: &Path, flag: &'static str) -> Result<Zeroizing<String>> {\n-    let what = \"the hotkey file\";\n-    let guarded = Guarded {\n-        what,\n-        holds: \"a hotkey phrase\",\n-        included: None,\n-        named_by: NamedBy::Flag(flag),\n-    };\n-    let Some(bytes) = PrivateFile::load(path, guarded)? else {\n-        // A path that is itself a phrase was passed in place of a file: it is not quoted, so\n-        // the words go no further than the argv they are already in.\n-        if path.to_str().is_some_and(holds_phrase) {\n-            return Err(phrase_in_argv());\n-        }\n-        // Nor is a path that names no file, which may be a secret passed in its place.\n-        return Err(Error::usage(\n-            format!(\n-                \"{what} `{flag}` names does not exist; the path is not repeated here, in case \\\n-                 it is the hotkey itself\"\n-            ),\n-            format!(\"pass `{flag}` a file that holds only the hotkey's words\"),\n-        ));\n-    };\n-    // A path that is itself a phrase is named by its flag, as a missing one is.\n-    let named = if path.to_str().is_some_and(holds_phrase) {\n-        format!(\"`{flag}` names\")\n-    } else {\n-        crate::phrase::quote_path(path)\n-    };\n-    utf8_text(bytes).ok_or_else(|| {\n-        Error::usage(\n-            format!(\"{what} {named} is not UTF-8 text\"),\n-            format!(\"pass `{flag}` a file that holds only the hotkey's words\"),\n-        )\n-    })\n+    Ok(Zeroizing::new(String::new())) /* ~ changed by cargo-mutants ~ */\n }\n \n /// The fewest words in a row on the English BIP-39 list that [`holds_phrase`] takes for a\n /// seed phrase: the 12 of the shortest phrase.\n const PHRASE_WORDS: usize = 12;\n \n /// Whether `text` holds what looks like a seed phrase, such as a hotkey's words or an\n /// account's access key: 12 or more words in a row, each on the English BIP-39 list, in any\n",
+    "file": "crates/hippius/src/wallet.rs",
+    "function": {
+      "function_name": "read_hotkey_file",
+      "return_type": "-> Result<Zeroizing<String>>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 226
+        },
+        "start": {
+          "column": 1,
+          "line": 182
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/wallet.rs:192:5: replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::new(String::new()))",
+    "package": "hippius",
+    "replacement": "Ok(Zeroizing::new(String::new()))",
+    "span": {
+      "end": {
+        "column": 7,
+        "line": 225
+      },
+      "start": {
+        "column": 5,
+        "line": 192
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/wallet.rs\n+++ replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::from(String::new()))\n@@ -184,50 +184,17 @@\n /// MiB, in a directory no one else can write. It holds the BIP-39 words a Bittensor hotkey was\n /// made from, such as `btcli` prints at its creation. The bytes are read into a buffer sized up\n /// front and cleared when dropped. Messages name the hotkey, never the words.\n ///\n /// # Errors\n ///\n /// `usage` when a check refuses the file, it does not exist, or it is not UTF-8 text.\n pub fn read_hotkey_file(path: &Path, flag: &'static str) -> Result<Zeroizing<String>> {\n-    let what = \"the hotkey file\";\n-    let guarded = Guarded {\n-        what,\n-        holds: \"a hotkey phrase\",\n-        included: None,\n-        named_by: NamedBy::Flag(flag),\n-    };\n-    let Some(bytes) = PrivateFile::load(path, guarded)? else {\n-        // A path that is itself a phrase was passed in place of a file: it is not quoted, so\n-        // the words go no further than the argv they are already in.\n-        if path.to_str().is_some_and(holds_phrase) {\n-            return Err(phrase_in_argv());\n-        }\n-        // Nor is a path that names no file, which may be a secret passed in its place.\n-        return Err(Error::usage(\n-            format!(\n-                \"{what} `{flag}` names does not exist; the path is not repeated here, in case \\\n-                 it is the hotkey itself\"\n-            ),\n-            format!(\"pass `{flag}` a file that holds only the hotkey's words\"),\n-        ));\n-    };\n-    // A path that is itself a phrase is named by its flag, as a missing one is.\n-    let named = if path.to_str().is_some_and(holds_phrase) {\n-        format!(\"`{flag}` names\")\n-    } else {\n-        crate::phrase::quote_path(path)\n-    };\n-    utf8_text(bytes).ok_or_else(|| {\n-        Error::usage(\n-            format!(\"{what} {named} is not UTF-8 text\"),\n-            format!(\"pass `{flag}` a file that holds only the hotkey's words\"),\n-        )\n-    })\n+    Ok(Zeroizing::from(String::new())) /* ~ changed by cargo-mutants ~ */\n }\n \n /// The fewest words in a row on the English BIP-39 list that [`holds_phrase`] takes for a\n /// seed phrase: the 12 of the shortest phrase.\n const PHRASE_WORDS: usize = 12;\n \n /// Whether `text` holds what looks like a seed phrase, such as a hotkey's words or an\n /// account's access key: 12 or more words in a row, each on the English BIP-39 list, in any\n",
+    "file": "crates/hippius/src/wallet.rs",
+    "function": {
+      "function_name": "read_hotkey_file",
+      "return_type": "-> Result<Zeroizing<String>>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 226
+        },
+        "start": {
+          "column": 1,
+          "line": 182
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/wallet.rs:192:5: replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::from(String::new()))",
+    "package": "hippius",
+    "replacement": "Ok(Zeroizing::from(String::new()))",
+    "span": {
+      "end": {
+        "column": 7,
+        "line": 225
+      },
+      "start": {
+        "column": 5,
+        "line": 192
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/wallet.rs\n+++ replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::from_iter([\"xyzzy\".into()]))\n@@ -184,50 +184,17 @@\n /// MiB, in a directory no one else can write. It holds the BIP-39 words a Bittensor hotkey was\n /// made from, such as `btcli` prints at its creation. The bytes are read into a buffer sized up\n /// front and cleared when dropped. Messages name the hotkey, never the words.\n ///\n /// # Errors\n ///\n /// `usage` when a check refuses the file, it does not exist, or it is not UTF-8 text.\n pub fn read_hotkey_file(path: &Path, flag: &'static str) -> Result<Zeroizing<String>> {\n-    let what = \"the hotkey file\";\n-    let guarded = Guarded {\n-        what,\n-        holds: \"a hotkey phrase\",\n-        included: None,\n-        named_by: NamedBy::Flag(flag),\n-    };\n-    let Some(bytes) = PrivateFile::load(path, guarded)? else {\n-        // A path that is itself a phrase was passed in place of a file: it is not quoted, so\n-        // the words go no further than the argv they are already in.\n-        if path.to_str().is_some_and(holds_phrase) {\n-            return Err(phrase_in_argv());\n-        }\n-        // Nor is a path that names no file, which may be a secret passed in its place.\n-        return Err(Error::usage(\n-            format!(\n-                \"{what} `{flag}` names does not exist; the path is not repeated here, in case \\\n-                 it is the hotkey itself\"\n-            ),\n-            format!(\"pass `{flag}` a file that holds only the hotkey's words\"),\n-        ));\n-    };\n-    // A path that is itself a phrase is named by its flag, as a missing one is.\n-    let named = if path.to_str().is_some_and(holds_phrase) {\n-        format!(\"`{flag}` names\")\n-    } else {\n-        crate::phrase::quote_path(path)\n-    };\n-    utf8_text(bytes).ok_or_else(|| {\n-        Error::usage(\n-            format!(\"{what} {named} is not UTF-8 text\"),\n-            format!(\"pass `{flag}` a file that holds only the hotkey's words\"),\n-        )\n-    })\n+    Ok(Zeroizing::from_iter([\"xyzzy\".into()])) /* ~ changed by cargo-mutants ~ */\n }\n \n /// The fewest words in a row on the English BIP-39 list that [`holds_phrase`] takes for a\n /// seed phrase: the 12 of the shortest phrase.\n const PHRASE_WORDS: usize = 12;\n \n /// Whether `text` holds what looks like a seed phrase, such as a hotkey's words or an\n /// account's access key: 12 or more words in a row, each on the English BIP-39 list, in any\n",
+    "file": "crates/hippius/src/wallet.rs",
+    "function": {
+      "function_name": "read_hotkey_file",
+      "return_type": "-> Result<Zeroizing<String>>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 226
+        },
+        "start": {
+          "column": 1,
+          "line": 182
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/wallet.rs:192:5: replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::from_iter([\"xyzzy\".into()]))",
+    "package": "hippius",
+    "replacement": "Ok(Zeroizing::from_iter([\"xyzzy\".into()]))",
+    "span": {
+      "end": {
+        "column": 7,
+        "line": 225
+      },
+      "start": {
+        "column": 5,
+        "line": 192
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/wallet.rs\n+++ replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::new(\"xyzzy\".into()))\n@@ -184,50 +184,17 @@\n /// MiB, in a directory no one else can write. It holds the BIP-39 words a Bittensor hotkey was\n /// made from, such as `btcli` prints at its creation. The bytes are read into a buffer sized up\n /// front and cleared when dropped. Messages name the hotkey, never the words.\n ///\n /// # Errors\n ///\n /// `usage` when a check refuses the file, it does not exist, or it is not UTF-8 text.\n pub fn read_hotkey_file(path: &Path, flag: &'static str) -> Result<Zeroizing<String>> {\n-    let what = \"the hotkey file\";\n-    let guarded = Guarded {\n-        what,\n-        holds: \"a hotkey phrase\",\n-        included: None,\n-        named_by: NamedBy::Flag(flag),\n-    };\n-    let Some(bytes) = PrivateFile::load(path, guarded)? else {\n-        // A path that is itself a phrase was passed in place of a file: it is not quoted, so\n-        // the words go no further than the argv they are already in.\n-        if path.to_str().is_some_and(holds_phrase) {\n-            return Err(phrase_in_argv());\n-        }\n-        // Nor is a path that names no file, which may be a secret passed in its place.\n-        return Err(Error::usage(\n-            format!(\n-                \"{what} `{flag}` names does not exist; the path is not repeated here, in case \\\n-                 it is the hotkey itself\"\n-            ),\n-            format!(\"pass `{flag}` a file that holds only the hotkey's words\"),\n-        ));\n-    };\n-    // A path that is itself a phrase is named by its flag, as a missing one is.\n-    let named = if path.to_str().is_some_and(holds_phrase) {\n-        format!(\"`{flag}` names\")\n-    } else {\n-        crate::phrase::quote_path(path)\n-    };\n-    utf8_text(bytes).ok_or_else(|| {\n-        Error::usage(\n-            format!(\"{what} {named} is not UTF-8 text\"),\n-            format!(\"pass `{flag}` a file that holds only the hotkey's words\"),\n-        )\n-    })\n+    Ok(Zeroizing::new(\"xyzzy\".into())) /* ~ changed by cargo-mutants ~ */\n }\n \n /// The fewest words in a row on the English BIP-39 list that [`holds_phrase`] takes for a\n /// seed phrase: the 12 of the shortest phrase.\n const PHRASE_WORDS: usize = 12;\n \n /// Whether `text` holds what looks like a seed phrase, such as a hotkey's words or an\n /// account's access key: 12 or more words in a row, each on the English BIP-39 list, in any\n",
+    "file": "crates/hippius/src/wallet.rs",
+    "function": {
+      "function_name": "read_hotkey_file",
+      "return_type": "-> Result<Zeroizing<String>>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 226
+        },
+        "start": {
+          "column": 1,
+          "line": 182
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/wallet.rs:192:5: replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::new(\"xyzzy\".into()))",
+    "package": "hippius",
+    "replacement": "Ok(Zeroizing::new(\"xyzzy\".into()))",
+    "span": {
+      "end": {
+        "column": 7,
+        "line": 225
+      },
+      "start": {
+        "column": 5,
+        "line": 192
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius/src/wallet.rs\n+++ replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::from(\"xyzzy\".into()))\n@@ -184,50 +184,17 @@\n /// MiB, in a directory no one else can write. It holds the BIP-39 words a Bittensor hotkey was\n /// made from, such as `btcli` prints at its creation. The bytes are read into a buffer sized up\n /// front and cleared when dropped. Messages name the hotkey, never the words.\n ///\n /// # Errors\n ///\n /// `usage` when a check refuses the file, it does not exist, or it is not UTF-8 text.\n pub fn read_hotkey_file(path: &Path, flag: &'static str) -> Result<Zeroizing<String>> {\n-    let what = \"the hotkey file\";\n-    let guarded = Guarded {\n-        what,\n-        holds: \"a hotkey phrase\",\n-        included: None,\n-        named_by: NamedBy::Flag(flag),\n-    };\n-    let Some(bytes) = PrivateFile::load(path, guarded)? else {\n-        // A path that is itself a phrase was passed in place of a file: it is not quoted, so\n-        // the words go no further than the argv they are already in.\n-        if path.to_str().is_some_and(holds_phrase) {\n-            return Err(phrase_in_argv());\n-        }\n-        // Nor is a path that names no file, which may be a secret passed in its place.\n-        return Err(Error::usage(\n-            format!(\n-                \"{what} `{flag}` names does not exist; the path is not repeated here, in case \\\n-                 it is the hotkey itself\"\n-            ),\n-            format!(\"pass `{flag}` a file that holds only the hotkey's words\"),\n-        ));\n-    };\n-    // A path that is itself a phrase is named by its flag, as a missing one is.\n-    let named = if path.to_str().is_some_and(holds_phrase) {\n-        format!(\"`{flag}` names\")\n-    } else {\n-        crate::phrase::quote_path(path)\n-    };\n-    utf8_text(bytes).ok_or_else(|| {\n-        Error::usage(\n-            format!(\"{what} {named} is not UTF-8 text\"),\n-            format!(\"pass `{flag}` a file that holds only the hotkey's words\"),\n-        )\n-    })\n+    Ok(Zeroizing::from(\"xyzzy\".into())) /* ~ changed by cargo-mutants ~ */\n }\n \n /// The fewest words in a row on the English BIP-39 list that [`holds_phrase`] takes for a\n /// seed phrase: the 12 of the shortest phrase.\n const PHRASE_WORDS: usize = 12;\n \n /// Whether `text` holds what looks like a seed phrase, such as a hotkey's words or an\n /// account's access key: 12 or more words in a row, each on the English BIP-39 list, in any\n",
+    "file": "crates/hippius/src/wallet.rs",
+    "function": {
+      "function_name": "read_hotkey_file",
+      "return_type": "-> Result<Zeroizing<String>>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 226
+        },
+        "start": {
+          "column": 1,
+          "line": 182
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius/src/wallet.rs:192:5: replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::from(\"xyzzy\".into()))",
+    "package": "hippius",
+    "replacement": "Ok(Zeroizing::from(\"xyzzy\".into()))",
+    "span": {
+      "end": {
+        "column": 7,
+        "line": 225
+      },
+      "start": {
+        "column": 5,
+        "line": 192
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius-cli/src/run.rs\n+++ replace run_warnings -> Vec<String> with vec![]\n@@ -111,25 +111,17 @@\n /// The warnings of the whole run, for JSON's `warnings`: the command's own run warnings and\n /// those of answers that marked their route deprecated, which were printed as they came, then\n /// those of a config or AWS file the run rewrote while it had another hard link, printed\n /// here in text mode. Also after a failure: a command can write the config and then fail at\n /// a later step, and an answer that failed can say its route is deprecated. JSON mode writes\n /// no warning lines, so the `warnings` array beside the document or the error is where an\n /// agent sees them.\n fn run_warnings(ctx: &Context<'_>) -> Vec<String> {\n-    let mut warnings = ctx.take_warnings();\n-    for warning in hippius::take_split_link_warnings()\n-        .into_iter()\n-        .chain(hippius::take_unknown_keys_warning())\n-    {\n-        ctx.warning(&warning);\n-        warnings.push(warning);\n-    }\n-    warnings\n+    vec![] /* ~ changed by cargo-mutants ~ */\n }\n \n /// The refusal of a command line that holds a seed phrase or an API token the run knows, which\n /// an error that quoted a word of it would copy into a log or a transcript.\n ///\n /// The phrase is looked for with anything that is not a letter read as a space, so a value\n /// joined to its flag (`--name=abandon ...`), or a numbered or comma-separated paste of the\n /// words, is found, as in a support text.\n",
+    "file": "crates/hippius-cli/src/run.rs",
+    "function": {
+      "function_name": "run_warnings",
+      "return_type": "-> Vec<String>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 128
+        },
+        "start": {
+          "column": 1,
+          "line": 111
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius-cli/src/run.rs:119:5: replace run_warnings -> Vec<String> with vec![]",
+    "package": "hippius-cli",
+    "replacement": "vec![]",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 127
+      },
+      "start": {
+        "column": 5,
+        "line": 119
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius-cli/src/run.rs\n+++ replace run_warnings -> Vec<String> with vec![String::new()]\n@@ -111,25 +111,17 @@\n /// The warnings of the whole run, for JSON's `warnings`: the command's own run warnings and\n /// those of answers that marked their route deprecated, which were printed as they came, then\n /// those of a config or AWS file the run rewrote while it had another hard link, printed\n /// here in text mode. Also after a failure: a command can write the config and then fail at\n /// a later step, and an answer that failed can say its route is deprecated. JSON mode writes\n /// no warning lines, so the `warnings` array beside the document or the error is where an\n /// agent sees them.\n fn run_warnings(ctx: &Context<'_>) -> Vec<String> {\n-    let mut warnings = ctx.take_warnings();\n-    for warning in hippius::take_split_link_warnings()\n-        .into_iter()\n-        .chain(hippius::take_unknown_keys_warning())\n-    {\n-        ctx.warning(&warning);\n-        warnings.push(warning);\n-    }\n-    warnings\n+    vec![String::new()] /* ~ changed by cargo-mutants ~ */\n }\n \n /// The refusal of a command line that holds a seed phrase or an API token the run knows, which\n /// an error that quoted a word of it would copy into a log or a transcript.\n ///\n /// The phrase is looked for with anything that is not a letter read as a space, so a value\n /// joined to its flag (`--name=abandon ...`), or a numbered or comma-separated paste of the\n /// words, is found, as in a support text.\n",
+    "file": "crates/hippius-cli/src/run.rs",
+    "function": {
+      "function_name": "run_warnings",
+      "return_type": "-> Vec<String>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 128
+        },
+        "start": {
+          "column": 1,
+          "line": 111
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius-cli/src/run.rs:119:5: replace run_warnings -> Vec<String> with vec![String::new()]",
+    "package": "hippius-cli",
+    "replacement": "vec![String::new()]",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 127
+      },
+      "start": {
+        "column": 5,
+        "line": 119
+      }
+    }
+  },
+  {
+    "diff": "--- crates/hippius-cli/src/run.rs\n+++ replace run_warnings -> Vec<String> with vec![\"xyzzy\".into()]\n@@ -111,25 +111,17 @@\n /// The warnings of the whole run, for JSON's `warnings`: the command's own run warnings and\n /// those of answers that marked their route deprecated, which were printed as they came, then\n /// those of a config or AWS file the run rewrote while it had another hard link, printed\n /// here in text mode. Also after a failure: a command can write the config and then fail at\n /// a later step, and an answer that failed can say its route is deprecated. JSON mode writes\n /// no warning lines, so the `warnings` array beside the document or the error is where an\n /// agent sees them.\n fn run_warnings(ctx: &Context<'_>) -> Vec<String> {\n-    let mut warnings = ctx.take_warnings();\n-    for warning in hippius::take_split_link_warnings()\n-        .into_iter()\n-        .chain(hippius::take_unknown_keys_warning())\n-    {\n-        ctx.warning(&warning);\n-        warnings.push(warning);\n-    }\n-    warnings\n+    vec![\"xyzzy\".into()] /* ~ changed by cargo-mutants ~ */\n }\n \n /// The refusal of a command line that holds a seed phrase or an API token the run knows, which\n /// an error that quoted a word of it would copy into a log or a transcript.\n ///\n /// The phrase is looked for with anything that is not a letter read as a space, so a value\n /// joined to its flag (`--name=abandon ...`), or a numbered or comma-separated paste of the\n /// words, is found, as in a support text.\n",
+    "file": "crates/hippius-cli/src/run.rs",
+    "function": {
+      "function_name": "run_warnings",
+      "return_type": "-> Vec<String>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 128
+        },
+        "start": {
+          "column": 1,
+          "line": 111
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/hippius-cli/src/run.rs:119:5: replace run_warnings -> Vec<String> with vec![\"xyzzy\".into()]",
+    "package": "hippius-cli",
+    "replacement": "vec![\"xyzzy\".into()]",
+    "span": {
+      "end": {
+        "column": 13,
+        "line": 127
+      },
+      "start": {
+        "column": 5,
+        "line": 119
+      }
+    }
+  }
+]

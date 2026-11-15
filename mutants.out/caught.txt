@@ -1,0 +1,19 @@
+crates/hippius/src/private_file.rs:46:5: replace note_split_link with ()
+crates/hippius/src/private_file.rs:56:5: replace take_split_link_warnings -> Vec<String> with vec![]
+crates/hippius/src/private_file.rs:56:5: replace take_split_link_warnings -> Vec<String> with vec![String::new()]
+crates/hippius/src/private_file.rs:56:5: replace take_split_link_warnings -> Vec<String> with vec!["xyzzy".into()]
+crates/hippius/src/private_file.rs:114:9: replace Guarded::split_link_warning -> String with String::new()
+crates/hippius/src/private_file.rs:114:9: replace Guarded::split_link_warning -> String with "xyzzy".into()
+crates/hippius/src/private_file.rs:380:9: replace PrivateFile::write -> Result<()> with Ok(())
+crates/hippius/src/private_file.rs:389:19: replace && with || in PrivateFile::write
+crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(None)
+crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::new(vec![])))
+crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from(vec![])))
+crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::new(vec![0])))
+crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from(vec![0])))
+crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::new(vec![1])))
+crates/hippius/src/private_file.rs:499:9: replace PrivateFile::read -> Result<Option<Zeroizing<Vec<u8>>>> with Ok(Some(Zeroizing::from(vec![1])))
+crates/hippius/src/wallet.rs:192:5: replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::new(String::new()))
+crates/hippius/src/wallet.rs:192:5: replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::from(String::new()))
+crates/hippius/src/wallet.rs:192:5: replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::new("xyzzy".into()))
+crates/hippius-cli/src/run.rs:119:5: replace run_warnings -> Vec<String> with vec![]

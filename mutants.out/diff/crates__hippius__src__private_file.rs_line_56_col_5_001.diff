@@ -1,0 +1,21 @@
+--- crates/hippius/src/private_file.rs
++++ replace take_split_link_warnings -> Vec<String> with vec![String::new()]
+@@ -48,17 +48,17 @@
+ }
+ 
+ /// Every warning for a private file this thread replaced while it had another hard link,
+ /// in the order of the writes, once. A write renames a new file over the old name, so the
+ /// other link keeps the old contents; the binary warns (tenet 8). A directory sync that
+ /// fails after the rename still notes it: the link is already split. Empty when no write
+ /// split a link. Thread-local, so a test sees only its own writes.
+ pub fn take_split_link_warnings() -> Vec<String> {
+-    SPLIT_LINKS.with(|links| std::mem::take(&mut *links.borrow_mut()))
++    vec![String::new()] /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Creates `dir` and each missing directory above it, each with mode `0700`, and sets that
+ /// mode again on each one it created, since `mkdir` masks it with the umask: under `0277`
+ /// the directory would be `0500`, and no file could be created in it. A directory that
+ /// another process creates first is left as it is. The mode is set through a descriptor
+ /// opened without following a symlink, so a name swapped for a link after the create is
+ /// never followed; a umask that also clears the owner's read bit leaves a directory that

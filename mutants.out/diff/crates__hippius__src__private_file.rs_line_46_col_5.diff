@@ -1,0 +1,22 @@
+--- crates/hippius/src/private_file.rs
++++ replace note_split_link with ()
+@@ -38,18 +38,17 @@
+ thread_local! {
+     /// The warnings for files [`PrivateFile::write`] on this thread replaced while they had
+     /// another hard link, until [`take_split_link_warnings`] takes them.
+     static SPLIT_LINKS: std::cell::RefCell<Vec<String>> =
+         const { std::cell::RefCell::new(Vec::new()) };
+ }
+ 
+ fn note_split_link(guarded: Guarded, path: &Path) {
+-    let warning = guarded.split_link_warning(path);
+-    SPLIT_LINKS.with(|links| links.borrow_mut().push(warning));
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Every warning for a private file this thread replaced while it had another hard link,
+ /// in the order of the writes, once. A write renames a new file over the old name, so the
+ /// other link keeps the old contents; the binary warns (tenet 8). A directory sync that
+ /// fails after the rename still notes it: the link is already split. Empty when no write
+ /// split a link. Thread-local, so a test sees only its own writes.
+ pub fn take_split_link_warnings() -> Vec<String> {

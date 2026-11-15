@@ -1,0 +1,93 @@
+--- crates/hippius/src/kubernetes.rs
++++ replace ClusterKey::load -> Result<Self> with Ok(Default::default())
+@@ -123,89 +123,17 @@
+     /// file is checked, then its format (module docs). Sends nothing.
+     ///
+     /// # Errors
+     ///
+     /// `usage` for a file that is missing, a symlink, not a regular file, another user's, open
+     /// to the group or others, larger than 1 MiB, or not a version-1 key file whose public keys
+     /// match its secret keys. No message quotes what the file holds.
+     pub fn load(path: &Path, flag: &'static str) -> Result<Self> {
+-        let guarded = Guarded {
+-            what: "the cluster key file",
+-            holds: "the cluster's private keys",
+-            included: None,
+-            named_by: NamedBy::Flag(flag),
+-        };
+-        let loaded = load_private_object(path, guarded, &key_file_hint(flag))?;
+-        let not_a_key_file = |problem: &str| {
+-            Error::usage(
+-                format!(
+-                    "the cluster key file {} {problem}, so it is not a key file the console \
+-                     saved",
+-                    quote_path(path)
+-                ),
+-                key_file_hint(flag),
+-            )
+-        };
+-        // A field given twice is refused, as the other private files refuse it: which copy
+-        // counts would depend on the parser.
+-        let mut fields = loaded.map_err(|problem| not_a_key_file(&problem.describe("a field")))?;
+-        // Taken out of the map first, so that each refusal below drops them cleared.
+-        let sign_secret = secret_text(&mut fields, "sign_secret_key");
+-        let box_secret = secret_text(&mut fields, "box_secret_key");
+-        if fields.get("kind").and_then(Value::as_str) != Some(KIND) {
+-            return Err(not_a_key_file(&format!("has no `kind` of `{KIND}`")));
+-        }
+-        if fields.get("version").and_then(Value::as_u64) != Some(VERSION) {
+-            return Err(Error::usage(
+-                format!(
+-                    "the cluster key file {} is not of version `{VERSION}`, the one this hipc \
+-                     reads",
+-                    quote_path(path)
+-                ),
+-                "check that the file came from the console, or update hipc",
+-            ));
+-        }
+-        let key = |field: &str, text: Option<&str>| {
+-            text.and_then(decode_key).ok_or_else(|| {
+-                not_a_key_file(&format!(
+-                    "has no `{field}` of {KEY_BYTES} bytes in standard base64"
+-                ))
+-            })
+-        };
+-        let public = |field: &str| key(field, fields.get(field).and_then(Value::as_str));
+-        let sign_secret = key(
+-            "sign_secret_key",
+-            sign_secret.as_deref().map(String::as_str),
+-        )?;
+-        let box_secret = key("box_secret_key", box_secret.as_deref().map(String::as_str))?;
+-        let sign_public = public("sign_public_key")?;
+-        let box_public = public("box_public_key")?;
+-        let sign = SigningKey::from_bytes(&sign_secret);
+-        // Compared as public data: neither public key is a secret.
+-        if sign.verifying_key().as_bytes() != &*sign_public
+-            || box_key(&box_secret).public_key().as_bytes() != &*box_public
+-        {
+-            return Err(Error::usage(
+-                format!(
+-                    "the cluster key file {} is damaged: its public keys do not match its \
+-                     secret keys",
+-                    quote_path(path)
+-                ),
+-                key_file_hint(flag),
+-            ));
+-        }
+-        Ok(Self {
+-            sign,
+-            box_secret,
+-            sign_public: *sign_public,
+-            box_public: *box_public,
+-            path: path.to_owned(),
+-            flag,
+-        })
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// The key, checked against `cluster`, the cluster `id` as the API returned it: both
+     /// public keys must be the ones it was created with, as the console checks. The box key
+     /// opens the kubeconfig and the signing key consents to node operations, so a file that
+     /// matches on one only is another cluster's. The keys are compared as the bytes they
+     /// decode to (standard or URL-safe base64, padded or not, line breaks dropped), so a
+     /// server that spells them another way than the console wrote them still matches.

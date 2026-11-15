@@ -1,0 +1,54 @@
+--- crates/hippius/src/wallet.rs
++++ replace read_hotkey_file -> Result<Zeroizing<String>> with Ok(Zeroizing::from_iter([String::new()]))
+@@ -184,50 +184,17 @@
+ /// MiB, in a directory no one else can write. It holds the BIP-39 words a Bittensor hotkey was
+ /// made from, such as `btcli` prints at its creation. The bytes are read into a buffer sized up
+ /// front and cleared when dropped. Messages name the hotkey, never the words.
+ ///
+ /// # Errors
+ ///
+ /// `usage` when a check refuses the file, it does not exist, or it is not UTF-8 text.
+ pub fn read_hotkey_file(path: &Path, flag: &'static str) -> Result<Zeroizing<String>> {
+-    let what = "the hotkey file";
+-    let guarded = Guarded {
+-        what,
+-        holds: "a hotkey phrase",
+-        included: None,
+-        named_by: NamedBy::Flag(flag),
+-    };
+-    let Some(bytes) = PrivateFile::load(path, guarded)? else {
+-        // A path that is itself a phrase was passed in place of a file: it is not quoted, so
+-        // the words go no further than the argv they are already in.
+-        if path.to_str().is_some_and(holds_phrase) {
+-            return Err(phrase_in_argv());
+-        }
+-        // Nor is a path that names no file, which may be a secret passed in its place.
+-        return Err(Error::usage(
+-            format!(
+-                "{what} `{flag}` names does not exist; the path is not repeated here, in case \
+-                 it is the hotkey itself"
+-            ),
+-            format!("pass `{flag}` a file that holds only the hotkey's words"),
+-        ));
+-    };
+-    // A path that is itself a phrase is named by its flag, as a missing one is.
+-    let named = if path.to_str().is_some_and(holds_phrase) {
+-        format!("`{flag}` names")
+-    } else {
+-        crate::phrase::quote_path(path)
+-    };
+-    utf8_text(bytes).ok_or_else(|| {
+-        Error::usage(
+-            format!("{what} {named} is not UTF-8 text"),
+-            format!("pass `{flag}` a file that holds only the hotkey's words"),
+-        )
+-    })
++    Ok(Zeroizing::from_iter([String::new()])) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The fewest words in a row on the English BIP-39 list that [`holds_phrase`] takes for a
+ /// seed phrase: the 12 of the shortest phrase.
+ const PHRASE_WORDS: usize = 12;
+ 
+ /// Whether `text` holds what looks like a seed phrase, such as a hotkey's words or an
+ /// account's access key: 12 or more words in a row, each on the English BIP-39 list, in any

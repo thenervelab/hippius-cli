@@ -383,29 +383,32 @@ impl PrivateFile {
         // count taken first would warn about a link this write just removed.
         self.unlink(&temporary);
         let linked = self.has_other_links();
-        let replaced = self.replace(&temporary, bytes, self.owner_mode());
-        // `Ok` means `renameat` already split the link, whether or not the directory
-        // sync that follows it succeeded. The other name keeps the old contents either way.
-        if linked && replaced.is_ok() {
-            note_split_link(self.guarded, &self.path);
-        }
-        let error = match replaced {
-            Ok(Replaced::Synced) => return Ok(()),
-            Ok(Replaced::SyncFailed(error)) => error,
+        // The outer result is every step up to `renameat`; the inner one is the directory
+        // sync after it. Once the rename has run, the link is split, whether or not that
+        // sync then succeeds, so the other name keeps the old contents either way.
+        let synced = match self.replace(&temporary, bytes, self.owner_mode()) {
+            Ok(synced) => {
+                if linked {
+                    note_split_link(self.guarded, &self.path);
+                }
+                synced
+            }
             Err(error) => {
                 self.unlink(&temporary);
-                error
+                Err(error)
             }
         };
         // A directory sync is the last step, so a failure there leaves the new file in
         // place but not yet durable. "write or sync" covers the earlier steps too.
         let dir = directory(&self.path);
-        Err(file_error(
-            "write or sync",
-            &self.path,
-            &error,
-            Denied::Chmod("700", dir),
-        ))
+        synced.map_err(|error| {
+            file_error(
+                "write or sync",
+                &self.path,
+                &error,
+                Denied::Chmod("700", dir),
+            )
+        })
     }
 
     /// Removes the temporary files that writers killed before their rename left beside the
@@ -598,10 +601,21 @@ impl PrivateFile {
     /// Creates `temporary` with `mode`, writes and syncs `bytes`, renames it over the file,
     /// and syncs the directory.
     ///
-    /// `Ok` means `renameat` replaced the name, so another hard link already keeps the old
-    /// contents. [`Replaced::SyncFailed`] is that rename followed by a directory sync that
-    /// failed. That arm cannot be provoked portably; its comment says why.
-    fn replace(&self, temporary: &str, bytes: &[u8], mode: Mode) -> std::io::Result<Replaced> {
+    /// The outer `Err` is a step up to and including `renameat`, so the name still holds the
+    /// old file. `Ok` means the rename replaced the name, so another hard link already keeps
+    /// the old contents; it holds the result of the directory sync that follows.
+    ///
+    /// No test makes that sync fail. A directory sync failure after `renameat` cannot be
+    /// provoked portably: `fsync` of the directory descriptor, already open, does not consult
+    /// the directory's mode (a mode of `0500` still syncs), and a full disk fails at the file
+    /// write or its sync, before the rename. The sync result is passed on unchanged, so that
+    /// path is the same code as every other write error.
+    fn replace(
+        &self,
+        temporary: &str,
+        bytes: &[u8],
+        mode: Mode,
+    ) -> std::io::Result<std::io::Result<()>> {
         let flags = OFlags::WRONLY | CREATE_NEW;
         let fd = rustix::fs::openat(&self.dir, temporary, flags | OFlags::CLOEXEC, PRIVATE)?;
         // The umask may have removed bits of `mode` at the open; this puts them back.
@@ -612,10 +626,7 @@ impl PrivateFile {
         file.write_all(bytes)?;
         file.sync_all()?;
         rustix::fs::renameat(&self.dir, temporary, &self.dir, &self.name)?;
-        match self.dir.sync_all() {
-            Ok(()) => Ok(Replaced::Synced),
-            Err(error) => Ok(Replaced::SyncFailed(error)),
-        }
+        Ok(self.dir.sync_all())
     }
 
     /// Removes `name` from the directory, never through a symlink (`unlinkat` removes the
@@ -705,21 +716,6 @@ fn open_error(
         return another_users_file(path, guarded);
     }
     file_error("read", path, error, Denied::Chmod("600", path))
-}
-
-/// What [`PrivateFile::replace`] did once `renameat` had replaced the name.
-#[derive(Debug)]
-enum Replaced {
-    /// The new file is in place and the directory is synced.
-    Synced,
-    /// The new file is in place. The directory sync then failed, so it is not yet
-    /// durable, and another hard link already keeps the old contents.
-    ///
-    /// No test reaches this arm. A directory sync failure after `renameat` cannot be
-    /// provoked portably: `fsync` of the directory descriptor, already open, does not
-    /// consult the directory's mode (a mode of `0500` still syncs), and a full disk
-    /// fails at the file write or its sync, before the rename.
-    SyncFailed(std::io::Error),
 }
 
 /// What a person changes when the system denies `hipc` a file operation (see
@@ -831,7 +827,7 @@ mod tests {
     /// rename is never reached. A directory sync that fails after `renameat` has already
     /// split the link cannot be provoked portably: `fsync` of the directory descriptor,
     /// already open, still succeeds after the mode drops, and a full disk fails at the
-    /// file write or its sync, before the rename. [`Replaced::SyncFailed`] says the same.
+    /// file write or its sync, before the rename. [`PrivateFile::replace`] says the same.
     #[test]
     fn a_failed_write_of_a_hard_linked_file_is_not_noted() {
         skip_if_root!();
