@@ -20,7 +20,8 @@ pub(crate) mod terminal;
 mod watchdog;
 
 pub(crate) use fixtures::{
-    BILLING, OWN_ACCOUNT, PROJECT, VM, docker_logins, parsed, permission_bits_apply,
+    BILLING, OWN_ACCOUNT, PROJECT, VM, docker_logins, imf_fixdate, parsed, permission_bits_apply,
+    unix_now,
 };
 pub(crate) use watchdog::{finish, finished};
 

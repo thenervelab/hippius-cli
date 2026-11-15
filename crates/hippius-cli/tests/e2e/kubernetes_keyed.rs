@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::common::{
     self, CLUSTER_KEY, CLUSTER_SECRETS, Hipc, Home, MEMBER, OTHER_KEY, Recorded, Reply, Route, Run,
-    Server, route, route_each_of, route_of,
+    Server, imf_fixdate, route, route_each_of, route_of, unix_now,
 };
 
 /// The list of test secrets holds every secret key of both key files, so the leak checks
@@ -1555,41 +1555,6 @@ fn the_question_names_what_is_signed_and_refuses_what_it_cannot() {
     }
 }
 
-/// `seconds` since the epoch as an IMF-fixdate, by Howard Hinnant's `civil_from_days`;
-/// 1970-01-01 was a Thursday. The scripted server sends no `Date` of its own, and a fixed
-/// one would be far from the clock of the machine that runs the test.
-fn imf_fixdate(seconds: u64) -> String {
-    const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let days = seconds / 86_400;
-    let shifted = days + 719_468;
-    let era = shifted / 146_097;
-    let day_of_era = shifted - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let shifted_month = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
-    let month = if shifted_month < 10 {
-        shifted_month + 3
-    } else {
-        shifted_month - 9
-    };
-    let year = year_of_era + era * 400 + u64::from(month <= 2);
-    let clock = seconds % 86_400;
-    let index = |n: u64| usize::try_from(n).expect("a weekday or a month fits");
-    format!(
-        "{}, {day:02} {} {year} {:02}:{:02}:{:02} GMT",
-        DAYS[index(days % 7)],
-        MONTHS[index(month - 1)],
-        clock / 3_600,
-        clock / 60 % 60,
-        clock % 60
-    )
-}
-
 /// The signatures are dated by the server's clock: the `Date` of the read before signing,
 /// when it is within five minutes of the local clock. One further off is refused, with
 /// nothing signed or sent, rather than replaced by the local clock.
@@ -1598,10 +1563,7 @@ fn a_signature_is_dated_by_the_server_clock_when_it_agrees_with_the_local_one() 
     let home = home();
     let key = key_path(&home);
     assert_eq!(imf_fixdate(784_111_777), "Sun, 06 Nov 1994 08:49:37 GMT");
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("the clock is after 1970")
-        .as_secs();
+    let now = unix_now();
     let dated = |date: &str| answer(200, &json!([])).header("Date", date);
     let routes = |then: &str| {
         vec![

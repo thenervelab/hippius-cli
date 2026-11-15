@@ -18,6 +18,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 - The install sections of the README and `docs/getting-started.md` give the install script, with `brew uninstall hipc` before it for a machine that has the IPFS-era `hipc`, and say what each other channel installs until the release publishes it: `brew install thenervelab/tap/hipc` the IPFS-era `hipc` 0.0.7 until `HOMEBREW_TAP_TOKEN` is set, and `pip`, `uv tool`, or `pipx install hippius` the old Hippius Python SDK until `PYPI_PUBLISH` is on. TENETS tenet 13 says the tap holds the IPFS-era formula until then.
 
+### Fixed
+
+- The Hub double-subscribe marker is dated by the later of the local clock and the `Date` of the subscriptions read, and aged by the earlier of the two, the rule the hAlpha top-up's in-flight check uses. So when the API sends a `Date`, a local clock that steps forward between two runs (an NTP correction) or runs fast no longer ages the marker out of its 10-minute window and lets a second subscribe charge twice; while the two clocks disagree, the window is longer by the difference, and a marker dated more than 10 minutes after the earlier of the two is refused with the hint to remove it. The marker is still `at` in seconds, so a marker 0.16 wrote is read as before, and an earlier `hipc` reads a new one. A local clock set before 1970 is now `internal` before the subscribe is sent, whatever the `Date`.
+
 ### Removed
 
 - `docs/commands.md`, the render of every `--help` page, and `scripts/docs-reference.sh`, which made it. `--help` at every level and `hipc schema` with a path give the same, from the installed binary.

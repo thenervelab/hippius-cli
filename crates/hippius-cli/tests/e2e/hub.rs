@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::common::{
     self, Hipc, Home, MEMBER, Reply, Route, Run, Server, docker_logins, draft, hub_provision_hint,
-    route, route_of,
+    imf_fixdate, route, route_each_of, route_of, unix_now,
 };
 
 const PLANS: &str = concat!(
@@ -1460,13 +1460,6 @@ fn move_marker(home: &Home, at: u64) {
         .expect("the config file is writable");
 }
 
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("the clock is after 1970")
-        .as_secs()
-}
-
 #[test]
 fn an_old_marker_does_not_block_and_a_refused_subscribe_clears_its_own() {
     let accepting = Server::start(vec![
@@ -1518,8 +1511,9 @@ fn a_marker_from_a_clock_that_stepped_back_still_blocks() {
         subscribe_in(&home, &server, &["--plan", "builder", "--yes"]).fails(2, "replace_required");
     assert_eq!(
         error["message"],
-        "the Hub subscribe marker of this profile is dated after the clock, so it blocks a \
-         subscribe until 10 minutes after that date; subscribing again could charge twice"
+        "the Hub subscribe marker of this profile is dated after the system clock or the API's \
+         `Date`, so it blocks a subscribe until 10 minutes after that date; subscribing again \
+         could charge twice"
     );
     assert_eq!(
         error["hint"],
@@ -1528,6 +1522,94 @@ fn a_marker_from_a_clock_that_stepped_back_still_blocks() {
              subscription get` lists the last subscribe",
             home.config().display()
         )
+    );
+}
+
+/// A server whose subscriptions reads answer `[]` with each `Date` of `dates` in turn, and
+/// which accepts every subscribe.
+fn dated(dates: &[u64]) -> Server {
+    let replies = dates
+        .iter()
+        .map(|at| Reply::json(200, "[]").header("Date", &imf_fixdate(*at)))
+        .collect();
+    Server::start(vec![
+        plans(),
+        route_each_of(&hub::SUBSCRIPTIONS, [], replies),
+        route_of(&hub::SUBSCRIBE, [], Reply::json(201, SUBMITTED)),
+    ])
+}
+
+/// The `at` of the marker in `home`.
+fn marker_at(home: &Home) -> u64 {
+    let text = home.config_text();
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("at = "))
+        .expect("a subscribe wrote a marker");
+    line["at = ".len()..].parse().expect("`at` is a number")
+}
+
+/// Issue 27: the window is measured by the API's clock too, the `Date` of the subscriptions
+/// read. A marker an hour old by the local clock, as a clock that stepped forward between two
+/// runs leaves it, still blocks while the `Date` says it is a minute old; once the `Date` says
+/// 10 minutes, it does not.
+#[test]
+fn a_marker_old_by_the_local_clock_blocks_while_the_date_says_it_is_recent() {
+    let now = unix_now();
+    let server = dated(&[now - 3_540, now - 3_000]);
+    let home = Home::new();
+    // A first run against a server that sends no `Date` dates the marker by the local clock.
+    let first = Server::start(vec![
+        plans(),
+        subscriptions("[]"),
+        route_of(&hub::SUBSCRIBE, [], Reply::json(201, SUBMITTED)),
+    ]);
+    subscribe_in(&home, &first, &["--plan", "builder", "--yes"]).ok();
+    rekey_marker(&home, &first, &server);
+    move_marker(&home, now - 3_600);
+    let error =
+        subscribe_in(&home, &server, &["--plan", "builder", "--yes"]).fails(2, "replace_required");
+    assert_eq!(
+        error["hint"],
+        "wait a few minutes, then run `hipc hub subscription get`"
+    );
+    subscribe_in(&home, &server, &["--plan", "builder", "--yes"]).ok();
+    let posts = server
+        .requests()
+        .iter()
+        .filter(|r| r.method == "POST")
+        .count();
+    assert_eq!(posts, 1);
+}
+
+/// A marker is dated by the later of the local clock and the `Date`: a `Date` an hour ahead
+/// dates it an hour ahead, and a run that reads no `Date` then finds it dated after the clock,
+/// so the refusal names the field to remove. A `Date` an hour behind leaves the local clock's
+/// time.
+#[test]
+fn a_marker_is_dated_by_the_later_of_the_local_clock_and_the_date() {
+    let now = unix_now();
+    let home = Home::new();
+    let ahead = dated(&[now + 3_600]);
+    subscribe_in(&home, &ahead, &["--plan", "builder", "--yes"]).ok();
+    assert_eq!(marker_at(&home), now + 3_600);
+    let error =
+        subscribe_in(&home, &ahead, &["--plan", "builder", "--yes"]).fails(2, "replace_required");
+    assert!(
+        error["hint"]
+            .as_str()
+            .unwrap()
+            .starts_with("remove the `hub_subscribe`"),
+        "{error}"
+    );
+
+    let home = Home::new();
+    let behind = dated(&[now - 3_600]);
+    subscribe_in(&home, &behind, &["--plan", "builder", "--yes"]).ok();
+    let at = marker_at(&home);
+    assert!(
+        (now..=unix_now()).contains(&at),
+        "{at} is the local clock's"
     );
 }
 
