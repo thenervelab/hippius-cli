@@ -1426,6 +1426,10 @@ confirmation_required|DELETE|3|null|compute runners installations delete 3
 -|POST|-|null|compute runners connect
 -|POST|-|{"compose":"services:\n  web:\n    image: nginx\n"}|compute app-engine validate --compose-file @DIR@/compose.yaml
 -|POST|~/apps/|{"flavor":"small","compose":"services:\n  web:\n    image: nginx\n","secrets":{"DB_PASSWORD":"<the DB_PASSWORD from --secrets-file>"},"region":"FR","backup_interval_s":3600}|compute app-engine apps create --flavor small --compose-file @DIR@/compose.yaml --secrets-file @DIR@/app-secrets.json --region FR --backup-interval 3600
+-|PUT|vm-1a2b|{"compose":"services:\n  web:\n    image: nginx\n"}|compute app-engine apps update vm-1a2b --compose-file @DIR@/compose.yaml
+-|PUT|vm-1a2b|{"secrets":{"DB_PASSWORD":"<the DB_PASSWORD from --secrets-file>"}}|compute app-engine apps update vm-1a2b --secrets-file @DIR@/app-secrets.json
+-|PUT|vm-1a2b|{"compose":"services:\n  web:\n    image: nginx\n","secrets":{"DB_PASSWORD":"<the DB_PASSWORD from --secrets-file>"}}|compute app-engine apps update vm-1a2b --compose-file @DIR@/compose.yaml --secrets-file @DIR@/app-secrets.json
+-|POST|vm-1a2b|{"confirm":true,"release":"<the newest guest components release>","expected_current_release":"<the release the app runs>"}|compute app-engine guest-components update vm-1a2b
 -|POST|-|{"compose":"services:\n  web:\n    image: nginx\n"}|compute app-engine fix --compose-file @DIR@/compose.yaml --output-file @DIR@/fixed.yaml
 -|PUT|-|{"monthly_cap":"5"}|compute runners limit update --monthly-cap 5
 confirmation_required|POST|-|{"name":"hipc-dry","public_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReleaseCheck hipc@check"}|compute ssh-keys create --name hipc-dry --public-key-file @DIR@/id.pub

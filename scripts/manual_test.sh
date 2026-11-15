@@ -3640,7 +3640,9 @@ billing gamma hotkeys create: the API has gamma payments off until gamma is enab
 billing gamma hotkeys delete: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
 billing gamma conversions create: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
 billing gamma conversions list: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
-billing gamma conversions get: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey'
+billing gamma conversions get: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
+compute app-engine apps update: replaces the compose or the secrets of a running app and restarts its VM; the script has no App Engine write tier
+compute app-engine guest-components update: restarts the VM of a running app when a newer guest release is offered; the script has no App Engine write tier'
 
 if [[ $EXCLUDED_ONLY == 1 ]]; then
   printf '%s\n' "$EXCLUDED"

@@ -1,5 +1,6 @@
 //! `hipc compute app-engine`: the reads of App Engine, the two POSTs that check and fix a
-//! compose file without launching anything, and the launch ([`create`]).
+//! compose file without launching anything, the launch ([`create`]), the compose and secrets
+//! update ([`update`]), and the guest components upgrade ([`guest`]).
 //!
 //! Every route is under `/api/compute/`, so it is account-scoped and takes a project, and a
 //! billing selection is refused (tenet 12). `GET info/` gates the feature per account: every
@@ -11,15 +12,17 @@
 //! return is sent as it is, for the server's own rule to refuse, with a warning before it is
 //! sent. A file that is not UTF-8 is refused before anything is sent, since it cannot travel as
 //! a JSON string unchanged, and so is a symlink or anything but a regular file, since a link
-//! to the config file would upload its token. Every answer must carry the `compose_sha256` of
-//! the bytes it should hash, the check the console makes before it offers a launch; without
-//! it the answer is not trusted.
+//! to the config file would upload its token. A compose check and a fix must carry the
+//! `compose_sha256` of the bytes they should hash; without it the answer is not trusted. A
+//! launch and an update check that hash when the answer names one.
 //!
-//! Only the launch sends a secret, from a checked file, and [`create`] says how it is kept out
-//! of every output. validate's optional `secrets` map is never sent, and no answer holds a
-//! secret value (only `secret_names`).
+//! The launch and [`update`] send a secret, from a checked file, and [`create`] says how it
+//! is kept out of every output. validate's optional `secrets` map is never sent, and no
+//! answer holds a secret value (only `secret_names`).
 
 pub(super) mod create;
+pub(super) mod guest;
+pub(super) mod update;
 
 use std::path::Path;
 
@@ -68,6 +71,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
             .map_err(unavailable_hint)
         }
         AppEngine::Apps(AppEngineApps::Create(args)) => create::create(ctx, args),
+        AppEngine::Apps(AppEngineApps::Update(args)) => update::update(ctx, args),
         AppEngine::Apps(AppEngineApps::Get(AppTarget { vm_id })) => {
             let request = Request::to(&compute::APP_ENGINE_APP, [vm_id])
                 .about(format!("get the app `{vm_id}`"))
@@ -107,14 +111,11 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
                 .listed_by(APPS_LIST_COMMAND);
             show(ctx, &request, |response| {
                 let components = response.document()?;
-                if view_of::<compute::GuestComponents>(&components).needs_operator == Some(true) {
-                    ctx.warning(&format!(
-                        "an earlier upgrade of `{vm_id}` failed, and Hippius must recover its VM"
-                    ));
-                }
+                warn_needs_operator(ctx, vm_id, &components);
                 Ok(components)
             })
         }
+        AppEngine::GuestComponents(GuestComponents::Update(target)) => guest::update(ctx, target),
         AppEngine::GuestComponents(GuestComponents::UpdateStatus(AppTarget { vm_id })) => {
             let request = Request::to(&compute::APP_ENGINE_GUEST_UPGRADE, [vm_id])
                 .about(format!("get the guest upgrade of the app `{vm_id}`"))
@@ -127,6 +128,16 @@ pub(crate) fn run(ctx: &Context<'_>, command: &AppEngine) -> Result<Printed> {
                 Ok(upgrade)
             })
         }
+    }
+}
+
+/// Warns when an earlier guest upgrade of `vm_id` failed and Hippius must recover the VM.
+/// The read's `needs_operator` is the only signal; the warning does not block a later upgrade.
+fn warn_needs_operator(ctx: &Context<'_>, vm_id: &dyn std::fmt::Display, components: &Value) {
+    if view_of::<compute::GuestComponents>(components).needs_operator == Some(true) {
+        ctx.warning(&format!(
+            "an earlier upgrade of `{vm_id}` failed, and Hippius must recover its VM"
+        ));
     }
 }
 
