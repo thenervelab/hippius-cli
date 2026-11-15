@@ -441,8 +441,8 @@ impl<'a> Target<'a> {
     /// # Errors
     ///
     /// `usage` when the pool is not a worker pool ([`Target::worker`]) or has no
-    /// `signing_params`. `internal` when they
-    /// hold a key other than [`SIGNED`] (`replaces` among them: a scale adds new nodes, and a
+    /// `signing_params` yet, as a new worker pool may not. `internal` when they hold a key
+    /// other than [`SIGNED`] (`replaces` among them: a scale adds new nodes, and a
     /// replacement names the replaced node itself); when their `pool` is not the pool's
     /// `name`, as a string on both sides; when the pool has a `flavor` and they name another
     /// or none, or they name one that is not text; or when their `labels` or `taints` are not
@@ -453,12 +453,12 @@ impl<'a> Target<'a> {
         let Some(signing) = signing_value.and_then(Value::as_object) else {
             return Err(Error::usage(
                 format!(
-                    "{} has no `signing_params`, so hipc cannot sign a node for \
-                     it: only a worker pool gains nodes",
+                    "{} has no `signing_params`, so hipc cannot sign a node for it",
                     self.pool_named()
                 ),
                 format!(
-                    "pick a worker pool from `hipc compute kubernetes node-pools list {}`",
+                    "run `hipc compute kubernetes node-pools list {}`, which shows each pool's \
+                     `signing_params`",
                     self.id
                 ),
             ));
@@ -757,6 +757,20 @@ mod tests {
         ] {
             assert_eq!(refused(&pool), None, "{pool}");
         }
+        // A worker pool without `signing_params` scales down, but cannot gain a signed node.
+        let unsigned = json!({ "id": 3, "name": "w", "role": "worker", "signing_params": null });
+        let target = Target {
+            id: 42,
+            cluster: &cluster,
+            pool: &unsigned,
+        };
+        let error = target.signing_params().expect_err("no node can be signed");
+        assert_eq!(error.code(), hippius::Code::Usage);
+        assert_eq!(
+            error.message(),
+            "the pool `w` (`3`) of the Kubernetes cluster `prod` (`42`) has no \
+             `signing_params`, so hipc cannot sign a node for it"
+        );
         for (pool, what) in [
             (
                 json!({ "id": 1, "name": "cp", "role": "control_plane", "signing_params": params }),
