@@ -7,14 +7,12 @@ From nothing to a logged-in `hipc`. The [README](../README.md) is the short vers
 macOS (Apple silicon and Intel) and Linux (x86_64 and aarch64):
 
 ```sh
-brew install thenervelab/tap/hipc
-# or
 curl -q --proto '=https' --tlsv1.2 -fsSL https://github.com/thenervelab/hippius-cli/releases/latest/download/install.sh | sh
 ```
 
-- The Homebrew formula replaces the old IPFS-era `hipc`, so `brew upgrade` moves a machine onto this one.
+- Homebrew and PyPI are not published yet. Until they are, `brew install thenervelab/tap/hipc` installs the IPFS-era `hipc` 0.0.7 and `pip install hippius` installs the old Hippius Python SDK, not this command; use the install script. If the IPFS-era `hipc` from Homebrew is installed, remove it first with `brew uninstall hipc`, so it does not come first on your `PATH`.
 - The script installs to `~/.local/bin` (or `$HIPC_INSTALL_DIR`) with no root, checks `SHA256SUMS`, and checks the signature when `cosign` is on `PATH` (`HIPC_INSTALL_REQUIRE_SIGNATURE=1` makes that required). End the pipe with `sh -s -- 0.16.0` to pin a version.
-- On PyPI the package is `hippius` and the command it installs is `hipc`, with wheels for macOS and Linux: `pip install hippius`, `uv tool install hippius`, or `pipx install hippius` installs the same `hipc` command. The PyPI project `hipc` is unrelated to Hippius.
+- Once published, the PyPI package is `hippius`, with wheels for macOS and Linux (`pip install hippius`, `uv tool install hippius`, or `pipx install hippius`), and the Homebrew formula is `thenervelab/tap/hipc`, which replaces the IPFS-era one on `brew upgrade`. The PyPI project `hipc` is unrelated to Hippius.
 - From source: `cargo install --locked --git https://github.com/thenervelab/hippius-cli hippius-cli`.
 - To uninstall, remove the binary; remove `~/.hippius` too to forget the token.
 

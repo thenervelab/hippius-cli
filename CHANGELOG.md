@@ -16,6 +16,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - The agents paragraph of `hipc --help` names how to find a command: walk the tree with `--help`, read a path's effect, confirmation, and guards with `hipc schema s3 buckets`, and the guide at `docs/agents.md`.
 - `docs/agents.md` is cut from 34 KB to under 8 KB: how to find a command, the loop, the output and error contract, the safety rules, and one example per service. What only some tasks need moves to four short pages under `docs/agents/` (accounts, secrets, Hub, `hipc api`). TENETS tenet 16 says a page never lists a command's flags or every command of a group; `--help` and `hipc schema` do, and a test holds the agent pages to a size.
 
+- The README, `docs/getting-started.md`, and TENETS tenet 13 lead with the install script and say that Homebrew and PyPI are not published yet: until the release workflow can publish them, `brew install thenervelab/tap/hipc` installs the IPFS-era `hipc` 0.0.7 and `pip install hippius` the old Hippius Python SDK.
+
 ### Removed
 
 - `docs/commands.md`, the render of every `--help` page, and `scripts/docs-reference.sh`, which made it. `--help` at every level and `hipc schema` with a path give the same, from the installed binary.

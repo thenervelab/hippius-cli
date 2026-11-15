@@ -9,13 +9,12 @@ At a terminal it talks to a person. On a pipe it talks to a program: output is J
 macOS (Apple silicon and Intel) and Linux (x86_64 and aarch64).
 
 ```sh
-brew install thenervelab/tap/hipc
-# or the install script: into ~/.local/bin, no root, checks the release's checksum, and its
-# signature when cosign is installed (HIPC_INSTALL_REQUIRE_SIGNATURE=1 makes that required)
+# into ~/.local/bin, no root, checks the release's checksum, and its signature when cosign
+# is installed (HIPC_INSTALL_REQUIRE_SIGNATURE=1 makes that required)
 curl -q --proto '=https' --tlsv1.2 -fsSL https://github.com/thenervelab/hippius-cli/releases/latest/download/install.sh | sh
 ```
 
-On PyPI the package is `hippius` and the command it installs is `hipc`, with wheels for macOS and Linux: `pip install hippius`, `uv tool install hippius`, or `pipx install hippius` installs the same `hipc` command. The PyPI project `hipc` is unrelated to Hippius. Then check it:
+Homebrew and PyPI are not published yet. Until they are, `brew install thenervelab/tap/hipc` installs the IPFS-era `hipc` 0.0.7 and `pip install hippius` installs the old Hippius Python SDK, not this command; use the install script. If the IPFS-era `hipc` from Homebrew is installed, remove it first with `brew uninstall hipc`, so it does not come first on your `PATH`. Once they are published, the PyPI package is `hippius` (the PyPI project `hipc` is unrelated to Hippius). Then check it:
 
 ```sh
 hipc version
