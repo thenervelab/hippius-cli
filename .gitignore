@@ -15,3 +15,7 @@ manual_test.log
 *.orig
 .idea/
 .vscode/
+
+# cargo mutants output (local mutation runs)
+/mutants.out/
+/mutants.out.old/

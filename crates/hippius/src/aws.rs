@@ -38,6 +38,8 @@ const AWS_SHARED_CREDENTIALS_FILE: &str = "AWS_SHARED_CREDENTIALS_FILE";
 const AWS_CONFIG: Guarded = Guarded {
     what: "the AWS config file",
     holds: "the S3 endpoint",
+    // The other link keeps the endpoint, not a key, so the warning names no secret.
+    included: None,
     named_by: NamedBy::Variable(AWS_CONFIG_FILE),
 };
 
@@ -45,6 +47,7 @@ const AWS_CONFIG: Guarded = Guarded {
 const AWS_CREDENTIALS: Guarded = Guarded {
     what: "the AWS credentials file",
     holds: "S3 keys",
+    included: Some("S3 keys"),
     named_by: NamedBy::Variable(AWS_SHARED_CREDENTIALS_FILE),
 };
 
@@ -876,6 +879,97 @@ mod tests {
         for name in leftovers {
             assert!(!dir.join(".aws").join(name).exists(), "{name} is left");
         }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A hard link is noted once, naming that AWS file: the rename leaves the old contents
+    /// at the other name. The credentials warning says the S3 keys are included; the config
+    /// file holds the endpoint, so its warning names no secret. A new file and a file with
+    /// one link are not noted. Both files are noted, the config file first, because it is
+    /// written first.
+    #[test]
+    fn configure_notes_each_hard_linked_aws_file_once() {
+        let dir = temp_dir("hard-link");
+        let files = AwsFiles {
+            config: dir.join("config"),
+            credentials: dir.join("credentials"),
+        };
+        let warned = |what: &str, included: Option<&str>, path: &Path| {
+            let clause = included.map_or(String::new(), |noun| format!(", {noun} included"));
+            format!(
+                "{what} `{}` had another hard link, which still holds its old contents{clause}; \
+                 only this name was changed",
+                path.display()
+            )
+        };
+        let write = |secret: &str| {
+            let profile = AwsProfile::new("hippius").unwrap();
+            let key = AccessKeyId::new("hip_KEY1").unwrap();
+            let secret = SecretKey::new(secret, &Source::Argument).unwrap();
+            configure(&files, &profile, &key, &secret, |_| Ok(())).unwrap();
+        };
+        let take = crate::take_split_link_warnings;
+        drop(take());
+        write("first-secret");
+        assert_eq!(take(), Vec::<String>::new(), "a new file");
+        write("second-secret");
+        assert_eq!(take(), Vec::<String>::new(), "one link");
+
+        let cred_copy = dir.join("credentials-copy");
+        fs::hard_link(&files.credentials, &cred_copy).unwrap();
+        let old_credentials = fs::read(&cred_copy).unwrap();
+        write("third-secret");
+        assert_eq!(
+            take(),
+            vec![warned(
+                "the AWS credentials file",
+                Some("S3 keys"),
+                &files.credentials
+            )]
+        );
+        assert_eq!(fs::read(&cred_copy).unwrap(), old_credentials);
+        assert!(
+            fs::read_to_string(&files.credentials)
+                .unwrap()
+                .contains("third-secret")
+        );
+        assert!(
+            !fs::read_to_string(&cred_copy)
+                .unwrap()
+                .contains("third-secret")
+        );
+        write("fourth-secret");
+        assert_eq!(
+            take(),
+            Vec::<String>::new(),
+            "the rename split the credentials link"
+        );
+
+        let config_copy = dir.join("config-copy");
+        fs::hard_link(&files.config, &config_copy).unwrap();
+        let old_config = fs::read(&config_copy).unwrap();
+        write("fifth-secret");
+        assert_eq!(
+            take(),
+            vec![warned("the AWS config file", None, &files.config)]
+        );
+        assert_eq!(fs::read(&config_copy).unwrap(), old_config);
+
+        fs::hard_link(&files.config, dir.join("config-again")).unwrap();
+        fs::hard_link(&files.credentials, dir.join("credentials-again")).unwrap();
+        write("sixth-secret");
+        assert_eq!(
+            take(),
+            vec![
+                warned("the AWS config file", None, &files.config),
+                warned(
+                    "the AWS credentials file",
+                    Some("S3 keys"),
+                    &files.credentials
+                ),
+            ]
+        );
+        assert_eq!(take(), Vec::<String>::new(), "taken once");
         fs::remove_dir_all(dir).unwrap();
     }
 

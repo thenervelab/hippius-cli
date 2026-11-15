@@ -35,6 +35,27 @@ pub fn on_lock_wait(note: impl Fn(&str) + 'static) {
     LOCK_WAIT.with(|hook| *hook.borrow_mut() = Some(Box::new(note)));
 }
 
+thread_local! {
+    /// The warnings for files [`PrivateFile::write`] on this thread replaced while they had
+    /// another hard link, until [`take_split_link_warnings`] takes them.
+    static SPLIT_LINKS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn note_split_link(guarded: Guarded, path: &Path) {
+    let warning = guarded.split_link_warning(path);
+    SPLIT_LINKS.with(|links| links.borrow_mut().push(warning));
+}
+
+/// Every warning for a private file this thread replaced while it had another hard link,
+/// in the order of the writes, once. A write renames a new file over the old name, so the
+/// other link keeps the old contents; the binary warns (tenet 8). A directory sync that
+/// fails after the rename still notes it: the link is already split. Empty when no write
+/// split a link. Thread-local, so a test sees only its own writes.
+pub fn take_split_link_warnings() -> Vec<String> {
+    SPLIT_LINKS.with(|links| std::mem::take(&mut *links.borrow_mut()))
+}
+
 /// Creates `dir` and each missing directory above it, each with mode `0700`, and sets that
 /// mode again on each one it created, since `mkdir` masks it with the umask: under `0277`
 /// the directory would be `0500`, and no file could be created in it. A directory that
@@ -77,7 +98,29 @@ pub(crate) fn directory(path: &Path) -> &Path {
 pub(crate) struct Guarded {
     pub(crate) what: &'static str,
     pub(crate) holds: &'static str,
+    /// The noun in a split-link warning's ", {noun} included", or `None` when that
+    /// warning names no secret. Not [`Self::holds`]: the config file's errors say "API
+    /// tokens" and the warning says "tokens", the sentence 0.16 printed. The AWS config
+    /// file names none, since it holds an endpoint. A file this process only reads leaves
+    /// it unset; nothing rewrites it, so no warning is built.
+    pub(crate) included: Option<&'static str>,
     pub(crate) named_by: NamedBy,
+}
+
+impl Guarded {
+    /// The warning after a write renamed a new file over one that had another hard link
+    /// (tenet 8). The clause comes from [`Self::included`].
+    fn split_link_warning(self, path: &Path) -> String {
+        let clause = self
+            .included
+            .map_or(String::new(), |noun| format!(", {noun} included"));
+        format!(
+            "{} {} had another hard link, which still holds its old contents{clause}; \
+             only this name was changed",
+            self.what,
+            quote_path(path)
+        )
+    }
 }
 
 /// What names a private file's path, which a hint tells the person to change.
@@ -329,24 +372,43 @@ impl PrivateFile {
     /// directory, so the write cannot follow a symlink someone planted at that name, and
     /// the rename stays on one file system. The data and then the directory are synced
     /// before success is reported, so a crash leaves the old file or the new one, never a
-    /// mix.
+    /// mix. When another name still links the file after the temporary name is removed,
+    /// that name keeps the old contents and the write is noted for
+    /// [`take_split_link_warnings`], including when the directory sync fails after the
+    /// rename: the link is already split.
     pub(crate) fn write(&self, bytes: &[u8]) -> Result<()> {
         let temporary = self.sibling(&format!("{}.tmp", std::process::id()));
-        // A file left by a crashed process with this pid is ours to replace.
+        // A crashed run can leave this name as the other hard link. Remove it before
+        // counting: if it was the only other name, no name keeps the old contents, and a
+        // count taken first would warn about a link this write just removed.
         self.unlink(&temporary);
-        if let Err(e) = self.replace(&temporary, bytes, self.owner_mode()) {
-            self.unlink(&temporary);
-            // The directory sync is the last step, so a failure there leaves the new file
-            // in place but not yet durable. "write or sync" covers both.
-            let dir = directory(&self.path);
-            return Err(file_error(
+        let linked = self.has_other_links();
+        // The outer result is every step up to `renameat`; the inner one is the directory
+        // sync after it. Once the rename has run, the link is split, whether or not that
+        // sync then succeeds, so the other name keeps the old contents either way.
+        let synced = match self.replace(&temporary, bytes, self.owner_mode()) {
+            Ok(synced) => {
+                if linked {
+                    note_split_link(self.guarded, &self.path);
+                }
+                synced
+            }
+            Err(error) => {
+                self.unlink(&temporary);
+                Err(error)
+            }
+        };
+        // A directory sync is the last step, so a failure there leaves the new file in
+        // place but not yet durable. "write or sync" covers the earlier steps too.
+        let dir = directory(&self.path);
+        synced.map_err(|error| {
+            file_error(
                 "write or sync",
                 &self.path,
-                &e,
+                &error,
                 Denied::Chmod("700", dir),
-            ));
-        }
-        Ok(())
+            )
+        })
     }
 
     /// Removes the temporary files that writers killed before their rename left beside the
@@ -441,6 +503,7 @@ impl PrivateFile {
             what,
             holds,
             named_by,
+            ..
         } = self.guarded;
         let path = &self.path;
         let file = match open_regular_at(&self.dir, Path::new(&self.name)) {
@@ -518,7 +581,7 @@ impl PrivateFile {
 
     /// Whether the file at the name has another hard link now, never through a symlink:
     /// `false` when there is no file there.
-    pub(crate) fn has_other_links(&self) -> bool {
+    fn has_other_links(&self) -> bool {
         rustix::fs::statat(&self.dir, &self.name, AtFlags::SYMLINK_NOFOLLOW)
             .is_ok_and(|stat| stat.st_nlink > 1)
     }
@@ -537,7 +600,22 @@ impl PrivateFile {
 
     /// Creates `temporary` with `mode`, writes and syncs `bytes`, renames it over the file,
     /// and syncs the directory.
-    fn replace(&self, temporary: &str, bytes: &[u8], mode: Mode) -> std::io::Result<()> {
+    ///
+    /// The outer `Err` is a step up to and including `renameat`, so the name still holds the
+    /// old file. `Ok` means the rename replaced the name, so another hard link already keeps
+    /// the old contents; it holds the result of the directory sync that follows.
+    ///
+    /// No test makes that sync fail. A directory sync failure after `renameat` cannot be
+    /// provoked portably: `fsync` of the directory descriptor, already open, does not consult
+    /// the directory's mode (a mode of `0500` still syncs), and a full disk fails at the file
+    /// write or its sync, before the rename. The sync result is passed on unchanged, so that
+    /// path is the same code as every other write error.
+    fn replace(
+        &self,
+        temporary: &str,
+        bytes: &[u8],
+        mode: Mode,
+    ) -> std::io::Result<std::io::Result<()>> {
         let flags = OFlags::WRONLY | CREATE_NEW;
         let fd = rustix::fs::openat(&self.dir, temporary, flags | OFlags::CLOEXEC, PRIVATE)?;
         // The umask may have removed bits of `mode` at the open; this puts them back.
@@ -548,7 +626,7 @@ impl PrivateFile {
         file.write_all(bytes)?;
         file.sync_all()?;
         rustix::fs::renameat(&self.dir, temporary, &self.dir, &self.name)?;
-        self.dir.sync_all()
+        Ok(self.dir.sync_all())
     }
 
     /// Removes `name` from the directory, never through a symlink (`unlinkat` removes the
@@ -611,6 +689,7 @@ fn another_users_file(path: &Path, guarded: Guarded) -> Error {
         what,
         holds,
         named_by,
+        ..
     } = guarded;
     Error::usage(
         format!(
@@ -707,5 +786,76 @@ mod tests {
         let other = std::io::Error::other("disk");
         let error = open_error(path, &other, Some(0), 501, CONFIG_FILE);
         assert_eq!(error.code(), crate::Code::Internal);
+    }
+
+    #[test]
+    fn a_split_link_warning_names_the_file() {
+        let config = Path::new("/h/config.toml");
+        assert_eq!(
+            CONFIG_FILE.split_link_warning(config),
+            "the config file `/h/config.toml` had another hard link, which still holds its \
+             old contents, tokens included; only this name was changed"
+        );
+        let credentials = Guarded {
+            what: "the AWS credentials file",
+            holds: "S3 keys",
+            included: Some("S3 keys"),
+            named_by: NamedBy::Variable("AWS_SHARED_CREDENTIALS_FILE"),
+        };
+        assert_eq!(
+            credentials.split_link_warning(Path::new("/h/.aws/credentials")),
+            "the AWS credentials file `/h/.aws/credentials` had another hard link, which \
+             still holds its old contents, S3 keys included; only this name was changed"
+        );
+        let endpoint = Guarded {
+            what: "the AWS config file",
+            holds: "the S3 endpoint",
+            included: None,
+            named_by: NamedBy::Variable("AWS_CONFIG_FILE"),
+        };
+        assert_eq!(
+            endpoint.split_link_warning(Path::new("/h/.aws/config")),
+            "the AWS config file `/h/.aws/config` had another hard link, which still holds \
+             its old contents; only this name was changed"
+        );
+    }
+
+    /// A write that fails before the rename does not warn: the other link still names this
+    /// file, not an older copy.
+    ///
+    /// The directory is mode `0500`, so the `O_CREAT` of the temporary file fails and the
+    /// rename is never reached. A directory sync that fails after `renameat` has already
+    /// split the link cannot be provoked portably: `fsync` of the directory descriptor,
+    /// already open, still succeeds after the mode drops, and a full disk fails at the
+    /// file write or its sync, before the rename. [`PrivateFile::replace`] says the same.
+    #[test]
+    fn a_failed_write_of_a_hard_linked_file_is_not_noted() {
+        skip_if_root!();
+        let dir =
+            std::env::temp_dir().join(format!("hipc-private-link-fail-{}", std::process::id()));
+        drop(std::fs::remove_dir_all(&dir));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::hard_link(&path, dir.join("other")).unwrap();
+        let file = PrivateFile::ensure(&path, CONFIG_FILE).unwrap();
+        drop(take_split_link_warnings());
+        // The directory descriptor is already open. Mode `0500` lets the owner enter the
+        // directory but not create the temporary file, so the rename is never reached.
+        // The owner can still put the write bit back.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let error = file.write(b"new");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(error.is_err(), "the directory was not writable");
+        assert_eq!(
+            take_split_link_warnings(),
+            Vec::<String>::new(),
+            "the temporary file was never created, so the rename did not split the link"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"old");
+        assert_eq!(std::fs::read(dir.join("other")).unwrap(), b"old");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
