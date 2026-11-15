@@ -9,12 +9,20 @@ At a terminal it talks to a person. On a pipe it talks to a program: output is J
 macOS (Apple silicon and Intel) and Linux (x86_64 and aarch64).
 
 ```sh
+# first remove the IPFS-era formula (version 0.0.x) from Homebrew, if it is there, so it does not shadow this one
+brew list --versions 2>/dev/null | grep -q '^hipc 0\.0\.' && brew uninstall hipc
 # into ~/.local/bin, no root, checks the release's checksum, and its signature when cosign
 # is installed (HIPC_INSTALL_REQUIRE_SIGNATURE=1 makes that required)
 curl -q --proto '=https' --tlsv1.2 -fsSL https://github.com/thenervelab/hippius-cli/releases/latest/download/install.sh | sh
 ```
 
-Homebrew and PyPI are not published yet. Until they are, `brew install thenervelab/tap/hipc` installs the IPFS-era `hipc` 0.0.7 and `pip install hippius` installs the old Hippius Python SDK, not this command; use the install script. If the IPFS-era `hipc` from Homebrew is installed, remove it first with `brew uninstall hipc`, so it does not come first on your `PATH`. Once they are published, the PyPI package is `hippius` (the PyPI project `hipc` is unrelated to Hippius). Then check it:
+Homebrew and PyPI are published by the release workflow, each behind its own switch:
+
+- Homebrew: `brew install thenervelab/tap/hipc` installs this `hipc` once the release can write to the tap (`HOMEBREW_TAP_TOKEN`); until then it installs the IPFS-era `hipc` 0.0.7. On a machine that still has the old formula, `brew upgrade hipc` then moves it onto this one.
+- PyPI: the wheels are published as the project `hippius` and install the command `hipc` (`pip install hippius`, `uv tool install hippius`, or `pipx install hippius`) once the release's `PYPI_PUBLISH` switch is on; until then each of those installs the old Hippius Python SDK 0.2.77, not this command. Afterwards, to keep the old SDK, pin `hippius==0.2.77` in its own environment.
+- The PyPI project `hipc` is unrelated to Hippius.
+
+Then check it:
 
 ```sh
 hipc version
