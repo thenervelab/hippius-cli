@@ -426,8 +426,11 @@ fn a_directory_named_hip_in_the_install_dir_is_refused() {
 fn a_signal_cleans_up_and_exits_with_its_number() {
     for (signal, code) in [("HUP", 129), ("INT", 130), ("TERM", 143)] {
         let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
-        // tar runs from main itself, so its parent is the installer.
-        machine.replace("tar", &format!("kill -{signal} $PPID"));
+        // tar runs from main itself, so its parent is the installer. The shell runs its
+        // trap once tar returns; tar waits a second after the kill so the signal is already
+        // pending then, however loaded the machine. Without the wait, the installer could go
+        // on to check the unpacked file first and fail with 1 rather than the signal's code.
+        machine.replace("tar", &format!("kill -{signal} $PPID; sleep 1"));
         let target = "x86_64-unknown-linux-musl";
         let (tarball, sum) = hipc_tarball();
         let base = serve(release("v1.0.0", target, &tarball, &sums(&sum, target)));
