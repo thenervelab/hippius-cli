@@ -9,7 +9,8 @@ use crate::cli::ids::billing_account_id;
 use crate::cli::values::{Spaces, label};
 use crate::cli::{
     BillingAccount, Budget, INVITE_ID, MEMBER_ID, ProjectCreate, ProjectTarget, ProjectTransfer,
-    ProjectTransfers, ProjectUpdate, Quota, REFERRAL_ID, examples, number, projects,
+    ProjectTransfers, ProjectUpdate, Quota, REFERRAL_ID, examples, examples_with_guide, number,
+    projects,
 };
 
 #[derive(Debug, Subcommand)]
@@ -79,11 +80,11 @@ pub(crate) enum Account {
     /// zones; a master S3 token stays with the account.
     /// The account itself is the Default project.
     #[command(subcommand)]
-    #[command(after_help = examples(&[
+    #[command(after_help = examples_with_guide(&[
         "hipc account projects list",
         "hipc account projects create --name web",
         "hipc account projects use proj_0a1b2c3d4e5f60718293",
-    ]))]
+    ], "/use/console/projects"))]
     Projects(Projects),
     /// Projects offered to the token's own account, and those it offered to others
     ///
