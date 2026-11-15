@@ -14,6 +14,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 ### Changed
 
 - The agents paragraph of `hipc --help` names how to find a command: walk the tree with `--help`, read a path's effect, confirmation, and guards with `hipc schema s3 buckets`, and the guide at `docs/agents.md`.
+- `hipc compute kubernetes node-pools scale` refuses a pool that is not a worker pool, such as the masters' control-plane pool, as `usage` before the question whichever way it would scale it, with the hint to pick a worker pool from `node-pools list`. Before, only a scale up was refused, so a mistaken pool id with a lower `--count` and `--yes` went to the server as a request to drain masters.
+- `hipc compute kubernetes clusters delete` names in its question, and in a text-mode note once the delete is accepted, the backup buckets it leaves: the backups guide says a cluster created with backups on keeps each bucket that holds etcd snapshots or Velero backups, billed until it is deleted. The note says how to find them (names that start with `hippius-k8s-` and end in `-etcd` or `-velero`, in `hipc s3 buckets list`) and how to remove them, as `compute databases delete` does for its backup bucket.
 - `docs/agents.md` is cut from 34 KB to under 8 KB: how to find a command, the loop, the output and error contract, the safety rules, and one example per service. What only some tasks need moves to four short pages under `docs/agents/` (accounts, secrets, Hub, `hipc api`). TENETS tenet 16 says a page never lists a command's flags or every command of a group; `--help` and `hipc schema` do, and a test holds the agent pages to a size.
 
 ### Removed

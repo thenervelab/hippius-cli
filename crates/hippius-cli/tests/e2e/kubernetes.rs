@@ -859,6 +859,54 @@ fn a_write_without_yes_writes_nothing_and_says_what_it_would_do() {
     );
 }
 
+/// The backup buckets a cluster delete leaves, as its question and its text-mode note name
+/// them (the backups guide: buckets that hold backups are kept).
+pub(crate) const LEFT_AFTER_DELETE: &str = "if the cluster was created with backups on, the \
+     server keeps each of its backup buckets that holds etcd snapshots or Velero backups in \
+     the account's S3, billed until it is deleted: their names start with `hippius-k8s-` and \
+     end in `-etcd` or `-velero`; find them with `hipc s3 buckets list`, empty each with an S3 \
+     client, and run `hipc s3 buckets delete` with its name and `--yes`";
+
+/// In text mode a cluster delete notes the backup buckets it leaves, once the delete is
+/// accepted; JSON mode writes no note, and a refused delete leaves nothing to note.
+#[test]
+fn a_cluster_delete_notes_the_backup_buckets_it_leaves_in_text_mode() {
+    let server = Server::start(every_route());
+    let delete = ["clusters", "delete", "7", "--yes"];
+    let mut text = vec!["--output", "text"];
+    text.extend(argv(&delete));
+    let run = Hipc::against(&Home::new(), &server).run(&text);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(run.stderr(), format!("note: {LEFT_AFTER_DELETE}\n"));
+    let mut quiet = vec!["--quiet"];
+    quiet.extend(&text);
+    let run = Hipc::against(&Home::new(), &server).run(&quiet);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert_eq!(run.stderr(), "");
+    let run = hipc(&server, &delete);
+    assert_eq!(run.ok(), cluster("decommissioning"));
+    assert_eq!(run.stderr(), "");
+    assert_eq!(
+        server.calls(),
+        [
+            "GET /api/kubernetes/clusters/7/",
+            "DELETE /api/kubernetes/clusters/7/",
+        ]
+        .repeat(3)
+    );
+    let refused = Server::start(vec![
+        route_of(&kubernetes::CLUSTER, [&7], answer(200, &cluster("running"))),
+        route_of(
+            &kubernetes::CLUSTER_DELETE,
+            [&7],
+            Reply::json(409, r#"{"error":"already decommissioning"}"#),
+        ),
+    ]);
+    let run = Hipc::against(&Home::new(), &refused).run(&text);
+    assert_eq!(run.code(), Some(1));
+    assert!(!run.stderr().contains("note:"), "{}", run.stderr());
+}
+
 /// A cluster the read finds without a name is named by its id alone.
 #[test]
 fn a_cluster_without_a_name_is_named_by_its_id() {

@@ -87,7 +87,12 @@ pub(crate) enum Clusters {
     /// This cannot be undone. Before the question, hipc reads the cluster, whose name the
     /// question gives; --dry-run reads nothing and lists the read in requests. The command
     /// returns once the teardown has started. The cluster is closed only after every VM is
-    /// decommissioned; hipc compute kubernetes clusters get shows its status.
+    /// decommissioned; hipc compute kubernetes clusters get shows its status. If the cluster was
+    /// created with backups on, the server keeps each of its backup buckets that holds etcd
+    /// snapshots or Velero backups, billed until it is deleted: their names start with
+    /// hippius-k8s- and end in -etcd or -velero; empty each with an S3 client and delete it with
+    /// hipc s3 buckets delete. The question names them, and so does a note in text mode when
+    /// the command is done.
     #[command(after_help = examples(&["hipc compute kubernetes clusters delete 7 --yes"]))]
     Delete(ClusterTarget),
     /// The cluster's journal: what each node reported, and when
@@ -168,7 +173,9 @@ pub(crate) enum NodePools {
     /// Before the question, hipc reads the cluster, its pools, and its operations, so the
     /// question names the pool and how many nodes it gains or loses; the count includes adds
     /// still queued and leaves out nodes being removed. --dry-run reads nothing and lists the
-    /// reads in requests. Each node added is a new VM of the pool's flavor, billed to the
+    /// reads in requests. A pool that is not a worker pool, such as the masters' control-plane
+    /// pool, is refused as usage before the question, whether it would grow or shrink. Each
+    /// node added is a new VM of the pool's flavor, billed to the
     /// balance, and each is signed on this machine with the cluster key file: the masters
     /// refuse a node the key did not sign. After the answer, hipc reads the pools and operations
     /// again, and refuses as conflict, sending nothing, when the pool is no longer the size the

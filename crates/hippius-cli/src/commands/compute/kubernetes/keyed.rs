@@ -18,8 +18,9 @@
 //!
 //! A scale and a replacement read the cluster first, to check the key file against it before
 //! the question, then its pools and its operations, so the question names the pool and the
-//! nodes it gains or loses. The pool's `signing_params` are checked against the pool before
-//! the question ([`Target::signing_params`]): the signature is what the masters act on and
+//! nodes it gains or loses. A pool that is not a worker pool is refused there, whichever way
+//! it is scaled ([`Target::worker`]). The pool's `signing_params` are checked against the
+//! pool before the question ([`Target::signing_params`]): the signature is what the masters act on and
 //! bill, so an answer whose `signing_params` would sign what the question does not name is
 //! refused with nothing signed. The signatures are made after the question, so a declined
 //! question uses no key. After the question, the pools and the operations are read again: a
@@ -316,15 +317,18 @@ impl<'a> Target<'a> {
     ///
     /// # Errors
     ///
-    /// `usage` when the pool already has `count` nodes, when it grows and no key file was
-    /// given, or when it grows and it is not a worker pool; `internal` when it grows and the
-    /// pool's `signing_params` are not the pool's own ([`Target::signing_params`]).
+    /// `usage` when the pool is not a worker pool ([`Target::worker`]), whichever way it is
+    /// scaled, when it already has `count` nodes, or when it grows and no key file was given;
+    /// `internal` when it grows and the pool's `signing_params` are not the pool's own
+    /// ([`Target::signing_params`]).
     fn scale<'k>(
         &self,
         current: u64,
         count: u64,
         key: Option<MatchedKey<'k>>,
     ) -> Result<(String, Option<Adds<'a, 'k>>)> {
+        // A scale down signs nothing, but a mistaken pool id must not drain the masters.
+        self.worker()?;
         let nodes = phrase::count(count, "node");
         let pool = self.pool_named();
         match count.cmp(&current) {
@@ -382,6 +386,32 @@ impl<'a> Target<'a> {
         )
     }
 
+    /// The pool's `signing_params` as the API gave them, unchecked: only a worker pool has
+    /// them, so a pool without them, such as the masters' control-plane pool, is refused
+    /// before the question, whether it would gain nodes or lose them.
+    ///
+    /// # Errors
+    ///
+    /// `usage` when the pool has no `signing_params` object.
+    fn worker(&self) -> Result<&'a Map<String, Value>> {
+        self.pool
+            .get("signing_params")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                Error::usage(
+                    format!(
+                        "{} has no `signing_params`, so it is not a worker pool: hipc scales \
+                         and replaces only the nodes of a worker pool",
+                        self.pool_named()
+                    ),
+                    format!(
+                        "pick a worker pool from `hipc compute kubernetes node-pools list {}`",
+                        self.id
+                    ),
+                )
+            })
+    }
+
     /// The pool's `signing_params`, what a node of it signs, checked against the pool they
     /// came with: only a worker pool has them, and the question names the pool and its
     /// flavor, so the signature must add a node of that flavor to that pool, as the pool
@@ -396,27 +426,15 @@ impl<'a> Target<'a> {
     ///
     /// # Errors
     ///
-    /// `usage` when the pool has no `signing_params`. `internal` when they hold a key other
-    /// than [`SIGNED`] (`replaces` among them: a scale adds new nodes, and a replacement names
-    /// the replaced node itself); when their `pool` is not the pool's `name`, as a string on
-    /// both sides; when the pool has a `flavor` and they name another or none, or they name
-    /// one that is not text; or when their `labels` or `taints` are not the pool's own, with
-    /// a side that is missing or `null` read as none.
+    /// `usage` when the pool is not a worker pool ([`Target::worker`]). `internal` when they
+    /// hold a key other than [`SIGNED`] (`replaces` among them: a scale adds new nodes, and a
+    /// replacement names the replaced node itself); when their `pool` is not the pool's
+    /// `name`, as a string on both sides; when the pool has a `flavor` and they name another
+    /// or none, or they name one that is not text; or when their `labels` or `taints` are not
+    /// the pool's own, with a side that is missing or `null` read as none.
     fn signing_params(&self) -> Result<&'a Map<String, Value>> {
+        let signing = self.worker()?;
         let signing_value = self.pool.get("signing_params");
-        let Some(signing) = signing_value.and_then(Value::as_object) else {
-            return Err(Error::usage(
-                format!(
-                    "{} has no `signing_params`, so hipc cannot sign a node for \
-                     it: only a worker pool gains nodes",
-                    self.pool_named()
-                ),
-                format!(
-                    "pick a worker pool from `hipc compute kubernetes node-pools list {}`",
-                    self.id
-                ),
-            ));
-        };
         let refused = |problem: String, why: &str| {
             Error::internal(format!(
                 "{} {problem}, so no node was signed: {why}",
