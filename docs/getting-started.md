@@ -7,14 +7,15 @@ From nothing to a logged-in `hipc`. The [README](../README.md) is the short vers
 macOS (Apple silicon and Intel) and Linux (x86_64 and aarch64):
 
 ```sh
-brew install thenervelab/tap/hipc
-# or
+# first remove the IPFS-era formula (version 0.0.x) from Homebrew, if it is there, so it does not shadow this one
+brew list --versions 2>/dev/null | grep -q '^hipc 0\.0\.' && brew uninstall hipc
 curl -q --proto '=https' --tlsv1.2 -fsSL https://github.com/thenervelab/hippius-cli/releases/latest/download/install.sh | sh
 ```
 
-- The Homebrew formula replaces the old IPFS-era `hipc`, so `brew upgrade` moves a machine onto this one.
 - The script installs to `~/.local/bin` (or `$HIPC_INSTALL_DIR`) with no root, checks `SHA256SUMS`, and checks the signature when `cosign` is on `PATH` (`HIPC_INSTALL_REQUIRE_SIGNATURE=1` makes that required). End the pipe with `sh -s -- 0.16.0` to pin a version.
-- On PyPI the package is `hippius` and the command it installs is `hipc`, with wheels for macOS and Linux: `pip install hippius`, `uv tool install hippius`, or `pipx install hippius` installs the same `hipc` command. The PyPI project `hipc` is unrelated to Hippius.
+- Homebrew: `brew install thenervelab/tap/hipc` installs this `hipc` once the release can write to the tap (`HOMEBREW_TAP_TOKEN`); until then it installs the IPFS-era `hipc` 0.0.7. On a machine that still has the old formula, `brew upgrade hipc` then moves it onto this one.
+- PyPI: the wheels are published as the project `hippius` and install the command `hipc` (`pip install hippius`, `uv tool install hippius`, or `pipx install hippius`) once the release's `PYPI_PUBLISH` switch is on; until then each of those installs the old Hippius Python SDK 0.2.77, not this command. Afterwards, to keep the old SDK, pin `hippius==0.2.77` in its own environment.
+- The PyPI project `hipc` is unrelated to Hippius.
 - From source: `cargo install --locked --git https://github.com/thenervelab/hippius-cli hippius-cli`.
 - To uninstall, remove the binary; remove `~/.hippius` too to forget the token.
 
