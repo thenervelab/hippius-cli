@@ -256,6 +256,41 @@ fn the_drive_cancel_prompt_names_who_goes_back_to_free() {
     );
 }
 
+/// The cluster delete prompt names the cluster the read found and the backup buckets the
+/// delete leaves. The answer is no, so only the read is sent.
+#[test]
+fn the_cluster_delete_prompt_names_the_backup_buckets_it_leaves() {
+    let server = Server::start(vec![route(
+        "GET",
+        "/api/kubernetes/clusters/7/",
+        Reply::json(200, r#"{"id":7,"name":"prod"}"#),
+    )]);
+    let args = [
+        "--output",
+        "text",
+        "compute",
+        "kubernetes",
+        "clusters",
+        "delete",
+        "7",
+    ];
+    let env = [
+        ("HIPPIUS_API_URL", server.url()),
+        ("HIPPIUS_TOKEN", TOKEN),
+        ("HIPPIUS_TOKEN_ORIGIN", server.url()),
+    ];
+    let (output, shown) = at_a_terminal(&args, &env, b"n\n", true);
+    assert_eq!(output.status.code(), Some(2), "{shown:?}");
+    let question = format!(
+        "this will delete the Kubernetes cluster `prod` (`7`): every VM in it stops and is \
+         decommissioned, with the workloads and the data on it, and this cannot be undone; {}; \
+         continue? [y/N] ",
+        crate::kubernetes::LEFT_AFTER_DELETE
+    );
+    assert!(shown.contains(&question), "{shown:?}");
+    assert_eq!(server.calls(), ["GET /api/kubernetes/clusters/7/"]);
+}
+
 /// The S3 cancel prompt says the plan runs to the end of the month paid for, with no
 /// refund, and then the account is on pay as you go, as the billing docs say.
 #[test]

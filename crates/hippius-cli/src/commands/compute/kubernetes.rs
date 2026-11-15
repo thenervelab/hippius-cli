@@ -150,7 +150,8 @@ fn read_list(ctx: &Context<'_>, client: &Client, request: &Request) -> Result<Ve
 
 /// `DELETE .../<id>/`, after a read of the cluster whose `name` the question gives. The
 /// console reads the answer as the cluster, now `decommissioning`. A dry run sends neither,
-/// and lists both.
+/// and lists both. The question and a text-mode note name the backups the delete leaves
+/// ([`left_after_delete`]).
 fn cluster_delete(ctx: &Context<'_>, client: &Client, id: u64) -> Result<Printed> {
     let delete = |named: &str| {
         Request::to(&kubernetes::CLUSTER_DELETE, [&id])
@@ -163,12 +164,39 @@ fn cluster_delete(ctx: &Context<'_>, client: &Client, id: u64) -> Result<Printed
     };
     let read = cluster_get(id);
     let draft = delete(&format!("`{id}`"));
+    let left = left_after_delete(id);
     let decide = || {
         let cluster = ctx.send(client, &read)?.document()?;
-        Ok(Decided::asked(delete(&phrase::named(id, &cluster)), None))
+        Ok(Decided::asked(
+            delete(&phrase::named(id, &cluster)),
+            Some(&left),
+        ))
     };
     let plan = WritePlan::new(&[&read], &draft);
-    read_then_write(ctx, client, &plan, decide, |sent| sent?.document())
+    read_then_write(ctx, client, &plan, decide, |sent| {
+        let decommissioning = sent?.document()?;
+        ctx.note(&left);
+        Ok(decommissioning)
+    })
+}
+
+/// What a cluster delete leaves behind, for its question and its note. The Kubernetes backups
+/// guide (docs.hippius.com/use/compute/kubernetes-backups, "After you delete a cluster") says
+/// that a cluster created with backups on writes its etcd snapshots and Velero backups to two
+/// buckets in the account's S3, named like `hippius-k8s-ID-xxxxxxxx-etcd` and `-velero`, and
+/// that a delete removes the empty ones and keeps those that hold backups, billed until they
+/// are deleted. The part after the id is not given by the guide, so the note names the
+/// cluster's own prefix, which keeps another cluster's buckets out of what it describes, and
+/// the command that lists them. A cluster created without backups has no buckets, so the
+/// wording holds for it too.
+fn left_after_delete(id: u64) -> String {
+    format!(
+        "if the cluster was created with backups on, the server keeps each of its backup \
+         buckets that holds etcd snapshots or Velero backups in the account's S3, billed until \
+         it is deleted: their names start with `hippius-k8s-{id}-` and end in `-etcd` or \
+         `-velero`; find them with `hipc s3 buckets list`, empty each with an S3 client, and \
+         run `hipc s3 buckets delete` with its name and `--yes`"
+    )
 }
 
 /// What `operations cancel` and `operations resume` do to an operation.

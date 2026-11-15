@@ -741,17 +741,34 @@ fn a_scale_that_cannot_be_signed_or_changes_nothing_is_refused_after_the_reads()
         "the pool `workers` (`3`) of the Kubernetes cluster `prod` (`42`) already has 2 nodes, \
          counting adds still queued"
     );
-    // The masters' pool has no `signing_params`, so no node can be signed for it.
+    // The masters' pool is a `control_plane` pool, not a worker pool, and is refused
+    // whichever way it is scaled, with or without a key file, and at the size it has.
+    let gets_before = server.calls().len();
+    for (count, key) in [
+        ("5", Some(key.as_str())),
+        ("5", None),
+        ("0", None),
+        ("0", Some(&key)),
+        ("1", None),
+    ] {
+        let mut args = scale_args(count, key, &["--yes"]);
+        args[3] = "1";
+        let error = hipc(&home, &server, &args).fails(2, "usage");
+        assert_eq!(
+            message(&error),
+            "the pool `control-plane` (`1`) of the Kubernetes cluster `prod` (`42`) is a \
+             `control_plane` pool, not a worker pool: hipc scales and replaces only the nodes \
+             of a worker pool",
+            "{args:?}"
+        );
+        assert_eq!(
+            error["hint"], "pick a worker pool from `hipc compute kubernetes node-pools list 42`",
+            "{args:?}"
+        );
+    }
+    // Each refusal comes after the three reads before the question, and before any after it.
+    assert_eq!(server.calls().len(), gets_before + 5 * 3);
     let mut args = scale_args("5", Some(&key), &["--yes"]);
-    args[3] = "1";
-    let error = hipc(&home, &server, &args).fails(2, "usage");
-    assert!(
-        message(&error).starts_with(
-            "the pool `control-plane` (`1`) of the Kubernetes cluster `prod` (`42`) has no \
-             `signing_params`"
-        ),
-        "{error}"
-    );
     args[3] = "9";
     let error = hipc(&home, &server, &args).fails(1, "not_found");
     assert_eq!(
@@ -852,7 +869,7 @@ fn a_replacement_signs_an_add_node_that_names_the_node_it_replaces() {
     )
     .fails(2, "usage");
     assert!(
-        message(&error).contains("has no `signing_params`"),
+        message(&error).contains("is a `control_plane` pool, not a worker pool"),
         "{error}"
     );
     assert_eq!(server.requests().len(), 12);
