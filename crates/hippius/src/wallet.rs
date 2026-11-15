@@ -193,6 +193,7 @@ pub fn read_hotkey_file(path: &Path, flag: &'static str) -> Result<Zeroizing<Str
     let guarded = Guarded {
         what,
         holds: "a hotkey phrase",
+        included: None,
         named_by: NamedBy::Flag(flag),
     };
     let Some(bytes) = PrivateFile::load(path, guarded)? else {

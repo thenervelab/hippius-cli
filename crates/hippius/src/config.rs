@@ -981,10 +981,12 @@ fn config_problem(message: &str) -> String {
     }
 }
 
-/// The config file.
+/// The config file. `included` is "tokens", not "API tokens", so the split-link warning
+/// stays the sentence 0.16 printed.
 pub(crate) const CONFIG_FILE: Guarded = Guarded {
     what: "the config file",
     holds: "API tokens",
+    included: Some("tokens"),
     named_by: NamedBy::Variable("HIPPIUS_CONFIG"),
 };
 

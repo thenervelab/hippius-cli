@@ -38,6 +38,8 @@ const AWS_SHARED_CREDENTIALS_FILE: &str = "AWS_SHARED_CREDENTIALS_FILE";
 const AWS_CONFIG: Guarded = Guarded {
     what: "the AWS config file",
     holds: "the S3 endpoint",
+    // The other link keeps the endpoint, not a key, so the warning names no secret.
+    included: None,
     named_by: NamedBy::Variable(AWS_CONFIG_FILE),
 };
 
@@ -45,6 +47,7 @@ const AWS_CONFIG: Guarded = Guarded {
 const AWS_CREDENTIALS: Guarded = Guarded {
     what: "the AWS credentials file",
     holds: "S3 keys",
+    included: Some("S3 keys"),
     named_by: NamedBy::Variable(AWS_SHARED_CREDENTIALS_FILE),
 };
 
@@ -879,9 +882,11 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    /// A hard link is noted once, naming that AWS file: the rename leaves the old keys at the
-    /// other name. A new file and a file with one link are not noted. Both files are noted,
-    /// the config file first, because it is written first.
+    /// A hard link is noted once, naming that AWS file: the rename leaves the old contents
+    /// at the other name. The credentials warning says the S3 keys are included; the config
+    /// file holds the endpoint, so its warning names no secret. A new file and a file with
+    /// one link are not noted. Both files are noted, the config file first, because it is
+    /// written first.
     #[test]
     fn configure_notes_each_hard_linked_aws_file_once() {
         let dir = temp_dir("hard-link");
@@ -889,10 +894,11 @@ mod tests {
             config: dir.join("config"),
             credentials: dir.join("credentials"),
         };
-        let warned = |what: &str, path: &Path| {
+        let warned = |what: &str, included: Option<&str>, path: &Path| {
+            let clause = included.map_or(String::new(), |noun| format!(", {noun} included"));
             format!(
-                "{what} `{}` had another hard link, which still holds its old contents, \
-                 tokens included; only this name was changed",
+                "{what} `{}` had another hard link, which still holds its old contents{clause}; \
+                 only this name was changed",
                 path.display()
             )
         };
@@ -915,7 +921,11 @@ mod tests {
         write("third-secret");
         assert_eq!(
             take(),
-            vec![warned("the AWS credentials file", &files.credentials)]
+            vec![warned(
+                "the AWS credentials file",
+                Some("S3 keys"),
+                &files.credentials
+            )]
         );
         assert_eq!(fs::read(&cred_copy).unwrap(), old_credentials);
         assert!(
@@ -939,7 +949,10 @@ mod tests {
         fs::hard_link(&files.config, &config_copy).unwrap();
         let old_config = fs::read(&config_copy).unwrap();
         write("fifth-secret");
-        assert_eq!(take(), vec![warned("the AWS config file", &files.config)]);
+        assert_eq!(
+            take(),
+            vec![warned("the AWS config file", None, &files.config)]
+        );
         assert_eq!(fs::read(&config_copy).unwrap(), old_config);
 
         fs::hard_link(&files.config, dir.join("config-again")).unwrap();
@@ -948,8 +961,12 @@ mod tests {
         assert_eq!(
             take(),
             vec![
-                warned("the AWS config file", &files.config),
-                warned("the AWS credentials file", &files.credentials),
+                warned("the AWS config file", None, &files.config),
+                warned(
+                    "the AWS credentials file",
+                    Some("S3 keys"),
+                    &files.credentials
+                ),
             ]
         );
         assert_eq!(take(), Vec::<String>::new(), "taken once");

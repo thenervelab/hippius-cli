@@ -131,6 +131,7 @@ impl ClusterKey {
         let guarded = Guarded {
             what: "the cluster key file",
             holds: "the cluster's private keys",
+            included: None,
             named_by: NamedBy::Flag(flag),
         };
         let loaded = load_private_object(path, guarded, &key_file_hint(flag))?;

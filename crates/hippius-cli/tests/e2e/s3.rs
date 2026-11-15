@@ -5,7 +5,10 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use hippius::routes::s3;
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, PROJECT, Reply, Server, command, draft, route, route_of};
+use crate::common::{
+    Hipc, Home, MEMBER, PROJECT, Reply, Server, command, draft, permission_bits_apply, route,
+    route_of,
+};
 
 /// A secret the server returns once. Tests assert where it may and may not appear.
 const SECRET: &str = "s3cr3t-QZ7-only-once";
@@ -1638,16 +1641,19 @@ const CONFIGURE_NOTE: &str =
     "note: run `aws --profile hippius s3 ls` to list the buckets with it\n";
 
 /// The warning for an AWS file a rename split, without the `warning:` label.
-fn split_link_text(what: &str, path: &std::path::Path) -> String {
+/// `included` is the noun in ", {noun} included", or none for the config file, which
+/// holds the endpoint and no key.
+fn split_link_text(what: &str, included: Option<&str>, path: &std::path::Path) -> String {
+    let clause = included.map_or(String::new(), |noun| format!(", {noun} included"));
     format!(
-        "{what} `{}` had another hard link, which still holds its old contents, \
-         tokens included; only this name was changed",
+        "{what} `{}` had another hard link, which still holds its old contents{clause}; \
+         only this name was changed",
         path.display()
     )
 }
 
-fn warning_line(what: &str, path: &std::path::Path) -> String {
-    format!("warning: {}\n", split_link_text(what, path))
+fn warning_line(what: &str, included: Option<&str>, path: &std::path::Path) -> String {
+    format!("warning: {}\n", split_link_text(what, included, path))
 }
 
 /// AWS files that already exist, each with one link, plus a private secret file.
@@ -1718,7 +1724,7 @@ fn configure_warns_when_the_credentials_file_has_another_hard_link() {
         run.stderr(),
         format!(
             "{CONFIGURE_NOTE}{}",
-            warning_line("the AWS credentials file", &credentials)
+            warning_line("the AWS credentials file", Some("S3 keys"), &credentials)
         )
     );
     assert_eq!(std::fs::read(&copy).unwrap(), old);
@@ -1747,10 +1753,77 @@ fn configure_warns_when_the_config_file_has_another_hard_link() {
         run.stderr(),
         format!(
             "{CONFIGURE_NOTE}{}",
-            warning_line("the AWS config file", &config)
+            warning_line("the AWS config file", None, &config)
         )
     );
     assert_eq!(std::fs::read(&copy).unwrap(), old);
+}
+
+/// The config file is written first. A credentials directory the owner cannot write then
+/// fails the credentials write, and JSON still lists the config file's split-link warning
+/// beside `error`: the rename already left the old endpoint at the other name.
+#[test]
+fn a_failed_credentials_write_lists_the_config_link_warning_beside_the_error() {
+    if !permission_bits_apply() {
+        return;
+    }
+    let home = Home::new();
+    let config_dir = home.path().join("config-dir");
+    let cred_dir = home.path().join("cred-dir");
+    std::fs::create_dir(&config_dir).unwrap();
+    std::fs::create_dir(&cred_dir).unwrap();
+    for dir in [&config_dir, &cred_dir] {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let config = home.file("config-dir/config", b"[profile work]\nregion = kept\n");
+    let credentials = home.file(
+        "cred-dir/credentials",
+        b"[work]\naws_access_key_id = AKIAOLD\n",
+    );
+    let copy = home.path().join("config-copy");
+    std::fs::hard_link(&config, &copy).unwrap();
+    let old_config = std::fs::read(&copy).unwrap();
+    let old_credentials = std::fs::read(&credentials).unwrap();
+    // The lock file exists already, so the lock is taken in a directory the owner cannot
+    // write. The credentials file exists too, so the failure is its rewrite, not its create.
+    // The same `0500` directory is what the library tests use.
+    std::fs::write(cred_dir.join(".credentials.lock"), b"").unwrap();
+    std::fs::set_permissions(&cred_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let secret = home.file("secret", b"other-secret\n");
+    let run = Hipc::new(&home)
+        .env("AWS_CONFIG_FILE", config.to_str().unwrap())
+        .env("AWS_SHARED_CREDENTIALS_FILE", credentials.to_str().unwrap())
+        .run(&[
+            "--json",
+            "s3",
+            "configure",
+            "--yes",
+            "--access-key-id",
+            "hip_KEY1",
+            "--secret-key-file",
+            secret.to_str().unwrap(),
+        ]);
+    std::fs::set_permissions(&cred_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let error = run.fails(2, "usage");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains(&credentials.display().to_string()),
+        "{error}"
+    );
+    let object: serde_json::Value = serde_json::from_str(run.stderr()).unwrap();
+    assert_eq!(
+        object["warnings"],
+        json!([split_link_text("the AWS config file", None, &config)])
+    );
+    assert_eq!(std::fs::read(&copy).unwrap(), old_config);
+    assert!(
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .contains("endpoint_url")
+    );
+    assert_eq!(std::fs::read(&credentials).unwrap(), old_credentials);
 }
 
 /// Both files warn, the config file first, because it is written first. JSON lists the same
@@ -1767,8 +1840,8 @@ fn configure_warns_for_both_hard_linked_aws_files() {
         run.stderr(),
         format!(
             "{CONFIGURE_NOTE}{}{}",
-            warning_line("the AWS config file", &config),
-            warning_line("the AWS credentials file", &credentials)
+            warning_line("the AWS config file", None, &config),
+            warning_line("the AWS credentials file", Some("S3 keys"), &credentials)
         )
     );
 
@@ -1789,8 +1862,8 @@ fn configure_warns_for_both_hard_linked_aws_files() {
     assert_eq!(
         run.json()["warnings"],
         json!([
-            split_link_text("the AWS config file", &config),
-            split_link_text("the AWS credentials file", &credentials),
+            split_link_text("the AWS config file", None, &config),
+            split_link_text("the AWS credentials file", Some("S3 keys"), &credentials),
         ])
     );
     assert!(!run.stdout().contains("other-secret"));
