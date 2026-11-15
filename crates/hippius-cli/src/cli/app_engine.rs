@@ -114,19 +114,22 @@ pub(crate) enum AppEngineApps {
     /// --yes
     ///
     /// Sends PUT /api/compute/app-engine/apps/<vm_id>/compose/. Pass --compose-file,
-    /// --secrets-file, or both; neither is a usage error, and an empty secrets file sends no
-    /// secrets. With --compose-file, hipc first checks the file with POST
-    /// /api/compute/app-engine/validate/, which sends no secret, and checks that
-    /// compose_sha256 is the file's SHA-256. Each secret the new compose declares must have
-    /// a value in --secrets-file, and the file may give no other. With only --secrets-file,
-    /// hipc reads the app and checks the file's names against its secret_names. Then it asks.
-    /// The VM stops and starts again and its volumes are kept. When a compose is sent, the
-    /// launch measurement then holds that file's SHA-256, so attestation proves this file.
-    /// The new compose must list the current compose's SHA-256 in x-hippius.upgrade_from, or
-    /// the server answers 409 app-lineage-missing, and hipc does not insert that line. Secret
-    /// values are write-only: they are sent once and never shown again. In this beta,
-    /// Hippius operators can read them and the app's volumes. A dry run shows a placeholder
-    /// for each value.
+    /// --secrets-file, or both; neither is a usage error, and an empty secrets file sends
+    /// no secrets. hipc always reads GET /api/compute/app-engine/apps/<vm_id>/ for the
+    /// secret names the app stores. With --compose-file it also sends POST
+    /// /api/compute/app-engine/validate/ with the compose alone, and checks that
+    /// compose_sha256 is the file's SHA-256. A name the new compose does not declare, or,
+    /// with no new compose, a name the app does not declare, is a usage error. So is a
+    /// declared name that is neither stored nor in the file. The values given replace the
+    /// stored ones; the rest are kept. Then it asks. The VM stops and starts again and its
+    /// volumes are kept. When a compose is sent, the launch measurement then holds that
+    /// file's SHA-256, so attestation proves this file. With only --secrets-file, the
+    /// launch measurement changes, but the compose hash in it stays the one the app runs
+    /// now. The new compose must list the current compose's SHA-256 in
+    /// x-hippius.upgrade_from, or the server answers 409 app-lineage-missing, and hipc does
+    /// not insert that line. Secret values are write-only: they are sent once and never
+    /// shown again. In this beta, Hippius operators can read them and the app's volumes. A
+    /// dry run shows a placeholder for each value.
     #[command(after_help = examples(&[
         "hipc compute app-engine apps update vm-1a2b --compose-file compose.yaml --yes",
         "hipc compute app-engine apps update vm-1a2b --secrets-file secrets.json --yes",
@@ -201,12 +204,14 @@ pub(crate) struct AppUpdate {
         long_help = compose_long_help()
     )]
     pub(crate) compose_file: Option<PathBuf>,
-    /// A JSON object of each secret's name to its value, which replaces the app's secrets
+    /// A JSON object of each secret's name to its value; the values given
+    /// replace the stored ones; the rest are kept
     ///
-    /// The file must be the current user's, of mode 0600, not a symlink, at most 1 MiB, in a
-    /// directory no one else can write; there is no stdin form. Each value is sent exactly as
-    /// the file holds it: nothing is trimmed. Values are write-only, and in this beta Hippius
-    /// operators can read them. An empty object sends no secrets.
+    /// A name left out keeps the value the app stores. The file must be the current user's,
+    /// of mode 0600, not a symlink, at most 1 MiB, in a directory no one else can write;
+    /// there is no stdin form. Each value is sent exactly as the file holds it: nothing is
+    /// trimmed. Values are write-only, and in this beta Hippius operators can read them. An
+    /// empty object sends no secrets.
     #[arg(long, value_name = "PATH", value_parser = secrets_file)]
     pub(crate) secrets_file: Option<PathBuf>,
 }
@@ -267,15 +272,19 @@ pub(crate) enum GuestComponents {
     /// Upgrade an app's guest components to the newest release; needs --yes when one is
     /// offered
     ///
-    /// hipc first reads GET /api/compute/app-engine/apps/<vm_id>/guest-components/. When the
-    /// app is already on the newest release, or none is offered, it exits 0 and prints that
-    /// answer, and sends nothing else; --yes is not required. Otherwise it asks, then sends
-    /// POST /api/compute/app-engine/apps/<vm_id>/guest-upgrade/ with confirm true, release
-    /// set to newest_release, and expected_current_release set to the release the read
-    /// showed, or null for the bare base. The VM restarts and its attestation measurement
-    /// changes. Volumes and its network identity are kept. A 409 guest-already-current, from
-    /// a race, exits 0 and prints the read again. Poll the job with hipc compute app-engine
-    /// guest-components update-status.
+    /// hipc first reads GET /api/compute/app-engine/apps/<vm_id>/guest-components/. When
+    /// release equals newest_release, it exits 0, notes that the app is already on the
+    /// newest release, and posts nothing. When no newer release is offered, it exits 0,
+    /// notes that, and posts nothing. --yes is not required for either. Otherwise it asks,
+    /// then sends POST /api/compute/app-engine/apps/<vm_id>/guest-upgrade/ with confirm
+    /// true, release set to newest_release, and expected_current_release set to the release
+    /// the read showed, or null for the bare base. The VM restarts and its attestation
+    /// measurement changes. Volumes and its network identity are kept. A 409
+    /// guest-already-current reads the guest components again. When that read still offers
+    /// an update, hipc exits 1 conflict and prints the read. Otherwise it exits 0 with the
+    /// note that read supports. An upgrade already in flight, upgrade.in_flight true, is
+    /// refused before the question as conflict, and the hint names hipc compute app-engine
+    /// guest-components update-status. Poll a scheduled upgrade with that command.
     #[command(after_help = examples(&[
         "hipc compute app-engine guest-components update vm-1a2b",
         "hipc compute app-engine guest-components update vm-1a2b --yes",

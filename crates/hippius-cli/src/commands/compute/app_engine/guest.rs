@@ -3,18 +3,21 @@
 //!
 //! The order (tenet 5): argv; the dry run, which sends nothing and shows a placeholder for
 //! the release numbers only a read can give; the token; `GET guest-components/`; then either
-//! nothing, when the app is already on the newest release, or the question and the post. No
-//! `--yes` is required when nothing is posted. A 409 `guest-already-current` is that same
-//! success, after the post is read again: the post did not change the app.
+//! nothing, when no newer release is offered, or the question and the post. No `--yes` is
+//! required when nothing is posted. The note says the app is on the newest release only when
+//! `release` and `newest_release` are the same number. A 409 `guest-already-current` reads
+//! the guest components again: an offer that is still an update is `conflict`, and that read
+//! is printed; otherwise the command exits 0 with the note the re-read supports. An upgrade
+//! already in flight is `conflict` before the question, and nothing is posted.
 
 use hippius::routes::compute::{self, GuestComponents};
-use hippius::{Client, Error, Request, Response, Result, Slot, view_of};
+use hippius::{Client, Error, Failure, Request, Response, Result, SideEffects, Slot, view_of};
 use serde_json::{Value, json};
 
-use super::super::refused_as;
 use super::{APPS_LIST_COMMAND, unavailable_hint, warn_needs_operator};
 use crate::cli::AppTarget;
 use crate::commands::Printed;
+use crate::commands::compute::refused_as;
 use crate::context::{Checked, Context, Write, WritePlan};
 
 /// The release number a dry run cannot know until the read.
@@ -48,23 +51,31 @@ pub(super) fn update(ctx: &Context<'_>, target: &AppTarget) -> Result<Printed> {
     };
     let components = read_components(ctx, &client, &read)?;
     warn_needs_operator(ctx, &vm_id, &components);
-    match offer(&view_of(&components)) {
+    let components_view = view_of(&components);
+    match offer(&components_view) {
         Ok(Offer::Current) => {
             // Nothing is posted, so this check is not a confirmation that was skipped.
             drop(checked);
-            ctx.note(&already(vm_id));
+            ctx.note(&current_note(vm_id, &components_view));
             Ok(Printed::Document(components))
         }
-        Ok(Offer::Upgrade { current, newest }) => schedule(
-            ctx,
-            &client,
-            Upgrade {
-                vm_id,
-                current,
-                newest,
-            },
-            checked,
-        ),
+        Ok(Offer::Upgrade { current, newest }) => {
+            if upgrade_in_flight(&components_view) {
+                // The post would be refused, so the question is not asked.
+                drop(checked);
+                return Err(already_in_flight(ctx, vm_id));
+            }
+            schedule(
+                ctx,
+                &client,
+                Upgrade {
+                    vm_id,
+                    current,
+                    newest,
+                },
+                checked,
+            )
+        }
         Err(error) => Err(error.with_hint(reread(vm_id))),
     }
 }
@@ -97,14 +108,14 @@ fn read_components(ctx: &Context<'_>, client: &Client, read: &Request) -> Result
 }
 
 /// The upgrade the read offered: which app, from which release, onto which.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Upgrade<'a> {
     vm_id: &'a str,
     current: Option<u64>,
     newest: u64,
 }
 
-/// Asks, then posts the upgrade. `guest-already-current` exits 0 with the read taken again.
+/// Asks, then posts the upgrade. `guest-already-current` is read again.
 fn schedule(
     ctx: &Context<'_>,
     client: &Client,
@@ -122,7 +133,7 @@ fn schedule(
     match ctx.send_confirmed(client, &request, &confirmed) {
         Ok(response) => accepted(ctx, vm_id, &response),
         Err(error) if refused_as(&error, 409, "guest-already-current") => {
-            current_again(ctx, client, vm_id)
+            current_again(ctx, client, vm_id, error)
         }
         Err(error) => Err(unavailable_hint(error)),
     }
@@ -145,7 +156,7 @@ fn upgrade_post(vm_id: &str, current: Option<u64>, newest: u64, action: &str) ->
 fn accepted(ctx: &Context<'_>, vm_id: &str, response: &Response) -> Result<Printed> {
     let scheduled = response
         .document()
-        .map_err(|error| error.with_side_effects(hippius::SideEffects::Partial))?;
+        .map_err(|error| error.with_side_effects(SideEffects::Partial))?;
     if let Some(command) = ctx.next_command(&format!(
         "compute app-engine guest-components update-status {vm_id}"
     )) {
@@ -154,12 +165,40 @@ fn accepted(ctx: &Context<'_>, vm_id: &str, response: &Response) -> Result<Print
     Ok(Printed::Document(scheduled))
 }
 
-/// The post lost a race and changed nothing. The read taken again is what is printed; its
-/// failure is returned as it is, since the post did not change the app.
-fn current_again(ctx: &Context<'_>, client: &Client, vm_id: &str) -> Result<Printed> {
+/// The post lost a race. The read taken again decides: still an update is `conflict`, with
+/// that read printed; otherwise the command exits 0. A failure of the re-read is returned
+/// as it is, since the post did not change the app.
+fn current_again(
+    ctx: &Context<'_>,
+    client: &Client,
+    vm_id: &str,
+    refused: Error,
+) -> Result<Printed> {
     let components = read_components(ctx, client, &guest_read(vm_id))?;
-    ctx.note(&already(vm_id));
-    Ok(Printed::Document(components))
+    let read = view_of(&components);
+    match offer(&read) {
+        Ok(Offer::Current) => {
+            ctx.note(&current_note(vm_id, &read));
+            Ok(Printed::Document(components))
+        }
+        Ok(Offer::Upgrade { .. }) => Err(still_offered(vm_id, refused, components)),
+        Err(error) => Err(error.with_hint(reread(vm_id))),
+    }
+}
+
+/// The 409 rejected the post. The re-read is printed because it still offers an update, and
+/// side effects stay none: the write did not go through.
+fn still_offered(vm_id: &str, refused: Error, components: Value) -> Error {
+    // `after_write` is what puts the re-read on stdout. Side effects go back to none: the
+    // 409 rejected the post, so the app is unchanged.
+    refused
+        .with_message(format!(
+            "the API answered 409 `guest-already-current` for the app `{vm_id}`, and the \
+             guest components it then returned still offer an update"
+        ))
+        .with_hint(reread(vm_id))
+        .after_write(components)
+        .with_side_effects(SideEffects::None)
 }
 
 /// What the upgrade does, for the question: the two release numbers the read showed.
@@ -173,6 +212,39 @@ fn upgrade_action(vm_id: &str, current: Option<u64>, newest: u64) -> String {
 
 fn already(vm_id: &str) -> String {
     format!("`{vm_id}` is already on the newest guest components release")
+}
+
+/// The note for a read that offers no upgrade. Both numbers equal is the newest release.
+/// A null newest, or `update_available: false` beside two different numbers, is not.
+fn current_note(vm_id: &str, read: &GuestComponents) -> String {
+    if on_newest(read) {
+        already(vm_id)
+    } else {
+        format!("no newer guest components release is offered for `{vm_id}`")
+    }
+}
+
+fn on_newest(read: &GuestComponents) -> bool {
+    matches!(
+        (&read.release, &read.newest_release),
+        (Slot::Value(current), Slot::Value(newest)) if current == newest
+    )
+}
+
+fn upgrade_in_flight(read: &GuestComponents) -> bool {
+    read.upgrade.as_ref().and_then(|job| job.in_flight) == Some(true)
+}
+
+fn already_in_flight(ctx: &Context<'_>, vm_id: &str) -> Error {
+    let words = format!("compute app-engine guest-components update-status {vm_id}");
+    let command = ctx
+        .next_command(&words)
+        .unwrap_or_else(|| format!("hipc {words}"));
+    Error::new(
+        Failure::Conflict,
+        format!("an upgrade of the guest components of the app `{vm_id}` is already in flight"),
+    )
+    .with_hint(format!("poll the upgrade with `{command}`"))
 }
 
 fn reread(vm_id: &str) -> String {
@@ -253,6 +325,48 @@ mod tests {
             already("vm-1a2b"),
             "`vm-1a2b` is already on the newest guest components release"
         );
+    }
+
+    /// Equal numbers are the newest release. A false flag, or a null newest, is not, even
+    /// though [`offer`] calls both current.
+    #[test]
+    fn the_note_names_the_newest_release_only_when_the_numbers_are_equal() {
+        let equal = json!({"release": 7, "newest_release": 7, "update_available": true});
+        assert_eq!(
+            current_note("vm-1a2b", &read(&equal)),
+            "`vm-1a2b` is already on the newest guest components release"
+        );
+        let stale = json!({"release": 7, "newest_release": 9, "update_available": false});
+        assert_eq!(
+            current_note("vm-1a2b", &read(&stale)),
+            "no newer guest components release is offered for `vm-1a2b`"
+        );
+        let none = json!({"release": 7, "newest_release": null});
+        assert_eq!(
+            current_note("vm-1a2b", &read(&none)),
+            "no newer guest components release is offered for `vm-1a2b`"
+        );
+        let both_null = json!({"release": null, "newest_release": null});
+        assert_eq!(
+            current_note("vm-1a2b", &read(&both_null)),
+            "no newer guest components release is offered for `vm-1a2b`"
+        );
+    }
+
+    /// Only a boolean `true` is in flight. A missing job, null, false, or another type is not.
+    #[test]
+    fn an_upgrade_in_flight_is_only_a_true_flag() {
+        assert!(upgrade_in_flight(&read(
+            &json!({"upgrade": {"in_flight": true}})
+        )));
+        assert!(!upgrade_in_flight(&read(
+            &json!({"upgrade": {"in_flight": false}})
+        )));
+        assert!(!upgrade_in_flight(&read(&json!({}))));
+        assert!(!upgrade_in_flight(&read(&json!({"upgrade": null}))));
+        assert!(!upgrade_in_flight(&read(
+            &json!({"upgrade": {"in_flight": "true"}})
+        )));
     }
 
     /// `false` is current even when a newer number is shown, and so is a newest of null

@@ -5833,7 +5833,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "repeats": false,
           "possible_values": [],
           "default": null,
-          "help": "A JSON object of each secret's name to its value, which replaces the app's secrets"
+          "help": "A JSON object of each secret's name to its value; the values given replace the stored ones; the rest are kept"
         }
       ],
       "required_groups": [],

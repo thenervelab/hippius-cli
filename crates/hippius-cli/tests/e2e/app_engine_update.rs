@@ -1,7 +1,6 @@
 //! `hipc compute app-engine apps update` and `guest-components update`. An update relaunches
-//! the VM. Secrets are read from a private file and redacted from every printed copy, as on
-//! `apps create`. A guest upgrade that finds the newest release already running exits 0 and
-//! posts nothing.
+//! the VM. Secrets are merged: a value in the file replaces the stored one, and a stored name
+//! left out is kept. A guest upgrade posts only when a newer release is offered.
 
 use hippius::routes::compute;
 use serde_json::{Value, json};
@@ -69,6 +68,33 @@ fn validated(names: &[&str]) -> String {
     .to_string()
 }
 
+/// `GET apps/{vm_id}/`: the app, its compose, and its revisions, plus `secret_names`.
+fn app_get(names: &[&str]) -> String {
+    json!({
+        "vm_id": "vm-1a2b",
+        "name": "web",
+        "status": "running",
+        "power_state": "running",
+        "boot_phase": "running",
+        "flavor": "small",
+        "region": "FR",
+        "grammar_version": 1,
+        "revision": 1,
+        "compose_sha256": COMPOSE_SHA256,
+        "secret_names": names,
+        "compose": COMPOSE,
+        "revisions": [{
+            "number": 1,
+            "compose_sha256": COMPOSE_SHA256,
+            "status": "applied",
+            "kind": "launch",
+            "created_at": "2026-11-01T00:00:00Z",
+            "applied_at": "2026-11-01T00:00:01Z"
+        }]
+    })
+    .to_string()
+}
+
 fn app_doc(sha: &str) -> String {
     json!({
         "vm_id": "vm-1a2b",
@@ -80,15 +106,26 @@ fn app_doc(sha: &str) -> String {
     .to_string()
 }
 
-fn validate_then(names: &[&str], put: Reply) -> Server {
+/// The app read, validate of the new compose, then the update. `stored` and `declared` are
+/// the two `secret_names` lists.
+fn update_server(declared: &[&str], stored: &[&str], put: Reply) -> Server {
     Server::start(vec![
+        route_of(
+            &compute::APP_ENGINE_APP,
+            [&"vm-1a2b"],
+            Reply::json(200, &app_get(stored)),
+        ),
         route_of(
             &compute::APP_ENGINE_VALIDATE,
             [],
-            Reply::json(200, &validated(names)),
+            Reply::json(200, &validated(declared)),
         ),
         route_of(&compute::APP_ENGINE_COMPOSE_UPDATE, [&"vm-1a2b"], put),
     ])
+}
+
+fn validate_then(names: &[&str], put: Reply) -> Server {
+    update_server(names, names, put)
 }
 
 fn update_args<'a>(files: &'a Files, extra: &[&'a str]) -> Vec<&'a str> {
@@ -135,8 +172,9 @@ fn secrets_only<'a>(files: &'a Files, extra: &[&'a str]) -> Vec<&'a str> {
     args
 }
 
-/// Compose and secrets both go in the one PUT, after validate of the compose alone. The
-/// printed copy redacts the value the answer echoed; the hash and the id stay.
+/// Compose and secrets both go in the one PUT, after the app read and validate of the
+/// compose alone. The printed copy redacts the value the answer echoed; the hash and the
+/// id stay.
 #[test]
 fn both_files_validate_then_put_and_the_printed_copy_is_redacted() {
     let files = files();
@@ -151,13 +189,15 @@ fn both_files_validate_then_put_and_the_printed_copy_is_redacted() {
     assert_eq!(doc["compose_sha256"], COMPOSE_SHA256);
     assert_eq!(doc["note"], "<redacted>");
     let requests = server.requests();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].path(), VALIDATE);
-    assert_eq!(requests[0].json(), json!({ "compose": COMPOSE }));
-    assert_eq!(requests[1].method, "PUT");
-    assert_eq!(requests[1].path(), COMPOSE_PUT);
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].path(), APP);
+    assert_eq!(requests[1].path(), VALIDATE);
+    assert_eq!(requests[1].json(), json!({ "compose": COMPOSE }));
+    assert_eq!(requests[2].method, "PUT");
+    assert_eq!(requests[2].path(), COMPOSE_PUT);
     assert_eq!(
-        requests[1].json(),
+        requests[2].json(),
         json!({
             "compose": COMPOSE,
             "secrets": { "DB_PASSWORD": SENTINEL, "API_KEY": OTHER_SECRET },
@@ -165,33 +205,25 @@ fn both_files_validate_then_put_and_the_printed_copy_is_redacted() {
     );
 }
 
-/// A compose alone sends no `secrets`. Secrets alone skip validate and read the app first.
+/// A compose alone sends no `secrets`. Secrets alone skip validate and read the app.
 #[test]
 fn compose_only_and_secrets_only_send_just_that_field() {
     let files = files();
-    let server = Server::start(vec![
-        route_of(
-            &compute::APP_ENGINE_VALIDATE,
-            [],
-            Reply::json(200, &validated(&[])),
-        ),
-        route_of(
-            &compute::APP_ENGINE_COMPOSE_UPDATE,
-            [&"vm-1a2b"],
-            Reply::json(202, &app_doc(COMPOSE_SHA256)),
-        ),
-    ]);
+    let server = update_server(&[], &[], Reply::json(202, &app_doc(COMPOSE_SHA256)));
     let doc = Hipc::against(&files.home, &server)
         .run(&compose_only(&files, &["--yes"]))
         .ok();
     assert_eq!(doc["status"], "running");
-    assert_eq!(server.requests()[1].json(), json!({ "compose": COMPOSE }));
+    let put = &server.requests()[2];
+    assert_eq!(put.method, "PUT");
+    assert_eq!(put.path(), COMPOSE_PUT);
+    assert_eq!(put.json(), json!({ "compose": COMPOSE }));
 
     let server = Server::start(vec![
         route_of(
             &compute::APP_ENGINE_APP,
             [&"vm-1a2b"],
-            Reply::json(200, &validated(&["DB_PASSWORD", "API_KEY"])),
+            Reply::json(200, &app_get(&["DB_PASSWORD", "API_KEY"])),
         ),
         route_of(
             &compute::APP_ENGINE_COMPOSE_UPDATE,
@@ -243,18 +275,7 @@ fn neither_file_is_usage_and_an_empty_secrets_file_sends_no_secrets() {
         .fails(2, "usage");
     assert!(server.requests().is_empty());
 
-    let server = Server::start(vec![
-        route_of(
-            &compute::APP_ENGINE_VALIDATE,
-            [],
-            Reply::json(200, &validated(&[])),
-        ),
-        route_of(
-            &compute::APP_ENGINE_COMPOSE_UPDATE,
-            [&"vm-1a2b"],
-            Reply::json(202, &app_doc(COMPOSE_SHA256)),
-        ),
-    ]);
+    let server = update_server(&[], &[], Reply::json(202, &app_doc(COMPOSE_SHA256)));
     Hipc::against(&files.home, &server)
         .run(&[
             "compute",
@@ -269,8 +290,10 @@ fn neither_file_is_usage_and_an_empty_secrets_file_sends_no_secrets() {
             "--yes",
         ])
         .ok();
+    let put = &server.requests()[2];
+    assert_eq!(put.method, "PUT");
     assert_eq!(
-        server.requests()[1].json(),
+        put.json(),
         json!({ "compose": COMPOSE }),
         "an empty secrets file adds no secrets key"
     );
@@ -292,7 +315,7 @@ fn a_missing_app_on_the_secrets_read_is_not_found_before_the_question() {
     assert_eq!(server.only_request().path(), APP);
 }
 
-/// Without `--yes` the refusal comes after the read, names only the action, and puts nothing.
+/// Without `--yes` the refusal comes after the reads, names only the action, and puts nothing.
 #[test]
 fn without_yes_the_update_is_refused_after_the_read() {
     let files = files();
@@ -300,34 +323,33 @@ fn without_yes_the_update_is_refused_after_the_read() {
         (
             compose_only(&files, &[]),
             "replace the compose of the app `vm-1a2b`",
-            VALIDATE,
             &[][..],
+            true,
         ),
         (
             secrets_only(&files, &[]),
             "replace the secrets of the app `vm-1a2b`",
-            APP,
             &["DB_PASSWORD", "API_KEY"][..],
+            false,
         ),
         (
             update_args(&files, &[]),
             "replace the compose and the secrets of the app `vm-1a2b`",
-            VALIDATE,
             &["DB_PASSWORD", "API_KEY"][..],
+            true,
         ),
     ];
-    for (args, action, first, names) in cases {
-        let answered = validated(names);
+    for (args, action, names, validates) in cases {
         let server = Server::start(vec![
             route_of(
                 &compute::APP_ENGINE_VALIDATE,
                 [],
-                Reply::json(200, &answered),
+                Reply::json(200, &validated(names)),
             ),
             route_of(
                 &compute::APP_ENGINE_APP,
                 [&"vm-1a2b"],
-                Reply::json(200, &answered),
+                Reply::json(200, &app_get(names)),
             ),
             route_of(
                 &compute::APP_ENGINE_COMPOSE_UPDATE,
@@ -342,12 +364,19 @@ fn without_yes_the_update_is_refused_after_the_read() {
             error["message"],
             format!("this would {action}, and `--yes` was not passed")
         );
-        assert_eq!(server.only_request().path(), first);
+        let requests = server.requests();
+        assert_eq!(requests[0].path(), APP);
+        if validates {
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[1].path(), VALIDATE);
+        } else {
+            assert_eq!(requests.len(), 1);
+        }
     }
 }
 
-/// The dry run sends nothing. Compose lists validate then the PUT; secrets alone list the
-/// app read then the PUT, with a placeholder for each value.
+/// The dry run sends nothing. Compose lists the app read, validate, then the PUT; secrets
+/// alone list the app read then the PUT, with a placeholder for each value.
 #[test]
 fn the_dry_run_lists_the_read_and_the_put_with_placeholders() {
     let files = files();
@@ -369,8 +398,10 @@ fn the_dry_run_lists_the_read_and_the_put_with_placeholders() {
             },
         })
     );
+    assert_eq!(both["requests"].as_array().unwrap().len(), 3);
+    assert!(both["requests"][0]["url"].as_str().unwrap().ends_with(APP));
     assert!(
-        both["requests"][0]["url"]
+        both["requests"][1]["url"]
             .as_str()
             .unwrap()
             .ends_with(VALIDATE)
@@ -400,33 +431,96 @@ fn the_dry_run_lists_the_read_and_the_put_with_placeholders() {
     assert!(server.requests().is_empty());
 }
 
-/// A declared name with no value, and a value the compose or the app does not declare, are
-/// usage after the read and before the question.
+/// A compose-only update of an app that already stores the names the new compose declares
+/// sends no secrets. Rotating one secret sends only that value.
 #[test]
-fn the_secrets_must_be_the_ones_declared() {
+fn a_compose_only_update_keeps_stored_secrets_and_one_name_rotates() {
     let files = files();
-    let server = Server::start(vec![route_of(
-        &compute::APP_ENGINE_VALIDATE,
-        [],
-        Reply::json(200, &validated(&["DB_PASSWORD"])),
-    )]);
+    let names = &["DB_PASSWORD", "API_KEY"][..];
+    let server = update_server(
+        names,
+        names,
+        Reply::json(202, r#"{"vm_id":"vm-1a2b","status":"running"}"#),
+    );
+    Hipc::against(&files.home, &server)
+        .run(&compose_only(&files, &["--yes"]))
+        .ok();
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[2].method, "PUT");
+    assert_eq!(requests[2].json(), json!({ "compose": COMPOSE }));
+
+    let one = path_text(&files.home.file(
+        "one.json",
+        json!({ "DB_PASSWORD": SENTINEL }).to_string().as_bytes(),
+    ));
+    let server = Server::start(vec![
+        route_of(
+            &compute::APP_ENGINE_APP,
+            [&"vm-1a2b"],
+            Reply::json(200, &app_get(names)),
+        ),
+        route_of(
+            &compute::APP_ENGINE_COMPOSE_UPDATE,
+            [&"vm-1a2b"],
+            Reply::json(202, r#"{"vm_id":"vm-1a2b","status":"running"}"#),
+        ),
+    ]);
+    Hipc::against(&files.home, &server)
+        .run(&[
+            "compute",
+            "app-engine",
+            "apps",
+            "update",
+            "vm-1a2b",
+            "--secrets-file",
+            &one,
+            "--yes",
+        ])
+        .ok();
+    let requests = server.requests();
+    assert_eq!(requests[0].path(), APP);
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1].json(),
+        json!({ "secrets": { "DB_PASSWORD": SENTINEL } })
+    );
+}
+
+/// A name the compose or the app does not declare, and a declared name that is neither
+/// stored nor in the file, are usage after the reads and before the question.
+#[test]
+fn an_undeclared_name_or_a_new_name_with_no_value_is_usage() {
+    let files = files();
+    let server = Server::start(vec![
+        route_of(
+            &compute::APP_ENGINE_APP,
+            [&"vm-1a2b"],
+            Reply::json(200, &app_get(&["API_KEY"])),
+        ),
+        route_of(
+            &compute::APP_ENGINE_VALIDATE,
+            [],
+            Reply::json(200, &validated(&["DB_PASSWORD"])),
+        ),
+    ]);
     let error = Hipc::against(&files.home, &server)
         .run(&compose_only(&files, &["--yes"]))
         .fails(2, "usage");
+    let message = error["message"].as_str().unwrap();
     assert!(
-        error["message"]
-            .as_str()
-            .unwrap()
-            .contains("the compose file")
-            && error["message"].as_str().unwrap().contains("DB_PASSWORD"),
+        message.contains("the compose file") && message.contains("`DB_PASSWORD`"),
         "{error}"
     );
-    assert_eq!(server.only_request().path(), VALIDATE);
+    assert!(message.contains("neither stored nor given"), "{error}");
+    assert_eq!(server.requests().len(), 2);
+    assert_eq!(server.requests()[0].path(), APP);
+    assert_eq!(server.requests()[1].path(), VALIDATE);
 
     let server = Server::start(vec![route_of(
         &compute::APP_ENGINE_APP,
         [&"vm-1a2b"],
-        Reply::json(200, &validated(&["DB_PASSWORD"])),
+        Reply::json(200, &app_get(&["DB_PASSWORD"])),
     )]);
     let error = Hipc::against(&files.home, &server)
         .run(&secrets_only(&files, &["--yes"]))
@@ -445,11 +539,18 @@ fn the_secrets_must_be_the_ones_declared() {
 fn the_validate_hash_is_required_and_the_update_hash_is_checked_when_named() {
     let files = files();
     let other = json!({ "compose_sha256": "00".repeat(32), "secret_names": [] });
-    let server = Server::start(vec![route_of(
-        &compute::APP_ENGINE_VALIDATE,
-        [],
-        Reply::json(200, &other.to_string()),
-    )]);
+    let server = Server::start(vec![
+        route_of(
+            &compute::APP_ENGINE_APP,
+            [&"vm-1a2b"],
+            Reply::json(200, &app_get(&[])),
+        ),
+        route_of(
+            &compute::APP_ENGINE_VALIDATE,
+            [],
+            Reply::json(200, &other.to_string()),
+        ),
+    ]);
     let error = Hipc::against(&files.home, &server)
         .run(&compose_only(&files, &["--yes"]))
         .fails(1, "internal");
@@ -460,7 +561,8 @@ fn the_validate_hash_is_required_and_the_update_hash_is_checked_when_named() {
             .contains("hashed other bytes"),
         "{error}"
     );
-    assert_eq!(server.only_request().path(), VALIDATE);
+    assert_eq!(server.requests().len(), 2);
+    assert_eq!(server.requests()[1].path(), VALIDATE);
 
     let server = validate_then(
         &[],
@@ -577,25 +679,14 @@ fn each_documented_update_status_keeps_its_code() {
         ),
     ];
     for (status, body, code, hint) in cases {
-        let server = Server::start(vec![
-            route_of(
-                &compute::APP_ENGINE_VALIDATE,
-                [],
-                Reply::json(200, &validated(&[])),
-            ),
-            route_of(
-                &compute::APP_ENGINE_COMPOSE_UPDATE,
-                [&"vm-1a2b"],
-                Reply::json(status, body),
-            ),
-        ]);
+        let server = update_server(&[], &[], Reply::json(status, body));
         let error = Hipc::against(&files.home, &server)
             .run(&compose_only(&files, &["--yes"]))
             .fails(1, code);
         if let Some(hint) = hint {
             assert_eq!(error["hint"], hint, "{status} {body}");
         }
-        assert_eq!(server.requests().len(), 2, "{status}");
+        assert_eq!(server.requests().len(), 3, "{status}");
     }
 }
 
@@ -634,8 +725,22 @@ fn components(release: &Value, newest: &Value, available: Option<bool>) -> Strin
     doc.to_string()
 }
 
-/// Already on the newest release: exit 0, the read is printed, nothing is posted, and
-/// `--yes` is not required. Text mode notes it.
+/// The 202 of `POST guest-upgrade/`: `{job}` as swagger documents it. `pending` is a state
+/// the upgrade job takes; `scheduled` is not.
+fn accepted_job() -> String {
+    json!({
+        "job": {
+            "job_id": "job-1",
+            "release": 7,
+            "state": "pending",
+            "in_flight": true
+        }
+    })
+    .to_string()
+}
+
+/// No newer release, and a release that equals `newest_release`: exit 0, the read is
+/// printed, nothing is posted, and `--yes` is not required. Text mode notes which.
 #[test]
 fn an_app_already_on_the_newest_release_exits_0_without_a_post() {
     let home = Home::new();
@@ -652,9 +757,19 @@ fn an_app_already_on_the_newest_release_exits_0_without_a_post() {
     assert_eq!(text.code(), Some(0), "{}", text.stderr());
     assert_eq!(
         text.stderr(),
-        "note: `vm-1a2b` is already on the newest guest components release\n"
+        "note: no newer guest components release is offered for `vm-1a2b`\n"
     );
     assert_eq!(server.requests().len(), 1);
+
+    let newest = components(&json!(7), &json!(7), Some(true));
+    let server = guest_read(&newest);
+    let text = Hipc::against(&home, &server).run(&with_text(&guest_args(&[])));
+    assert_eq!(text.code(), Some(0), "{}", text.stderr());
+    assert_eq!(
+        text.stderr(),
+        "note: `vm-1a2b` is already on the newest guest components release\n"
+    );
+    assert_eq!(server.only_request().method, "GET");
 }
 
 /// A newer release is posted only with `--yes`. The body names both releases. The bare base
@@ -672,7 +787,7 @@ fn a_newer_release_is_posted_after_yes_and_refused_without_it() {
         route_of(
             &compute::APP_ENGINE_GUEST_UPGRADE_CREATE,
             [&"vm-1a2b"],
-            Reply::json(202, r#"{"vm_id":"vm-1a2b","state":"scheduled"}"#),
+            Reply::json(202, &accepted_job()),
         ),
     ]);
     let error = Hipc::against(&home, &server)
@@ -694,13 +809,14 @@ fn a_newer_release_is_posted_after_yes_and_refused_without_it() {
         route_of(
             &compute::APP_ENGINE_GUEST_UPGRADE_CREATE,
             [&"vm-1a2b"],
-            Reply::json(202, r#"{"vm_id":"vm-1a2b","state":"scheduled"}"#),
+            Reply::json(202, &accepted_job()),
         ),
     ]);
     let doc = Hipc::against(&home, &server)
         .run(&guest_args(&["--yes"]))
         .ok();
-    assert_eq!(doc["state"], "scheduled");
+    assert_eq!(doc["job"]["state"], "pending");
+    assert_eq!(doc["job"]["in_flight"], true);
     assert_eq!(server.requests()[1].method, "POST");
     assert_eq!(server.requests()[1].path(), GUEST_POST);
     assert_eq!(
@@ -718,7 +834,7 @@ fn a_newer_release_is_posted_after_yes_and_refused_without_it() {
         route_of(
             &compute::APP_ENGINE_GUEST_UPGRADE_CREATE,
             [&"vm-1a2b"],
-            Reply::json(202, r#"{"vm_id":"vm-1a2b"}"#),
+            Reply::json(202, &accepted_job()),
         ),
     ]);
     Hipc::against(&home, &server)
@@ -738,7 +854,7 @@ fn a_newer_release_is_posted_after_yes_and_refused_without_it() {
         route_of(
             &compute::APP_ENGINE_GUEST_UPGRADE_CREATE,
             [&"vm-1a2b"],
-            Reply::json(202, r#"{"vm_id":"vm-1a2b"}"#),
+            Reply::json(202, &accepted_job()),
         ),
     ]);
     let text = Hipc::against(&home, &server).run(&with_text(&guest_args(&["--yes"])));
@@ -754,34 +870,94 @@ fn a_newer_release_is_posted_after_yes_and_refused_without_it() {
     );
 }
 
-/// `guest-already-current` exits 0 and prints the read taken again, even when that read still
-/// says an update is available. Another 409 is a conflict. A read hipc cannot act on is
-/// internal, and nothing is posted.
-#[test]
-fn guest_already_current_exits_0_and_a_nameless_read_is_internal() {
-    let home = Home::new();
-    let offered = components(&json!(3), &json!(7), Some(true));
-    let again = components(&json!(7), &json!(7), Some(true));
-    let server = Server::start(vec![
+/// A read, a 409 `guest-already-current`, then `again`.
+fn already_current(first: &str, again: &str) -> Server {
+    Server::start(vec![
         route_each_of(
             &compute::APP_ENGINE_GUEST_COMPONENTS,
             [&"vm-1a2b"],
-            vec![Reply::json(200, &offered), Reply::json(200, &again)],
+            vec![Reply::json(200, first), Reply::json(200, again)],
         ),
         route_of(
             &compute::APP_ENGINE_GUEST_UPGRADE_CREATE,
             [&"vm-1a2b"],
             Reply::json(409, r#"{"error":"guest-already-current"}"#),
         ),
-    ]);
+    ])
+}
+
+/// Equal release numbers on the re-read exit 0. Text mode notes the newest release.
+#[test]
+fn guest_already_current_on_equal_releases_exits_0() {
+    let home = Home::new();
+    let offered = components(&json!(3), &json!(7), Some(true));
+    let again = components(&json!(7), &json!(7), Some(true));
+    let server = already_current(&offered, &again);
     let doc = Hipc::against(&home, &server)
         .run(&guest_args(&["--yes"]))
         .ok();
     assert_eq!(doc["release"], 7);
-    assert_eq!(doc["update_available"], true);
+    assert_eq!(doc["newest_release"], 7);
     assert_eq!(server.requests().len(), 3);
     assert_eq!(server.requests()[2].path(), GUEST);
 
+    let server = already_current(&offered, &again);
+    let text = Hipc::against(&home, &server).run(&with_text(&guest_args(&["--yes"])));
+    assert_eq!(text.code(), Some(0), "{}", text.stderr());
+    assert!(
+        text.stderr()
+            .contains("already on the newest guest components release"),
+        "{}",
+        text.stderr()
+    );
+}
+
+/// A re-read that still offers an update is conflict. The read is printed, and the rejected
+/// post counts as no side effect.
+#[test]
+fn a_re_read_that_still_offers_an_update_is_conflict() {
+    let home = Home::new();
+    let offered = components(&json!(3), &json!(7), Some(true));
+    let server = already_current(&offered, &offered);
+    let run = Hipc::against(&home, &server).run(&guest_args(&["--yes"]));
+    assert_eq!(run.code(), Some(1), "{}", run.stderr());
+    assert_eq!(run.json()["release"], 3);
+    assert_eq!(run.json()["newest_release"], 7);
+    let error: Value = serde_json::from_str(run.stderr().lines().last().unwrap()).unwrap();
+    assert_eq!(error["error"]["code"], "conflict");
+    assert_eq!(error["error"]["side_effects"], "none");
+    assert_eq!(error["error"]["http_status"], 409);
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("guest-already-current"), "{message}");
+    assert!(message.contains("still offer an update"), "{message}");
+    assert_eq!(server.requests().len(), 3);
+    assert_eq!(server.requests()[1].method, "POST");
+    assert_eq!(server.requests()[2].method, "GET");
+}
+
+/// A re-read that offers nothing, without equal numbers, exits 0 and says so.
+#[test]
+fn a_re_read_with_no_newer_release_says_none_is_offered() {
+    let home = Home::new();
+    let offered = components(&json!(3), &json!(7), Some(true));
+    let none = components(&json!(7), &json!(9), Some(false));
+    let server = already_current(&offered, &none);
+    let text = Hipc::against(&home, &server).run(&with_text(&guest_args(&["--yes"])));
+    assert_eq!(text.code(), Some(0), "{}", text.stderr());
+    assert!(
+        text.stderr()
+            .contains("no newer guest components release is offered"),
+        "{}",
+        text.stderr()
+    );
+    assert_eq!(server.requests().len(), 3);
+}
+
+/// Another 409 stays a conflict. A read hipc cannot act on is internal, and nothing is posted.
+#[test]
+fn another_guest_conflict_stays_one_and_a_nameless_read_is_internal() {
+    let home = Home::new();
+    let offered = components(&json!(3), &json!(7), Some(true));
     let server = Server::start(vec![
         route_of(
             &compute::APP_ENGINE_GUEST_COMPONENTS,
@@ -910,6 +1086,67 @@ fn each_documented_guest_status_keeps_its_code() {
     }
 }
 
+/// `upgrade.in_flight` true is conflict before the question, even with `--yes`, and nothing
+/// is posted. The hint names the status command.
+#[test]
+fn an_upgrade_already_in_flight_is_refused_before_the_question() {
+    let home = Home::new();
+    let mut offered = json!({
+        "release": 3,
+        "newest_release": 7,
+        "update_available": true,
+        "upgrade": { "job_id": "job-1", "state": "pending", "in_flight": true }
+    });
+    let read = |body: &str| {
+        Server::start(vec![route_of(
+            &compute::APP_ENGINE_GUEST_COMPONENTS,
+            [&"vm-1a2b"],
+            Reply::json(200, body),
+        )])
+    };
+    for args in [guest_args(&[]), guest_args(&["--yes"])] {
+        let server = read(&offered.to_string());
+        let error = Hipc::against(&home, &server)
+            .run(&args)
+            .fails(1, "conflict");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("already in flight"),
+            "{error}"
+        );
+        assert!(
+            error["hint"]
+                .as_str()
+                .unwrap()
+                .contains("guest-components update-status"),
+            "{error}"
+        );
+        assert!(error["http_status"].is_null(), "{error}");
+        assert_eq!(error["side_effects"], "none");
+        assert_eq!(server.only_request().method, "GET");
+    }
+    // A false flag still asks, then posts.
+    offered["upgrade"]["in_flight"] = json!(false);
+    let server = Server::start(vec![
+        route_of(
+            &compute::APP_ENGINE_GUEST_COMPONENTS,
+            [&"vm-1a2b"],
+            Reply::json(200, &offered.to_string()),
+        ),
+        route_of(
+            &compute::APP_ENGINE_GUEST_UPGRADE_CREATE,
+            [&"vm-1a2b"],
+            Reply::json(202, &accepted_job()),
+        ),
+    ]);
+    Hipc::against(&home, &server)
+        .run(&guest_args(&["--yes"]))
+        .ok();
+    assert_eq!(server.requests()[1].method, "POST");
+}
+
 /// `needs_operator` warns and does not block the upgrade. The dry run lists the read and the
 /// post, with placeholders, and sends nothing.
 #[test]
@@ -926,7 +1163,7 @@ fn needs_operator_warns_and_the_dry_run_uses_placeholders() {
         route_of(
             &compute::APP_ENGINE_GUEST_UPGRADE_CREATE,
             [&"vm-1a2b"],
-            Reply::json(202, r#"{"vm_id":"vm-1a2b"}"#),
+            Reply::json(202, &accepted_job()),
         ),
     ]);
     let text = Hipc::against(&home, &server).run(&with_text(&guest_args(&["--yes"])));

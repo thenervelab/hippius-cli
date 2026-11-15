@@ -641,6 +641,21 @@ pub struct GuestComponents {
     /// Whether an earlier upgrade failed, and Hippius must recover the VM.
     #[serde(default, deserialize_with = "field")]
     pub needs_operator: Option<bool>,
+    /// The upgrade in progress, when the read names one. Missing, null, and a value that is
+    /// not an object are `None`.
+    #[serde(default, deserialize_with = "nested")]
+    pub upgrade: Option<GuestUpgradeJob>,
+}
+
+/// One guest-components upgrade, as far as an update decides whether one is running.
+///
+/// The guest-components read nests it under `upgrade`. Only `in_flight` decides; the rest
+/// of the job is left unread.
+#[derive(Debug, Default, Deserialize)]
+pub struct GuestUpgradeJob {
+    /// Whether this upgrade is still running.
+    #[serde(default, deserialize_with = "field")]
+    pub in_flight: Option<bool>,
 }
 
 /// The guest upgrade of [`APP_ENGINE_GUEST_UPGRADE`], as far as its note decides on it.
