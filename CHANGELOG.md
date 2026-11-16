@@ -13,6 +13,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 ### Changed
 
+- `hipc compute exposures list` and `create` say that an http exposure is served over HTTPS at a hostname such as https://NAME.hpcr.io, where the edge terminates TLS and the guest speaks plain HTTP.
+- The `hipc compute vms create` example that opens ports opens 80 and 443, and `--open-port` says to open both for the web.
+- `hipc cdn waf` and `hipc cdn cap` say that a request the WAF blocks or rate-limits is never billed and does not count toward the zone's spend cap.
+- `hipc compute` says the balance is not a spending cap: an hour it cannot pay becomes debt the account owes, and VMs keep running. A project's monthly budget is what limits a month.
 - The agents paragraph of `hipc --help` names how to find a command: walk the tree with `--help`, read a path's effect, confirmation, and guards with `hipc schema s3 buckets`, and the guide at `docs/agents.md`.
 - `hipc compute kubernetes node-pools scale` refuses a pool whose `role` is not `worker`, such as the masters' `control_plane` pool, as `usage` before the question whichever way it would scale it, with the hint to pick a worker pool from `node-pools list`. Before, only a scale up was refused, so a mistaken pool id with a lower `--count` and `--yes` went to the server as a request to drain masters.
 - `hipc compute kubernetes clusters delete` names in its question, and in a text-mode note once the delete is accepted, the backup buckets it leaves: the backups guide says a cluster created with backups on keeps each bucket that holds etcd snapshots or Velero backups, billed until it is deleted. The note says how to find them (names that start with `hippius-k8s-<cluster_id>-` and end in `-etcd` or `-velero`, in `hipc s3 buckets list`) and how to remove them, as `compute databases delete` does for its backup bucket.

@@ -270,7 +270,8 @@ pub(crate) enum Vms {
         "hipc compute vms create --flavor small --ssh-key-id 1 --yes",
         "hipc compute vms create --flavor small --ssh-public-key-file id_ed25519.pub --yes",
         "hipc compute vms create --flavor small --ssh-key-id 1 --public-ip --no-wait --yes",
-        "hipc compute vms create --flavor small --ssh-key-id 1 --public-ip --open-ssh --open-port 443 --yes",
+        "hipc compute vms create --flavor small --ssh-key-id 1 --public-ip \
+         --open-ssh --open-port 80 --open-port 443 --yes",
     ]))]
     Create(Box<VmCreate>),
     /// Power a VM on
@@ -463,7 +464,8 @@ pub(crate) struct VmCreate {
     /// the rules cannot be set, the command exits 1 partial_failure, prints the VM on stdout,
     /// and the hint names the firewall update to run; the VM keeps running with every port
     /// closed. Otherwise the VM printed carries firewall, the rules sent. To accept fewer
-    /// addresses, leave this out and run hipc compute firewall update.
+    /// addresses, leave this out and run hipc compute firewall update. For the web, open 80
+    /// and 443, as the example does.
     #[arg(
         long = "open-port",
         value_name = "PORT",
