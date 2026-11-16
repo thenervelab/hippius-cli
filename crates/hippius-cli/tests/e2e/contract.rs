@@ -584,6 +584,26 @@ fn old_command_paths_are_plain_usage_errors() {
             "hub namespace robot get",
             "/api/registry/me/robot/",
         ),
+        (
+            "billing transactions",
+            "billing transactions list",
+            "/api/billing/transactions/?page_size=100",
+        ),
+        (
+            "billing transactions --limit 20",
+            "billing transactions list --limit 20",
+            "/api/billing/transactions/?page_size=20",
+        ),
+        (
+            "billing transactions --all",
+            "billing transactions list --all",
+            "/api/billing/transactions/?page_size=100",
+        ),
+        (
+            "--output json billing transactions",
+            "--output json billing transactions list",
+            "/api/billing/transactions/?page_size=100",
+        ),
     ];
     for (old, new, url) in cases {
         let mut argv: Vec<&str> = old.split_whitespace().collect();

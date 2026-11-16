@@ -790,8 +790,22 @@ mod tests {
 
     #[test]
     fn transaction_ids_are_uuids_and_a_refusal_says_where_one_is_printed() {
-        let id = "3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42";
-        assert_eq!(super::transaction_id(id).as_deref(), Ok(id));
+        for id in [
+            "3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42",
+            "3F1C2B9E-8A1D-4C55-9A51-2F0D6C1E7B42",
+        ] {
+            assert_eq!(super::transaction_id(id).as_deref(), Ok(id));
+        }
+        for bad in [
+            "",
+            "3f1c2b9e8a1d4c559a512f0d6c1e7b42",
+            "{3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42}",
+            "urn:uuid:3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42",
+            " 3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42",
+            "3f1c2b9g-8a1d-4c55-9a51-2f0d6c1e7b42",
+        ] {
+            assert!(super::transaction_id(bad).is_err(), "{bad:?}");
+        }
         assert_eq!(
             super::transaction_id("42"),
             Err(
