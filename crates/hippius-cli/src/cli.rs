@@ -77,7 +77,8 @@ pub(crate) use crate::cli::backups::{
 };
 pub(crate) use crate::cli::billing::{
     AutoReload, AutoReloadUpdate, Billing, BillingProfile, CHAIN_MINIMUM, Gamma, GammaConversions,
-    GammaHotkeys, Invoices, ProfileUpdate, ReloadCap, TopUp, TopUpMethod, conversion_id,
+    GammaHotkeys, Invoices, ProfileUpdate, ReloadCap, TopUp, TopUpMethod, Transactions,
+    conversion_id,
 };
 pub(crate) use crate::cli::cdn::{
     Cdn, CdnCap, CdnEstimate, CdnHostnames, CdnPurge, CdnPurges, CdnRules, CdnStats, CdnZones,

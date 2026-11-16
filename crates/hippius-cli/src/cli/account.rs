@@ -8,9 +8,9 @@ use hippius::phrase;
 use crate::cli::ids::billing_account_id;
 use crate::cli::values::{Spaces, label};
 use crate::cli::{
-    BillingAccount, Budget, INVITE_ID, MEMBER_ID, ProjectCreate, ProjectTarget, ProjectTransfer,
-    ProjectTransfers, ProjectUpdate, Quota, REFERRAL_ID, examples, examples_with_guide, number,
-    projects,
+    BillingAccount, Budget, CursorArgs, INVITE_ID, MEMBER_ID, ProjectCreate, ProjectTarget,
+    ProjectTransfer, ProjectTransfers, ProjectUpdate, Quota, REFERRAL_ID, examples,
+    examples_with_guide, number, projects,
 };
 
 #[derive(Debug, Subcommand)]
@@ -63,6 +63,18 @@ pub(crate) enum Account {
         "hipc account members update 12 --grant vms=operator --yes",
     ]))]
     Members(Members),
+    /// The selected account's audit trail: who changed what, newest first, one page at a time
+    ///
+    /// Each event names when it happened, the member who acted, the action, what it acted on,
+    /// and the IP address. It records each change a member makes in the account and every
+    /// team change, but not what a change sent, nor the owner's own product actions. The owner
+    /// and members with the Manage the team permission can read it; anyone else is refused
+    /// with team_management_required. The server's page size is fixed, so there is no --limit.
+    #[command(after_help = examples(&[
+        "hipc account audit-trail",
+        "hipc account audit-trail --all",
+    ]))]
+    AuditTrail(CursorArgs),
     /// Invites to the selected account's team
     ///
     /// An invite is an email, lasts 7 days, and is used once; the team holds at most 50 members and

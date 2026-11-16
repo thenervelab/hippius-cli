@@ -23,13 +23,15 @@ pub(crate) enum Billing {
         "hipc billing subscriptions",
     ]))]
     Subscriptions,
-    /// The transaction history, one page at a time
+    /// The transaction history, and one transaction read by its id
+    ///
+    /// The routes are the token's own account's: a membership is refused.
+    #[command(subcommand)]
     #[command(after_help = examples(&[
-        "hipc billing transactions",
-        "hipc billing transactions --limit 20",
-        "hipc billing transactions --all",
+        "hipc billing transactions list",
+        "hipc billing transactions get 3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42",
     ]))]
-    Transactions(ListArgs),
+    Transactions(Transactions),
     /// The legacy Stripe top-up plan, if there is one
     #[command(after_help = examples(&[
         "hipc billing stripe",
@@ -121,9 +123,11 @@ pub(crate) enum Billing {
     ///
     /// A card or Bitcoin top-up takes --amount in US dollars and prints its checkout_url.
     /// Nothing is paid until a person pays there; then the balance grows by the amount. hipc
-    /// does not wait for the payment: hipc billing balance shows it. A member tops up only a
-    /// billing account, from --billing, HIPPIUS_BILLING, or hipc account billing-accounts use;
-    /// without one a membership is refused with account_scope_unsupported.
+    /// does not wait for the payment: hipc billing balance shows it, and hipc billing
+    /// top-up-status reads a card top-up by the transaction_id it printed. A member tops up
+    /// only a billing account, from --billing, HIPPIUS_BILLING, or hipc account
+    /// billing-accounts use; without one a membership is refused with
+    /// account_scope_unsupported.
     ///
     /// A hAlpha top-up takes --alpha, the hAlpha to spend, and converts it into credits on
     /// chain (1 credit = 1 USD). It reads GET /api/billing/native/quote/ and the purchases
@@ -153,6 +157,44 @@ pub(crate) enum Billing {
         "hipc billing top-up --method halpha --alpha 1.5 --yes",
     ]))]
     TopUp(TopUp),
+    /// Whether a card top-up was paid, by the transaction_id hipc billing top-up printed
+    ///
+    /// GET /api/billing/stripe/checkout-status/?transaction_id=<id>. status is pending,
+    /// processing, paid, or failed; minted says whether the credits reached the balance, and
+    /// value is the US dollars charged. The route reads only a top-up of the billing account
+    /// the request acts on, and answers not_found for any other, so run it with the --billing
+    /// the top-up had. A member reads only a billing account's top-ups, from --billing,
+    /// HIPPIUS_BILLING, or hipc account billing-accounts use; without one a membership is
+    /// refused with account_scope_unsupported. Bitcoin and hAlpha top-ups have no status
+    /// here: hipc billing transactions list shows them.
+    #[command(after_help = examples(&[
+        "hipc billing top-up-status 3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42",
+    ]))]
+    TopUpStatus {
+        /// The top-up's transaction_id, as hipc billing top-up --method card printed it
+        #[arg(value_parser = transaction_id)]
+        transaction_id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum Transactions {
+    /// The transaction history, newest first, one page at a time
+    #[command(after_help = examples(&[
+        "hipc billing transactions list",
+        "hipc billing transactions list --limit 20",
+        "hipc billing transactions list --all",
+    ]))]
+    List(ListArgs),
+    /// One transaction: its amount, credits, status, and when it completed
+    #[command(after_help = examples(&[
+        "hipc billing transactions get 3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42",
+    ]))]
+    Get {
+        /// The transaction id, from hipc billing transactions list
+        #[arg(value_parser = transaction_id)]
+        transaction_id: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -637,6 +679,16 @@ fn gamma_amount(text: &str) -> Result<String, String> {
     Ok(text.to_owned())
 }
 
+/// A transaction id: a UUID, as swagger types the id of a transaction and as the card top-up
+/// answers its `transaction_id`. It goes into the URL path or the query.
+fn transaction_id(text: &str) -> Result<String, String> {
+    idempotency_key(text).map_err(|_| {
+        "a transaction id is a UUID such as `3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42`, as hipc \
+         billing transactions list and a card top-up print it"
+            .to_owned()
+    })
+}
+
 /// A conversion id: a UUID, as the API answers it, which goes into the URL path.
 pub(crate) fn conversion_id(text: &str) -> Result<String, String> {
     idempotency_key(text).map_err(|_| {
@@ -734,6 +786,34 @@ mod tests {
             assert_eq!(super::alpha(text), Err(error.to_owned()), "{text:?}");
         }
         assert_eq!(CHAIN_MINIMUM.to_string(), "0.01");
+    }
+
+    #[test]
+    fn transaction_ids_are_uuids_and_a_refusal_says_where_one_is_printed() {
+        for id in [
+            "3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42",
+            "3F1C2B9E-8A1D-4C55-9A51-2F0D6C1E7B42",
+        ] {
+            assert_eq!(super::transaction_id(id).as_deref(), Ok(id));
+        }
+        for bad in [
+            "",
+            "3f1c2b9e8a1d4c559a512f0d6c1e7b42",
+            "{3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42}",
+            "urn:uuid:3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42",
+            " 3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42",
+            "3f1c2b9g-8a1d-4c55-9a51-2f0d6c1e7b42",
+        ] {
+            assert!(super::transaction_id(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(
+            super::transaction_id("42"),
+            Err(
+                "a transaction id is a UUID such as `3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42`, as \
+                 hipc billing transactions list and a card top-up print it"
+                    .to_owned()
+            )
+        );
     }
 
     #[test]

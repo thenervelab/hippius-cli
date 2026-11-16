@@ -834,7 +834,7 @@ mod tests {
     /// The leaves that end in a noun: each reads the thing it names and changes nothing
     /// (tenet 2), or is one of the top-level commands that are not resources. Two can write,
     /// as tenet 2 says: `api` and `kubeconfig`.
-    const NOUN_LEAVES: [&str; 44] = [
+    const NOUN_LEAVES: [&str; 45] = [
         "api",
         "schema",
         "version",
@@ -844,6 +844,7 @@ mod tests {
         "analytics",
         "apps",
         "attestation",
+        "audit-trail",
         "availability",
         "balance",
         "charge-cap",
@@ -876,7 +877,7 @@ mod tests {
         "stripe",
         "subscriptions",
         "summary",
-        "transactions",
+        "top-up-status",
         "update-status",
         "usage",
     ];
