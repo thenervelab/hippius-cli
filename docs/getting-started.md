@@ -76,7 +76,7 @@ At a terminal `hipc` prints text; on a pipe, or with `CI` or `AI_AGENT` set, JSO
 
 ```sh
 hipc compute vms list --json | jq -r '.items[].vm_id'
-hipc billing transactions --all
+hipc billing transactions list --all
 ```
 
 A failure is an `error:` line on stderr, with a `hint:` when `hipc` knows the fix, or one JSON object in JSON mode. Exit `1` means the API or the runtime failed; exit `2` means change the command, and nothing was sent.

@@ -531,6 +531,8 @@ account_checks() {
   expect "members envelope" 'has("items") and has("next_page_token")'
   online "account invites list" 0 account invites list
   expect "invites envelope" 'has("items") and has("next_page_token")'
+  online "account audit-trail" 0 account audit-trail
+  expect "audit trail envelope" '(.items | type) == "array" and has("next_page_token")'
   # The referral links and analytics are the signed-in user's; a create or a rename runs
   # offline only, since a create mints the user's referral code on first use.
   online "account referrals list" 0 account referrals list
@@ -580,11 +582,21 @@ account_checks() {
   expect_code "missing gamma conversion is not_found" not_found
   online "billing subscriptions" 0 billing subscriptions
   expect "four plan sources in order" '[.items[].service] == ["drive", "s3", "hub", "stripe"]'
-  online "billing transactions --limit 2" 0 billing transactions --limit 2
+  online "billing transactions list --limit 2" 0 billing transactions list --limit 2
   expect "transactions page keeps count" \
     'has("next_page_token") and has("count") and (.items | length) <= 2'
-  online "billing transactions --all" 0 billing transactions --all
+  local transaction
+  transaction="$(field '.items[0].id')"
+  online "billing transactions list --all" 0 billing transactions list --all
   expect "transactions --all is an array" 'type == "array"'
+  if [[ -n "$transaction" ]]; then
+    online "billing transactions get" 0 billing transactions get "$transaction"
+    expect "one transaction is that transaction" ".id == \"$transaction\""
+  fi
+  online "a missing transaction" 1 billing transactions get "$MISSING_UUID"
+  expect_code "missing transaction is not_found" not_found
+  online "a missing card top-up" 1 billing top-up-status "$MISSING_UUID"
+  expect_code "missing card top-up is not_found" not_found
   online "billing stripe" 0 billing stripe
   expect "stripe document" 'has("has_subscription")'
   online "billing summary" 0 billing summary
@@ -1849,8 +1861,15 @@ refusal_checks() {
   offline "repository without its namespace" 2 hub artifacts list app
   offline "repository with an artifacts part" 2 hub artifacts list hipc-check/artifacts/app
   offline "artifact reference with a slash" 2 hub artifacts get hipc-check/app v1/x
-  offline "membership on billing transactions" 2 --account "$other" billing transactions
+  offline "membership on billing transactions" 2 --account "$other" billing transactions list
   expect_code "transactions refuse a membership" account_scope_unsupported
+  offline "membership on a top-up status" 2 --account "$other" \
+    billing top-up-status "$MISSING_UUID"
+  expect_code "a top-up status needs a billing account in a membership" \
+    account_scope_unsupported
+  offline "membership on the audit trail sends the header" 0 --account "$other" --dry-run \
+    account audit-trail
+  expect_dry_run "audit trail account header" ".account_header == \"$other\""
   offline "membership on drive history" 2 --account "$other" drive subscription history
   expect_code "drive history refuses a membership" account_scope_unsupported
   offline "membership on invoices sends the header" 0 --account "$other" --dry-run \
@@ -2046,7 +2065,10 @@ refusal_checks() {
   offline "database id not a number" 2 compute databases get x
   expect_err "a numeric id names its list" \
     '.error.message | test("from .hipc compute databases list.")'
-  offline "transactions page token" 2 billing transactions --page-token x
+  offline "transactions page token" 2 billing transactions list --page-token x
+  offline "transaction id not a UUID" 2 billing transactions get 42
+  offline "top-up status id not a UUID" 2 billing top-up-status cs_test_x
+  offline "audit trail page token" 2 account audit-trail --page-token abc
   offline "runner jobs page token" 2 compute runners jobs --page-token abc
   # A blank message is refused before the question, even with --yes.
   local blank="$WORK/input/blank"

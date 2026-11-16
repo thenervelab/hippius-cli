@@ -76,7 +76,7 @@ pub(super) fn of_auth(path: &[&str]) -> Option<Spec> {
 /// The rows of `hipc account ...`, by the rest of the path.
 pub(super) fn of_account(path: &[&str]) -> Option<Spec> {
     match path {
-        ["list" | "get"]
+        ["list" | "get" | "audit-trail"]
         | ["notifications" | "marketing-consent", "get"]
         | [
             "members" | "invites" | "projects" | "billing-accounts" | "project-transfers",
@@ -146,9 +146,10 @@ pub(super) fn of_account(path: &[&str]) -> Option<Spec> {
 pub(super) fn of_billing(path: &[&str]) -> Option<Spec> {
     match path {
         [
-            "balance" | "subscriptions" | "transactions" | "stripe" | "summary" | "usage"
-            | "native-quote",
+            "balance" | "subscriptions" | "stripe" | "summary" | "usage" | "native-quote"
+            | "top-up-status",
         ]
+        | ["transactions", "list" | "get"]
         | ["invoices", "list"]
         | ["auto-reload", "get" | "history"]
         | ["gamma" | "profile", "get"]

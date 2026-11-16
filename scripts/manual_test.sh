@@ -1037,6 +1037,8 @@ scenario_account_billing() {
     -- hipc --output text account marketing-consent update --granted false --dry-run
   step read net "List the members" "see who can act in the account" \
     -- hipc --output text account members list
+  step read net "Read the audit trail" "see who changed what in the account, newest first" \
+    -- hipc --output text account audit-trail
   # A GET mints nothing: the API documents that only the create mints the user's code, on
   # first use.
   step read net "List the referral links" "see the links that share the referral code" \
@@ -1058,7 +1060,16 @@ scenario_account_billing() {
   step read net "List the subscriptions" "see every paid plan in one place" \
     -- hipc --output text billing subscriptions
   step read net "List recent transactions" "see what was charged and credited" \
-    -- hipc --output text billing transactions --limit 5
+    -- hipc --json billing transactions list --limit 5
+  transaction="$(pick "<transaction>" "$MISSING_UUID" 'first(rows // [] | .[] | .id)')"
+  [[ -n "$transaction" ]] || SKIP_REASON="the account has no transaction"
+  step read net "Read a transaction" "see the first transaction whole" \
+    -- hipc --output text billing transactions get "$transaction"
+  # Only a card top-up has a checkout status; any other transaction, or one of another billing
+  # account, is answered `not_found`, as an unknown id is.
+  step read net/not_found "Read a card top-up's outcome" \
+    "see whether a card checkout was paid; a transaction that is no card top-up is not found" \
+    -- hipc --json billing top-up-status "${transaction:-$MISSING_UUID}"
   step read net "Read the billing summary" "see the month's spend by product" \
     -- hipc --output text billing summary
   step read net "Read the usage" "see the metered usage this month" \

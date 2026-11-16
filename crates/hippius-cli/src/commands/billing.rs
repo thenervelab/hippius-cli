@@ -1,6 +1,7 @@
 //! `hipc billing`: the balance, the compute burn rate and usage, every plan in one view, the
-//! transaction history, the invoices, the billing profile, the auto-reload setting, its card,
-//! and its attempts, and a card, Bitcoin, or hAlpha top-up (the last in `halpha`).
+//! transactions, the invoices, the billing profile, the auto-reload setting, its card, and its
+//! attempts, a card, Bitcoin, or hAlpha top-up (the last in `halpha`), and a card top-up's
+//! outcome.
 //!
 //! USDC and TAO top-ups are not wrapped: they go through `hipc api` or the console.
 //!
@@ -22,7 +23,7 @@ use serde_json::{Map, Value, json};
 
 use crate::cli::{
     AutoReload, AutoReloadUpdate, Billing, BillingProfile, Invoices, ProfileUpdate, ReloadCap,
-    TopUp, TopUpMethod,
+    TopUp, TopUpMethod, Transactions,
 };
 use crate::commands::credits::{AmountPath, shown_in_credits};
 use crate::commands::files::write_output_file;
@@ -51,11 +52,19 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Billing) -> Result<Printed> {
                 .about("get the legacy Stripe top-up plan"),
             Gate::Open,
         ),
-        Billing::Transactions(args) => list::run(
+        Billing::Transactions(Transactions::List(args)) => list::run(
             ctx,
             &client()?,
             &Request::to(&billing::TRANSACTIONS, []).about("list the transactions"),
             args,
+        ),
+        Billing::Transactions(Transactions::Get { transaction_id }) => print_body(
+            ctx,
+            &client()?,
+            &Request::to(&billing::TRANSACTION, [transaction_id])
+                .listed_by("hipc billing transactions list")
+                .about(format!("get the transaction `{transaction_id}`")),
+            Gate::Open,
         ),
         Billing::Subscriptions => subscriptions(ctx, &client()?),
         Billing::Summary => print_in_credits(
@@ -106,6 +115,15 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Billing) -> Result<Printed> {
         Billing::NativeQuote => halpha::native_quote(ctx),
         Billing::Gamma(command) => gamma::run(ctx, command),
         Billing::TopUp(top_up) => start_top_up(ctx, top_up),
+        // Swagger: the route finds only a top-up of the billing account the request acts on,
+        // so a member reads it beside a billing account, as the top-up was sent.
+        Billing::TopUpStatus { transaction_id } => billing_read(
+            ctx,
+            &Request::to(&billing::CHECKOUT_STATUS, [])
+                .query("transaction_id", transaction_id)
+                .about(format!("get the card top-up `{transaction_id}`")),
+            "a top-up status read",
+        ),
     }
 }
 

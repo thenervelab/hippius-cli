@@ -72,6 +72,7 @@ fn of_account(path: &[&str]) -> Vec<&'static Endpoint> {
         ["members", "list"] => sends![account::MEMBERS],
         ["members", "update"] => sends![account::MEMBER_UPDATE, account::MEMBERS],
         ["members", "delete"] => sends![account::MEMBER_DELETE],
+        ["audit-trail"] => sends![account::AUDIT],
         ["invites", "list"] => sends![account::INVITES],
         ["invites", "create"] => sends![account::INVITE_CREATE],
         ["invites", "revoke"] => sends![account::INVITE_REVOKE],
@@ -124,7 +125,8 @@ fn of_billing(path: &[&str]) -> Vec<&'static Endpoint> {
             hub::SUBSCRIPTIONS,
             billing::STRIPE_SUBSCRIPTION
         ],
-        ["transactions"] => sends![billing::TRANSACTIONS],
+        ["transactions", "list"] => sends![billing::TRANSACTIONS],
+        ["transactions", "get"] => sends![billing::TRANSACTION],
         ["stripe"] => sends![billing::STRIPE_SUBSCRIPTION],
         ["summary"] => sends![compute::BILLING_SUMMARY],
         ["usage"] => sends![compute::USAGE],
@@ -153,6 +155,7 @@ fn of_billing(path: &[&str]) -> Vec<&'static Endpoint> {
             billing::NATIVE_PURCHASES,
             billing::BITCOIN_INVOICE
         ],
+        ["top-up-status"] => sends![billing::CHECKOUT_STATUS],
         _ => Vec::new(),
     }
 }
