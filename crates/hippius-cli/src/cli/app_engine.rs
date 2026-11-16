@@ -311,3 +311,21 @@ fn new_compose_file(text: &str) -> Result<PathBuf, String> {
     }
     new_file(text, "the fixed compose")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The long help of `--compose-file` is the short help, then where the server's smaller
+    /// limit is read and why `/dev/stdin` is refused.
+    #[test]
+    fn the_compose_long_help_adds_the_server_limit_and_the_stdin_rule() {
+        let long = compose_long_help();
+        assert!(long.starts_with(&format!("{}\n\n", compose_help())), "{long}");
+        assert!(
+            long.contains("at most max_compose_bytes from hipc compute app-engine get"),
+            "{long}"
+        );
+        assert!(long.contains("so pass - for stdin"), "{long}");
+    }
+}
