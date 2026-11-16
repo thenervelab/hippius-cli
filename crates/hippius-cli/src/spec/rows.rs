@@ -548,7 +548,12 @@ pub(super) fn of_network(path: &[&str]) -> Option<Spec> {
     match path {
         ["groups" | "policies" | "vpcs", "list"]
         | ["peers", "list" | "get"]
-        | ["vpcs", "resources" | "routers", "list"] => Some(READ_ONLY),
+        | ["vpcs", "resources" | "routers", "list"]
+        | ["isolation", "get"]
+        // The topology's first read for an account creates its network, but hipc reads the
+        // group list first, which answers 403 for a network never set up, so the topology
+        // is read only once the network exists.
+        | ["topology"] => Some(READ_ONLY),
         // Swagger: the first `GET /api/network/me/` for an account creates its network (a
         // default group, a VPC network, and the intra-network policy), and later calls find
         // it. A repeat leaves the server as one call did, and every call is confirmed because
@@ -558,7 +563,38 @@ pub(super) fn of_network(path: &[&str]) -> Option<Spec> {
         // A rename sets the name, so a repeat leaves the same name; a repeat remove finds the
         // peer gone. A peer is a device or VM that someone reaches over the network, so both
         // are confirmed.
-        ["get" | "create"] | ["peers", "update" | "delete"] => Some(UNDO),
+        ["get" | "create"]
+        | ["peers", "update" | "delete"]
+        // A policy or resource update sets the fields given, so a repeat leaves them as one
+        // call did, and a repeat delete finds the thing gone. Each changes who reaches what.
+        | ["policies", "update"]
+        | ["vpcs", "resources", "update"]
+        | ["groups" | "policies" | "vpcs", "delete"]
+        | ["vpcs", "resources" | "routers", "delete"] => Some(UNDO),
+        // A new group or VPC network has no peers, policies, resources, or routers, so it
+        // changes no access and is not gated; a repeat makes another.
+        ["groups" | "vpcs", "create"] => Some(REPEATS),
+        // A policy, a resource, or a router changes who reaches what, so each is confirmed;
+        // a repeat makes another.
+        ["policies", "create"] | ["vpcs", "resources" | "routers", "create"] => Some(SPEND),
+        // The list given becomes the group's, so a repeat finds nothing to change, sends
+        // nothing, and asks nothing.
+        ["groups", "update"] => Some(Spec {
+            confirmation: Asks::When("the peers given are not the group's peers now"),
+            guards: &[Guard {
+                code: Code::RemoveOthersRequired,
+                when: Some("the peers given leave out a peer the group has now"),
+            }],
+            ..UNDO
+        }),
+        // Either mode changes which peers reach each other; a repeat leaves the mode as it is.
+        ["isolation", "update"] => Some(Spec {
+            guards: &[Guard {
+                code: Code::ChangeIsolationRequired,
+                when: None,
+            }],
+            ..UNDO
+        }),
         _ => None,
     }
 }

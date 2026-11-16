@@ -1271,6 +1271,12 @@ network_checks() {
   online "network vpcs list" 0 network vpcs list
   expect "vpcs envelope" 'has("items") and .next_page_token == null'
   vpc="$(field '.items[0].id')"
+  online "network isolation get" 0 network isolation get
+  expect "isolation mode" 'has("isolation_mode")'
+  # The topology's first read creates the network, but hipc reads the group list first, so
+  # `hipc schema` calls it read_only and it runs live.
+  online "network topology" 0 network topology
+  expect "topology graph" 'has("nodes") and has("edges")'
   online "a missing network peer" 1 network peers get "$MISSING_KEY"
   expect_code "a missing network peer is not_found" not_found
   if [[ -n "$peer" ]]; then
@@ -1309,6 +1315,27 @@ network_checks() {
     "DELETE $(route "network peers delete" DELETE 12)"
   offline "network peers delete without --yes" 2 network peers delete 12
   expect_code "peer remove is confirmation_required" confirmation_required
+  offline "network topology --dry-run" 0 --dry-run network topology
+  expect_requests "topology reads the group list first" \
+    "GET $(route_ending "network topology" GET /groups/)" \
+    "GET $(route_ending "network topology" GET /topology/)"
+  offline "network groups update --dry-run" 0 --dry-run network groups update 5 --peer 12
+  expect_dry_run "group peers update reads first and posts one change per peer" \
+    ".method == \"POST\" and
+    .url == \"$DEAD_ORIGIN$(route "network groups update" POST 5)\" and
+    (.reads_first.url | endswith(\"/topology/\"))"
+  offline "network groups delete without --yes" 2 network groups delete 5
+  expect_code "group delete is confirmation_required" confirmation_required
+  offline "network policies delete without --yes" 2 network policies delete 9
+  expect_code "policy delete is confirmation_required" confirmation_required
+  offline "network isolation update without --change-isolation" 2 \
+    network isolation update --mode deny_intra --yes
+  expect_code "isolation switch needs --change-isolation" change_isolation_required
+  offline "network isolation update --dry-run" 0 --dry-run network isolation update --mode deny_intra
+  expect_dry_run "isolation switch is a POST of the mode" \
+    ".method == \"POST\" and
+    .url == \"$DEAD_ORIGIN$(route "network isolation update" POST)\" and
+    .body == {\"isolation_mode\":\"deny_intra\"}"
   offline "network peer id with a slash" 2 network peers get ../12
   expect_code "a peer id with a slash is usage" usage
   offline "membership on the network sends the header" 0 --account "$other" --dry-run \

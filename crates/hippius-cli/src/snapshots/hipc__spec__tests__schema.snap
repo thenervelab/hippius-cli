@@ -11911,10 +11911,148 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
     {
       "path": [
         "network",
+        "groups",
+        "create"
+      ],
+      "about": "Create an empty group of peers, which a policy can then name",
+      "effect": "non_idempotent",
+      "confirmation": false,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [],
+      "flags": [
+        {
+          "name": "--name",
+          "value_name": "NAME",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The group's name: 1 to 50 lowercase letters, digits, and -"
+        }
+      ],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/network/groups/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "network",
+        "groups",
+        "update"
+      ],
+      "about": "Set which peers are in a group; needs --yes to change them, and --remove-others to drop one",
+      "effect": "idempotent",
+      "confirmation": true,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": "the peers given are not the group's peers now",
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [
+        {
+          "code": "remove_others_required",
+          "flag": "--remove-others",
+          "when": "the peers given leave out a peer the group has now"
+        }
+      ],
+      "args": [
+        {
+          "name": "group_id",
+          "value_name": "GROUP_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The group id, from hipc network groups list"
+        }
+      ],
+      "flags": [
+        {
+          "name": "--peer",
+          "value_name": "PEER_ID",
+          "required": true,
+          "repeats": true,
+          "possible_values": [],
+          "default": null,
+          "help": "A peer the group holds, by its id from hipc network peers list; repeat for each"
+        },
+        {
+          "name": "--remove-others",
+          "value_name": null,
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "Let the list remove the group's peers it leaves out"
+        }
+      ],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/network/groups/"
+        },
+        {
+          "method": "GET",
+          "path": "/api/network/topology/"
+        },
+        {
+          "method": "POST",
+          "path": "/api/network/groups/{group_id}/members/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "network",
+        "groups",
+        "delete"
+      ],
+      "about": "Delete a group; needs --yes",
+      "effect": "idempotent",
+      "confirmation": true,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [
+        {
+          "name": "group_id",
+          "value_name": "GROUP_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The group id, from hipc network groups list"
+        }
+      ],
+      "flags": [],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "DELETE",
+          "path": "/api/network/groups/{group_id}/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "network",
         "policies",
         "list"
       ],
-      "about": "The network's access policies, each one allowing traffic from one group to another",
+      "about": "The network's access policies, each one ruling the traffic from one group to another",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,
@@ -11930,6 +12068,289 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         {
           "method": "GET",
           "path": "/api/network/policies/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "network",
+        "policies",
+        "create"
+      ],
+      "about": "Allow or drop the traffic from one group of peers to another; needs --yes",
+      "effect": "non_idempotent",
+      "confirmation": true,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [],
+      "flags": [
+        {
+          "name": "--source-group",
+          "value_name": "GROUP_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The group the traffic comes from, by its id from hipc network groups list"
+        },
+        {
+          "name": "--dest-group",
+          "value_name": "GROUP_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The group the traffic goes to, by its id from hipc network groups list"
+        },
+        {
+          "name": "--name",
+          "value_name": "NAME",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The policy's name, 1 to 255 characters on one line"
+        },
+        {
+          "name": "--protocol",
+          "value_name": "PROTOCOL",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "all",
+            "tcp",
+            "udp",
+            "icmp"
+          ],
+          "default": null,
+          "help": "The protocol: all, tcp, udp, or icmp"
+        },
+        {
+          "name": "--port",
+          "value_name": "PORT",
+          "required": false,
+          "repeats": true,
+          "possible_values": [],
+          "default": null,
+          "help": "A port or a LOW-HIGH range, with --protocol tcp or udp; repeat for each"
+        },
+        {
+          "name": "--bidirectional",
+          "value_name": "BOOL",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "true",
+            "false"
+          ],
+          "default": null,
+          "help": "Whether the destination group may start the traffic too: true or false"
+        },
+        {
+          "name": "--action",
+          "value_name": "ACTION",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "accept",
+            "drop"
+          ],
+          "default": null,
+          "help": "What the policy does with the traffic: accept or drop"
+        },
+        {
+          "name": "--enabled",
+          "value_name": "BOOL",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "true",
+            "false"
+          ],
+          "default": null,
+          "help": "Whether the policy applies: true or false"
+        }
+      ],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/network/policies/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "network",
+        "policies",
+        "update"
+      ],
+      "about": "Change a policy's groups, traffic, action, or name; needs --yes",
+      "effect": "idempotent",
+      "confirmation": true,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [
+        {
+          "name": "policy_id",
+          "value_name": "POLICY_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The policy id, from hipc network policies list"
+        }
+      ],
+      "flags": [
+        {
+          "name": "--source-group",
+          "value_name": "GROUP_ID",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The group the traffic comes from, by its id from hipc network groups list"
+        },
+        {
+          "name": "--dest-group",
+          "value_name": "GROUP_ID",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The group the traffic goes to, by its id from hipc network groups list"
+        },
+        {
+          "name": "--name",
+          "value_name": "NAME",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The policy's name, 1 to 255 characters on one line"
+        },
+        {
+          "name": "--protocol",
+          "value_name": "PROTOCOL",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "all",
+            "tcp",
+            "udp",
+            "icmp"
+          ],
+          "default": null,
+          "help": "The protocol: all, tcp, udp, or icmp"
+        },
+        {
+          "name": "--port",
+          "value_name": "PORT",
+          "required": false,
+          "repeats": true,
+          "possible_values": [],
+          "default": null,
+          "help": "A port or a LOW-HIGH range, with --protocol tcp or udp; repeat for each"
+        },
+        {
+          "name": "--bidirectional",
+          "value_name": "BOOL",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "true",
+            "false"
+          ],
+          "default": null,
+          "help": "Whether the destination group may start the traffic too: true or false"
+        },
+        {
+          "name": "--action",
+          "value_name": "ACTION",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "accept",
+            "drop"
+          ],
+          "default": null,
+          "help": "What the policy does with the traffic: accept or drop"
+        },
+        {
+          "name": "--enabled",
+          "value_name": "BOOL",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "true",
+            "false"
+          ],
+          "default": null,
+          "help": "Whether the policy applies: true or false"
+        }
+      ],
+      "required_groups": [
+        {
+          "names": [
+            "--source-group",
+            "--dest-group",
+            "--name",
+            "--protocol",
+            "--port",
+            "--bidirectional",
+            "--action",
+            "--enabled"
+          ],
+          "multiple": true
+        }
+      ],
+      "routes": [
+        {
+          "method": "PATCH",
+          "path": "/api/network/policies/{policy_id}/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "network",
+        "policies",
+        "delete"
+      ],
+      "about": "Delete a policy; needs --yes",
+      "effect": "idempotent",
+      "confirmation": true,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [
+        {
+          "name": "policy_id",
+          "value_name": "POLICY_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The policy id, from hipc network policies list"
+        }
+      ],
+      "flags": [],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "DELETE",
+          "path": "/api/network/policies/{policy_id}/"
         }
       ]
     },
@@ -11955,6 +12376,76 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         {
           "method": "GET",
           "path": "/api/network/networks/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "network",
+        "vpcs",
+        "create"
+      ],
+      "about": "Create a VPC network, with no resources and no routers",
+      "effect": "non_idempotent",
+      "confirmation": false,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [],
+      "flags": [
+        {
+          "name": "--name",
+          "value_name": "NAME",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The VPC network's name, 1 to 255 characters on one line"
+        }
+      ],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/network/networks/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "network",
+        "vpcs",
+        "delete"
+      ],
+      "about": "Delete a VPC network; needs --yes",
+      "effect": "idempotent",
+      "confirmation": true,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [
+        {
+          "name": "vpc_id",
+          "value_name": "VPC_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The VPC network id, from hipc network vpcs list"
+        }
+      ],
+      "flags": [],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "DELETE",
+          "path": "/api/network/networks/{vpc_id}/"
         }
       ]
     },
@@ -11998,6 +12489,224 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "path": [
         "network",
         "vpcs",
+        "resources",
+        "create"
+      ],
+      "about": "Add a host, subnet, or domain to a VPC network; needs --yes",
+      "effect": "non_idempotent",
+      "confirmation": true,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [
+        {
+          "name": "vpc_id",
+          "value_name": "VPC_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The VPC network id, from hipc network vpcs list"
+        }
+      ],
+      "flags": [
+        {
+          "name": "--name",
+          "value_name": "NAME",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The resource's name, 1 to 255 characters on one line"
+        },
+        {
+          "name": "--address",
+          "value_name": "ADDRESS",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "An IP address, a CIDR subnet, or a domain"
+        },
+        {
+          "name": "--kind",
+          "value_name": "KIND",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "host",
+            "subnet",
+            "domain"
+          ],
+          "default": null,
+          "help": "What the address is: host, subnet, or domain"
+        },
+        {
+          "name": "--group",
+          "value_name": "GROUP_ID",
+          "required": false,
+          "repeats": true,
+          "possible_values": [],
+          "default": null,
+          "help": "A group whose peers reach the resource, by its id from hipc network groups list; repeat for each"
+        }
+      ],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/network/networks/{vpc_id}/resources/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "network",
+        "vpcs",
+        "resources",
+        "update"
+      ],
+      "about": "Change a resource's name, address, kind, or groups; needs --yes",
+      "effect": "idempotent",
+      "confirmation": true,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [
+        {
+          "name": "vpc_id",
+          "value_name": "VPC_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The VPC network id, from hipc network vpcs list"
+        },
+        {
+          "name": "resource_id",
+          "value_name": "RESOURCE_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The resource id, from hipc network vpcs resources list"
+        }
+      ],
+      "flags": [
+        {
+          "name": "--name",
+          "value_name": "NAME",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The resource's name, 1 to 255 characters on one line"
+        },
+        {
+          "name": "--address",
+          "value_name": "ADDRESS",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "An IP address, a CIDR subnet, or a domain"
+        },
+        {
+          "name": "--kind",
+          "value_name": "KIND",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "host",
+            "subnet",
+            "domain"
+          ],
+          "default": null,
+          "help": "What the address is: host, subnet, or domain"
+        },
+        {
+          "name": "--group",
+          "value_name": "GROUP_ID",
+          "required": false,
+          "repeats": true,
+          "possible_values": [],
+          "default": null,
+          "help": "A group whose peers reach the resource, by its id from hipc network groups list; repeat for each"
+        }
+      ],
+      "required_groups": [
+        {
+          "names": [
+            "--name",
+            "--address",
+            "--kind",
+            "--group"
+          ],
+          "multiple": true
+        }
+      ],
+      "routes": [
+        {
+          "method": "PATCH",
+          "path": "/api/network/networks/{vpc_id}/resources/{resource_id}/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "network",
+        "vpcs",
+        "resources",
+        "delete"
+      ],
+      "about": "Remove a resource from a VPC network; needs --yes",
+      "effect": "idempotent",
+      "confirmation": true,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [
+        {
+          "name": "vpc_id",
+          "value_name": "VPC_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The VPC network id, from hipc network vpcs list"
+        },
+        {
+          "name": "resource_id",
+          "value_name": "RESOURCE_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The resource id, from hipc network vpcs resources list"
+        }
+      ],
+      "flags": [],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "DELETE",
+          "path": "/api/network/networks/{vpc_id}/resources/{resource_id}/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "network",
+        "vpcs",
         "routers",
         "list"
       ],
@@ -12032,14 +12741,232 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
     },
     {
       "path": [
+        "network",
+        "vpcs",
+        "routers",
+        "create"
+      ],
+      "about": "Make a peer route a VPC network's traffic to its resources; needs --yes",
+      "effect": "non_idempotent",
+      "confirmation": true,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [
+        {
+          "name": "vpc_id",
+          "value_name": "VPC_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The VPC network id, from hipc network vpcs list"
+        }
+      ],
+      "flags": [
+        {
+          "name": "--peer",
+          "value_name": "PEER_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The peer that routes the traffic, by its id from hipc network peers list"
+        },
+        {
+          "name": "--masquerade",
+          "value_name": "BOOL",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "true",
+            "false"
+          ],
+          "default": null,
+          "help": "Whether the router masks the source address of what it routes: true or false"
+        },
+        {
+          "name": "--metric",
+          "value_name": "NUMBER",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The router's priority among the VPC network's routers; the lower number wins"
+        }
+      ],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/network/networks/{vpc_id}/routers/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "network",
+        "vpcs",
+        "routers",
+        "delete"
+      ],
+      "about": "Stop a peer routing a VPC network's traffic; needs --yes",
+      "effect": "idempotent",
+      "confirmation": true,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [
+        {
+          "name": "vpc_id",
+          "value_name": "VPC_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The VPC network id, from hipc network vpcs list"
+        },
+        {
+          "name": "router_id",
+          "value_name": "ROUTER_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The router id, from hipc network vpcs routers list"
+        }
+      ],
+      "flags": [],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "DELETE",
+          "path": "/api/network/networks/{vpc_id}/routers/{router_id}/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "network",
+        "isolation",
+        "get"
+      ],
+      "about": "The network's isolation mode: allow_intra or deny_intra",
+      "effect": "read_only",
+      "confirmation": false,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [],
+      "flags": [],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/network/isolation/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "network",
+        "isolation",
+        "update"
+      ],
+      "about": "Switch the isolation mode; needs --yes, and --change-isolation",
+      "effect": "idempotent",
+      "confirmation": true,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [
+        {
+          "code": "change_isolation_required",
+          "flag": "--change-isolation",
+          "when": null
+        }
+      ],
+      "args": [],
+      "flags": [
+        {
+          "name": "--mode",
+          "value_name": "MODE",
+          "required": true,
+          "repeats": false,
+          "possible_values": [
+            "allow_intra",
+            "deny_intra"
+          ],
+          "default": null,
+          "help": "The new mode: allow_intra or deny_intra"
+        },
+        {
+          "name": "--change-isolation",
+          "value_name": null,
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "Let the switch change which peers can reach each other"
+        }
+      ],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/network/isolation/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "network",
+        "topology"
+      ],
+      "about": "The whole network as a graph: its groups, peers, resources, and routers, and the policies and routes between them",
+      "effect": "read_only",
+      "confirmation": false,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [],
+      "flags": [],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/api/network/groups/"
+        },
+        {
+          "method": "GET",
+          "path": "/api/network/topology/"
+        }
+      ]
+    },
+    {
+      "path": [
         "api"
       ],
-      "about": "Call any console API endpoint; a method other than GET or HEAD needs --yes, as does GET or HEAD /network/me/, which may create the network",
+      "about": "Call any console API endpoint; a write needs --yes, as does GET or HEAD of /network/me/ or /network/topology/, which may create the network",
       "effect": "non_idempotent",
       "confirmation": true,
       "reveal": true,
       "pagination": true,
-      "confirmation_when": "the method is not `GET` or `HEAD`, or the request is a `GET` or `HEAD` of `/api/network/me/`, whose read may create something, with or without the trailing slash or a format suffix, and under any API version; a write to a route no command lists in its `routes` also warns that `hipc` does not know it",
+      "confirmation_when": "the method is not `GET` or `HEAD`, or the request is a `GET` or `HEAD` of `/api/network/me/` or a `GET` or `HEAD` of `/api/network/topology/`, whose read may create something, with or without the trailing slash or a format suffix, and under any API version; a write to a route no command lists in its `routes` also warns that `hipc` does not know it",
       "reveal_when": "the route answers with a secret, or the request is a `GET` of a route no command lists in its `routes`, whose answer may hold one",
       "refused_when": "the target is a full URL off the configured API origin, or the request is a write other than `DELETE` of `/api/account/deletion/`, a write of `/api/cdn/zones/{zone_id}/hostnames/{hostname}/dns-setup/`, a write of `/api/registry/subscribe/`, `GET` or `HEAD` of `/api/kubernetes/clusters/{cluster_id}/secrets/`, any method of `/api/auth/token/`, a write of `/api/compute/app-engine/apps/`, of `/api/compute/app-engine/validate/`, or of `/api/compute/app-engine/apps/{vm_id}/compose/` whose body sets `secrets` (a body that is not a JSON object counts as setting it), or a write under `/api/support/` whose body holds `HIPPIUS_TOKEN` or a token a profile of the config file stores, as it is, quoted, percent-encoded, or behind a JSON escape, also when whitespace or an invisible joining character splits it, or an access key: 12 to 24 words of the BIP-39 list in a row whose checksum holds, with anything that is not a letter read as a space; a write is `POST`, `PUT`, `PATCH`, or `DELETE`, and each path counts in any letter case, with or without the trailing slash or a format suffix, and under any API version",
       "guards": [
@@ -12148,10 +13075,6 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         {
           "method": "PUT",
           "path": "/api/compute/app-engine/apps/{vm_id}/compose/"
-        },
-        {
-          "method": "POST",
-          "path": "/api/network/isolation/"
         },
         {
           "method": "PUT",

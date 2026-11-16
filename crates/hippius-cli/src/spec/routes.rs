@@ -32,7 +32,6 @@ pub(super) fn routes(path: &[&str]) -> Vec<&'static Endpoint> {
             account::DELETION_REQUEST,
             account::DELETION_WITHDRAW,
             compute::APP_ENGINE_COMPOSE_UPDATE,
-            network::ISOLATION_UPDATE,
             operator::NODE_STORAGE_UPDATE,
         ],
         ["compute", "app-engine", rest @ ..] => of_compute_app_engine(rest),
@@ -458,10 +457,32 @@ fn of_network(path: &[&str]) -> Vec<&'static Endpoint> {
         ["peers", "update"] => sends![network::PEER_UPDATE],
         ["peers", "delete"] => sends![network::PEER_DELETE],
         ["groups", "list"] => sends![network::GROUPS],
+        ["groups", "create"] => sends![network::GROUP_CREATE],
+        ["groups", "update"] => sends![
+            network::GROUPS,
+            network::TOPOLOGY,
+            network::GROUP_MEMBERS_UPDATE
+        ],
+        ["groups", "delete"] => sends![network::GROUP_DELETE],
         ["policies", "list"] => sends![network::POLICIES],
+        ["policies", "create"] => sends![network::POLICY_CREATE],
+        ["policies", "update"] => sends![network::POLICY_UPDATE],
+        ["policies", "delete"] => sends![network::POLICY_DELETE],
         ["vpcs", "list"] => sends![network::VPCS],
+        ["vpcs", "create"] => sends![network::VPC_CREATE],
+        ["vpcs", "delete"] => sends![network::VPC_DELETE],
         ["vpcs", "resources", "list"] => sends![network::VPC_RESOURCES],
+        ["vpcs", "resources", "create"] => sends![network::VPC_RESOURCE_CREATE],
+        ["vpcs", "resources", "update"] => sends![network::VPC_RESOURCE_UPDATE],
+        ["vpcs", "resources", "delete"] => sends![network::VPC_RESOURCE_DELETE],
         ["vpcs", "routers", "list"] => sends![network::VPC_ROUTERS],
+        ["vpcs", "routers", "create"] => sends![network::VPC_ROUTER_CREATE],
+        ["vpcs", "routers", "delete"] => sends![network::VPC_ROUTER_DELETE],
+        ["isolation", "get"] => sends![network::ISOLATION],
+        ["isolation", "update"] => sends![network::ISOLATION_UPDATE],
+        // The group list first, which shows the network exists, so the topology read, whose
+        // first one for an account creates the network, creates nothing.
+        ["topology"] => sends![network::GROUPS, network::TOPOLOGY],
         _ => Vec::new(),
     }
 }

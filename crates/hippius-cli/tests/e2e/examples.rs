@@ -449,7 +449,7 @@ fn every_confirmed_command_refuses_without_yes_and_sends_no_write() {
 /// The commands whose real run always sends more than one request, which a dry run lists
 /// (`TENETS.md` tenet 5). A list replace is told by its `reads_first`, and Hub
 /// `--replace` by its `may_cancel_first`.
-const MORE_THAN_ONE_REQUEST: [&str; 25] = [
+const MORE_THAN_ONE_REQUEST: [&str; 26] = [
     "auth status",
     "billing subscriptions",
     "billing auto-reload update",
@@ -477,6 +477,8 @@ const MORE_THAN_ONE_REQUEST: [&str; 25] = [
     "hub subscription subscribe",
     "support tickets update",
     "compute app-engine apps create",
+    // The group list, which shows the network exists, then the topology.
+    "network topology",
 ];
 
 /// A dry run that would send requests lists every one in `requests`, the request the

@@ -809,12 +809,11 @@ mod tests {
         let lonely: Vec<_> = all.into_iter().filter(|(_, size)| *size == 1).collect();
         // The exceptions of tenet 2. The grammar is `hipc support tickets` by design, and
         // `support` holds the `tickets` group, not one command. The others hold only `list`,
-        // because a list is `<noun> list`, and fill when their writes land (the writes of the
-        // network groups, policies, and VPCs come in a later release, `compute kubernetes
-        // backups` holds `list` alone until the backup writes are added, `hub events` until the
-        // API has another events route, and `support tickets messages` until an attachment
-        // upload joins it); a group not named here that holds one command fails, so this list
-        // only shrinks.
+        // because a list is `<noun> list`, and fill when their writes land (`compute
+        // kubernetes backups` holds `list` alone until the backup writes are added, `hub
+        // events` until the API has another events route, and `support tickets messages` until
+        // an attachment upload joins it); a group not named here that holds one command fails,
+        // so this list only shrinks.
         let one = |path: &str| (path.to_owned(), 1);
         assert_eq!(
             lonely,
@@ -823,10 +822,6 @@ mod tests {
                 one("hipc compute kubernetes backups"),
                 one("hipc support"),
                 one("hipc support tickets messages"),
-                one("hipc network groups"),
-                one("hipc network policies"),
-                one("hipc network vpcs resources"),
-                one("hipc network vpcs routers"),
             ]
         );
     }
@@ -834,7 +829,7 @@ mod tests {
     /// The leaves that end in a noun: each reads the thing it names and changes nothing
     /// (tenet 2), or is one of the top-level commands that are not resources. Two can write,
     /// as tenet 2 says: `api` and `kubeconfig`.
-    const NOUN_LEAVES: [&str; 44] = [
+    const NOUN_LEAVES: [&str; 45] = [
         "api",
         "schema",
         "version",
@@ -876,6 +871,7 @@ mod tests {
         "stripe",
         "subscriptions",
         "summary",
+        "topology",
         "transactions",
         "update-status",
         "usage",
@@ -986,7 +982,7 @@ mod tests {
         assert_eq!(missing, Vec::<&Vec<String>>::new());
     }
 
-    /// Twelve commands ask only sometimes, and the schema says when: `confirmation` is true
+    /// Thirteen commands ask only sometimes, and the schema says when: `confirmation` is true
     /// and `confirmation_when` names the condition, so an agent passes `--yes` when it
     /// holds. Every other command asks always or never.
     #[test]
@@ -1056,11 +1052,15 @@ mod tests {
                 ("cdn waf rules update".to_owned(), WAF_CHECK),
                 ("cdn waf rate-limits update".to_owned(), WAF_CHECK),
                 (
+                    "network groups update".to_owned(),
+                    "the peers given are not the group's peers now"
+                ),
+                (
                     "api".to_owned(),
                     "the method is not `GET` or `HEAD`, or the request is a `GET` or `HEAD` of \
-                     `/api/network/me/`, whose read may create something, with or without the \
-                     trailing slash or a format suffix, and under any API version; a write to a \
-                     route no command lists in \
+                     `/api/network/me/` or a `GET` or `HEAD` of `/api/network/topology/`, whose \
+                     read may create something, with or without the trailing slash or a format \
+                     suffix, and under any API version; a write to a route no command lists in \
                      its `routes` also warns that `hipc` does not know it"
                 ),
             ]
@@ -1521,10 +1521,23 @@ mod tests {
         assert_eq!(global("--request-timeout")["default"], "30");
     }
 
+    /// The fields of a network policy, of which an update needs one.
+    const POLICY_FIELDS: [&str; 8] = [
+        "--source-group",
+        "--dest-group",
+        "--name",
+        "--protocol",
+        "--port",
+        "--bidirectional",
+        "--action",
+        "--enabled",
+    ];
+
     /// A launch needs a key flag, a purge a target, `s3 configure` a key pair, a plan
     /// change one kind of change, and the billing profile, auto-reload, notification settings,
-    /// runner settings, and project quota updates at least one field, which no single flag
-    /// says, so the schema lists each such set; no other command has one.
+    /// runner settings, project quota, network policy, and VPC resource updates at least one
+    /// field, which no single flag says, so the schema lists each such set; no other command
+    /// has one.
     #[test]
     fn a_set_of_which_one_is_required_is_listed() {
         let doc = schema(&[]).unwrap();
@@ -1615,6 +1628,12 @@ mod tests {
                     &["cdn", "purges", "create"],
                     &["--everything", "--path", "--prefix"],
                     false
+                ),
+                group(&["network", "policies", "update"], &POLICY_FIELDS, true),
+                group(
+                    &["network", "vpcs", "resources", "update"],
+                    &["--name", "--address", "--kind", "--group"],
+                    true
                 ),
             ]
         );

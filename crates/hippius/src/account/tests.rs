@@ -566,23 +566,24 @@ const METHODS: [Method; 6] = [
     Method::Delete,
 ];
 
-/// The network summary provisions on a GET and a HEAD, with or without its trailing
-/// slash, with a format suffix, and with a query; the writes on the path and its
-/// neighbours do not.
+/// The network summary and the topology provision on a GET and a HEAD, with or without
+/// their trailing slash, with a format suffix, and with a query; the writes on the paths and
+/// their neighbours do not.
 #[test]
-fn the_network_summary_provisions_on_its_reads_and_nowhere_else() {
+fn the_network_summary_and_topology_provision_on_their_reads_and_nowhere_else() {
     assert_eq!(
         routes::all().filter(|row| row.provisions()).count(),
-        1,
+        2,
         "a new row needs cases here"
     );
-    let path = "/api/network/me/";
-    let mut forms = vec![path.to_owned(), slashless(path), format!("{path}?x=1")];
-    forms.extend(suffixed_forms(path));
-    for form in &forms {
-        for method in METHODS {
-            let expected = matches!(method, Method::Get | Method::Head);
-            assert_eq!(provisions(method, form), expected, "{method} {form}");
+    for path in ["/api/network/me/", "/api/network/topology/"] {
+        let mut forms = vec![path.to_owned(), slashless(path), format!("{path}?x=1")];
+        forms.extend(suffixed_forms(path));
+        for form in &forms {
+            for method in METHODS {
+                let expected = matches!(method, Method::Get | Method::Head);
+                assert_eq!(provisions(method, form), expected, "{method} {form}");
+            }
         }
     }
     for path in [
@@ -590,6 +591,8 @@ fn the_network_summary_provisions_on_its_reads_and_nowhere_else() {
         "/api/network/me/x/",
         "/api/network/me//",
         "/api/network/peers/",
+        "/api/network/isolation/",
+        "/api/network/topology/x/",
         "/api/networks/me/",
         "/network/me/",
         "/api/network/me.tar.gz/",

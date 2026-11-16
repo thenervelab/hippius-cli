@@ -6,16 +6,27 @@
 //!
 //! Swagger documents no answer body for these routes and no page parameters, so a list
 //! is read whole: a bare array, or a page with no `next` link. A `next` link is `internal`
-//! rather than a short list printed as complete. None of these answers is documented to
-//! hold a secret. The routes that do, or may, issue one (a peer enrollment and the enroll
-//! keys) are left to `hipc api`, which guards the enrollment with `--reveal`.
+//! rather than a short list printed as complete. None of the answers here is documented, or
+//! shown by the console's network types, to hold a secret: the writes answer the group,
+//! policy, VPC network, resource, or router they made or changed, and the isolation switch
+//! the network's summary. The routes that do, or may, issue one (a peer enrollment and the
+//! enroll keys) are left to the console and `hipc api`, which guards the enrollment with
+//! `--reveal`.
+
+mod groups;
 
 use hippius::phrase::quote;
-use hippius::routes::{Route, network};
+use hippius::routes::account::NameBody;
+use hippius::routes::network::{self, IsolationBody, PolicyBody, ResourceBody, RouterCreateBody};
+use hippius::routes::{Route, RouteFlag};
 use hippius::{Error, ISSUES_URL, Request, Response, Result, view_of};
 use serde_json::{Value, json};
 
-use crate::cli::{Groups, Network, Peers, Policies, VpcResources, VpcRouters, Vpcs};
+use crate::cli::{
+    Groups, Isolation, IsolationMode, Network, Peers, Policies, PolicyAction, PolicyCreate,
+    PolicyFields, PolicyUpdate, Protocol, ResourceFields, ResourceKind, ResourceUpdate,
+    VpcResources, VpcRouters, Vpcs,
+};
 use crate::commands::{
     Printed, print_body, print_body_or, print_envelope, print_with, run_hint, set_up_first,
 };
@@ -92,24 +103,368 @@ fn dispatch(ctx: &Context<'_>, command: &Network) -> Result<Printed> {
             print_body(ctx, &ctx.load_authed_client()?, &request, creation_gate())
         }
         Network::Peers(command) => peers(ctx, command),
-        Network::Groups(Groups::List) => list(ctx, &network::GROUPS, "list the network's groups"),
-        Network::Policies(Policies::List) => {
-            list(ctx, &network::POLICIES, "list the network's policies")
+        Network::Groups(command) => groups(ctx, command),
+        Network::Policies(command) => policies(ctx, command),
+        Network::Vpcs(command) => vpcs(ctx, command),
+        Network::Isolation(command) => isolation(ctx, command),
+        Network::Topology => topology(ctx),
+    }
+}
+
+fn groups(ctx: &Context<'_>, command: &Groups) -> Result<Printed> {
+    match command {
+        Groups::List => list(ctx, &network::GROUPS, "list the network's groups"),
+        // A new group has no peers and no policy, so it changes no access: it is not gated
+        // (tenet 5), as a CDN list's create is not.
+        Groups::Create { name } => {
+            let request = Request::to(&network::GROUP_CREATE, [])
+                .json(&network::GroupCreateBody { label: name })
+                .about(format!("create the network group `{name}`"));
+            print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
-        Network::Vpcs(Vpcs::List) => list(ctx, &network::VPCS, "list the VPC networks"),
-        Network::Vpcs(Vpcs::Resources(VpcResources::List { vpc_id })) => list_of_vpc(
+        Groups::Update {
+            group_id,
+            peers,
+            remove_others,
+        } => groups::set_peers(ctx, *group_id, peers, *remove_others),
+        Groups::Delete { group_id } => {
+            let request = Request::to(&network::GROUP_DELETE, [group_id])
+                .listed_by("hipc network groups list")
+                .about(format!("delete the network group `{group_id}`"));
+            let gate = Gate::Confirm {
+                consequence: Some(GROUP_DELETED),
+            };
+            let done = json!({ "id": group_id, "deleted": true });
+            print_body_or(ctx, &ctx.load_authed_client()?, &request, gate, done)
+        }
+    }
+}
+
+fn policies(ctx: &Context<'_>, command: &Policies) -> Result<Printed> {
+    match command {
+        Policies::List => list(ctx, &network::POLICIES, "list the network's policies"),
+        Policies::Create(PolicyCreate {
+            source_group,
+            dest_group,
+            fields,
+        }) => {
+            let body = policy_body(fields, Some(*source_group), Some(*dest_group))?;
+            let request = Request::to(&network::POLICY_CREATE, [])
+                .json(&body)
+                .about(format!(
+                    "create a network policy from the group `{source_group}` to the group \
+                     `{dest_group}`"
+                ));
+            let gate = Gate::Confirm {
+                consequence: Some(ACCESS_CHANGES),
+            };
+            print_body(ctx, &ctx.load_authed_client()?, &request, gate)
+        }
+        Policies::Update(PolicyUpdate {
+            policy_id,
+            source_group,
+            dest_group,
+            fields,
+        }) => {
+            let body = policy_body(fields, *source_group, *dest_group)?;
+            let request = Request::to(&network::POLICY_UPDATE, [policy_id])
+                .json(&body)
+                .listed_by("hipc network policies list")
+                .about(format!(
+                    "change the network policy `{policy_id}`: {}",
+                    hippius::phrase::ticked(sent_keys(&body), "and")
+                ));
+            let gate = Gate::Confirm {
+                consequence: Some(ACCESS_CHANGES),
+            };
+            print_body(ctx, &ctx.load_authed_client()?, &request, gate)
+        }
+        Policies::Delete { policy_id } => {
+            let request = Request::to(&network::POLICY_DELETE, [policy_id])
+                .listed_by("hipc network policies list")
+                .about(format!("delete the network policy `{policy_id}`"));
+            let gate = Gate::Confirm {
+                consequence: Some(POLICY_DELETED),
+            };
+            let done = json!({ "id": policy_id, "deleted": true });
+            print_body_or(ctx, &ctx.load_authed_client()?, &request, gate, done)
+        }
+    }
+}
+
+/// The body of a policy create or update: the groups given and every field of `fields` that
+/// was. A port is sent only with a protocol that has ports, since `NetBird` ignores the ports
+/// of the others; an update must name the protocol too, as hipc does not read the one the
+/// policy has.
+///
+/// # Errors
+///
+/// `usage` when `--port` is given without `--protocol tcp` or `--protocol udp`.
+fn policy_body(
+    fields: &PolicyFields,
+    source_group: Option<u64>,
+    dest_group: Option<u64>,
+) -> Result<PolicyBody<'_>> {
+    let ports = (!fields.ports.is_empty()).then_some(fields.ports.as_slice());
+    if ports.is_some() && !fields.protocol.is_some_and(Protocol::has_ports) {
+        return Err(Error::usage(
+            "`--port` needs `--protocol tcp` or `--protocol udp`: the other protocols have no \
+             ports",
+            "pass `--protocol tcp` or `--protocol udp` with `--port`, or remove `--port`",
+        ));
+    }
+    Ok(PolicyBody {
+        name: fields.name.as_deref(),
+        source_group,
+        dest_group,
+        protocol: fields.protocol.map(Protocol::code),
+        ports,
+        bidirectional: fields.bidirectional,
+        action: fields.action.map(PolicyAction::code),
+        enabled: fields.enabled,
+    })
+}
+
+/// The top-level keys `body` sends, in the order it sends them: an update's question names
+/// what it changes, as the fields go out.
+fn sent_keys(body: &impl serde::Serialize) -> Vec<String> {
+    crate::commands::sent_fields(body)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect()
+}
+
+fn vpcs(ctx: &Context<'_>, command: &Vpcs) -> Result<Printed> {
+    match command {
+        Vpcs::List => list(ctx, &network::VPCS, "list the VPC networks"),
+        // A new VPC network has no resources and no routers, so it reaches nothing and changes
+        // no access: it is not gated (tenet 5).
+        Vpcs::Create { name } => {
+            let request = Request::to(&network::VPC_CREATE, [])
+                .json(&NameBody { name })
+                .about(format!("create the VPC network {}", quote(name)));
+            print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
+        }
+        Vpcs::Delete { vpc_id } => {
+            let request = Request::to(&network::VPC_DELETE, [vpc_id])
+                .listed_by("hipc network vpcs list")
+                .about(format!("delete the VPC network `{vpc_id}`"));
+            let gate = Gate::Confirm {
+                consequence: Some(VPC_DELETED),
+            };
+            let done = json!({ "id": vpc_id, "deleted": true });
+            print_body_or(ctx, &ctx.load_authed_client()?, &request, gate, done)
+        }
+        Vpcs::Resources(command) => resources(ctx, command),
+        Vpcs::Routers(command) => routers(ctx, command),
+    }
+}
+
+fn resources(ctx: &Context<'_>, command: &VpcResources) -> Result<Printed> {
+    match command {
+        VpcResources::List { vpc_id } => list_of_vpc(
             ctx,
             &network::VPC_RESOURCES,
             vpc_id,
             &format!("list the resources of the VPC network `{vpc_id}`"),
         ),
-        Network::Vpcs(Vpcs::Routers(VpcRouters::List { vpc_id })) => list_of_vpc(
+        VpcResources::Create {
+            vpc_id,
+            name,
+            address,
+            fields,
+        } => {
+            let body = resource_body(Some(name), Some(address), fields);
+            let request = Request::to(&network::VPC_RESOURCE_CREATE, [vpc_id])
+                .json(&body)
+                .listed_by("hipc network vpcs list")
+                .about(format!(
+                    "add the resource {} to the VPC network `{vpc_id}`",
+                    quote(address)
+                ));
+            let gate = Gate::Confirm {
+                consequence: Some(RESOURCE_REACHED),
+            };
+            print_body(ctx, &ctx.load_authed_client()?, &request, gate)
+        }
+        VpcResources::Update(ResourceUpdate {
+            vpc_id,
+            resource_id,
+            name,
+            address,
+            fields,
+        }) => {
+            let body = resource_body(name.as_deref(), address.as_deref(), fields);
+            let request = Request::to(&network::VPC_RESOURCE_UPDATE, [vpc_id, resource_id])
+                .json(&body)
+                .listed_by(format!("hipc network vpcs resources list {vpc_id}"))
+                .about(format!(
+                    "change the resource `{resource_id}` of the VPC network `{vpc_id}`: {}",
+                    hippius::phrase::ticked(sent_keys(&body), "and")
+                ));
+            let gate = Gate::Confirm {
+                consequence: Some(ACCESS_CHANGES),
+            };
+            print_body(ctx, &ctx.load_authed_client()?, &request, gate)
+        }
+        VpcResources::Delete {
+            vpc_id,
+            resource_id,
+        } => {
+            let request = Request::to(&network::VPC_RESOURCE_DELETE, [vpc_id, resource_id])
+                .listed_by(format!("hipc network vpcs resources list {vpc_id}"))
+                .about(format!(
+                    "remove the resource `{resource_id}` from the VPC network `{vpc_id}`"
+                ));
+            let gate = Gate::Confirm {
+                consequence: Some(RESOURCE_REMOVED),
+            };
+            let done = json!({ "id": resource_id, "vpc_id": vpc_id, "deleted": true });
+            print_body_or(ctx, &ctx.load_authed_client()?, &request, gate, done)
+        }
+    }
+}
+
+/// The body of a resource create or update: every field given.
+fn resource_body<'a>(
+    name: Option<&'a str>,
+    address: Option<&'a str>,
+    fields: &'a ResourceFields,
+) -> ResourceBody<'a> {
+    ResourceBody {
+        name,
+        address,
+        kind: fields.kind.map(ResourceKind::code),
+        groups: (!fields.groups.is_empty()).then_some(fields.groups.as_slice()),
+    }
+}
+
+fn routers(ctx: &Context<'_>, command: &VpcRouters) -> Result<Printed> {
+    match command {
+        VpcRouters::List { vpc_id } => list_of_vpc(
             ctx,
             &network::VPC_ROUTERS,
             vpc_id,
             &format!("list the routers of the VPC network `{vpc_id}`"),
         ),
+        VpcRouters::Create {
+            vpc_id,
+            peer,
+            masquerade,
+            metric,
+        } => {
+            let body = RouterCreateBody {
+                peer: *peer,
+                masquerade: *masquerade,
+                metric: *metric,
+            };
+            let request = Request::to(&network::VPC_ROUTER_CREATE, [vpc_id])
+                .json(&body)
+                .listed_by("hipc network vpcs list")
+                .about(format!(
+                    "make the peer `{peer}` a router of the VPC network `{vpc_id}`"
+                ));
+            let gate = Gate::Confirm {
+                consequence: Some(ROUTED_THROUGH),
+            };
+            print_body(ctx, &ctx.load_authed_client()?, &request, gate)
+        }
+        VpcRouters::Delete { vpc_id, router_id } => {
+            let request = Request::to(&network::VPC_ROUTER_DELETE, [vpc_id, router_id])
+                .listed_by(format!("hipc network vpcs routers list {vpc_id}"))
+                .about(format!(
+                    "remove the router `{router_id}` from the VPC network `{vpc_id}`"
+                ));
+            let gate = Gate::Confirm {
+                consequence: Some(ROUTER_REMOVED),
+            };
+            let done = json!({ "id": router_id, "vpc_id": vpc_id, "deleted": true });
+            print_body_or(ctx, &ctx.load_authed_client()?, &request, gate, done)
+        }
     }
+}
+
+fn isolation(ctx: &Context<'_>, command: &Isolation) -> Result<Printed> {
+    match command {
+        Isolation::Get => {
+            let request =
+                Request::to(&network::ISOLATION, []).about("get the network's isolation mode");
+            print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
+        }
+        Isolation::Update {
+            mode,
+            change_isolation,
+        } => {
+            require_change_isolation(ctx, *change_isolation)?;
+            let request = Request::to(&network::ISOLATION_UPDATE, [])
+                .json(&IsolationBody {
+                    isolation_mode: mode.code(),
+                })
+                .about(format!(
+                    "switch the private network's isolation to `{}`",
+                    mode.code()
+                ));
+            let gate = Gate::Confirm {
+                consequence: Some(isolation_consequence(*mode)),
+            };
+            print_body(ctx, &ctx.load_authed_client()?, &request, gate)
+        }
+    }
+}
+
+/// Refuses an isolation switch without `--change-isolation`, as `hipc api` refuses the
+/// route: the one flag of the route's row, so the two cannot drift. A dry run sends nothing,
+/// so it needs no flag (tenet 5). It comes before the config file is read, as `--public`
+/// does.
+fn require_change_isolation(ctx: &Context<'_>, change_isolation: bool) -> Result<()> {
+    debug_assert_eq!(
+        network::ISOLATION_UPDATE.endpoint().guard(),
+        hippius::routes::Guard::Needs(&[RouteFlag::ChangeIsolation]),
+        "the curated switch asks for the flag the route's row names"
+    );
+    if change_isolation || ctx.dry_run() {
+        return Ok(());
+    }
+    Err(Error::change_isolation_required(ctx.args()))
+}
+
+/// What a switch to `mode` does, for its question.
+fn isolation_consequence(mode: IsolationMode) -> &'static str {
+    match mode {
+        IsolationMode::AllowIntra => {
+            "every peer of the network can reach every other, and policies can only widen that"
+        }
+        IsolationMode::DenyIntra => {
+            "peers reach each other only where a policy allows it, and every other connection \
+             between them closes"
+        }
+    }
+}
+
+/// `hipc network topology`: the group list first, which answers 403 when the network was
+/// never set up and creates nothing, then the topology, whose first read for an account
+/// would create the network (its row `provisions`). After the group list answered, the
+/// network exists, so the topology read creates nothing either and is sent as a read: it
+/// needs no confirmation, and a failure of it has no side effects.
+fn topology(ctx: &Context<'_>) -> Result<Printed> {
+    let client = ctx.load_authed_client()?;
+    let (probe, read) = topology_reads();
+    if ctx.dry_run() {
+        return ctx.dry_run_of(&client, &[&probe, &read]).map(Printed::from);
+    }
+    ctx.send(&client, &probe)?;
+    let body = ctx.send(&client, &read)?.document()?;
+    Ok(Printed::Document(body))
+}
+
+/// The two reads of [`topology`], each named: the group list that shows the network exists,
+/// and the topology read, sent as a read once it does.
+pub(super) fn topology_reads() -> (Request, Request) {
+    let probe = Request::to(&network::GROUPS, []).about("list the network's groups");
+    let read = Request::to(&network::TOPOLOGY, [])
+        .changes_nothing()
+        .about("read the network's topology");
+    (probe, read)
 }
 
 fn peers(ctx: &Context<'_>, command: &Peers) -> Result<Printed> {
@@ -207,3 +562,32 @@ fn list_of_vpc(ctx: &Context<'_>, route: &Route<1>, vpc_id: &str, action: &str) 
 
 /// What a peer removal ends, for its question and `hipc api`'s.
 pub(crate) const PEER_REMOVED: &str = "it loses its access to the private network";
+
+/// What a group delete ends, for its question and `hipc api`'s.
+pub(crate) const GROUP_DELETED: &str =
+    "its peers lose the access its policies give them, and a group made again gets a new id";
+
+/// What a policy delete ends, for its question and `hipc api`'s.
+pub(crate) const POLICY_DELETED: &str =
+    "the traffic it allowed is no longer allowed by it, and traffic it dropped may pass";
+
+/// What a VPC network delete ends, for its question and `hipc api`'s.
+pub(crate) const VPC_DELETED: &str = "peers lose the routes it gave them to its resources";
+
+/// What a resource removal ends, for its question and `hipc api`'s.
+pub(crate) const RESOURCE_REMOVED: &str = "peers lose their route to it";
+
+/// What a router removal ends, for its question and `hipc api`'s.
+pub(crate) const ROUTER_REMOVED: &str = "the VPC network's traffic no longer goes through that \
+                                         peer, and with no router left its resources are out of \
+                                         reach";
+
+/// What a policy create or update, or a resource update, does, for its question.
+const ACCESS_CHANGES: &str = "it changes which peers of the network can reach what";
+
+/// What a resource create does, for its question.
+const RESOURCE_REACHED: &str =
+    "the peers of its groups can reach it through the VPC network's routers";
+
+/// What a router create does, for its question.
+const ROUTED_THROUGH: &str = "the VPC network's traffic goes through that peer";
