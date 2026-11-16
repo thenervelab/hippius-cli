@@ -161,7 +161,7 @@ fn a_route_that_does_not_take_the_selector_is_refused_with_nothing_sent() {
             "`DELETE /api/compute/vms/vm-1/` does not take a billing account",
         ),
         (
-            &["--billing", BILLING, "billing", "transactions"],
+            &["--billing", BILLING, "billing", "transactions", "list"],
             "billing_scope_unsupported",
             "`GET /api/billing/transactions/` does not take a billing account",
         ),

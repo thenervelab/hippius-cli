@@ -7,11 +7,12 @@
 //! stay in `hippius-hub`, and `hipc` never shells out to it.
 
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use hippius::routes::{API_BASE, Paging, Route, hub};
 use hippius::{
-    CHECK_FIRST_HINT, Client, Code, ConfigFile, Error, Failure, HubMarker, Request, Result,
-    SideEffects, Source, phrase, view_of,
+    CHECK_FIRST_HINT, Client, Code, ConfigFile, Error, Failure, HubMarker, Now, Request, Response,
+    Result, SideEffects, Source, phrase, view_of,
 };
 use serde_json::{Map, Value, json};
 
@@ -264,7 +265,10 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
     let confirmed = ctx.confirm_write(checked, &action, Some(PayFrom::Credits.how()))?;
     let plans = read_list(ctx, &client, &plans)?;
     let plan_id = resolve_plan(&plans, &args.plan)?;
-    let subscriptions = read_list(ctx, &client, &subscriptions)?;
+    let answer = ctx.send(&client, &subscriptions)?;
+    let action = "check the Hub subscribe marker";
+    let now = Now::of(answer.date(), SystemTime::now(), action)?;
+    let subscriptions = rows_of(&answer, &subscriptions)?;
     let paid = active_paid(&plans, &subscriptions)?;
     if !paid.is_empty() && !args.replace {
         return Err(Error::replace_required(
@@ -275,7 +279,7 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
             ctx.args(),
         ));
     }
-    let mark = Mark::set(ctx, &client, &settings.profile, &paid)?;
+    let mark = Mark::set(ctx, &client, &settings.profile, &paid, now)?;
     let mut cancelled = Vec::new();
     for id in &paid {
         let request = Request::to(&hub::SUBSCRIPTION_CANCEL, [id])
@@ -307,17 +311,69 @@ fn subscribe(ctx: &Context<'_>, args: &HubSubscribe) -> Result<Printed> {
     }
 }
 
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
+/// The time a marker set `now` records: the later reading, the later of the local clock and
+/// the subscriptions read's `Date` ([`age`] says why).
+fn marker_at(now: Now) -> u64 {
+    now.latest
+}
+
+/// Where a marker stands against the window at a time `now` read from two clocks ([`age`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Age {
+    /// At least [`MARKER_SECONDS`] old by the earlier reading, so by both: it no longer blocks.
+    Expired,
+    /// Less than [`MARKER_SECONDS`] old by the later reading, and dated at most that far after
+    /// it: it blocks, and waiting a few minutes is the way out.
+    Recent,
+    /// Dated more than [`MARKER_SECONDS`] after both readings, as a clock that stepped back
+    /// leaves it: it blocks, and waiting it out could take hours.
+    Ahead,
+    /// At least [`MARKER_SECONDS`] old by the later reading but not by the earlier: the local
+    /// clock and the `Date` disagree by more than the rest of the window, or one has stopped.
+    /// It blocks, and waiting may never end.
+    Disputed,
+}
+
+/// Where a marker dated `at` stands `now`.
+///
+/// A marker is dated by the later reading of the time it was set ([`marker_at`]) and expires
+/// only once the earlier reading of `now` is [`MARKER_SECONDS`] past that. So its age is never
+/// more than the local clock says, as a marker 0.16 dated by the local clock alone was aged,
+/// nor, when both runs read a `Date`, more than the `Date`s say: a clock that steps forward
+/// between two such runs (an NTP correction), a local clock that runs fast, or a `Date` ahead
+/// of time cannot end the window early. A run whose answer has no `Date`, or one that is not
+/// an IMF-fixdate, has only the local clock, as in 0.16. The cost is the other side: while the
+/// two clocks disagree, the window is longer by the difference.
+///
+/// A marker that still blocks is never left to be waited out for ever. Once the later reading
+/// puts it past the window while the earlier does not ([`Age::Disputed`], a `Date` that stopped
+/// or a clock far off), or it is dated more than the window after both readings
+/// ([`Age::Ahead`]), the refusal names the field to remove once the list shows the subscribe.
+/// Both take the later reading, so a `Date` that was fast when the marker was set reads as
+/// [`Age::Recent`], a wait, for the window's length by that `Date`, not as an invitation to
+/// remove a subscribe a minute old.
+fn age(at: u64, now: Now) -> Age {
+    if now
+        .earliest
+        .checked_sub(at)
+        .is_some_and(|age| age >= MARKER_SECONDS)
+    {
+        Age::Expired
+    } else if at.saturating_sub(now.latest) > MARKER_SECONDS {
+        Age::Ahead
+    } else if now.latest.saturating_sub(at) >= MARKER_SECONDS {
+        Age::Disputed
+    } else {
+        Age::Recent
+    }
 }
 
 /// The double-subscribe marker one run set. A new subscription shows in the list
 /// only after its block is confirmed, so a subscribe sent in the last minutes is invisible
 /// to the paid-plan guard. The marker covers that window: it is checked and set in one
 /// locked edit, so two subscribes at once cannot both pass, and it is keyed by API origin
-/// and token, so another origin or token on the same profile name is not blocked.
+/// and token, so another origin or token on the same profile name is not blocked. Its time
+/// is read from two clocks, as [`age`] says.
 struct Mark {
     path: PathBuf,
     profile: String,
@@ -353,9 +409,17 @@ impl Mark {
     /// before the window as active: an id outside `cancels` is then taken for the plan bought
     /// in the window. The POST answer names no subscription id, so hipc cannot tell the two
     /// apart; it takes the list to move forward.
-    fn set(ctx: &Context<'_>, client: &Client, profile: &str, paid: &[u64]) -> Result<Self> {
+    ///
+    /// `now` is the time of the subscriptions read, which dates this run's marker and ages the
+    /// others ([`age`]).
+    fn set(
+        ctx: &Context<'_>,
+        client: &Client,
+        profile: &str,
+        paid: &[u64],
+        now: Now,
+    ) -> Result<Self> {
         let path = context::config_path()?;
-        let at = unix_now();
         let key = client.identity();
         let (previous, marker) = ConfigFile::edit(path.clone(), |config| {
             let previous = config.hub_marker(profile).cloned();
@@ -365,12 +429,7 @@ impl Mark {
             // blocks, however far: a refused repeat is the safe side.
             let in_window: Vec<(String, HubMarker)> = config
                 .hub_markers()
-                .filter(|(_, old)| {
-                    old.key() == key
-                        && at
-                            .checked_sub(old.at())
-                            .is_none_or(|age| age < MARKER_SECONDS)
-                })
+                .filter(|(_, old)| old.key() == key && age(old.at(), now) != Age::Expired)
                 .map(|(name, old)| (name.to_owned(), old.clone()))
                 .collect();
             let mut cancels: Vec<u64> = Vec::new();
@@ -398,33 +457,41 @@ impl Mark {
                         )
                     }
                 };
-                // A marker further ahead of the clock than the window is from a clock that
-                // stepped back by more than a few minutes; waiting it out could take hours.
-                // The marker still blocks, the safe side, and the hint names the field to
-                // remove once the list shows the last subscribe.
-                if let Some((owner, _)) = in_window
-                    .iter()
-                    .find(|(_, old)| old.at().saturating_sub(at) > MARKER_SECONDS)
-                {
+                // A marker the clocks may never age out is not waited out: it still blocks,
+                // the safe side, and the hint names the field to remove once the list shows
+                // the last subscribe.
+                let window = phrase::count(MARKER_SECONDS / 60, "minute");
+                let stuck = in_window.iter().find_map(|(owner, old)| {
+                    let message = match age(old.at(), now) {
+                        Age::Expired | Age::Recent => return None,
+                        Age::Ahead => format!(
+                            "the Hub subscribe marker of {} is dated after the clock, so it \
+                             blocks a subscribe until {window} after that date; subscribing \
+                             again could charge twice",
+                            sent_from(owner)
+                        ),
+                        Age::Disputed => format!(
+                            "the system clock and the API's `Date` disagree on the age of the \
+                             Hub subscribe marker of {}: one puts it {window} or more in the \
+                             past and the other does not, so it blocks a subscribe until both \
+                             do; subscribing again could charge twice",
+                            sent_from(owner)
+                        ),
+                    };
+                    Some((owner, message))
+                });
+                if let Some((owner, message)) = stuck {
                     let marker = Source::Profile {
                         field: "hub_subscribe",
                         profile: owner.clone(),
                         path: path.clone(),
                     };
-                    return Err(Error::replace_required(
-                        format!(
-                            "the Hub subscribe marker of {} is dated after the clock, so it \
-                             blocks a subscribe until {} after that date; subscribing again \
-                             could charge twice",
-                            sent_from(owner),
-                            phrase::count(MARKER_SECONDS / 60, "minute")
-                        ),
-                        ctx.args(),
-                    )
-                    .with_hint(format!(
-                        "remove {marker}, once `hipc hub subscription get` lists the last \
+                    return Err(
+                        Error::replace_required(message, ctx.args()).with_hint(format!(
+                            "remove {marker}, once `hipc hub subscription get` lists the last \
                          subscribe"
-                    )));
+                        )),
+                    );
                 }
                 // This profile is named when it sent one, else the first that did.
                 let owner = in_window
@@ -447,7 +514,7 @@ impl Mark {
                 )
                 .with_hint("wait a few minutes, then run `hipc hub subscription get`"));
             }
-            let marker = HubMarker::new(at, key, cancels);
+            let marker = HubMarker::new(marker_at(now), key, cancels);
             config.set_hub_marker(profile, Some(marker.clone()));
             Ok((previous, marker))
         })?;
@@ -548,7 +615,12 @@ fn subscriptions_named(ids: &[u64]) -> String {
 /// Sends `request`, a GET whose answer is a list, after the command's dry-run check and
 /// confirmation.
 fn read_list(ctx: &Context<'_>, client: &Client, request: &Request) -> Result<Vec<Value>> {
-    hippius::page(ctx.send(client, request)?.json()?)?.into_complete(request.target())
+    rows_of(&ctx.send(client, request)?, request)
+}
+
+/// The rows of `answer`, the whole list `request` read.
+fn rows_of(answer: &Response, request: &Request) -> Result<Vec<Value>> {
+    hippius::page(answer.json()?)?.into_complete(request.target())
 }
 
 /// The plan id for a numeric id or a name in any case, from the catalog.
@@ -1166,3 +1238,203 @@ fn provision(
 pub(crate) const CANCELLED: &str = "the namespace stays available for a 30-day grace period, \
                                     and subscribing again within it keeps everything; when it \
                                     ends, the namespace and everything in it are deleted for good";
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use super::*;
+
+    /// 2026-11-03 10:00:00 UTC. Each reading is given in seconds from it.
+    const T: u64 = 1_793_700_000;
+
+    /// The time now as a run reads it: the API's `Date`, `date` seconds from [`T`], when the
+    /// answer has one, and the local clock `local` seconds from [`T`]. The two are independent,
+    /// so either can be ahead, behind, or stopped.
+    fn read(date: Option<i64>, local: i64) -> Now {
+        let date = date.map(|offset| {
+            let clock = (10 * 3_600_i64 + offset).unsigned_abs();
+            assert!(
+                (-36_000..50_400).contains(&offset),
+                "the dates stay on one day"
+            );
+            format!(
+                "Tue, 03 Nov 2026 {:02}:{:02}:{:02} GMT",
+                clock / 3_600,
+                clock / 60 % 60,
+                clock % 60
+            )
+        });
+        let local = T.checked_add_signed(local).expect("a time after 1970");
+        Now::of(
+            date.as_deref(),
+            UNIX_EPOCH + Duration::from_secs(local),
+            "test",
+        )
+        .expect("the local clock is after 1970")
+    }
+
+    /// Where the marker a run set at `first` stands at `second`, dated as [`Mark::set`] dates it.
+    fn age_at(first: Now, second: Now) -> Age {
+        age(marker_at(first), second)
+    }
+
+    const WINDOW: i64 = 600;
+
+    #[test]
+    fn the_window_is_ten_minutes() {
+        assert_eq!(MARKER_SECONDS, WINDOW.unsigned_abs());
+    }
+
+    #[test]
+    fn without_a_date_the_window_is_the_local_clocks() {
+        let first = read(None, 0);
+        assert_eq!(marker_at(first), T);
+        assert_eq!(age_at(first, read(None, 0)), Age::Recent);
+        assert_eq!(age_at(first, read(None, WINDOW - 1)), Age::Recent);
+        assert_eq!(age_at(first, read(None, WINDOW)), Age::Expired);
+        // The clock stepped back: a few minutes is a wait, further is the field to remove.
+        assert_eq!(age_at(first, read(None, -1)), Age::Recent);
+        assert_eq!(age_at(first, read(None, -WINDOW)), Age::Recent);
+        assert_eq!(age_at(first, read(None, -WINDOW - 1)), Age::Ahead);
+        assert_eq!(age_at(first, read(None, -86_400)), Age::Ahead);
+    }
+
+    /// Issue 27: a local clock 20 minutes slow on the first run and set right before the
+    /// second (an NTP correction) aged the marker out a minute later by the local clock alone.
+    /// The first run's `Date` dates the marker, so the window is the API's 10 minutes.
+    #[test]
+    fn a_forward_step_of_the_local_clock_does_not_end_the_window() {
+        let first = read(Some(0), -1_200);
+        assert_eq!(marker_at(first), T);
+        assert_eq!(age_at(first, read(Some(60), 60)), Age::Recent);
+        assert_eq!(
+            age_at(first, read(Some(WINDOW - 1), WINDOW - 1)),
+            Age::Recent
+        );
+        assert_eq!(age_at(first, read(Some(WINDOW), WINDOW)), Age::Expired);
+        // Stepped forward by an hour between two runs that both read a `Date`: it still blocks,
+        // and as the local clock has the window, the refusal names the field to remove.
+        assert_eq!(
+            age_at(read(Some(0), 0), read(Some(60), 3_660)),
+            Age::Disputed
+        );
+        // Without a `Date` on the second run there is only the local clock, as in 0.16.
+        assert_eq!(age_at(read(Some(0), 0), read(None, 3_660)), Age::Expired);
+    }
+
+    /// A `Date` 20 minutes fast when the marker is set dates it 20 minutes ahead. While the
+    /// `Date` is read, the next run is told to wait, not to remove a subscribe a minute old; once
+    /// the `Date` puts it 10 minutes old and the local clock does not, the clocks disagree.
+    #[test]
+    fn a_fast_date_on_the_first_run_is_a_wait_until_the_window_has_passed_by_it() {
+        let first = read(Some(1_200), 0);
+        assert_eq!(marker_at(first), T + 1_200);
+        assert_eq!(age_at(first, read(Some(1_260), 60)), Age::Recent);
+        assert_eq!(
+            age_at(first, read(Some(1_200 + WINDOW - 1), WINDOW - 1)),
+            Age::Recent
+        );
+        assert_eq!(
+            age_at(first, read(Some(1_200 + WINDOW), WINDOW)),
+            Age::Disputed
+        );
+        // It expires only once the local clock, the slower one, has the window too.
+        assert_eq!(age_at(first, read(Some(2_399), 1_799)), Age::Disputed);
+        assert_eq!(age_at(first, read(Some(2_400), 1_800)), Age::Expired);
+        // A run that reads no `Date` has only the local clock, 20 minutes behind the marker.
+        assert_eq!(age_at(first, read(None, 60)), Age::Ahead);
+    }
+
+    /// A `Date` 20 minutes slow leaves the local clock's time on the marker, and the window by
+    /// the local clock is a wait; past it, the `Date` still puts the marker in the future.
+    #[test]
+    fn a_slow_date_is_a_wait_by_the_local_clock_then_disputed() {
+        let first = read(Some(-1_200), 0);
+        assert_eq!(marker_at(first), T);
+        assert_eq!(age_at(first, read(Some(-1_140), 60)), Age::Recent);
+        assert_eq!(
+            age_at(first, read(Some(-WINDOW - 1), WINDOW - 1)),
+            Age::Recent
+        );
+        assert_eq!(age_at(first, read(Some(-WINDOW), WINDOW)), Age::Disputed);
+        assert_eq!(age_at(first, read(Some(WINDOW), 1_800)), Age::Expired);
+    }
+
+    /// A local clock an hour slow: the marker is dated by the `Date`. Read with the `Date`, it is
+    /// a wait and then disputed; read without one, it is an hour ahead of the clock.
+    #[test]
+    fn a_slow_local_clock_is_ahead_without_a_date() {
+        let first = read(Some(0), -3_600);
+        assert_eq!(marker_at(first), T);
+        assert_eq!(age_at(first, read(Some(60), -3_540)), Age::Recent);
+        assert_eq!(age_at(first, read(Some(WINDOW), -3_000)), Age::Disputed);
+        assert_eq!(age_at(first, read(None, -3_540)), Age::Ahead);
+    }
+
+    /// A `Date` that has stopped, before the marker's time, at it, or after it inside the
+    /// window, never ages the marker out, and once the local clock has the window the refusal
+    /// stops saying to wait: 0.16 would have let the subscribe through there.
+    #[test]
+    fn a_stopped_date_is_never_waited_out() {
+        for stopped in [-WINDOW + 1, -300, 0] {
+            let first = read(Some(stopped), 0);
+            assert_eq!(marker_at(first), T, "{stopped}");
+            assert_eq!(age_at(first, read(Some(stopped), WINDOW - 1)), Age::Recent);
+            for local in [WINDOW, 3_600, 86_400] {
+                let second = read(Some(stopped), local);
+                assert_eq!(age_at(first, second), Age::Disputed, "{stopped} {local}");
+            }
+        }
+        // Stopped after a marker the local clock dated alone, inside its window.
+        let first = read(None, 0);
+        for local in [WINDOW, 86_400] {
+            assert_eq!(
+                age_at(first, read(Some(300), local)),
+                Age::Disputed,
+                "{local}"
+            );
+        }
+    }
+
+    /// For every reading of either run, a marker expires no sooner than by the local clock alone
+    /// (0.16's rule) or, when both runs read a `Date`, by the `Date` alone; and a marker the later
+    /// clock puts at least the window in the past, or that is more than the window ahead of
+    /// both, is never a wait.
+    #[test]
+    fn the_window_is_never_shorter_than_by_either_clock_nor_a_wait_for_ever() {
+        let offsets = [
+            -3_600, -1_200, -601, -600, -599, -1, 0, 1, 599, 600, 601, 1_200, 3_600,
+        ];
+        let dates = offsets.map(Some).into_iter().chain([None]);
+        for first_date in dates.clone() {
+            for first_local in offsets {
+                let first = read(first_date, first_local);
+                let at = marker_at(first);
+                for second_date in dates.clone() {
+                    for second_local in offsets {
+                        let second = read(second_date, second_local);
+                        let age = age_at(first, second);
+                        let case = format!(
+                            "{first_date:?} {first_local} -> \
+                             {second_date:?} {second_local}: {age:?}"
+                        );
+                        let by_local = second_local - first_local;
+                        let by_date = first_date.zip(second_date).map(|(a, b)| b - a);
+                        if age == Age::Expired {
+                            assert!(by_local >= WINDOW, "{case}");
+                            assert!(by_date.is_none_or(|by_date| by_date >= WINDOW), "{case}");
+                        }
+                        let later = second.latest.cast_signed() - at.cast_signed();
+                        if !(-WINDOW..WINDOW).contains(&later) {
+                            assert_ne!(age, Age::Recent, "{case}");
+                        }
+                        if age == Age::Ahead {
+                            assert!(later < -WINDOW, "{case}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

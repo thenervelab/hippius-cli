@@ -42,8 +42,9 @@ pub(crate) enum Cdn {
     Zones(CdnZones),
     /// A zone's monthly spend cap, in credits (1 credit = $1)
     ///
-    /// The cap counts the zone's traffic, requests, custom hostnames, and WAF add-on. At the cap
-    /// the zone is paused: every request, on its default hostname and its custom ones, is
+    /// The cap counts the zone's traffic, requests, custom hostnames, and WAF add-on. A request
+    /// the WAF blocks or rate-limits is never billed and does not count toward the cap. At the
+    /// cap the zone is paused: every request, on its default hostname and its custom ones, is
     /// answered 503 and nothing more is billed, until the cap is raised above the month's spend
     /// or the next month starts.
     #[command(subcommand)]
@@ -81,6 +82,9 @@ pub(crate) enum Cdn {
     Stats(CdnStats),
     /// A zone's web application firewall: its settings, custom rules, rate limits, and
     /// versions; billed while its mode is not off
+    ///
+    /// A request the WAF blocks or rate-limits is never billed and does not count toward the
+    /// zone's spend cap.
     #[command(subcommand, after_help = examples_with_guide(&[
         "hipc cdn waf get zab12cd34ef56",
         "hipc cdn waf update zab12cd34ef56 --mode log --yes",

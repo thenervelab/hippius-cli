@@ -214,11 +214,13 @@ const NOT_READ_WHOLE: &[(&str, &str)] = &[
 /// `/drive/subscription/history/`, `/s3/subscription/history/`, `/ssh-keys/`, `/support/tickets/`,
 /// `/support/tickets/{id}/messages/`), by `continuation_token`
 /// (`/objectstore/buckets/{name}/objects/`), by the `before` cursor at a fixed size
-/// (`/runners/jobs/`, no `--limit`), and by `page` and `page_size` with the next page worked out
-/// from `total` (`/models/` and a model's versions, `hub_models.rs`).
+/// (`/runners/jobs/`, and `/accounts/audit/` as the console pages it, no `--limit`), and by
+/// `page` and `page_size` with the next page worked out from `total` (`/models/` and a model's
+/// versions, `hub_models.rs`).
 const PAGED: &[(&str, &[&str])] = &[
+    ("account audit-trail", &["--page-token", "--all"]),
     (
-        "billing transactions",
+        "billing transactions list",
         &["--limit", "--page-token", "--all"],
     ),
     (
@@ -261,7 +263,10 @@ const PAGED: &[(&str, &[&str])] = &[
 /// The lists paged by `page` and `page_size`, with their routes: the ones `--page-token`
 /// asks for a page number on.
 const PAGED_BY_NUMBER: &[(&[&str], &str)] = &[
-    (&["billing", "transactions"], "/api/billing/transactions/"),
+    (
+        &["billing", "transactions", "list"],
+        "/api/billing/transactions/",
+    ),
     (&["billing", "invoices", "list"], "/api/billing/invoices/"),
     (
         &["billing", "gamma", "conversions", "list"],

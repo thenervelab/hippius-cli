@@ -1277,7 +1277,7 @@ mod tests {
                 "unexpected argument `a 1..2 b` found",
             ),
             (
-                &["hipc", "billing", "transactions", "--limit", "0"],
+                &["hipc", "billing", "transactions", "list", "--limit", "0"],
                 "invalid value `0` for `--limit <LIMIT>`: 0 is not in `1..=500`",
             ),
             // An apostrophe inside a refused word stays; the quotes around it change.
@@ -1326,6 +1326,7 @@ mod tests {
                     "hipc",
                     "billing",
                     "transactions",
+                    "list",
                     "--limit",
                     "1\n\nUsage: x",
                 ],

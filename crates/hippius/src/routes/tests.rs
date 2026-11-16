@@ -367,6 +367,7 @@ const WRITTEN_OUT: &[(&str, &str)] = &[
     ("GET", "/api/accounts/members/"),
     ("PATCH", "/api/accounts/members/{member_id}/"),
     ("DELETE", "/api/accounts/members/{member_id}/"),
+    ("GET", "/api/accounts/audit/"),
     ("GET", "/api/accounts/invites/"),
     ("POST", "/api/accounts/invites/"),
     ("DELETE", "/api/accounts/invites/{invite_id}/"),
@@ -415,6 +416,7 @@ const WRITTEN_OUT: &[(&str, &str)] = &[
     // billing
     ("GET", "/api/billing/credits/balance/"),
     ("GET", "/api/billing/transactions/"),
+    ("GET", "/api/billing/transactions/{transaction_id}/"),
     ("GET", "/api/billing/invoices/"),
     ("GET", "/api/billing/invoices/{invoice_id}/pdf/"),
     ("GET", "/api/billing/profile/"),
@@ -425,6 +427,7 @@ const WRITTEN_OUT: &[(&str, &str)] = &[
     ("POST", "/api/billing/auto-reload/card-setup/"),
     ("GET", "/api/billing/stripe/active-subscription/"),
     ("POST", "/api/billing/stripe/create-checkout-session/"),
+    ("GET", "/api/billing/stripe/checkout-status/"),
     ("POST", "/api/billing/btcpay/create-invoice/"),
     ("GET", "/api/billing/native/quote/"),
     ("POST", "/api/billing/native/buy/"),

@@ -77,7 +77,8 @@ pub(crate) use crate::cli::backups::{
 };
 pub(crate) use crate::cli::billing::{
     AutoReload, AutoReloadUpdate, Billing, BillingProfile, CHAIN_MINIMUM, Gamma, GammaConversions,
-    GammaHotkeys, Invoices, ProfileUpdate, ReloadCap, TopUp, TopUpMethod, conversion_id,
+    GammaHotkeys, Invoices, ProfileUpdate, ReloadCap, TopUp, TopUpMethod, Transactions,
+    conversion_id,
 };
 pub(crate) use crate::cli::cdn::{
     Cdn, CdnCap, CdnEstimate, CdnHostnames, CdnPurge, CdnPurges, CdnRules, CdnStats, CdnZones,
@@ -423,10 +424,11 @@ pub(crate) enum Command {
     /// App Engine apps, managed databases and Kubernetes, GitHub Actions runners, and SSH keys
     ///
     /// hipc does not open SSH; use ssh for that. A launch attaches a public IPv4 only with
-    /// --public-ip; hipc compute public-ip create attaches one to a VM that exists. A project's
-    /// monthly budget, hipc account projects budget update, mails alerts and, with
-    /// --block-launches true, refuses new launches that add cost at its limit; it does not stop
-    /// a VM that runs.
+    /// --public-ip; hipc compute public-ip create attaches one to a VM that exists. The balance
+    /// is not a spending cap: an hour it cannot pay becomes debt the account owes, and VMs keep
+    /// running. A project's monthly budget, hipc account projects budget update, is what limits
+    /// a month: it mails alerts and, with --block-launches true, refuses new launches that add
+    /// cost at its limit; it does not stop a VM that runs.
     #[command(subcommand)]
     #[command(after_help = examples_with_guide(COMPUTE_EXAMPLES, "/use/compute"))]
     Compute(Compute),
