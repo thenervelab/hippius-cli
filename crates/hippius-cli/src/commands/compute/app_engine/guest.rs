@@ -46,7 +46,10 @@ pub(super) fn update(ctx: &Context<'_>, target: &AppTarget) -> Result<Printed> {
     let read = guest_read(vm_id);
     let draft = guest_draft(vm_id);
     let checked = match ctx.check_write(&client, &WritePlan::new(&[&read], &draft))? {
-        Write::DryRun(doc) => return Ok(doc.into()),
+        // The guest components are read before the question, which names the releases.
+        Write::DryRun(doc) => {
+            return Ok(doc.reads_first(ctx.describe(&client, &read)?).into());
+        }
         Write::Checked(checked) => checked,
     };
     let components = read_components(ctx, &client, &read)?;

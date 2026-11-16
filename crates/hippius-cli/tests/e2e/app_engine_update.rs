@@ -375,8 +375,9 @@ fn without_yes_the_update_is_refused_after_the_read() {
     }
 }
 
-/// The dry run sends nothing. Compose lists the app read, validate, then the PUT; secrets
-/// alone list the app read then the PUT, with a placeholder for each value.
+/// The dry run sends nothing. Compose lists the app read as `reads_first`, validate, then
+/// the PUT; secrets alone list the app read as `reads_first` then the PUT, with a
+/// placeholder for each value.
 #[test]
 fn the_dry_run_lists_the_read_and_the_put_with_placeholders() {
     let files = files();
@@ -400,6 +401,7 @@ fn the_dry_run_lists_the_read_and_the_put_with_placeholders() {
     );
     assert_eq!(both["requests"].as_array().unwrap().len(), 3);
     assert!(both["requests"][0]["url"].as_str().unwrap().ends_with(APP));
+    assert_eq!(both["reads_first"], both["requests"][0]);
     assert!(
         both["requests"][1]["url"]
             .as_str()
@@ -419,6 +421,7 @@ fn the_dry_run_lists_the_read_and_the_put_with_placeholders() {
             .unwrap()
             .ends_with(APP)
     );
+    assert_eq!(secrets["reads_first"], secrets["requests"][0]);
     assert_eq!(
         draft(&secrets)["body"],
         json!({
@@ -1147,8 +1150,8 @@ fn an_upgrade_already_in_flight_is_refused_before_the_question() {
     assert_eq!(server.requests()[1].method, "POST");
 }
 
-/// `needs_operator` warns and does not block the upgrade. The dry run lists the read and the
-/// post, with placeholders, and sends nothing.
+/// `needs_operator` warns and does not block the upgrade. The dry run lists the read as
+/// `reads_first` and the post, with placeholders, and sends nothing.
 #[test]
 fn needs_operator_warns_and_the_dry_run_uses_placeholders() {
     let home = Home::new();
@@ -1187,6 +1190,7 @@ fn needs_operator_warns_and_the_dry_run_uses_placeholders() {
         "a newer guest components release is offered"
     );
     assert!(doc["requests"][0]["url"].as_str().unwrap().ends_with(GUEST));
+    assert_eq!(doc["reads_first"], doc["requests"][0]);
     assert_eq!(draft(&doc)["method"], "POST");
     assert!(draft(&doc)["url"].as_str().unwrap().ends_with(GUEST_POST));
     assert_eq!(

@@ -173,7 +173,10 @@ pub(super) fn update(ctx: &Context<'_>, args: &AppUpdate) -> Result<Printed> {
         &action,
     );
     let checked = match ctx.check_write(&client, &WritePlan::new(&before, &draft))? {
-        Write::DryRun(doc) => return Ok(doc.into()),
+        // The app is read before the question, for the secret names it stores.
+        Write::DryRun(doc) => {
+            return Ok(doc.reads_first(ctx.describe(&client, &reads.app)?).into());
+        }
         Write::Checked(checked) => checked,
     };
     let answers = declared(ctx, &client, &loaded, &reads)?;
