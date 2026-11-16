@@ -62,6 +62,7 @@ impl AppSecrets {
         let guarded = Guarded {
             what: "the secrets file",
             holds: "secret values",
+            included: None,
             named_by: NamedBy::Flag(flag),
         };
         let refuse = |problem: &str| {

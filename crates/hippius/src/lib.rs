@@ -49,8 +49,7 @@ pub use crate::app_secrets::{AppSecrets, is_secret_name};
 pub use crate::aws::{AccessKeyId, AwsFiles, AwsProfile, SecretKey, configure};
 pub use crate::client::{Client, Request, Response, follow, is_default_origin};
 pub use crate::config::{
-    ConfigFile, HubMarker, Overrides, Settings, Token, config_path, take_split_link,
-    take_unknown_keys_warning,
+    ConfigFile, HubMarker, Overrides, Settings, Token, config_path, take_unknown_keys_warning,
 };
 pub use crate::digest::sha256_hex;
 pub use crate::dns::{DnsCredentials, DnsProvider};
@@ -59,7 +58,7 @@ pub use crate::ids::new_idempotency_key;
 pub use crate::json::{Next, Page, cursor_page, envelope, envelope_beside, page, page_beside};
 pub use crate::kubernetes::{ClusterKey, MatchedKey, SignedOperation};
 pub use crate::method::Method;
-pub use crate::private_file::on_lock_wait;
+pub use crate::private_file::{on_lock_wait, take_split_link_warnings};
 pub use crate::redact::{
     holds_secret, insert_unique, redact_all, redact_name, redact_value, redact_value_all,
     redactions, without_field, without_fields,

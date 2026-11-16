@@ -93,6 +93,7 @@ impl DnsCredentials {
         let guarded = Guarded {
             what: "the DNS credentials file",
             holds: "a DNS provider credential",
+            included: None,
             named_by: NamedBy::Flag(flag),
         };
         let refuse = |problem: &str| {

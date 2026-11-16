@@ -17,6 +17,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 ### Changed
 
 - `hipc billing transactions` is now `hipc billing transactions list`, beside the new `get`, with the same flags and output; the old command line is a `usage` error. `hipc api` now knows `GET /billing/transactions/<id>/`, `GET /billing/stripe/checkout-status/`, and `GET /accounts/audit/`, so a read of them no longer needs `--reveal`. `hipc api --all` follows only `next` links, so on the audit trail it exits `internal` at a page that names a `next_before`; `hipc account audit-trail --all` follows every page.
+- `hipc compute exposures list` and `create` say that an http exposure is served over HTTPS at a hostname such as https://NAME.hpcr.io, where the edge terminates TLS and the guest speaks plain HTTP.
+- The `hipc compute vms create` example that opens ports opens 80 and 443, and `--open-port` says to open both for the web.
+- `hipc cdn waf` and `hipc cdn cap` say that a request the WAF blocks or rate-limits is never billed and does not count toward the zone's spend cap.
+- `hipc compute` says the balance is not a spending cap: an hour it cannot pay becomes debt the account owes, and VMs keep running. A project's monthly budget is what limits a month.
 - The agents paragraph of `hipc --help` names how to find a command: walk the tree with `--help`, read a path's effect, confirmation, and guards with `hipc schema s3 buckets`, and the guide at `docs/agents.md`.
 - `hipc compute kubernetes node-pools scale` refuses a pool whose `role` is not `worker`, such as the masters' `control_plane` pool, as `usage` before the question whichever way it would scale it, with the hint to pick a worker pool from `node-pools list`. Before, only a scale up was refused, so a mistaken pool id with a lower `--count` and `--yes` went to the server as a request to drain masters.
 - `hipc compute kubernetes clusters delete` names in its question, and in a text-mode note once the delete is accepted, the backup buckets it leaves: the backups guide says a cluster created with backups on keeps each bucket that holds etcd snapshots or Velero backups, billed until it is deleted. The note says how to find them (names that start with `hippius-k8s-<cluster_id>-` and end in `-etcd` or `-velero`, in `hipc s3 buckets list`) and how to remove them, as `compute databases delete` does for its backup bucket.
@@ -24,9 +28,17 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 - The install sections of the README and `docs/getting-started.md` give the install script, with `brew uninstall hipc` before it for a machine that has the IPFS-era `hipc`, and say what each other channel installs until the release publishes it: `brew install thenervelab/tap/hipc` the IPFS-era `hipc` 0.0.7 until `HOMEBREW_TAP_TOKEN` is set, and `pip`, `uv tool`, or `pipx install hippius` the old Hippius Python SDK until `PYPI_PUBLISH` is on. TENETS tenet 13 says the tap holds the IPFS-era formula until then.
 
+### Fixed
+
+- The Hub double-subscribe marker is dated by the later of the local clock and the `Date` of the subscriptions read, and aged by the earlier of the two, as the hAlpha top-up's in-flight check ages a purchase. So the window is never shorter than by the local clock alone, and when both runs read a `Date`, a local clock that steps forward between them (an NTP correction) or runs fast no longer ages the marker out of its 10 minutes and lets a second subscribe charge twice. While the two clocks disagree, the window is longer by the difference. A marker that may not age out soon is refused with the hint to remove it once `hipc hub subscription get` lists the last subscribe, rather than with a wait: one dated more than 10 minutes after both clocks, or one the later clock puts 10 minutes in the past and the earlier does not, such as under a `Date` that stopped. The marker is still `at` in seconds, so a marker 0.16 wrote is read as before, and an earlier `hipc` reads a new one. A local clock set before 1970 is now `internal` before the subscribe is sent, whatever the `Date`.
+
 ### Removed
 
 - `docs/commands.md`, the render of every `--help` page, and `scripts/docs-reference.sh`, which made it. `--help` at every level and `hipc schema` with a path give the same, from the installed binary.
+
+### Fixed
+
+- `hipc s3 configure` warns when the AWS credentials file or the AWS config file has another hard link. The rewrite renames a new file over that name, so the other name keeps the old contents. The credentials warning says the S3 keys are included; the config-file warning does not, since that file holds the endpoint and no key. Text mode prints a `warning:` that names the file; JSON adds the same text to `warnings`. A file with one link does not warn, and a dry run writes nothing, so it does not warn either. TENETS tenet 8 says so.
 
 ## [0.16.0] - 2026-11-12
 

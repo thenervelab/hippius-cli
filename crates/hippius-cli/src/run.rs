@@ -110,15 +110,14 @@ fn repeated_global(args: &[OsString]) -> Option<hippius::Error> {
 
 /// The warnings of the whole run, for JSON's `warnings`: the command's own run warnings and
 /// those of answers that marked their route deprecated, which were printed as they came, then
-/// those of the config file, printed here in text mode. Also after a failure: a command can
-/// write the config and then fail at a later step, and an answer that failed can say its route
-/// is deprecated. JSON mode writes no
-/// warning lines, so the `warnings` array beside the document or the error is where an agent
-/// sees them.
+/// those of a config or AWS file the run rewrote while it had another hard link, printed
+/// here in text mode. Also after a failure: a command can write the config and then fail at
+/// a later step, and an answer that failed can say its route is deprecated. JSON mode writes
+/// no warning lines, so the `warnings` array beside the document or the error is where an
+/// agent sees them.
 fn run_warnings(ctx: &Context<'_>) -> Vec<String> {
     let mut warnings = ctx.take_warnings();
-    let split_link = hippius::take_split_link().map(|path| split_link_warning(&path));
-    for warning in split_link
+    for warning in hippius::take_split_link_warnings()
         .into_iter()
         .chain(hippius::take_unknown_keys_warning())
     {
@@ -213,16 +212,6 @@ fn disable_core_dumps() {
         use rustix::process::{DumpableBehavior, set_dumpable_behavior};
         let _best_effort = set_dumpable_behavior(DumpableBehavior::NotDumpable);
     }
-}
-
-/// The warning after a write to a config file that had another hard link (tenet 8): the
-/// write renamed a new file over this name, so the other link still holds the old contents.
-fn split_link_warning(path: &std::path::Path) -> String {
-    format!(
-        "the config file {} had another hard link, which still holds its old contents, tokens \
-         included; only this name was changed",
-        hippius::phrase::quote(path.display())
-    )
 }
 
 #[cfg(not(panic = "unwind"))]
@@ -322,15 +311,6 @@ mod tests {
         assert_eq!(
             rustix::process::dumpable_behavior().expect("read the dumpable flag"),
             rustix::process::DumpableBehavior::NotDumpable
-        );
-    }
-
-    #[test]
-    fn the_split_link_warning_names_the_file() {
-        assert_eq!(
-            split_link_warning(std::path::Path::new("/h/.hippius/config.toml")),
-            "the config file `/h/.hippius/config.toml` had another hard link, which still \
-             holds its old contents, tokens included; only this name was changed"
         );
     }
 
