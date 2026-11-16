@@ -80,6 +80,7 @@ fn an_add_sends_one_call_per_peer_the_group_lacks() {
         [
             "GET /api/network/groups/",
             "GET /api/network/topology/",
+            "GET /api/network/topology/",
             "POST /api/network/groups/5/members/",
         ]
     );
@@ -155,7 +156,7 @@ fn the_group_s_own_list_changes_nothing_and_asks_nothing() {
     .ok();
     assert_eq!(
         doc,
-        json!({"id": 5, "label": "devs", "peers": [14, 12], "added": [], "removed": []})
+        json!({"id": 5, "label": "devs", "peers": [12, 14], "added": [], "removed": []})
     );
     assert_eq!(changes(&server), Vec::<Value>::new());
 }
@@ -182,9 +183,9 @@ fn a_change_without_yes_is_refused_after_the_reads() {
     );
 }
 
-/// A dry run sends nothing and needs no token or `--yes`: it lists the two reads and the
-/// write, with placeholders for what only the reads give, and the topology as the read the
-/// guard compares.
+/// A dry run sends nothing and needs no token or `--yes`: it lists the reads, the topology
+/// twice (before the question and after it), and the write, with placeholders for what only the
+/// reads give, and the topology as the read the guard compares.
 #[test]
 fn a_dry_run_lists_the_reads_and_a_placeholder_write() {
     let server = Server::start(vec![]);
@@ -217,6 +218,7 @@ fn a_dry_run_lists_the_reads_and_a_placeholder_write() {
             "dry_run": true,
             "requests": [
                 read("/api/network/groups/"),
+                read("/api/network/topology/"),
                 read("/api/network/topology/"),
                 {
                     "method": "POST",
@@ -312,9 +314,9 @@ fn a_first_change_refused_is_its_own_error() {
     assert_eq!(error["side_effects"], "none");
 }
 
-/// A change that fails after another went through is `partial_failure`: stdout holds what
-/// was done, `details` the step that failed, and the hint says that running the command
-/// again sends only what is left.
+/// A change that fails after another went through is `partial_failure`: stdout holds the
+/// group's peers as they now are and what was done, `details` the step that failed, and the
+/// hint says that running the command again sends only what is left.
 #[test]
 fn a_change_that_fails_after_another_is_a_partial_failure() {
     let server = server(vec![
@@ -346,7 +348,7 @@ fn a_change_that_fails_after_another_is_a_partial_failure() {
     let doc: Value = serde_json::from_str(run.stdout()).unwrap();
     assert_eq!(
         doc,
-        json!({"id": 5, "label": "devs", "peers": [13], "added": [13], "removed": []})
+        json!({"id": 5, "label": "devs", "peers": [12, 14, 13], "added": [13], "removed": []})
     );
     assert_eq!(changes(&server).len(), 2);
 }
@@ -421,7 +423,7 @@ fn a_membership_reaches_every_request_and_a_project_is_refused() {
     ];
     Hipc::against(&home, &server).run(&args).ok();
     let requests = server.requests();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
     for request in requests {
         assert_eq!(request.header("x-hippius-account"), Some(MEMBER));
     }
@@ -460,4 +462,204 @@ fn a_peer_is_required_and_numeric() {
         "{error}"
     );
     assert!(server.requests().is_empty());
+}
+
+/// A topology whose group `5` holds `12` and `14` and the managed database `20`.
+const WITH_MANAGED: &str = concat!(
+    r#"{"nodes":["#,
+    r#"{"type":"peer","meta":{"peer_id":12,"groups":[5]}},"#,
+    r#"{"type":"peer","meta":{"peer_id":14,"groups":[5]}},"#,
+    r#"{"type":"peer","meta":{"peer_id":20,"groups":[5],"managed_service":true}},"#,
+    r#"{"type":"peer","meta":{"peer_id":21,"groups":[],"managed_service":true}}"#,
+    r#"]}"#
+);
+
+/// A managed database's membership is Hippius's: a list that would remove one, or add one, is
+/// refused before the question with a hint that keeps the list as it must be, and nothing is
+/// written; a list that keeps it in the group goes through.
+#[test]
+fn a_managed_database_is_neither_added_nor_removed() {
+    let server = Server::start(vec![
+        route_of(&network::GROUPS, [], Reply::json(200, GROUPS)),
+        route_of(&network::TOPOLOGY, [], Reply::json(200, WITH_MANAGED)),
+        route_each_of(
+            &network::GROUP_MEMBERS_UPDATE,
+            [&5],
+            vec![Reply::json(201, "{}")],
+        ),
+    ]);
+    let home = Home::new();
+    for (extra, hint) in [
+        (
+            &["--peer", "12", "--peer", "14", "--remove-others", "--yes"][..],
+            "add `--peer 20` to keep it in the group",
+        ),
+        (
+            &[
+                "--peer", "12", "--peer", "14", "--peer", "20", "--peer", "21", "--yes",
+            ],
+            "remove `--peer 21`",
+        ),
+    ] {
+        let error = run(&home, &server, &update(extra)).fails(2, "usage");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .ends_with("is a managed database, whose groups Hippius keeps"),
+            "{error}"
+        );
+        assert_eq!(error["hint"], hint);
+    }
+    assert_eq!(changes(&server), Vec::<Value>::new());
+    let doc = run(
+        &home,
+        &server,
+        &update(&["--peer", "20", "--remove-others", "--yes"]),
+    )
+    .ok();
+    assert_eq!(doc["peers"], json!([20]));
+    assert_eq!(
+        changes(&server),
+        [
+            json!({"action": "remove", "peer_id": 12}),
+            json!({"action": "remove", "peer_id": 14}),
+        ]
+    );
+}
+
+/// The topology is read again after the question, and the changes are decided from that
+/// read: a peer that joined the group meanwhile is a removal nobody confirmed, so without
+/// `--remove-others` it is `conflict` and nothing is written; with it, the list given stands
+/// and the joined peer is removed. A peer added meanwhile is not added twice.
+#[test]
+fn the_topology_read_after_the_question_decides_the_changes() {
+    let joined = TOPOLOGY.replace(r#""groups":[1]}"#, r#""groups":[1,5]}"#);
+    let server = |remove_others_reply: Vec<Reply>| {
+        Server::start(vec![
+            route_of(&network::GROUPS, [], Reply::json(200, GROUPS)),
+            route_each_of(
+                &network::TOPOLOGY,
+                [],
+                vec![Reply::json(200, TOPOLOGY), Reply::json(200, &joined)],
+            ),
+            route_each_of(&network::GROUP_MEMBERS_UPDATE, [&5], remove_others_reply),
+        ])
+    };
+    let home = Home::new();
+    let quiet = server(vec![Reply::json(201, "{}")]);
+    let error = run(
+        &home,
+        &quiet,
+        &update(&["--peer", "12", "--peer", "14", "--peer", "15", "--yes"]),
+    )
+    .fails(1, "not_found");
+    assert!(
+        error["message"].as_str().unwrap().contains("no peer `15`"),
+        "{error}"
+    );
+    let racing = server(vec![Reply::json(201, "{}")]);
+    let args = update(&["--peer", "12", "--remove-others", "--yes"]);
+    let doc = run(&home, &racing, &args).ok();
+    // The first read showed `12` and `14`; the second shows `13` joined, so it goes too.
+    assert_eq!(doc["removed"], json!([13, 14]));
+    assert_eq!(doc["peers"], json!([12]));
+    let racing = server(vec![Reply::json(201, "{}")]);
+    let error = run(
+        &home,
+        &racing,
+        &update(&["--peer", "12", "--peer", "14", "--peer", "13", "--yes"]),
+    )
+    .ok();
+    // `13` joined between the reads, so the add the question named is not sent again.
+    assert_eq!(error["added"], json!([]));
+    assert_eq!(changes(&racing), Vec::<Value>::new());
+    // With an add to make, `13` joining between the reads is a removal nobody confirmed.
+    let with_15 = |topology: &str| {
+        topology.replace(
+            r#"{"id":"resource:3""#,
+            r#"{"type":"peer","meta":{"peer_id":15,"groups":[]}},{"id":"resource:3""#,
+        )
+    };
+    let racing = Server::start(vec![
+        route_of(&network::GROUPS, [], Reply::json(200, GROUPS)),
+        route_each_of(
+            &network::TOPOLOGY,
+            [],
+            vec![
+                Reply::json(200, &with_15(TOPOLOGY)),
+                Reply::json(200, &with_15(&joined)),
+            ],
+        ),
+    ]);
+    let error = run(
+        &home,
+        &racing,
+        &update(&["--peer", "12", "--peer", "14", "--peer", "15", "--yes"]),
+    )
+    .fails(1, "conflict");
+    assert_eq!(
+        error["message"],
+        "cannot set the peers of the network group `5`: the peer `13` joined the group after \
+         it was read, and `--remove-others` was not passed"
+    );
+    assert_eq!(error["http_status"], Value::Null);
+    assert_eq!(changes(&racing), Vec::<Value>::new());
+}
+
+/// With `--remove-others` and no `--peer` the group is emptied; without either, the parser
+/// refuses.
+#[test]
+fn remove_others_without_a_peer_empties_the_group() {
+    let server = server(vec![Reply::json(201, "{}")]);
+    let home = Home::new();
+    let doc = run(&home, &server, &update(&["--remove-others", "--yes"])).ok();
+    assert_eq!(
+        doc,
+        json!({"id": 5, "label": "devs", "peers": [], "added": [], "removed": [12, 14]})
+    );
+    run(&home, &server, &update(&["--yes"])).fails(2, "usage");
+}
+
+/// A failure during the adds, after one went through, is `partial_failure` too, and its
+/// stdout holds the group's peers with the one add that was made.
+#[test]
+fn a_failure_during_the_adds_is_a_partial_failure() {
+    let topology = TOPOLOGY.replace(
+        r#"{"id":"resource:3""#,
+        concat!(
+            r#"{"id":"peer:15","type":"peer","label":"d","meta":{"peer_id":15,"groups":[]}},"#,
+            r#"{"id":"resource:3""#
+        ),
+    );
+    let server = Server::start(vec![
+        route_of(&network::GROUPS, [], Reply::json(200, GROUPS)),
+        route_of(&network::TOPOLOGY, [], Reply::json(200, &topology)),
+        route_each_of(
+            &network::GROUP_MEMBERS_UPDATE,
+            [&5],
+            vec![
+                Reply::json(201, "{}"),
+                Reply::json(409, r#"{"detail":"no"}"#),
+            ],
+        ),
+    ]);
+    let run = run(
+        &Home::new(),
+        &server,
+        &update(&[
+            "--peer", "12", "--peer", "14", "--peer", "13", "--peer", "15", "--yes",
+        ]),
+    );
+    let error = run.fails_keeping_stdout(1, "partial_failure");
+    assert_eq!(
+        error["details"][0]["step"],
+        "add the peer `15` to the network group `devs` (`5`)"
+    );
+    assert_eq!(error["details"][0]["code"], "conflict");
+    let doc: Value = serde_json::from_str(run.stdout()).unwrap();
+    assert_eq!(
+        doc,
+        json!({"id": 5, "label": "devs", "peers": [12, 14, 13], "added": [13], "removed": []})
+    );
 }

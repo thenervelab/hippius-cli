@@ -4,7 +4,10 @@
 //! network types say there is no bulk form), so the command makes the group's list the one
 //! given by reading who is in the group now and sending one call per change. A peer that
 //! leaves a group loses the access its policies give, so a list that leaves out a peer the
-//! group has is refused without `--remove-others`, as every list replace is (tenet 5).
+//! group has is refused without `--remove-others`, as every list replace is (tenet 5). A
+//! managed database's membership is Hippius's to keep (the console's types: the API answers
+//! 409 to a customer's edit), so a list that would add or remove one is refused before the
+//! question rather than fail after other changes went through, on every rerun.
 //!
 //! Before the question it reads the group list, which names the group and answers 403 when the
 //! network was never set up, then the topology, whose peer nodes say which groups each peer
@@ -13,10 +16,15 @@
 //! an answer `hipc` cannot read is `internal`, never an empty group, so a shape it does not
 //! expect cannot turn the guard off.
 //!
+//! A question can wait as long as a person takes, so after it the topology is read again
+//! and the changes are decided from that read: a peer added to the group meanwhile is not
+//! left in it by a list that was meant to be the whole list. Without `--remove-others` such
+//! a peer would be a removal nobody asked about, so that is `conflict`, with nothing sent.
+//!
 //! The changes go out adds first, so a peer moved between lists is never left with less
-//! access in between than the end state gives. A failure after one went through prints what
-//! was done, as `partial_failure`; a run of the same command reads again and sends only what
-//! is left.
+//! access in between than the end state gives. A failure after one went through prints the
+//! group's peers as they now are and what changed, as `partial_failure`; a run of the same
+//! command reads again and sends only what is left.
 
 use hippius::routes::network::{self, Group, GroupMemberBody, MemberAction, Topology};
 use hippius::{Client, Error, Failure, Request, Result, SideEffects, phrase, view_of};
@@ -25,10 +33,6 @@ use serde_json::{Value, json};
 use crate::commands::network::topology_reads;
 use crate::commands::{Printed, failed_part, unreadable};
 use crate::context::{Confirmed, Context, Write, WritePlan};
-
-/// What a change of a group's peers does, for its question.
-const MEMBERS_CHANGE: &str =
-    "a peer added gains the access the group's policies give, and a peer removed loses it";
 
 /// The hint of a failure after some changes went through.
 const RUN_AGAIN: &str = "run the same command again: it reads the group's peers first and \
@@ -40,8 +44,10 @@ const RUN_AGAIN: &str = "run the same command again: it reads the group's peers 
 ///
 /// The refusals of [`Context::check_write`] and [`Context::confirm_write`]; a read's error;
 /// `internal` for a read whose answer `hipc` cannot read; `not_found` for a group or a peer
-/// the reads do not show; `remove_others_required`; and a change's error, as
-/// `partial_failure` after another went through.
+/// the reads do not show; `usage` for a managed database the list would add or remove;
+/// `remove_others_required`; `conflict` when the read after the question shows a peer to
+/// remove that the first did not and `--remove-others` was not passed; and a change's error,
+/// as `partial_failure` after another went through.
 pub(super) fn set_peers(
     ctx: &Context<'_>,
     group_id: u64,
@@ -58,8 +64,9 @@ pub(super) fn set_peers(
             "peer_id": "<each peer whose membership changes>",
         }))
         .about(unnamed_action(group_id));
-    // One question covers every change, so the steps of `read_then_write` do not fit.
-    let plan = WritePlan::new(&[&groups, &topology], &draft);
+    // One question covers every change, and the topology is read again after it, so the
+    // steps of `read_then_write` do not fit. The dry run lists both topology reads.
+    let plan = WritePlan::new(&[&groups, &topology, &topology], &draft);
     let checked = match ctx.check_write(&client, &plan)? {
         Write::DryRun(doc) => {
             return Ok(doc.reads_first(ctx.describe(&client, &topology)?).into());
@@ -71,40 +78,68 @@ pub(super) fn set_peers(
     let group = Target { id: group_id, name };
     let now = members(&ctx.send(&client, &topology)?.json()?, group_id)?;
     let change = Change::between(&now.members, peers);
-    refuse(ctx, &change, &now, &group, remove_others)?;
-    let document = |done: &Change| {
+    check(&change, &now, group_id)?;
+    if !remove_others && !change.removed.is_empty() {
+        return Err(Error::remove_others_required(
+            format!(
+                "this would remove {} that the network group {} has now, and \
+                 `--remove-others` was not passed",
+                phrase::count(change.removed.len() as u64, "peer"),
+                group.name,
+            ),
+            ctx.args(),
+            &ticked_each(&change.removed),
+        ));
+    }
+    let document = |state: &[u64], added: &[u64], removed: &[u64]| {
         json!({
             "id": group_id,
             "label": label,
-            "peers": change.peers,
-            "added": done.added,
-            "removed": done.removed,
+            "peers": state,
+            "added": added,
+            "removed": removed,
         })
     };
-    if change.added.is_empty() && change.removed.is_empty() {
+    if change.is_empty() {
         // Nothing to send, so nothing to ask about (the row asks only when the list changes).
         let _nothing_sent = ctx.unasked(checked);
-        return Ok(Printed::Document(document(&change)));
+        return Ok(Printed::Document(document(&now.members, &[], &[])));
     }
-    let name = &group.name;
     let question = format!(
-        "set the peers of the network group {name}: {}",
-        change.said()
+        "set the peers of the network group {}: {}",
+        group.name,
+        said(&change.added, &change.removed, "add", "remove")
     );
-    let confirmed = ctx.confirm_write(checked, &question, Some(MEMBERS_CHANGE))?;
-    let (done, stopped) = apply(ctx, &client, &confirmed, &group, &change);
-    let Some((step, error)) = stopped else {
-        return Ok(Printed::Document(document(&done)));
+    let confirmed = ctx.confirm_write(checked, &question, Some(change.consequence()))?;
+    let again = members(&ctx.send(&client, &topology)?.json()?, group_id)?;
+    let change = Change::between(&again.members, peers);
+    check(&change, &again, group_id)?;
+    if let Some(&joined) = change.removed.first().filter(|_| !remove_others) {
+        return Err(Error::new(
+            Failure::Conflict,
+            format!(
+                "cannot {action}: the peer `{joined}` joined the group after it was read, and \
+                 `--remove-others` was not passed"
+            ),
+        )
+        .with_hint("run the same command again to see the group as it is now"));
+    }
+    let applied = apply(ctx, &client, &confirmed, &group, &change);
+    let state = after(&again.members, &applied);
+    let printed = document(&state, &applied.added, &applied.removed);
+    let Some((step, error)) = applied.failed else {
+        return Ok(Printed::Document(printed));
     };
-    if done.added.is_empty() && done.removed.is_empty() {
+    if applied.added.is_empty() && applied.removed.is_empty() {
         return Err(error);
     }
     Err(Error::partial_failure(
         format!(
-            "changed the peers of the network group {name} in part: {}; then cannot {step}",
-            done.said_done()
+            "changed the peers of the network group {} in part: {}; then cannot {step}",
+            group.name,
+            said(&applied.added, &applied.removed, "added", "removed")
         ),
-        document(&done),
+        printed,
         Value::Array(vec![failed_part("step", &step, &error)]),
         SideEffects::Partial,
     )
@@ -124,54 +159,57 @@ fn unnamed_action(group_id: u64) -> String {
     format!("set the peers of the network group `{group_id}`")
 }
 
-/// Refuses `change` before the question: a peer it adds that the network does not have is
-/// `not_found`, and without `remove_others` a peer it removes is `remove_others_required`.
-fn refuse(
-    ctx: &Context<'_>,
-    change: &Change,
-    now: &Members,
-    group: &Target,
-    remove_others: bool,
-) -> Result<()> {
+/// Each peer in backticks, for a refusal that names them.
+fn ticked_each(peers: &[u64]) -> Vec<String> {
+    peers.iter().map(|peer| format!("`{peer}`")).collect()
+}
+
+/// Refuses `change` against what `now` shows: a peer it adds that the network does not have
+/// is `not_found`, and a managed database it adds or removes is `usage`, whose hint keeps the
+/// list as it must be.
+fn check(change: &Change, now: &Seen, group_id: u64) -> Result<()> {
+    let action = unnamed_action(group_id);
     if let Some(&missing) = change.added.iter().find(|peer| !now.peers.contains(peer)) {
         return Err(Error::new(
             Failure::NotFound,
-            format!(
-                "cannot {}: the network has no peer `{missing}`",
-                unnamed_action(group.id)
-            ),
+            format!("cannot {action}: the network has no peer `{missing}`"),
         )
         .with_hint("run `hipc network peers list` to see what exists"));
     }
-    if remove_others || change.removed.is_empty() {
+    let managed = |peer: &&u64| now.managed.contains(peer);
+    let (peer, hint) = if let Some(&peer) = change.added.iter().find(managed) {
+        (peer, format!("remove `--peer {peer}`"))
+    } else if let Some(&peer) = change.removed.iter().find(managed) {
+        (peer, format!("add `--peer {peer}` to keep it in the group"))
+    } else {
         return Ok(());
-    }
-    let removed: Vec<String> = change
-        .removed
-        .iter()
-        .map(|peer| format!("`{peer}`"))
-        .collect();
-    Err(Error::remove_others_required(
+    };
+    Err(Error::usage(
         format!(
-            "this would remove {} that the network group {} has now, and \
-             `--remove-others` was not passed",
-            phrase::count(removed.len() as u64, "peer"),
-            group.name,
+            "cannot {action}: the peer `{peer}` is a managed database, whose groups Hippius \
+             keeps"
         ),
-        ctx.args(),
-        &removed,
+        hint,
     ))
 }
 
-/// Sends each change of `change`, adds first, until one fails: what went through, and the
-/// step that failed with its error, if one did.
+/// What [`apply`] sent: the peers it added and removed, and the step that failed with its
+/// error, if one did.
+#[derive(Debug, Default)]
+struct Applied {
+    added: Vec<u64>,
+    removed: Vec<u64>,
+    failed: Option<(String, Error)>,
+}
+
+/// Sends each change of `change`, adds first, until one fails.
 fn apply(
     ctx: &Context<'_>,
     client: &Client,
     confirmed: &Confirmed,
     group: &Target,
     change: &Change,
-) -> (Change, Option<(String, Error)>) {
+) -> Applied {
     let steps = change
         .added
         .iter()
@@ -182,12 +220,8 @@ fn apply(
                 .iter()
                 .map(|&peer| (MemberAction::Remove, peer)),
         );
-    let mut done = Change {
-        peers: Vec::new(),
-        added: Vec::new(),
-        removed: Vec::new(),
-    };
     let name = &group.name;
+    let mut applied = Applied::default();
     for (action, peer) in steps {
         let step = match action {
             MemberAction::Add => format!("add the peer `{peer}` to the network group {name}"),
@@ -203,14 +237,26 @@ fn apply(
             .listed_by("hipc network groups list")
             .about(step.clone());
         if let Err(error) = ctx.send_confirmed(client, &request, confirmed) {
-            return (done, Some((step, error)));
+            applied.failed = Some((step, error));
+            break;
         }
         match action {
-            MemberAction::Add => done.added.push(peer),
-            MemberAction::Remove => done.removed.push(peer),
+            MemberAction::Add => applied.added.push(peer),
+            MemberAction::Remove => applied.removed.push(peer),
         }
     }
-    (done, None)
+    applied
+}
+
+/// The group's peers after `applied`, from `members`, the list the changes were decided
+/// from: those it kept, in its order, then those added, in the order given.
+fn after(members: &[u64], applied: &Applied) -> Vec<u64> {
+    members
+        .iter()
+        .copied()
+        .filter(|peer| !applied.removed.contains(peer))
+        .chain(applied.added.iter().copied())
+        .collect()
 }
 
 /// The group `group_id` as a message names it, from the group list's answer: its label and
@@ -244,24 +290,27 @@ fn group_name(answer: &Value, group_id: u64, action: &str) -> Result<(String, Op
 
 /// Who is in the group now, from the topology.
 #[derive(Debug, Default)]
-struct Members {
+struct Seen {
     /// Every peer of the network, by its id.
     peers: Vec<u64>,
     /// The peers in the group, in the topology's order.
     members: Vec<u64>,
+    /// The peers that are managed databases.
+    managed: Vec<u64>,
 }
 
-/// The network's peers, and those in the group `group_id`, from the topology's answer.
+/// The network's peers, those in the group `group_id`, and the managed ones, from the
+/// topology's answer.
 ///
 /// # Errors
 ///
 /// `internal` when the answer has no list of nodes, or a peer node without its id or its
 /// list of groups: the guard must see every peer's groups, so a node it cannot read is not
 /// taken as a peer outside the group.
-fn members(answer: &Value, group_id: u64) -> Result<Members> {
+fn members(answer: &Value, group_id: u64) -> Result<Seen> {
     let unread = || unreadable("read the network's topology");
     let topology: Topology = view_of(answer);
-    let mut found = Members::default();
+    let mut found = Seen::default();
     for node in topology.nodes.ok_or_else(unread)? {
         if node.kind.as_deref() != Some("peer") {
             continue;
@@ -274,71 +323,71 @@ fn members(answer: &Value, group_id: u64) -> Result<Members> {
         if groups.contains(&group_id) {
             found.members.push(peer);
         }
+        if meta.managed_service == Some(true) {
+            found.managed.push(peer);
+        }
     }
     Ok(found)
 }
 
 /// The change from one list of a group's peers to another.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct Change {
-    /// The new list: each peer given, once, in the order given.
-    peers: Vec<u64>,
-    /// The peers given that the group does not have, in the order given.
+    /// The peers given that the group does not have, in the order given; a peer given twice
+    /// counts once.
     added: Vec<u64>,
     /// The peers the group has that are not given, in the group's order.
     removed: Vec<u64>,
 }
 
 impl Change {
-    /// The change from `now` to `given`; a peer given twice counts once.
+    /// The change from `now` to `given`.
     fn between(now: &[u64], given: &[u64]) -> Self {
-        let mut peers: Vec<u64> = Vec::with_capacity(given.len());
+        let mut added: Vec<u64> = Vec::new();
         for &peer in given {
-            if !peers.contains(&peer) {
-                peers.push(peer);
+            if !now.contains(&peer) && !added.contains(&peer) {
+                added.push(peer);
             }
         }
-        let added = peers
-            .iter()
-            .copied()
-            .filter(|peer| !now.contains(peer))
-            .collect();
         let removed = now
             .iter()
             .copied()
-            .filter(|peer| !peers.contains(peer))
+            .filter(|peer| !given.contains(peer))
             .collect();
-        Self {
-            peers,
-            added,
-            removed,
-        }
+        Self { added, removed }
     }
 
-    /// The change as a question names it, such as: add the peer `12` and remove the peers
-    /// `13` and `14`.
-    fn said(&self) -> String {
-        self.parts("add", "remove")
+    fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
     }
 
-    /// What went through, as a partial failure names it.
-    fn said_done(&self) -> String {
-        self.parts("added", "removed")
-    }
-
-    fn parts(&self, add: &str, remove: &str) -> String {
-        let mut parts = Vec::new();
-        for (verb, peers) in [(add, &self.added), (remove, &self.removed)] {
-            if !peers.is_empty() {
-                parts.push(format!(
-                    "{verb} the {} {}",
-                    phrase::plural(peers.len() as u64, "peer"),
-                    phrase::ticked(peers, "and")
-                ));
+    /// What the change does to access, for its question: only what it does.
+    fn consequence(&self) -> &'static str {
+        match (self.added.is_empty(), self.removed.is_empty()) {
+            (false, true) => "a peer added gains the access the group's policies give",
+            (true, false) => "a peer removed loses the access the group's policies give",
+            _ => {
+                "a peer added gains the access the group's policies give, and a peer removed \
+                 loses it"
             }
         }
-        phrase::join(&parts, "and")
     }
+}
+
+/// `added` and `removed` as a message names them, with `add` and `remove` as the verbs: add
+/// the peer `12` and remove the peers `13` and `14`.
+fn said(added: &[u64], removed: &[u64], add: &str, remove: &str) -> String {
+    let mut parts = Vec::new();
+    for (verb, peers) in [(add, added), (remove, removed)] {
+        if !peers.is_empty() {
+            parts.push(format!(
+                "{verb} the {} {}",
+                phrase::plural(peers.len() as u64, "peer"),
+                phrase::ticked(peers, "and")
+            ));
+        }
+    }
+    phrase::join(&parts, "and")
 }
 
 #[cfg(test)]
@@ -349,26 +398,76 @@ mod tests {
     fn a_change_adds_what_is_given_and_removes_what_is_left_out() {
         let change = Change::between(&[1, 2, 3], &[4, 2, 4, 5]);
         assert_eq!(
-            change,
-            Change {
-                peers: vec![4, 2, 5],
-                added: vec![4, 5],
-                removed: vec![1, 3],
-            }
+            (change.added.as_slice(), change.removed.as_slice()),
+            (&[4, 5][..], &[1, 3][..])
         );
         assert_eq!(
-            change.said(),
+            said(&change.added, &change.removed, "add", "remove"),
             "add the peers `4` and `5` and remove the peers `1` and `3`"
         );
         assert_eq!(
-            change.said_done(),
+            said(&change.added, &change.removed, "added", "removed"),
             "added the peers `4` and `5` and removed the peers `1` and `3`"
         );
-        let same = Change::between(&[2, 1], &[1, 2]);
-        assert!(same.added.is_empty() && same.removed.is_empty());
-        assert_eq!(same.said(), "");
-        assert_eq!(Change::between(&[], &[7]).said(), "add the peer `7`");
-        assert_eq!(Change::between(&[7, 8], &[8]).said(), "remove the peer `7`");
+        assert!(Change::between(&[2, 1], &[1, 2]).is_empty());
+        assert!(!Change::between(&[], &[7]).is_empty());
+        assert!(!Change::between(&[7], &[]).is_empty());
+        assert_eq!(said(&[7], &[], "add", "remove"), "add the peer `7`");
+        assert_eq!(said(&[], &[7], "add", "remove"), "remove the peer `7`");
+        assert_eq!(said(&[], &[], "add", "remove"), "");
+    }
+
+    #[test]
+    fn the_consequence_names_only_what_the_change_does() {
+        assert_eq!(
+            Change::between(&[], &[1]).consequence(),
+            "a peer added gains the access the group's policies give"
+        );
+        assert_eq!(
+            Change::between(&[1], &[]).consequence(),
+            "a peer removed loses the access the group's policies give"
+        );
+        assert_eq!(
+            Change::between(&[1], &[2]).consequence(),
+            "a peer added gains the access the group's policies give, and a peer removed loses \
+             it"
+        );
+    }
+
+    #[test]
+    fn the_peers_after_keep_the_group_s_order_then_the_added() {
+        let applied = Applied {
+            added: vec![9, 7],
+            removed: vec![2],
+            failed: None,
+        };
+        assert_eq!(after(&[3, 2, 1], &applied), [3, 1, 9, 7]);
+        assert_eq!(after(&[3], &Applied::default()), [3]);
+    }
+
+    #[test]
+    fn a_managed_database_or_a_missing_peer_is_refused() {
+        let now = Seen {
+            peers: vec![12, 13, 20],
+            members: vec![12, 20],
+            managed: vec![20, 13],
+        };
+        assert!(check(&Change::between(&now.members, &[12, 20]), &now, 5).is_ok());
+        let error = check(&Change::between(&now.members, &[12]), &now, 5).unwrap_err();
+        assert_eq!(error.code(), hippius::Code::Usage);
+        assert_eq!(
+            error.message(),
+            "cannot set the peers of the network group `5`: the peer `20` is a managed \
+             database, whose groups Hippius keeps"
+        );
+        assert_eq!(
+            error.hint(),
+            Some("add `--peer 20` to keep it in the group")
+        );
+        let error = check(&Change::between(&now.members, &[12, 20, 13]), &now, 5).unwrap_err();
+        assert_eq!(error.hint(), Some("remove `--peer 13`"));
+        let error = check(&Change::between(&now.members, &[12, 20, 99]), &now, 5).unwrap_err();
+        assert_eq!(error.code(), hippius::Code::NotFound);
     }
 
     #[test]
@@ -383,6 +482,13 @@ mod tests {
         let found = members(&answer, 5).unwrap();
         assert_eq!(found.peers, [12, 13, 14]);
         assert_eq!(found.members, [12, 14]);
+        assert_eq!(found.managed, Vec::<u64>::new());
+        let managed = json!({"nodes": [
+            {"type": "peer", "meta": {"peer_id": 12, "groups": [], "managed_service": true}},
+            {"type": "peer", "meta": {"peer_id": 13, "groups": [], "managed_service": false}},
+            {"type": "peer", "meta": {"peer_id": 14, "groups": [], "managed_service": null}},
+        ]});
+        assert_eq!(members(&managed, 5).unwrap().managed, [12]);
         let none = members(&json!({"nodes": []}), 5).unwrap();
         assert!(none.peers.is_empty() && none.members.is_empty());
     }

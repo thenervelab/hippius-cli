@@ -12092,7 +12092,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         {
           "name": "--peer",
           "value_name": "PEER_ID",
-          "required": true,
+          "required": false,
           "repeats": true,
           "possible_values": [],
           "default": null,
@@ -12105,7 +12105,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "repeats": false,
           "possible_values": [],
           "default": null,
-          "help": "Let the list remove the group's peers it leaves out"
+          "help": "Let the list remove the group's peers it leaves out; with no --peer, every peer"
         }
       ],
       "required_groups": [],
@@ -12302,7 +12302,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "policies",
         "update"
       ],
-      "about": "Change a policy's groups, traffic, action, or name; needs --yes",
+      "about": "Change a policy's groups, traffic, action, or name; needs --yes, and --remove-others to drop a port",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -12310,7 +12310,13 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "confirmation_when": null,
       "reveal_when": null,
       "refused_when": null,
-      "guards": [],
+      "guards": [
+        {
+          "code": "remove_others_required",
+          "flag": "--remove-others",
+          "when": "`--port` leaves out a port the policy has now"
+        }
+      ],
       "args": [
         {
           "name": "policy_id",
@@ -12408,6 +12414,15 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           ],
           "default": null,
           "help": "Whether the policy applies: true or false"
+        },
+        {
+          "name": "--remove-others",
+          "value_name": null,
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "Let --port remove the policy's ports it leaves out"
         }
       ],
       "required_groups": [
@@ -12426,6 +12441,10 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         }
       ],
       "routes": [
+        {
+          "method": "GET",
+          "path": "/api/network/policies/"
+        },
         {
           "method": "PATCH",
           "path": "/api/network/policies/{policy_id}/"
@@ -12682,7 +12701,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "resources",
         "update"
       ],
-      "about": "Change a resource's name, address, kind, or groups; needs --yes",
+      "about": "Change a resource's name, address, kind, or groups; needs --yes, and --remove-others to drop a group",
       "effect": "idempotent",
       "confirmation": true,
       "reveal": false,
@@ -12690,7 +12709,13 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "confirmation_when": null,
       "reveal_when": null,
       "refused_when": null,
-      "guards": [],
+      "guards": [
+        {
+          "code": "remove_others_required",
+          "flag": "--remove-others",
+          "when": "`--group` leaves out a group the resource is in now"
+        }
+      ],
       "args": [
         {
           "name": "vpc_id",
@@ -12751,6 +12776,15 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "possible_values": [],
           "default": null,
           "help": "A group whose peers reach the resource, by its id from hipc network groups list; repeat for each"
+        },
+        {
+          "name": "--remove-others",
+          "value_name": null,
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "Let --group remove the resource's groups it leaves out"
         }
       ],
       "required_groups": [
@@ -12765,6 +12799,10 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         }
       ],
       "routes": [
+        {
+          "method": "GET",
+          "path": "/api/network/networks/{vpc_id}/resources/"
+        },
         {
           "method": "PATCH",
           "path": "/api/network/networks/{vpc_id}/resources/{resource_id}/"
@@ -12985,6 +13023,10 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "routes": [
         {
           "method": "GET",
+          "path": "/api/network/groups/"
+        },
+        {
+          "method": "GET",
           "path": "/api/network/isolation/"
         }
       ]
@@ -13096,7 +13138,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         {
           "code": "remove_others_required",
           "flag": "--remove-others",
-          "when": "the request is a `PATCH` or `DELETE` of `/api/accounts/members/{member_id}/` whose body sets `grants`, a `PUT` of `/api/cdn/zones/{zone_id}/rules/`, a `PUT` of `/api/cdn/zones/{zone_id}/waf/rules/`, a `PUT` of `/api/cdn/zones/{zone_id}/waf/rate-limits/`, a `PATCH` or `DELETE` of `/api/cdn/lists/{list_name}/` whose body sets `items`, a `PUT` of `/api/cdn/lists/{list_name}/items/`, a `PUT` of `/api/compute/vms/{vm_id}/firewall/`, a `PUT` of `/api/v1/operator/nodes/{node_id}/storage/`, or a `PUT` of `/api/objectstore/buckets/{bucket_name}/acl/set/`; a body that is not a JSON object counts as setting the key; each rule holds for every write method of its route that has no rule of its own; a `PUT` that borrows a rule on a key of the body needs the flag whatever its body sets; a `POST` or `DELETE` of `/api/cdn/lists/{list_name}/items/`, which the API documents as doing something else, needs none"
+          "when": "the request is a `PATCH` or `DELETE` of `/api/accounts/members/{member_id}/` whose body sets `grants`, a `PUT` of `/api/cdn/zones/{zone_id}/rules/`, a `PUT` of `/api/cdn/zones/{zone_id}/waf/rules/`, a `PUT` of `/api/cdn/zones/{zone_id}/waf/rate-limits/`, a `PATCH` or `DELETE` of `/api/cdn/lists/{list_name}/` whose body sets `items`, a `PUT` of `/api/cdn/lists/{list_name}/items/`, a `PUT` of `/api/compute/vms/{vm_id}/firewall/`, a `PATCH` or `DELETE` of `/api/network/policies/{policy_id}/` whose body sets `ports`, a `PATCH` or `DELETE` of `/api/network/networks/{vpc_id}/resources/{resource_id}/` whose body sets `groups`, a `PUT` of `/api/v1/operator/nodes/{node_id}/storage/`, or a `PUT` of `/api/objectstore/buckets/{bucket_name}/acl/set/`; a body that is not a JSON object counts as setting the key; each rule holds for every write method of its route that has no rule of its own; a `PUT` that borrows a rule on a key of the body needs the flag whatever its body sets; a `POST` or `DELETE` of `/api/cdn/lists/{list_name}/items/`, which the API documents as doing something else, needs none"
         }
       ],
       "args": [
@@ -13172,7 +13214,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "repeats": false,
           "possible_values": [],
           "default": null,
-          "help": "Let a write that replaces a whole list or document remove the entries it leaves out; required for a PATCH or DELETE of /accounts/members/<member_id>/ whose body sets grants, a PUT of /cdn/zones/<zone_id>/rules/, a PUT of /cdn/zones/<zone_id>/waf/rules/, a PUT of /cdn/zones/<zone_id>/waf/rate-limits/, a PATCH or DELETE of /cdn/lists/<list_name>/ whose body sets items, a PUT of /cdn/lists/<list_name>/items/, a PUT of /compute/vms/<vm_id>/firewall/, a PUT of /objectstore/buckets/<bucket_name>/acl/set/, and an operator route hipc guards the same way"
+          "help": "Let a write that replaces a whole list or document remove the entries it leaves out; required for a PATCH or DELETE of /accounts/members/<member_id>/ whose body sets grants, a PUT of /cdn/zones/<zone_id>/rules/, a PUT of /cdn/zones/<zone_id>/waf/rules/, a PUT of /cdn/zones/<zone_id>/waf/rate-limits/, a PATCH or DELETE of /cdn/lists/<list_name>/ whose body sets items, a PUT of /cdn/lists/<list_name>/items/, a PUT of /compute/vms/<vm_id>/firewall/, a PATCH or DELETE of /network/policies/<policy_id>/ whose body sets ports, a PATCH or DELETE of /network/networks/<vpc_id>/resources/<resource_id>/ whose body sets groups, a PUT of /objectstore/buckets/<bucket_name>/acl/set/, and an operator route hipc guards the same way"
         }
       ],
       "required_groups": [],

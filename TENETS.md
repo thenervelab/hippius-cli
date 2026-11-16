@@ -120,7 +120,7 @@ The command prompts only when the output mode is text, stdin, stdout, and stderr
 Some writes need a flag that names their risk, besides `--yes`. Each is its own exit-2 code, `--yes` does not imply it, and it does not imply `--yes`:
 
 - `--reveal`: the answer holds a secret (tenet 9).
-- `--remove-others`: a write that replaces a whole list (firewall rules, CDN cache rules, WAF rules and rate limits, a WAF list's items, a member's grants, a network group's peers) would drop an entry the list has now. Without it, the command reads the list and refuses a removal.
+- `--remove-others`: a write that replaces a whole list (firewall rules, CDN cache rules, WAF rules and rate limits, a WAF list's items, a member's grants, a network group's peers, a network policy's ports, a VPC resource's groups) would drop an entry the list has now. Without it, the command reads the list and refuses a removal.
 - `--change-isolation`: a network isolation switch, in either direction, changes which peers of the network can reach each other.
 - `--public`: a CDN zone create, or an update that moves its origin, may publish a private bucket. A bucket ACL update needs both `--public` and `--remove-others`. A Hub namespace update that makes it public (`--visibility public`) lets anyone pull from it; through `hipc api`, a write of the publicity route needs `--public` unless the body sets `public` to `false`.
 - `--replace`: a Hub subscribe while a paid plan is active (tenet 11).

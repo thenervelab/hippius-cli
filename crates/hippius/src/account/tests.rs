@@ -901,6 +901,33 @@ fn an_uncurated_replace_rule_matches_its_own_method_and_every_write() {
             "/api/registry/me/publicity",
             "--public unless public is false",
         ),
+        (
+            Method::Patch,
+            "/api/network/policies/9/",
+            "--remove-others if ports",
+        ),
+        (
+            Method::Patch,
+            "/api/network/policies/9",
+            "--remove-others if ports",
+        ),
+        (
+            Method::Delete,
+            "/api/network/policies/9/",
+            "--remove-others if ports",
+        ),
+        (
+            Method::Patch,
+            "/api/network/networks/3/resources/7/",
+            "--remove-others if groups",
+        ),
+        (
+            Method::Delete,
+            "/api/network/networks/3/resources/7/",
+            "--remove-others if groups",
+        ),
+        (Method::Patch, "/api/network/networks/3/", ""),
+        (Method::Post, "/api/network/groups/5/members/", ""),
     ];
     assert_rules_hold(&routes);
     let guarded_rows = routes::all()
@@ -908,7 +935,7 @@ fn an_uncurated_replace_rule_matches_its_own_method_and_every_write() {
         .count();
     assert_eq!(
         ROUTE_RULES.len() + guarded_rows,
-        29,
+        33,
         "a new row or entry needs cases in a rule test"
     );
 }

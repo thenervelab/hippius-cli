@@ -34,11 +34,17 @@ routes! {
     /// Creates a policy.
     POLICY_CREATE: 0 = Route::post("/api/network/policies/").scoped();
 
-    /// Changes a policy.
-    POLICY_UPDATE: 1 = Route::patch("/api/network/policies/{policy_id}/").scoped();
+    /// Changes a policy. `ports` replaces the policy's whole list, so `hipc api` needs
+    /// `--remove-others` on a body that sets it, as `hipc network policies update --port` does;
+    /// the delete carries the guard too, as every write method of the route takes it.
+    POLICY_UPDATE: 1 = Route::patch("/api/network/policies/{policy_id}/")
+        .scoped()
+        .guard(Guard::NeedsWhenSet(&[RouteFlag::RemoveOthers], "ports"));
 
     /// Deletes a policy.
-    POLICY_DELETE: 1 = Route::delete("/api/network/policies/{policy_id}/").scoped();
+    POLICY_DELETE: 1 = Route::delete("/api/network/policies/{policy_id}/")
+        .scoped()
+        .guard(Guard::NeedsWhenSet(&[RouteFlag::RemoveOthers], "ports"));
 
     /// The network peers.
     PEERS: 0 = Route::get("/api/network/peers/").scoped();
@@ -67,13 +73,20 @@ routes! {
     /// Adds a resource to a VPC.
     VPC_RESOURCE_CREATE: 1 = Route::post("/api/network/networks/{vpc_id}/resources/").scoped();
 
-    /// Changes a resource of a VPC.
+    /// Changes a resource of a VPC. `groups` replaces the resource's whole list, so `hipc api`
+    /// needs `--remove-others` on a body that sets it, as `hipc network vpcs resources update
+    /// --group` does; the delete carries the guard too, as every write method of the route
+    /// takes it.
     VPC_RESOURCE_UPDATE: 2 =
-        Route::patch("/api/network/networks/{vpc_id}/resources/{resource_id}/").scoped();
+        Route::patch("/api/network/networks/{vpc_id}/resources/{resource_id}/")
+            .scoped()
+            .guard(Guard::NeedsWhenSet(&[RouteFlag::RemoveOthers], "groups"));
 
     /// Removes a resource from a VPC.
     VPC_RESOURCE_DELETE: 2 =
-        Route::delete("/api/network/networks/{vpc_id}/resources/{resource_id}/").scoped();
+        Route::delete("/api/network/networks/{vpc_id}/resources/{resource_id}/")
+            .scoped()
+            .guard(Guard::NeedsWhenSet(&[RouteFlag::RemoveOthers], "groups"));
 
     /// A VPC's routers.
     VPC_ROUTERS: 1 = Route::get("/api/network/networks/{vpc_id}/routers/").scoped();
@@ -243,13 +256,40 @@ pub struct TopologyNode {
 }
 
 /// The `meta` of a peer node of a [`Topology`]: the console's network types document these
-/// two fields.
+/// fields.
 #[derive(Debug, Default, Deserialize)]
 pub struct PeerMeta {
+    /// Whether the peer is a managed database, whose group membership Hippius keeps: the
+    /// console's types say the API answers 409 to a customer's edit of it, and that the
+    /// deployed API may leave the field out, which reads as not managed.
+    #[serde(default, deserialize_with = "field")]
+    pub managed_service: Option<bool>,
     /// The peer's id in the peer list.
     #[serde(default, deserialize_with = "field")]
     pub peer_id: Option<u64>,
     /// The ids of the groups the peer is in.
+    #[serde(default, deserialize_with = "field")]
+    pub groups: Option<Vec<u64>>,
+}
+
+/// One policy of [`POLICIES`]' answer, as far as an update of its ports decides on it.
+#[derive(Debug, Default, Deserialize)]
+pub struct Policy {
+    /// The policy's id, read as text, so a number or a string compares.
+    #[serde(default, deserialize_with = "text_or_number")]
+    pub id: Option<String>,
+    /// The policy's ports.
+    #[serde(default, deserialize_with = "field")]
+    pub ports: Option<Vec<String>>,
+}
+
+/// One resource of [`VPC_RESOURCES`]' answer, as far as an update of its groups decides on it.
+#[derive(Debug, Default, Deserialize)]
+pub struct Resource {
+    /// The resource's id, read as text, so a number or a string compares.
+    #[serde(default, deserialize_with = "text_or_number")]
+    pub id: Option<String>,
+    /// The ids of the groups the resource is in.
     #[serde(default, deserialize_with = "field")]
     pub groups: Option<Vec<u64>>,
 }

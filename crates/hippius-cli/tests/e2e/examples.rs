@@ -363,6 +363,7 @@ fn every_help_example_runs_as_typed_and_its_dry_run_sends_nothing() {
 const STOP_AT_A_READ: &[&str] = &[
     // The list a replace compares, or the member list a grant replace reads.
     "account members update",
+    "network policies update",
     "cdn lists items update",
     "cdn rules update",
     "compute firewall update",
@@ -449,7 +450,7 @@ fn every_confirmed_command_refuses_without_yes_and_sends_no_write() {
 /// The commands whose real run always sends more than one request, which a dry run lists
 /// (`TENETS.md` tenet 5). A list replace is told by its `reads_first`, and Hub
 /// `--replace` by its `may_cancel_first`.
-const MORE_THAN_ONE_REQUEST: [&str; 26] = [
+const MORE_THAN_ONE_REQUEST: [&str; 27] = [
     "auth status",
     "billing subscriptions",
     "billing auto-reload update",
@@ -477,8 +478,9 @@ const MORE_THAN_ONE_REQUEST: [&str; 26] = [
     "hub subscription subscribe",
     "support tickets update",
     "compute app-engine apps create",
-    // The group list, which shows the network exists, then the topology.
+    // The group list, which shows the network exists, then the topology or the isolation.
     "network topology",
+    "network isolation get",
 ];
 
 /// A dry run that would send requests lists every one in `requests`, the request the

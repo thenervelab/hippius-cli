@@ -137,21 +137,26 @@ pub(crate) enum Groups {
         #[arg(long, value_parser = group_name)]
         name: String,
     },
-    /// Set which peers are in a group; needs --yes to change them, and --remove-others to drop one
+    /// Set which peers are in a group; needs --yes to change them, and --remove-others to
+    /// drop one
     ///
-    /// The peers given become the group's whole list. Before the question hipc reads the
-    /// group list, to name the group, and the network's topology, to find the peers in the
-    /// group now and to check that each peer given exists. It then sends one POST
-    /// /api/network/groups/GROUP_ID/members/ per peer it adds or removes, adds first; a list
-    /// that is already the group's sends nothing. A peer added gains the access the group's
-    /// policies give; one removed loses it, so a list that leaves out a peer the group has now
-    /// is refused unless --remove-others is passed. The default group and the groups Hippius
-    /// keeps for each VM are refused by the server (409). When a step fails after others went
-    /// through, stdout holds what was done; running the same command again sends only what is
-    /// left.
+    /// The peers given become the group's whole list; --remove-others with no --peer empties
+    /// the group. Before the question hipc reads the group list, to name the group, and the
+    /// network's topology, to find the peers in the group now and to check that each peer
+    /// given exists. A list that leaves out a peer the group has now is refused unless
+    /// --remove-others is passed. A managed database's membership is kept by Hippius, so a
+    /// list that would add or remove one is refused. After the question hipc reads the
+    /// topology again and sends one POST /api/network/groups/GROUP_ID/members/ per peer it
+    /// adds or removes, adds first; a list that is already the group's sends nothing and asks
+    /// nothing. A peer added gains the access the group's policies give; one removed loses
+    /// it. The default group and the groups Hippius keeps for each VM are refused by the
+    /// server (409). When a step fails after others went through, stdout holds the group's
+    /// peers as they now are and what changed; running the same command again sends only
+    /// what is left.
     #[command(after_help = examples(&[
         "hipc network groups update 5 --peer 12 --peer 13 --yes",
         "hipc network groups update 5 --peer 12 --remove-others --yes",
+        "hipc network groups update 5 --remove-others --yes",
         "hipc --dry-run network groups update 5 --peer 12",
     ]))]
     Update {
@@ -159,9 +164,14 @@ pub(crate) enum Groups {
         #[arg(value_parser = group_id)]
         group_id: u64,
         /// A peer the group holds, by its id from hipc network peers list; repeat for each
-        #[arg(long = "peer", value_name = "PEER_ID", required = true, value_parser = body_peer_id)]
+        #[arg(
+            long = "peer",
+            value_name = "PEER_ID",
+            required_unless_present = "remove_others",
+            value_parser = body_peer_id
+        )]
         peers: Vec<u64>,
-        /// Let the list remove the group's peers it leaves out
+        /// Let the list remove the group's peers it leaves out; with no --peer, every peer
         #[arg(long)]
         remove_others: bool,
     },
@@ -198,11 +208,14 @@ pub(crate) enum Policies {
         "hipc --dry-run network policies create --source-group 5 --dest-group 6",
     ]))]
     Create(PolicyCreate),
-    /// Change a policy's groups, traffic, action, or name; needs --yes
+    /// Change a policy's groups, traffic, action, or name; needs --yes, and --remove-others to
+    /// drop a port
     ///
     /// Sends PATCH /api/network/policies/POLICY_ID/ with only the fields given; the others
     /// stay. A change to what a policy allows changes who reaches whom. --port replaces the
-    /// policy's ports. The server refuses a policy Hippius manages (409).
+    /// policy's whole list of ports, so before the question hipc reads the policy list and
+    /// refuses a list that leaves out a port the policy has now unless --remove-others is
+    /// passed. The server refuses a policy Hippius manages (409).
     #[command(after_help = examples(&[
         "hipc network policies update 9 --enabled false --yes",
         "hipc network policies update 9 --protocol tcp --port 443 --yes",
@@ -264,6 +277,9 @@ pub(crate) struct PolicyUpdate {
     pub(crate) dest_group: Option<u64>,
     #[command(flatten)]
     pub(crate) fields: PolicyFields,
+    /// Let --port remove the policy's ports it leaves out
+    #[arg(long)]
+    pub(crate) remove_others: bool,
 }
 
 /// The fields of a policy besides its groups, each sent only when given.
@@ -411,11 +427,14 @@ pub(crate) enum VpcResources {
         #[command(flatten)]
         fields: ResourceFields,
     },
-    /// Change a resource's name, address, kind, or groups; needs --yes
+    /// Change a resource's name, address, kind, or groups; needs --yes, and --remove-others to
+    /// drop a group
     ///
     /// Sends PATCH /api/network/networks/VPC_ID/resources/RESOURCE_ID/ with only the fields
-    /// given; the others stay. --group replaces the resource's groups. A new address or new
-    /// groups change who reaches what.
+    /// given; the others stay. --group replaces the resource's whole list of groups, so
+    /// before the question hipc reads the VPC network's resources and refuses a list that
+    /// leaves out a group the resource is in now unless --remove-others is passed: that
+    /// group's peers would lose their route to it. A new address changes who reaches what.
     #[command(after_help = examples(&[
         "hipc network vpcs resources update 3 7 --address 10.0.0.6 --yes",
         "hipc --dry-run network vpcs resources update 3 7 --group 5 --group 6",
@@ -464,6 +483,9 @@ pub(crate) struct ResourceUpdate {
     pub(crate) address: Option<String>,
     #[command(flatten)]
     pub(crate) fields: ResourceFields,
+    /// Let --group remove the resource's groups it leaves out
+    #[arg(long)]
+    pub(crate) remove_others: bool,
 }
 
 /// The fields of a resource besides its name and address, each sent only when given.

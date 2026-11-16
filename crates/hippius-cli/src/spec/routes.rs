@@ -469,19 +469,21 @@ fn of_network(path: &[&str]) -> Vec<&'static Endpoint> {
         ["groups", "delete"] => sends![network::GROUP_DELETE],
         ["policies", "list"] => sends![network::POLICIES],
         ["policies", "create"] => sends![network::POLICY_CREATE],
-        ["policies", "update"] => sends![network::POLICY_UPDATE],
+        ["policies", "update"] => sends![network::POLICIES, network::POLICY_UPDATE],
         ["policies", "delete"] => sends![network::POLICY_DELETE],
         ["vpcs", "list"] => sends![network::VPCS],
         ["vpcs", "create"] => sends![network::VPC_CREATE],
         ["vpcs", "delete"] => sends![network::VPC_DELETE],
         ["vpcs", "resources", "list"] => sends![network::VPC_RESOURCES],
         ["vpcs", "resources", "create"] => sends![network::VPC_RESOURCE_CREATE],
-        ["vpcs", "resources", "update"] => sends![network::VPC_RESOURCE_UPDATE],
+        ["vpcs", "resources", "update"] => {
+            sends![network::VPC_RESOURCES, network::VPC_RESOURCE_UPDATE]
+        }
         ["vpcs", "resources", "delete"] => sends![network::VPC_RESOURCE_DELETE],
         ["vpcs", "routers", "list"] => sends![network::VPC_ROUTERS],
         ["vpcs", "routers", "create"] => sends![network::VPC_ROUTER_CREATE],
         ["vpcs", "routers", "delete"] => sends![network::VPC_ROUTER_DELETE],
-        ["isolation", "get"] => sends![network::ISOLATION],
+        ["isolation", "get"] => sends![network::GROUPS, network::ISOLATION],
         ["isolation", "update"] => sends![network::ISOLATION_UPDATE],
         // The group list first, which shows the network exists, so the topology read, whose
         // first one for an account creates the network, creates nothing.

@@ -566,10 +566,7 @@ pub(super) fn of_network(path: &[&str]) -> Option<Spec> {
         // are confirmed.
         ["get" | "create"]
         | ["peers", "update" | "delete"]
-        // A policy or resource update sets the fields given, so a repeat leaves them as one
-        // call did, and a repeat delete finds the thing gone. Each changes who reaches what.
-        | ["policies", "update"]
-        | ["vpcs", "resources", "update"]
+        // A repeat delete finds the thing gone. Each changes who reaches what.
         | ["groups" | "policies" | "vpcs", "delete"]
         | ["vpcs", "resources" | "routers", "delete"] => Some(UNDO),
         // A new group or VPC network has no peers, policies, resources, or routers, so it
@@ -585,6 +582,22 @@ pub(super) fn of_network(path: &[&str]) -> Option<Spec> {
             guards: &[Guard {
                 code: Code::RemoveOthersRequired,
                 when: Some("the peers given leave out a peer the group has now"),
+            }],
+            ..UNDO
+        }),
+        // A policy or resource update sets the fields given, so a repeat leaves them as one
+        // call did. `--port` and `--group` replace a whole list.
+        ["policies", "update"] => Some(Spec {
+            guards: &[Guard {
+                code: Code::RemoveOthersRequired,
+                when: Some("`--port` leaves out a port the policy has now"),
+            }],
+            ..UNDO
+        }),
+        ["vpcs", "resources", "update"] => Some(Spec {
+            guards: &[Guard {
+                code: Code::RemoveOthersRequired,
+                when: Some("`--group` leaves out a group the resource is in now"),
             }],
             ..UNDO
         }),

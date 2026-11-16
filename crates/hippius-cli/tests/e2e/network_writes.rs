@@ -1,6 +1,7 @@
-//! The network writes that send one request: a group's create and delete, the policies, the
-//! VPC networks with their resources and routers, and the isolation switch with its read;
-//! and the topology, which reads the group list first. Every route acts in the selected
+//! The network writes: a group's create and delete, the policies, the VPC networks with
+//! their resources and routers, and the isolation switch; the list replaces of a policy's
+//! ports and a resource's groups; and the reads that check the group list first, the
+//! topology and the isolation mode. Every route acts in the selected
 //! account, and a project or a billing account is refused.
 
 use hippius::routes::network;
@@ -43,7 +44,7 @@ struct Single {
 }
 
 /// Every command here that sends one request.
-const SINGLE: [Single; 14] = [
+const SINGLE: [Single; 13] = [
     Single {
         args: &["network", "groups", "create", "--name", "build-boxes"],
         method: "POST",
@@ -193,15 +194,6 @@ const SINGLE: [Single; 14] = [
         done: Some(r#"{"id":4,"vpc_id":"3","deleted":true}"#),
     },
     Single {
-        args: &["network", "isolation", "get"],
-        method: "GET",
-        path: "/api/network/isolation/",
-        status: 200,
-        answer: r#"{"isolation_mode":"allow_intra"}"#,
-        sends: None,
-        done: None,
-    },
-    Single {
         args: &[
             "network",
             "isolation",
@@ -313,6 +305,7 @@ fn a_policy_sends_every_field_given() {
             "udp",
             "--port",
             "53",
+            "--remove-others",
             "--yes",
         ])
         .ok();
@@ -428,6 +421,7 @@ fn a_resource_sends_every_field_given() {
             "db.internal",
             "--group",
             "5",
+            "--remove-others",
             "--yes",
         ])
         .ok();
@@ -1019,4 +1013,194 @@ fn a_name_or_a_value_outside_its_rule_is_usage() {
         Hipc::against(&home, &server).run(args).fails(2, "usage");
     }
     assert!(server.requests().is_empty());
+}
+
+/// The isolation mode is read once the group list shows the network exists: a network never
+/// set up stops at the list's 403, so the isolation read, not known not to create the
+/// network, is never sent for it.
+#[test]
+fn isolation_get_reads_the_group_list_first() {
+    let mode = r#"{"isolation_mode":"allow_intra"}"#;
+    let server = Server::start(vec![
+        route_of(&network::GROUPS, [], Reply::json(200, "[]")),
+        route_of(&network::ISOLATION, [], Reply::json(200, mode)),
+    ]);
+    let home = Home::new();
+    let doc = Hipc::against(&home, &server)
+        .run(&["network", "isolation", "get"])
+        .ok();
+    assert_eq!(doc, parsed(mode));
+    assert_eq!(
+        server.calls(),
+        ["GET /api/network/groups/", "GET /api/network/isolation/"]
+    );
+    let unset = Server::start(vec![route_of(
+        &network::GROUPS,
+        [],
+        Reply::json(403, NOT_SET_UP),
+    )]);
+    Hipc::against(&home, &unset)
+        .run(&["network", "isolation", "get"])
+        .fails(1, "permission");
+    assert_eq!(unset.calls(), ["GET /api/network/groups/"]);
+    let doc = Hipc::tokenless(&home, &server)
+        .env_remove("HIPPIUS_TOKEN")
+        .run(&["--dry-run", "network", "isolation", "get"])
+        .dry_ok();
+    assert_eq!(doc["requests"].as_array().map(Vec::len), Some(2));
+}
+
+/// `--port` replaces the policy's whole list: the policy list is read before the question,
+/// and a list that leaves out a port the policy has is refused without `--remove-others`,
+/// naming each port; one that keeps them is sent. With `--remove-others` nothing is read.
+#[test]
+fn a_policy_port_list_that_drops_a_port_needs_remove_others() {
+    let list = r#"[{"id":8,"ports":["80"]},{"id":"9","ports":["22","443"]}]"#;
+    let server = Server::start(vec![
+        route_of(&network::POLICIES, [], Reply::json(200, list)),
+        route_of(&network::POLICY_UPDATE, [&9], Reply::json(200, POLICY)),
+    ]);
+    let home = Home::new();
+    let update = |extra: &[&'static str]| -> Vec<&'static str> {
+        [
+            &[
+                "network",
+                "policies",
+                "update",
+                "9",
+                "--protocol",
+                "tcp",
+                "--port",
+                "22",
+            ][..],
+            extra,
+        ]
+        .concat()
+    };
+    let error = Hipc::against(&home, &server)
+        .run(&update(&["--yes"]))
+        .fails(2, "remove_others_required");
+    assert_eq!(
+        error["message"],
+        "this would remove 1 port that the network policy `9` has now, and `--remove-others` \
+         was not passed"
+    );
+    assert_eq!(
+        error["hint"],
+        "run `hipc network policies update 9 --protocol tcp --port 22 --yes --remove-others` \
+         to remove `443`"
+    );
+    assert_eq!(server.calls(), ["GET /api/network/policies/"]);
+    Hipc::against(&home, &server)
+        .run(&update(&["--port", "443", "--port", "8080", "--yes"]))
+        .ok();
+    Hipc::against(&home, &server)
+        .run(&update(&["--remove-others", "--yes"]))
+        .ok();
+    assert_eq!(
+        server.calls(),
+        [
+            "GET /api/network/policies/",
+            "GET /api/network/policies/",
+            "PATCH /api/network/policies/9/",
+            "PATCH /api/network/policies/9/",
+        ]
+    );
+    let doc = Hipc::tokenless(&home, &server)
+        .env_remove("HIPPIUS_TOKEN")
+        .run(&[&["--dry-run"][..], &update(&[])].concat())
+        .dry_ok();
+    assert_eq!(doc["requests"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        doc["reads_first"]["url"],
+        format!("{}/api/network/policies/", server.url())
+    );
+}
+
+/// A policy the list does not hold is `not_found`, and a policy without a port list is a
+/// shape `hipc` does not read; neither sends the PATCH.
+#[test]
+fn a_policy_the_list_cannot_show_sends_nothing() {
+    let home = Home::new();
+    let args = [
+        "network",
+        "policies",
+        "update",
+        "9",
+        "--protocol",
+        "udp",
+        "--port",
+        "53",
+        "--yes",
+    ];
+    for (list, code) in [
+        (r#"[{"id":8,"ports":[]}]"#, "not_found"),
+        (r#"[{"id":9}]"#, "internal"),
+        (r#"{"policies":[]}"#, "internal"),
+    ] {
+        let server = Server::start(vec![route_of(
+            &network::POLICIES,
+            [],
+            Reply::json(200, list),
+        )]);
+        let error = Hipc::against(&home, &server).run(&args).fails(1, code);
+        if code == "not_found" {
+            assert_eq!(
+                error["message"],
+                "cannot change the policy `9`: the API does not list it"
+            );
+            assert_eq!(
+                error["hint"],
+                "run `hipc api GET /network/policies/` to see what exists"
+            );
+        }
+        assert_eq!(server.calls(), ["GET /api/network/policies/"], "{list}");
+    }
+}
+
+/// `--group` replaces the resource's whole list: the VPC network's resources are read first,
+/// and a list that leaves out a group the resource is in is refused without
+/// `--remove-others`.
+#[test]
+fn a_resource_group_list_that_drops_a_group_needs_remove_others() {
+    let list = r#"{"count":1,"next":null,"results":[{"id":7,"groups":[5,6]}]}"#;
+    let server = Server::start(vec![
+        route_of(&network::VPC_RESOURCES, [&3], Reply::json(200, list)),
+        route_of(
+            &network::VPC_RESOURCE_UPDATE,
+            [&3, &7],
+            Reply::json(200, r#"{"id":7}"#),
+        ),
+    ]);
+    let home = Home::new();
+    let base = [
+        "network",
+        "vpcs",
+        "resources",
+        "update",
+        "3",
+        "7",
+        "--group",
+        "6",
+    ];
+    let error = Hipc::against(&home, &server)
+        .run(&[&base[..], &["--yes"]].concat())
+        .fails(2, "remove_others_required");
+    assert_eq!(
+        error["message"],
+        "this would remove 1 group that the resource `7` has now, and `--remove-others` was \
+         not passed"
+    );
+    Hipc::against(&home, &server)
+        .run(&[&base[..], &["--group", "5", "--yes"]].concat())
+        .ok();
+    assert_eq!(body_text(&server.requests()[2]), r#"{"groups":[6,5]}"#);
+    let unreadable = Server::start(vec![route_of(
+        &network::VPC_RESOURCES,
+        [&3],
+        Reply::json(200, r#"[{"id":7}]"#),
+    )]);
+    Hipc::against(&home, &unreadable)
+        .run(&[&base[..], &["--yes"]].concat())
+        .fails(1, "internal");
 }

@@ -212,6 +212,8 @@ fn schema_guards_name_each_refusal_a_flag_of_the_command_gets_past() {
             "cdn waf rate-limits update",
             "cdn lists items update",
             "network groups update",
+            "network policies update",
+            "network vpcs resources update",
             "api",
         ]
     );

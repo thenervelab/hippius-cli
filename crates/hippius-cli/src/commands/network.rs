@@ -16,10 +16,10 @@
 mod groups;
 
 use hippius::phrase::quote;
+use hippius::routes::Route;
 use hippius::routes::account::NameBody;
 use hippius::routes::network::{self, IsolationBody, PolicyBody, ResourceBody, RouterCreateBody};
-use hippius::routes::{Route, RouteFlag};
-use hippius::{Error, ISSUES_URL, Request, Response, Result, view_of};
+use hippius::{Error, Failure, ISSUES_URL, Request, Response, Result, view_of};
 use serde_json::{Value, json};
 
 use crate::cli::{
@@ -27,8 +27,10 @@ use crate::cli::{
     PolicyFields, PolicyUpdate, Protocol, ResourceFields, ResourceKind, ResourceUpdate,
     VpcResources, VpcRouters, Vpcs,
 };
+use crate::commands::replace::{Entry, Found, Replace, replace_list};
 use crate::commands::{
     Printed, print_body, print_body_or, print_envelope, print_with, run_hint, set_up_first,
+    unreadable,
 };
 use crate::context::{Context, Gate};
 
@@ -165,6 +167,7 @@ fn policies(ctx: &Context<'_>, command: &Policies) -> Result<Printed> {
             source_group,
             dest_group,
             fields,
+            remove_others,
         }) => {
             let body = policy_body(fields, *source_group, *dest_group)?;
             let request = Request::to(&network::POLICY_UPDATE, [policy_id])
@@ -174,10 +177,42 @@ fn policies(ctx: &Context<'_>, command: &Policies) -> Result<Printed> {
                     "change the network policy `{policy_id}`: {}",
                     hippius::phrase::ticked(sent_keys(&body), "and")
                 ));
-            let gate = Gate::Confirm {
-                consequence: Some(ACCESS_CHANGES),
+            let client = ctx.load_authed_client()?;
+            let Some(ports) = body.ports else {
+                let gate = Gate::Confirm {
+                    consequence: Some(ACCESS_CHANGES),
+                };
+                return print_body(ctx, &client, &request, gate);
             };
-            print_body(ctx, &ctx.load_authed_client()?, &request, gate)
+            // `ports` replaces the policy's whole list, so a port it leaves out is a removal.
+            let replace = Replace {
+                write: request,
+                consequence: Some(ACCESS_CHANGES),
+                entries: ports
+                    .iter()
+                    .map(|port| Entry::new(port.as_str().into()))
+                    .collect(),
+                remove_others: *remove_others,
+                // There is no read of one policy: the list holds every policy's ports.
+                read: Request::to(&network::POLICIES, []).about("list the network's policies"),
+                draft_body: None,
+                draft_if_match: None,
+                noun: "port",
+                owner: format!("the network policy `{policy_id}`"),
+            };
+            replace_list(ctx, &client, &replace, |answer| {
+                let policy: network::Policy =
+                    listed(answer, "/network/policies/", *policy_id, "policy")?;
+                let ports = policy
+                    .ports
+                    .ok_or_else(|| unreadable("list the network's policies"))?;
+                Ok(Found::new(
+                    ports
+                        .into_iter()
+                        .map(|port| Entry::new(port.into()))
+                        .collect(),
+                ))
+            })
         }
         Policies::Delete { policy_id } => {
             let request = Request::to(&network::POLICY_DELETE, [policy_id])
@@ -293,6 +328,7 @@ fn resources(ctx: &Context<'_>, command: &VpcResources) -> Result<Printed> {
             name,
             address,
             fields,
+            remove_others,
         }) => {
             let body = resource_body(name.as_deref(), address.as_deref(), fields);
             let request = Request::to(&network::VPC_RESOURCE_UPDATE, [vpc_id, resource_id])
@@ -302,10 +338,44 @@ fn resources(ctx: &Context<'_>, command: &VpcResources) -> Result<Printed> {
                     "change the resource `{resource_id}` of the VPC network `{vpc_id}`: {}",
                     hippius::phrase::ticked(sent_keys(&body), "and")
                 ));
-            let gate = Gate::Confirm {
-                consequence: Some(ACCESS_CHANGES),
+            let client = ctx.load_authed_client()?;
+            let Some(groups) = body.groups else {
+                let gate = Gate::Confirm {
+                    consequence: Some(ACCESS_CHANGES),
+                };
+                return print_body(ctx, &client, &request, gate);
             };
-            print_body(ctx, &ctx.load_authed_client()?, &request, gate)
+            // `groups` replaces the resource's whole list, so a group it leaves out is a
+            // removal: its peers lose their route to the resource.
+            let list = format!("list the resources of the VPC network `{vpc_id}`");
+            let replace = Replace {
+                write: request,
+                consequence: Some(ACCESS_CHANGES),
+                entries: groups
+                    .iter()
+                    .map(|&group| Entry::new(group.into()))
+                    .collect(),
+                remove_others: *remove_others,
+                // There is no read of one resource: the list holds every resource's groups.
+                read: Request::to(&network::VPC_RESOURCES, [vpc_id])
+                    .listed_by("hipc network vpcs list")
+                    .about(list.clone()),
+                draft_body: None,
+                draft_if_match: None,
+                noun: "group",
+                owner: format!("the resource `{resource_id}`"),
+            };
+            let path = format!("/network/networks/{vpc_id}/resources/");
+            replace_list(ctx, &client, &replace, |answer| {
+                let resource: network::Resource = listed(answer, &path, *resource_id, "resource")?;
+                let groups = resource.groups.ok_or_else(|| unreadable(&list))?;
+                Ok(Found::new(
+                    groups
+                        .into_iter()
+                        .map(|group| Entry::new(group.into()))
+                        .collect(),
+                ))
+            })
         }
         VpcResources::Delete {
             vpc_id,
@@ -323,6 +393,39 @@ fn resources(ctx: &Context<'_>, command: &VpcResources) -> Result<Printed> {
             print_body_or(ctx, &ctx.load_authed_client()?, &request, gate, done)
         }
     }
+}
+
+/// The item whose `id` is `id` in `answer`, a list read whole from `path` (as `hipc api` takes
+/// it), as a view: what a list replace compares against.
+///
+/// # Errors
+///
+/// `internal` for an answer that is not a list, or one that names a next page; `not_found`
+/// when no item has the id, naming the list that shows what exists.
+fn listed<T: serde::de::DeserializeOwned + Default>(
+    answer: Value,
+    path: &str,
+    id: u64,
+    what: &str,
+) -> Result<T> {
+    let items = hippius::page(answer)
+        .map_err(|_| unreadable(&format!("read the {what} list")))?
+        .into_complete(path)?;
+    let id = id.to_string();
+    items
+        .iter()
+        .find(|item| {
+            let item_id = item.get("id").cloned().map(serde_json::from_value);
+            matches!(item_id, Some(Ok(hippius::TextOrNumber(text))) if text == id)
+        })
+        .map(view_of)
+        .ok_or_else(|| {
+            Error::new(
+                Failure::NotFound,
+                format!("cannot change the {what} `{id}`: the API does not list it"),
+            )
+            .with_hint(format!("run `hipc api GET {path}` to see what exists"))
+        })
 }
 
 /// The body of a resource create or update: every field given.
@@ -386,10 +489,19 @@ fn routers(ctx: &Context<'_>, command: &VpcRouters) -> Result<Printed> {
 
 fn isolation(ctx: &Context<'_>, command: &Isolation) -> Result<Printed> {
     match command {
+        // Only the summary's and the topology's reads are documented to create the network;
+        // this one is not known not to, so it is sent only once the group list, which answers
+        // 403 for a network never set up, shows the network exists, as the topology is.
         Isolation::Get => {
-            let request =
+            let client = ctx.load_authed_client()?;
+            let (probe, _) = topology_reads();
+            let read =
                 Request::to(&network::ISOLATION, []).about("get the network's isolation mode");
-            print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
+            if ctx.dry_run() {
+                return ctx.dry_run_of(&client, &[&probe, &read]).map(Printed::from);
+            }
+            ctx.send(&client, &probe)?;
+            Ok(Printed::Document(ctx.send(&client, &read)?.document()?))
         }
         Isolation::Update {
             mode,
@@ -417,11 +529,6 @@ fn isolation(ctx: &Context<'_>, command: &Isolation) -> Result<Printed> {
 /// so it needs no flag (tenet 5). It comes before the config file is read, as `--public`
 /// does.
 fn require_change_isolation(ctx: &Context<'_>, change_isolation: bool) -> Result<()> {
-    debug_assert_eq!(
-        network::ISOLATION_UPDATE.endpoint().guard(),
-        hippius::routes::Guard::Needs(&[RouteFlag::ChangeIsolation]),
-        "the curated switch asks for the flag the route's row names"
-    );
     if change_isolation || ctx.dry_run() {
         return Ok(());
     }
@@ -591,3 +698,20 @@ const RESOURCE_REACHED: &str =
 
 /// What a router create does, for its question.
 const ROUTED_THROUGH: &str = "the VPC network's traffic goes through that peer";
+
+#[cfg(test)]
+mod tests {
+    use hippius::routes::{Guard, RouteFlag};
+
+    use super::*;
+
+    /// The isolation switch asks for the flag its route's row names, so the curated command
+    /// and `hipc api` refuse the same way.
+    #[test]
+    fn the_isolation_switch_needs_the_flag_its_row_names() {
+        assert_eq!(
+            network::ISOLATION_UPDATE.endpoint().guard(),
+            Guard::Needs(&[RouteFlag::ChangeIsolation])
+        );
+    }
+}
