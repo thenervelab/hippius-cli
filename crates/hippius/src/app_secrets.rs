@@ -1,5 +1,5 @@
-//! The secret values `hipc compute app-engine apps create` sends once, read from a private
-//! file.
+//! The secret values `hipc compute app-engine apps create` and `apps update` send once, read
+//! from a private file.
 //!
 //! Swagger (`compute_app-engine_apps_create`) takes `secrets`, a map of name to string, in the
 //! body. The server stores the values encrypted, hands each to the VM as

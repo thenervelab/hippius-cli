@@ -1265,12 +1265,12 @@ fn hipc_api_refuses_a_body_with_secrets() {
         (
             "PUT",
             "/compute/app-engine/apps/vm-1a2b/compose/",
-            "not in this version",
+            "apps update --secrets-file",
         ),
         (
             "PATCH",
             "/compute/app-engine/apps/vm-1a2b/compose/",
-            "not in this version",
+            "apps update --secrets-file",
         ),
         (
             "POST",

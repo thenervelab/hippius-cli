@@ -377,6 +377,8 @@ const STOP_AT_A_READ: &[&str] = &[
     "billing top-up",
     // The validate answer the launch is checked against.
     "compute app-engine apps create",
+    // The app's stored secret names, and with a compose the validate hash.
+    "compute app-engine apps update",
     // The VM, the cluster, the node pool, or the operation the question names.
     "compute backups restore",
     "compute kubernetes node-pools scale",

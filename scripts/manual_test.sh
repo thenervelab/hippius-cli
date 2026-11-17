@@ -1849,6 +1849,11 @@ app_engine() {
     -- hipc --output text compute app-engine guest-components get "$app"
   step read net "Read the guest component update" "see whether an update is pending or done" \
     -- hipc --output text compute app-engine guest-components update-status "$app"
+  # Without --yes this never posts: exit 0 when no newer release is offered, or
+  # confirmation_required when one is. An error code needs JSON, not text.
+  step read net/confirmation_required "See whether a guest update is offered" \
+    "without --yes nothing is posted: exit 0 when none is offered, or confirmation_required when one is" \
+    -- hipc --json compute app-engine guest-components update "$app"
   block_end
   # A compose the platform refuses exits 1 `validation`, with every issue listed.
   step read net/permission,validation "Validate a compose" \
@@ -3651,7 +3656,8 @@ billing gamma hotkeys create: the API has gamma payments off until gamma is enab
 billing gamma hotkeys delete: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
 billing gamma conversions create: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
 billing gamma conversions list: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
-billing gamma conversions get: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey'
+billing gamma conversions get: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
+compute app-engine apps update: replaces the compose or the secrets of a running app and restarts its VM; the script has no App Engine write tier'
 
 if [[ $EXCLUDED_ONLY == 1 ]]; then
   printf '%s\n' "$EXCLUDED"

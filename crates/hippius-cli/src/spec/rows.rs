@@ -341,7 +341,16 @@ pub(super) fn of_compute_app_engine(path: &[&str]) -> Option<Spec> {
         // file, and a repeat finds that file and stops.
         ["fix"] => Some(UNGATED_WRITE),
         // An app is a VM with a public IPv4, so a repeat launches, and bills, a second one.
-        ["apps", "create"] => Some(SPEND),
+        // An update is a relaunch: the VM stops and starts again, and a repeat sends the
+        // compose or the secrets again.
+        ["apps", "create" | "update"] => Some(SPEND),
+        // The VM restarts only when a newer guest release is offered. Already being on it
+        // posts nothing and asks nothing.
+        ["guest-components", "update"] => Some(Spec {
+            effect: Effect::NonIdempotent,
+            confirmation: Asks::When("a newer guest components release is offered"),
+            ..READ_ONLY
+        }),
         _ => None,
     }
 }

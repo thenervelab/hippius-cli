@@ -987,7 +987,7 @@ mod tests {
         assert_eq!(missing, Vec::<&Vec<String>>::new());
     }
 
-    /// Twelve commands ask only sometimes, and the schema says when: `confirmation` is true
+    /// Thirteen commands ask only sometimes, and the schema says when: `confirmation` is true
     /// and `confirmation_when` names the condition, so an agent passes `--yes` when it
     /// holds. Every other command asks always or never.
     #[test]
@@ -1033,6 +1033,10 @@ mod tests {
                      email, differs from every email but an empty one"
                 ),
                 ("s3 configure".to_owned(), "the AWS profile already exists"),
+                (
+                    "compute app-engine guest-components update".to_owned(),
+                    "a newer guest components release is offered"
+                ),
                 (
                     "compute runners settings update".to_owned(),
                     "against the settings it reads first, `--enabled` or `--allow-public-repos` \

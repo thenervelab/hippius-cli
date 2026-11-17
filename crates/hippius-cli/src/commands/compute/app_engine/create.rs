@@ -32,7 +32,7 @@ use crate::commands::compute::launch::{
 use crate::context::{Context, Write, WritePlan};
 
 /// The flag that names the secrets file, in its placeholders and hints.
-const SECRETS_FLAG: &str = "--secrets-file";
+pub(super) const SECRETS_FLAG: &str = "--secrets-file";
 
 pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
     let timeout = launch_wait(ctx, &args.launch);
@@ -86,7 +86,7 @@ pub(super) fn create(ctx: &Context<'_>, args: &AppCreate) -> Result<Printed> {
             Ok(parsed)
         })
         .map_err(unavailable_hint)?;
-    check_secret_names(&parsed, secrets.as_ref(), &compose)?;
+    check_secret_names(&parsed, secrets.as_ref(), &compose.name)?;
     let question = format!("{action}, billed per hour from the balance");
     let confirmed = ctx.confirm_write(checked, &question, None)?;
     if let Some(intervals) = &intervals {
@@ -182,17 +182,17 @@ fn create_body<'a>(
     }
 }
 
-/// Refuses a launch whose secrets are not the ones the compose declares, as validate read
-/// them (`secret_names`): a declared name with no value (which the server would refuse with
-/// `app-secret-missing`, after the question), or a value for a name the compose does not
-/// declare, which the console's launch drops without a word and hipc does not send. An answer whose
-/// `secret_names` is missing, null, or not a list of strings is internal, since nothing could
-/// then be checked. A name is quoted only when the compose declares it: one it does not may
-/// be a value pasted in the wrong place.
-fn check_secret_names(
+/// Refuses a launch or an update whose secrets are not the ones `source` names, as the
+/// answer read them (`secret_names`): a declared name with no value (which the server would
+/// refuse with `app-secret-missing`, after the question), or a value for a name it does not
+/// declare, which the console's launch drops without a word and hipc does not send. An answer
+/// whose `secret_names` is missing, null, or not a list of strings is internal, since nothing
+/// could then be checked. A name is quoted only when it is declared: one that is not may be a
+/// value pasted in the wrong place.
+pub(super) fn check_secret_names(
     parsed: &Value,
     secrets: Option<&AppSecrets>,
-    compose: &Compose,
+    source: &str,
 ) -> Result<()> {
     let names = view_of::<compute::Validated>(parsed).secret_names;
     let declared: Vec<&str> = match &names {
@@ -204,8 +204,8 @@ fn check_secret_names(
                 "without `secret_names`"
             };
             return Err(Error::internal(format!(
-                "cannot check the declared secrets: the API's check of {} answered {answered}",
-                compose.name
+                "cannot check the declared secrets: the API's check of {source} answered \
+                 {answered}"
             )));
         }
     };
@@ -221,10 +221,7 @@ fn check_secret_names(
             )
         };
         return Err(Error::usage(
-            format!(
-                "{} declares the secret {name}, and `{SECRETS_FLAG}` gives it no value",
-                compose.name
-            ),
+            format!("{source} declares the secret {name}, and `{SECRETS_FLAG}` gives it no value"),
             hint,
         ));
     }
@@ -241,9 +238,8 @@ fn check_secret_names(
         };
         return Err(Error::usage(
             format!(
-                "the secrets file gives {} that {} does not declare",
+                "the secrets file gives {} that {source} does not declare",
                 phrase::count(undeclared as u64, "secret"),
-                compose.name
             ),
             format!(
                 "remove from the secrets file every name the compose does not declare under \

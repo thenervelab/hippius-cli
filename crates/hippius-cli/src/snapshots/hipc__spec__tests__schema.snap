@@ -5907,6 +5907,69 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "compute",
         "app-engine",
         "apps",
+        "update"
+      ],
+      "about": "Replace an app's compose, its secrets, or both; the VM stops and starts again; needs --yes",
+      "effect": "non_idempotent",
+      "confirmation": true,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [
+        {
+          "name": "vm_id",
+          "value_name": "VM_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The vm_id from hipc compute app-engine apps list"
+        }
+      ],
+      "flags": [
+        {
+          "name": "--compose-file",
+          "value_name": "PATH",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The compose file, a regular file (not a symlink) of UTF-8 text of at most 1 MiB, sent byte for byte; - reads stdin"
+        },
+        {
+          "name": "--secrets-file",
+          "value_name": "PATH",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "A JSON object of each secret's name to its value; the values given replace the stored ones; the rest are kept"
+        }
+      ],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "PUT",
+          "path": "/api/compute/app-engine/apps/{vm_id}/compose/"
+        },
+        {
+          "method": "POST",
+          "path": "/api/compute/app-engine/validate/"
+        },
+        {
+          "method": "GET",
+          "path": "/api/compute/app-engine/apps/{vm_id}/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "compute",
+        "app-engine",
+        "apps",
         "runtime"
       ],
       "about": "What the app's runner reports about itself, relayed from its VM and cached for 15 seconds; not verified",
@@ -5968,6 +6031,46 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "flags": [],
       "required_groups": [],
       "routes": [
+        {
+          "method": "GET",
+          "path": "/api/compute/app-engine/apps/{vm_id}/guest-components/"
+        }
+      ]
+    },
+    {
+      "path": [
+        "compute",
+        "app-engine",
+        "guest-components",
+        "update"
+      ],
+      "about": "Upgrade an app's guest components to the newest release; needs --yes when one is offered",
+      "effect": "non_idempotent",
+      "confirmation": true,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": "a newer guest components release is offered",
+      "reveal_when": null,
+      "refused_when": null,
+      "guards": [],
+      "args": [
+        {
+          "name": "vm_id",
+          "value_name": "VM_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The vm_id from hipc compute app-engine apps list"
+        }
+      ],
+      "flags": [],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/compute/app-engine/apps/{vm_id}/guest-upgrade/"
+        },
         {
           "method": "GET",
           "path": "/api/compute/app-engine/apps/{vm_id}/guest-components/"
@@ -12257,10 +12360,6 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         {
           "method": "DELETE",
           "path": "/api/account/deletion/"
-        },
-        {
-          "method": "PUT",
-          "path": "/api/compute/app-engine/apps/{vm_id}/compose/"
         },
         {
           "method": "POST",
