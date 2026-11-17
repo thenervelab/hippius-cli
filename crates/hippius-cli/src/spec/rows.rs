@@ -9,9 +9,9 @@
 use hippius::Code;
 
 use super::{
-    API_CONFIRMATION, API_GUARDS, API_REFUSED_WHEN, API_REVEAL_WHEN, Asks, CDN_CAP_RAISED, Effect,
-    Guard, HUB_REPLACE_WHEN, NO_CREDENTIALS_DIR, NO_SECRET_FILE, NOT_DEFAULT_ORIGIN,
-    NOTIFICATION_ALERT_OFF, READ_ONLY, RELOAD_CHARGES_MORE, RUNNER_CAP_RAISED,
+    API_CONFIRMATION, API_GUARDS, API_REFUSED_WHEN, API_REVEAL_WHEN, ATTACHMENT_HOLDS_A_TOKEN,
+    Asks, CDN_CAP_RAISED, Effect, Guard, HUB_REPLACE_WHEN, NO_CREDENTIALS_DIR, NO_SECRET_FILE,
+    NOT_DEFAULT_ORIGIN, NOTIFICATION_ALERT_OFF, READ_ONLY, RELOAD_CHARGES_MORE, RUNNER_CAP_RAISED,
     RUNNER_SETTINGS_SPEND_MORE, SPEND, Spec, TICKET_HOLDS_A_TOKEN, UNDO, UNGATED_WRITE, WAF_CHECK,
 };
 
@@ -540,6 +540,11 @@ pub(super) fn of_support(path: &[&str]) -> Option<Spec> {
         // A ticket spends nothing, but a person on the support team reads it.
         ["tickets", "create"] => Some(Spec {
             refused_when: Some(TICKET_HOLDS_A_TOKEN),
+            ..SPEND
+        }),
+        // An attachment too, and a repeat attaches the file again.
+        ["tickets", "messages", "attach"] => Some(Spec {
+            refused_when: Some(ATTACHMENT_HOLDS_A_TOKEN),
             ..SPEND
         }),
         // A close again leaves the ticket closed. hipc refuses one of a ticket its read shows

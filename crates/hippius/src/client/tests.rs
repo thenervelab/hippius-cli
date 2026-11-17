@@ -936,6 +936,41 @@ fn a_refusal_names_the_method_sent_and_the_route_of_its_guard() {
     );
 }
 
+/// A file upload's dry run shows the file's name, type and size in place of its bytes, and
+/// says the body is a form; no rule reads a form as a JSON body that sets a key, and `Debug`
+/// counts its bytes.
+#[test]
+fn a_file_form_is_described_by_its_file_and_sets_no_key() {
+    let c = client(member());
+    let form = crate::FileForm::new("file", "a.txt", "text/plain", b"my words").unwrap();
+    let request = Request::new(Method::Post, "/support/tickets/7/messages/3/attachments/")
+        .file_form(form.clone());
+    let doc = c.describe(&request).unwrap();
+    assert_eq!(
+        doc,
+        json!({
+            "dry_run": true,
+            "method": "POST",
+            "url": "https://api.hippius.com/api/support/tickets/7/messages/3/attachments/",
+            "account_header": null,
+            "project_header": null,
+            "billing_header": null,
+            "body": {"file": {"filename": "a.txt", "content_type": "text/plain", "bytes": 8}},
+            "content_type": "multipart/form-data",
+        })
+    );
+    assert!(!doc.to_string().contains("my words"), "{doc}");
+    let shown = format!("{request:?}");
+    assert!(
+        shown.contains(&format!("body_len: Some({})", form.body().len())),
+        "{shown}"
+    );
+    assert!(!shown.contains("my words"), "{shown}");
+    // A route whose rule reads the body's `secrets` takes a form as setting nothing.
+    let launch = Request::new(Method::Post, "/compute/app-engine/apps/").file_form(form);
+    assert_eq!(flag_names(&c, &launch), NONE);
+}
+
 #[test]
 fn dry_run_describes_without_header_values() {
     let c = client(member());
@@ -1497,7 +1532,9 @@ fn a_json_body_is_written_into_a_buffer_of_its_exact_size() {
     use std::io::Write as _;
     let body = json!({"secrets": {"A": "x".repeat(1000)}, "n": [1, 2.5, "é"]});
     let request = Request::new(Method::Post, "/x/").json(&body);
-    let bytes = request.body.as_ref().expect("a body");
+    let Some(Payload::Json(bytes)) = request.body.as_ref() else {
+        panic!("a JSON body");
+    };
     assert_eq!(bytes.as_slice(), serde_json::to_vec(&body).unwrap());
     assert_eq!(bytes.capacity(), bytes.len());
     let mut count = ByteCount(0);

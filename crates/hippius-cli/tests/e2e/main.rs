@@ -64,6 +64,7 @@ mod sources;
 mod status;
 mod subscription_change;
 mod support;
+mod support_attach;
 mod team;
 mod top_up;
 mod transport;

@@ -28,6 +28,7 @@ use crate::config::{Credential, Settings};
 use crate::encode::percent_encode;
 use crate::error::{Code, Error, Failure, Result, SideEffects};
 use crate::method::{Access, Method};
+use crate::multipart::FileForm;
 use crate::phrase::quote;
 use crate::project;
 use crate::redact::{is_secret_field, token_spellings};
@@ -80,9 +81,7 @@ pub struct Request {
     method: Method,
     target: String,
     query: Vec<(String, String)>,
-    /// Cleared when dropped: a body can hold a secret sent once, such as an App Engine
-    /// launch's secrets or a DNS provider credential.
-    body: Option<Zeroizing<Vec<u8>>>,
+    body: Option<Payload>,
     /// What the request does, as [`Request::action`] says it.
     about: Option<String>,
     /// [`Request::listed_by`].
@@ -244,14 +243,23 @@ impl Request {
         serde_json::to_writer(&mut size, body).expect("a request body is plain JSON data");
         let mut bytes = Zeroizing::new(Vec::with_capacity(size.0));
         serde_json::to_writer(&mut *bytes, body).expect("a request body is plain JSON data");
-        self.body = Some(bytes);
+        self.body = Some(Payload::Json(bytes));
         self
     }
 
     /// Sets a body the caller already holds as JSON bytes.
     #[must_use]
     pub fn raw_json(mut self, body: Vec<u8>) -> Self {
-        self.body = Some(Zeroizing::new(body));
+        self.body = Some(Payload::Json(Zeroizing::new(body)));
+        self
+    }
+
+    /// Sets a `multipart/form-data` body that carries one file, sent with the
+    /// `Content-Type` that names its boundary. A dry run shows the file's name, type and
+    /// size in place of its bytes.
+    #[must_use]
+    pub fn file_form(mut self, form: FileForm) -> Self {
+        self.body = Some(Payload::Form(form));
         self
     }
 
@@ -293,6 +301,36 @@ impl Request {
     }
 }
 
+/// A request's body.
+#[derive(Clone)]
+enum Payload {
+    /// JSON, cleared when dropped: a body can hold a secret sent once, such as an App Engine
+    /// launch's secrets or a DNS provider credential.
+    Json(Zeroizing<Vec<u8>>),
+    /// A form that carries one file, a support attachment, which holds no secret: the
+    /// command refuses a file that holds the token before it builds one.
+    Form(FileForm),
+}
+
+impl Payload {
+    /// The bytes sent.
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Json(bytes) => bytes,
+            Self::Form(form) => form.body(),
+        }
+    }
+
+    /// The bytes of a JSON body, which a route rule and the redaction of an error read; a
+    /// form is no JSON, and sets no key a rule reads.
+    fn json(&self) -> Option<&[u8]> {
+        match self {
+            Self::Json(bytes) => Some(bytes),
+            Self::Form(_) => None,
+        }
+    }
+}
+
 /// A writer that keeps nothing and counts the bytes written to it.
 #[derive(Debug)]
 struct ByteCount(usize);
@@ -314,7 +352,10 @@ impl fmt::Debug for Request {
             .field("method", &self.method)
             .field("target", &without_query_values(&self.target))
             .field("query_params", &self.query.len())
-            .field("body_len", &self.body.as_deref().map(Vec::len))
+            .field(
+                "body_len",
+                &self.body.as_ref().map(|body| body.bytes().len()),
+            )
             .field("about", &self.about)
             .field("listed_by", &self.listed_by)
             .field("accept", &self.accept)
@@ -869,7 +910,7 @@ impl Client {
     /// cluster's sealed kubeconfig.
     pub fn route_flags(&self, request: &Request) -> Result<Vec<(RouteFlag, &'static str)>> {
         let target = self.target(request)?;
-        let body = request.body.as_deref().map(Vec::as_slice);
+        let body = request.body.as_ref().and_then(Payload::json);
         let mut needed = Vec::new();
         for Rule { guard, route } in account::route_rules(request.method, target.api_path()) {
             let flags = match guard {
@@ -1071,10 +1112,11 @@ impl Client {
     /// The same local refusals [`Client::send`] makes, such as `account_scope_unsupported`.
     pub fn describe(&self, request: &Request) -> Result<Value> {
         let resolved = self.resolve(request)?;
-        let body = request
-            .body
-            .as_deref()
-            .map_or(Value::Null, |b| parse_json(b).unwrap_or(Value::Null));
+        let body = match &request.body {
+            None => Value::Null,
+            Some(Payload::Json(bytes)) => parse_json(bytes).unwrap_or(Value::Null),
+            Some(Payload::Form(form)) => form.shown(),
+        };
         let mut doc = serde_json::json!({
             "dry_run": true,
             "method": request.method.as_str(),
@@ -1094,6 +1136,11 @@ impl Client {
         // Likewise present only on the writes that send one.
         if let Some(key) = &request.idempotency_key {
             doc["idempotency_key"] = key.as_str().into();
+        }
+        // Every other body is JSON; a file upload says it is not, and its `body` shows the
+        // file in place of its bytes.
+        if let Some(Payload::Form(_)) = &request.body {
+            doc["content_type"] = "multipart/form-data".into();
         }
         Ok(doc)
     }
@@ -1150,10 +1197,11 @@ impl Client {
         // A POST, PUT, or PATCH without a body still goes out with `Content-Length: 0`, as
         // curl sends it. Without a body ureq frames those methods as chunked with one empty
         // chunk, which servers and proxies handle inconsistently.
-        let empty = Vec::new();
-        let body = match request.body.as_deref() {
-            Some(body) => Some(body),
-            None if request.method.always_has_body() => Some(&empty),
+        let json = || "application/json".to_owned();
+        let body: Option<(&[u8], String)> = match &request.body {
+            Some(Payload::Json(bytes)) => Some((bytes, json())),
+            Some(Payload::Form(form)) => Some((form.body(), form.content_type())),
+            None if request.method.always_has_body() => Some((&[], json())),
             None => None,
         };
         let host = split_url(&resolved.target.url)
@@ -1178,9 +1226,9 @@ impl Client {
             transport_error(&error, progress, write, &attempt)
         };
         let sent = match body {
-            Some(body) => builder
-                .header("Content-Type", "application/json")
-                .body(body.as_slice())
+            Some((body, content_type)) => builder
+                .header("Content-Type", content_type)
+                .body(body)
                 .map_err(unbuildable)
                 .and_then(|r| self.agent.run(r).map_err(failed)),
             None => builder
@@ -1235,7 +1283,7 @@ impl Client {
                 token_spellings: std::mem::take(&mut *token_spellings),
             });
         }
-        let sent_secrets = sent_secret_spellings(request.body.as_deref().map(Vec::as_slice));
+        let sent_secrets = sent_secret_spellings(request.body.as_ref().and_then(Payload::json));
         let error = status_error(&StatusAnswer {
             attempt: &attempt,
             write,

@@ -112,7 +112,7 @@ pub(crate) use crate::cli::s3::{
     TokenKind, TokenRotate, TokenTarget, Tokens, continuation_token,
 };
 pub(crate) use crate::cli::support::{
-    Support, TicketBody, TicketCreate, TicketList, TicketMessages, TicketPriority,
+    MessageAttach, Support, TicketBody, TicketCreate, TicketList, TicketMessages, TicketPriority,
     TicketUpdateStatus, Tickets,
 };
 
@@ -443,10 +443,11 @@ pub(crate) enum Command {
     #[command(subcommand)]
     #[command(after_help = examples_with_guide(CDN_EXAMPLES, "/use/cdn"))]
     Cdn(Cdn),
-    /// Support tickets: open one, list them, read one, reply, read its messages, and close it
+    /// Support tickets: open one, list them, read one, reply, read its messages, attach a file,
+    /// and close it
     ///
-    /// A ticket is read by a person on the Hippius support team. Attachments and the handoff
-    /// from the chat stay on hipc api.
+    /// A ticket is read by a person on the Hippius support team. The handoff from the chat
+    /// stays on hipc api.
     #[command(subcommand)]
     #[command(after_help = examples_with_guide(SUPPORT_EXAMPLES, "/use/console/support"))]
     Support(Support),
@@ -533,6 +534,7 @@ const SUPPORT_EXAMPLES: &[&str] = &[
     "hipc support tickets get 42",
     "hipc support tickets reply 42 --body-file message.txt",
     "hipc support tickets messages list 42",
+    "hipc support tickets messages attach 42 3 --file screenshot.png --yes",
     "hipc support tickets update 42 --status closed --yes",
 ];
 const NETWORK_EXAMPLES: &[&str] = &[
@@ -663,6 +665,8 @@ const INVOICE_ID: &str = "an invoice id is a whole number, from `hipc billing in
 const MEMBER_ID: &str = "a member id is a whole number, from `hipc account members list`";
 const INVITE_ID: &str = "an invite id is a whole number, from `hipc account invites list`";
 const TICKET_ID: &str = "a ticket id is a whole number, from `hipc support tickets list`";
+const MESSAGE_ID: &str =
+    "a message id is a whole number, from `hipc support tickets messages list`";
 const REFERRAL_ID: &str =
     "a referral link id is a whole number, from `hipc account referrals list`";
 
