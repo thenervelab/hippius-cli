@@ -11734,6 +11734,33 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "help": "How urgent it is; without it the server picks the default"
         },
         {
+          "name": "--category",
+          "value_name": "CATEGORY",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The ticket's category, one line of 1 to 50 characters"
+        },
+        {
+          "name": "--resource-type",
+          "value_name": "RESOURCE_TYPE",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The kind of resource the ticket is about, one line of 1 to 50 characters"
+        },
+        {
+          "name": "--resource-id",
+          "value_name": "RESOURCE_ID",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The id of the resource the ticket is about, one line of 1 to 255 characters"
+        },
+        {
           "name": "--body-file",
           "value_name": "PATH",
           "required": true,
@@ -11786,6 +11813,15 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "possible_values": [],
           "default": null,
           "help": "The file holding the message, or - for stdin; it must not be blank"
+        },
+        {
+          "name": "--client-msg-id",
+          "value_name": "UUID",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The client_msg_id to send, a UUID; without it each run sends a new one"
         }
       ],
       "required_groups": [],

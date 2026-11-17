@@ -821,7 +821,7 @@ fn rerun_hint(flag: &str, argv: &[String]) -> String {
     if argv.iter().any(|word| word.contains('?')) {
         format!("pass `{flag}` after the command")
     } else {
-        format!("run `{}`", crate::phrase::command_line(argv, flag))
+        format!("run `{}`", crate::phrase::command_line(argv, &[flag]))
     }
 }
 

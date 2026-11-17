@@ -110,13 +110,13 @@ pub fn command(args: &[String]) -> String {
 }
 
 /// The command line `hipc` followed by `args` (the words after the program name), with
-/// `flag` added at the end of the arguments, or before a `--`, after which it would be read as
-/// a value, not a flag. It is ready to paste into a POSIX shell: a word with anything but
-/// letters, digits, and `-_./:=@%+,` is single-quoted.
-pub fn command_line(args: &[String], flag: &str) -> String {
+/// `added`, a flag and any value it takes, at the end of the arguments, or before a `--`,
+/// after which they would be read as values, not a flag. It is ready to paste into a POSIX
+/// shell: a word with anything but letters, digits, and `-_./:=@%+,` is single-quoted.
+pub fn command_line(args: &[String], added: &[&str]) -> String {
     let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
     let mut args = args.to_vec();
-    args.insert(end, flag.to_owned());
+    args.splice(end..end, added.iter().map(|word| (*word).to_owned()));
     command(&args)
 }
 
@@ -237,19 +237,26 @@ mod tests {
         let args =
             |words: &[&str]| -> Vec<String> { words.iter().map(|w| (*w).to_owned()).collect() };
         assert_eq!(
-            command_line(&args(&["hub", "namespace", "create", "team-a"]), "--reveal"),
+            command_line(
+                &args(&["hub", "namespace", "create", "team-a"]),
+                &["--reveal"]
+            ),
             "hipc hub namespace create team-a --reveal"
         );
         assert_eq!(
             command_line(
                 &args(&["s3", "tokens", "create", "--name", "my key", ""]),
-                "--reveal"
+                &["--reveal"]
             ),
             "hipc s3 tokens create --name 'my key' '' --reveal"
         );
         assert_eq!(
-            command_line(&args(&["x", "it's", "--", "--y"]), "--replace"),
+            command_line(&args(&["x", "it's", "--", "--y"]), &["--replace"]),
             r"hipc x 'it'\''s' --replace -- --y"
+        );
+        assert_eq!(
+            command_line(&args(&["x", "--", "--y"]), &["--id", "a b"]),
+            "hipc x --id 'a b' -- --y"
         );
     }
 
