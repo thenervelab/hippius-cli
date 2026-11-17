@@ -102,7 +102,7 @@ const PLAN_ROUTES: &[(&str, RouteClass)] = {
         ("/api/billing/auto-reload/history/", Scoped),
         ("/api/ssh-keys/", Personal),
         ("/api/ssh-keys/3/", Personal),
-        // The customer ticket routes, and the two under them left to `hipc api`.
+        // The customer ticket routes, the attachment upload, and the handoff left to `hipc api`.
         ("/api/support/tickets/", Personal),
         ("/api/support/tickets/?status=open&page_size=100", Personal),
         ("/api/support/tickets/7/", Personal),

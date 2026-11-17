@@ -454,6 +454,7 @@ fn of_support(path: &[&str]) -> Vec<&'static Endpoint> {
         ["tickets", "reply"] => sends![support::MESSAGE_CREATE],
         ["tickets", "update"] => sends![support::TICKET_UPDATE, support::TICKET],
         ["tickets", "messages", "list"] => sends![support::MESSAGES],
+        ["tickets", "messages", "attach"] => sends![support::ATTACHMENT_CREATE],
         _ => Vec::new(),
     }
 }
