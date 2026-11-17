@@ -853,6 +853,13 @@ impl Hipc {
     }
 
     /// Sends stdout to `file` instead of a pipe, so the run's stdout reads as empty.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "only the Linux /dev/full tests send stdout to a file"
+        )
+    )]
     pub(crate) fn stdout_to(mut self, file: std::fs::File) -> Self {
         self.stdout = Some(file);
         self

@@ -424,17 +424,19 @@ fn a_directory_named_hip_in_the_install_dir_is_refused() {
 /// so a caller can tell an interruption from a failure.
 #[test]
 fn a_signal_cleans_up_and_exits_with_its_number() {
+    // A non-interactive sh cannot trap a signal that was ignored when it started, so a HUP
+    // inherited as ignored (a suite started under nohup) is ignored by the installer too, and
+    // the HUP case would fail with 1. Say so, rather than fail on the exit code.
+    #[cfg(target_os = "linux")]
+    assert!(
+        !hup_is_ignored(),
+        "SIGHUP is ignored in this test process (started under nohup?); the installer cannot \
+         trap it, so run the suite without nohup"
+    );
     for (signal, code) in [("HUP", 129), ("INT", 130), ("TERM", 143)] {
         let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
-        // tar runs from main itself, so its parent is the installer. The shell runs its
-        // trap once tar returns; tar waits a second after the kill so the signal is already
-        // latched then, however loaded the machine. Without the wait, the installer could go
-        // on to check the unpacked file first and fail with 1 rather than the signal's code.
-        // The installer's PATH has no sleep, so the real one is called by its path.
-        machine.replace(
-            "tar",
-            &format!("kill -{signal} $PPID; exec '{}' 1", tool("sleep").display()),
-        );
+        // tar runs from main itself, so its parent is the installer.
+        machine.replace("tar", &format!("kill -{signal} $PPID"));
         let target = "x86_64-unknown-linux-musl";
         let (tarball, sum) = hipc_tarball();
         let base = serve(release("v1.0.0", target, &tarball, &sums(&sum, target)));
@@ -1340,4 +1342,17 @@ fn a_dangling_hip_symlink_gets_the_note_too() {
     assert!(out.status.success(), "{stderr}");
     let note = old_hip_note(&dir.join("hip"));
     assert!(stderr.contains(&note), "{note}: {stderr}");
+}
+
+/// Whether this process ignores SIGHUP, from the `SigIgn` mask in `/proc/self/status`
+/// (bit 0 is signal 1, SIGHUP).
+#[cfg(target_os = "linux")]
+fn hup_is_ignored() -> bool {
+    let status = std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status");
+    let mask = status
+        .lines()
+        .find_map(|line| line.strip_prefix("SigIgn:"))
+        .expect("the status has SigIgn");
+    let mask = u64::from_str_radix(mask.trim(), 16).expect("SigIgn is hex");
+    mask & 1 == 1
 }
