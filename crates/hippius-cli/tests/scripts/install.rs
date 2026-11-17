@@ -424,16 +424,15 @@ fn a_directory_named_hip_in_the_install_dir_is_refused() {
 /// so a caller can tell an interruption from a failure.
 #[test]
 fn a_signal_cleans_up_and_exits_with_its_number() {
-    // A non-interactive sh cannot trap a signal that was ignored when it started, so a HUP
-    // inherited as ignored (a suite started under nohup) is ignored by the installer too, and
-    // the HUP case would fail with 1. Say so, rather than fail on the exit code.
-    #[cfg(target_os = "linux")]
-    assert!(
-        !hup_is_ignored(),
-        "SIGHUP is ignored in this test process (started under nohup?); the installer cannot \
-         trap it, so run the suite without nohup"
-    );
     for (signal, code) in [("HUP", 129), ("INT", 130), ("TERM", 143)] {
+        // A non-interactive sh cannot trap a signal that was ignored when it started: a HUP
+        // under nohup, an INT in a job started with `&`. The installer would then ignore it
+        // too and fail with 1, so say why rather than fail on the exit code.
+        assert!(
+            sh_can_trap(signal),
+            "this test process ignores SIG{signal} (started under nohup, or as a background \
+             job?), so the installer's sh cannot trap it; run the suite in the foreground"
+        );
         let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
         // tar runs from main itself, so its parent is the installer.
         machine.replace("tar", &format!("kill -{signal} $PPID"));
@@ -1344,15 +1343,14 @@ fn a_dangling_hip_symlink_gets_the_note_too() {
     assert!(stderr.contains(&note), "{note}: {stderr}");
 }
 
-/// Whether this process ignores SIGHUP, from the `SigIgn` mask in `/proc/self/status`
-/// (bit 0 is signal 1, SIGHUP).
-#[cfg(target_os = "linux")]
-fn hup_is_ignored() -> bool {
-    let status = std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status");
-    let mask = status
-        .lines()
-        .find_map(|line| line.strip_prefix("SigIgn:"))
-        .expect("the status has SigIgn");
-    let mask = u64::from_str_radix(mask.trim(), 16).expect("SigIgn is hex");
-    mask & 1 == 1
+/// Whether a `/bin/sh` started from this process can trap `signal`, as the installer's
+/// does: the shell exits 9 from its trap when it can, and 0 when the signal was ignored on
+/// entry, which a non-interactive sh cannot undo.
+fn sh_can_trap(signal: &str) -> bool {
+    let status = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("trap 'exit 9' {signal}; kill -{signal} $$; exit 0"))
+        .status()
+        .expect("run /bin/sh");
+    status.code() == Some(9)
 }
