@@ -256,7 +256,8 @@ impl Request {
 
     /// Sets a `multipart/form-data` body that carries one file, sent with the
     /// `Content-Type` that names its boundary. A dry run shows the file's name, type and
-    /// size in place of its bytes.
+    /// size in place of its bytes. The form is not cleared when dropped and an error answer
+    /// is not redacted of it, so it must hold no secret: the caller checks the file first.
     #[must_use]
     pub fn file_form(mut self, form: FileForm) -> Self {
         self.body = Some(Payload::Form(form));
@@ -301,15 +302,26 @@ impl Request {
     }
 }
 
-/// A request's body.
+/// A request's body. `Debug` shows its kind and size, never its bytes.
 #[derive(Clone)]
 enum Payload {
     /// JSON, cleared when dropped: a body can hold a secret sent once, such as an App Engine
     /// launch's secrets or a DNS provider credential.
     Json(Zeroizing<Vec<u8>>),
-    /// A form that carries one file, a support attachment, which holds no secret: the
-    /// command refuses a file that holds the token before it builds one.
+    /// A form that carries one file. It is not cleared when dropped, and an error answer is
+    /// not redacted of what it holds, so a caller of [`Request::file_form`] must not send a
+    /// secret in it: `hipc support tickets messages attach` refuses a file that holds the
+    /// token or an access key before it builds the form.
     Form(FileForm),
+}
+
+impl fmt::Debug for Payload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Json(bytes) => f.debug_struct("Json").field("len", &bytes.len()).finish(),
+            Self::Form(form) => f.debug_tuple("Form").field(form).finish(),
+        }
+    }
 }
 
 impl Payload {

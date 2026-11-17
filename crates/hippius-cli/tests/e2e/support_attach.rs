@@ -22,6 +22,9 @@ const ATTACHMENT: &str = concat!(
 /// A PNG file's signature and a few bytes, one of them not UTF-8.
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\xffIHDR";
 
+/// The type text is sent as.
+const TEXT: &str = "text/plain; charset=utf-8";
+
 /// The largest file attached, in bytes: 5 MB.
 const LIMIT: usize = 5_000_000;
 
@@ -93,7 +96,7 @@ fn attach_sends_the_file_as_a_form_and_prints_the_answer() {
 }
 
 /// Each type is sent as its first bytes say, whatever the file is called; text is
-/// `text/plain`.
+/// `text/plain` with its charset.
 #[test]
 fn each_type_is_sent_as_its_first_bytes_say() {
     let home = Home::new();
@@ -105,7 +108,7 @@ fn each_type_is_sent_as_its_first_bytes_say() {
         (
             "vm.log",
             "boot failed at 10:00 \u{2014} again\n".as_bytes(),
-            "text/plain",
+            TEXT,
         ),
     ] {
         let server = Server::start(vec![attach_route(Reply::json(201, ATTACHMENT))]);
@@ -135,13 +138,38 @@ fn a_quote_or_backslash_in_the_name_is_sent_as_an_underscore() {
     let request = server.only_request();
     assert_eq!(
         request.body,
-        form(
-            &boundary(&request),
-            "say _hi_there_.txt",
-            "text/plain",
-            b"hello\n"
-        )
+        form(&boundary(&request), "say _hi_there_.txt", TEXT, b"hello\n")
     );
+}
+
+/// A line break would end the part's header line, and a bidi override or a zero-width
+/// character would change how the name reads to the person who opens it, and in the
+/// question: each is sent and asked about as `_`.
+#[test]
+fn a_line_break_or_a_bidi_override_in_the_name_is_sent_as_an_underscore() {
+    let home = Home::new();
+    for (name, sent) in [
+        ("a\r\nX-Evil: 1.txt", "a__X-Evil: 1.txt"),
+        ("invoice\u{202e}txt.exe", "invoice_txt.exe"),
+        ("log\u{200b}.txt", "log_.txt"),
+    ] {
+        let server = Server::start(vec![attach_route(Reply::json(201, ATTACHMENT))]);
+        let file = home.file(name, b"hello\n");
+        Hipc::against(&home, &server)
+            .run(&attach(shown(&file), &["--yes"]))
+            .ok();
+        let request = server.only_request();
+        assert_eq!(
+            request.body,
+            form(&boundary(&request), sent, TEXT, b"hello\n"),
+            "{name:?}"
+        );
+        let error = Hipc::against(&home, &server)
+            .run(&attach(shown(&file), &[]))
+            .fails(2, "confirmation_required");
+        let message = error["message"].as_str().unwrap();
+        assert!(message.contains(&format!("attach `{sent}`")), "{message}");
+    }
 }
 
 #[test]
@@ -199,7 +227,7 @@ fn the_dry_run_shows_the_file_not_its_bytes_and_sends_nothing() {
             "project_header": null,
             "billing_header": null,
             "content_type": "multipart/form-data",
-            "body": {"file": {"filename": "vm.log", "content_type": "text/plain", "bytes": 27}},
+            "body": {"file": {"filename": "vm.log", "content_type": TEXT, "bytes": 27}},
         })
     );
     // Text mode shows the same, and no bytes of the file either.
@@ -285,12 +313,12 @@ fn each_refused_file_is_usage_and_sends_nothing() {
                 "`{}` is a symlink, and a symlink is never followed",
                 shown(&link)
             ),
-            "pass a regular file to `--file`, or `-` for stdin",
+            "pass a regular file to `--file`",
         ),
         (
             shown(home.path()).to_owned(),
             format!("`{}` is not a regular file", shown(home.path())),
-            "pass a regular file to `--file`, or `-` for stdin",
+            "pass a regular file to `--file`",
         ),
         (
             shown(&missing).to_owned(),
@@ -400,17 +428,26 @@ fn a_file_that_holds_a_token_or_an_access_key_is_refused() {
     assert_eq!(server.requests().len(), 1);
 }
 
-/// The server's refusal of the file, or a missing ticket or message, is its error; a 502
-/// after the upload was sent may have attached it, so it is `partial`.
+/// The server's refusal of the file, a ticket of someone else's, or a missing ticket or
+/// message, is its error; a 429 says when to try again, and a 502 after the upload was sent
+/// may have attached it, so it is `partial`.
 #[test]
 fn the_servers_answers_keep_their_codes() {
     let home = Home::new();
     let file = home.file("shot.png", PNG);
-    for (reply, code, side_effects, hint) in [
+    for (reply, code, side_effects, hint, retry_after_ms) in [
         (
             Reply::json(400, r#"{"file":["Unsupported file type."]}"#),
             "validation",
             "none",
+            Value::Null,
+            Value::Null,
+        ),
+        (
+            Reply::json(403, r#"{"detail":"You do not have permission."}"#),
+            "permission",
+            "none",
+            Value::Null,
             Value::Null,
         ),
         (
@@ -418,17 +455,20 @@ fn the_servers_answers_keep_their_codes() {
             "not_found",
             "none",
             json!("run `hipc support tickets messages list 42` to see what exists"),
+            Value::Null,
         ),
         (
             Reply::json(429, r#"{"detail":"slow down"}"#).header("Retry-After", "7"),
             "rate_limited",
             "none",
-            Value::Null,
+            json!("wait 7 seconds, then run the command again"),
+            json!(7000),
         ),
         (
             Reply::json(502, r#"{"error":"x"}"#),
             "unavailable",
             "partial",
+            json!("check whether the change was made before running the command again"),
             Value::Null,
         ),
     ] {
@@ -437,9 +477,8 @@ fn the_servers_answers_keep_their_codes() {
             .run(&attach(shown(&file), &["--yes"]))
             .fails(1, code);
         assert_eq!(error["side_effects"], side_effects, "{code}");
-        if !hint.is_null() {
-            assert_eq!(error["hint"], hint, "{code}");
-        }
+        assert_eq!(error["retry_after_ms"], retry_after_ms, "{code}");
+        assert_eq!(error["hint"], hint, "{code}");
         assert!(
             error["message"]
                 .as_str()

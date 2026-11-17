@@ -27,7 +27,7 @@ pub(super) fn run(ctx: &Context<'_>, args: &MessageAttach) -> Result<Printed> {
         flag: "--file",
         what: "attachment",
     };
-    let contents = input.read(MAX_BYTES)?;
+    let contents = input.read_file(MAX_BYTES)?;
     if contents.is_empty() {
         return Err(Error::usage(
             format!("{} is empty", input.name()),
@@ -91,8 +91,9 @@ fn content_type(bytes: &[u8]) -> Option<&'static str> {
         Some("application/pdf")
     } else if !bytes.contains(&0) && std::str::from_utf8(bytes).is_ok() {
         // A NUL byte is valid UTF-8, but no text file holds one; a binary file of ASCII
-        // bytes does.
-        Some("text/plain")
+        // bytes does. The charset is named because `text/plain` alone means US-ASCII (RFC
+        // 2046 section 4.1.2).
+        Some("text/plain; charset=utf-8")
     } else {
         None
     }
@@ -137,6 +138,8 @@ fn refused(input: &Input<'_>, secret: Secret) -> Error {
 mod tests {
     use super::*;
 
+    const TEXT: &str = "text/plain; charset=utf-8";
+
     #[test]
     fn each_type_is_read_from_its_first_bytes() {
         let webp = b"RIFF\x10\0\0\0WEBPVP8 ";
@@ -147,16 +150,16 @@ mod tests {
             (b"GIF89a..", Some("image/gif")),
             (webp, Some("image/webp")),
             (b"%PDF-1.7\n", Some("application/pdf")),
-            (b"plain words\n", Some("text/plain")),
-            ("r\u{e9}sum\u{e9}\r\n".as_bytes(), Some("text/plain")),
+            (b"plain words\n", Some(TEXT)),
+            ("r\u{e9}sum\u{e9}\r\n".as_bytes(), Some(TEXT)),
             // One byte short of each signature.
             (b"\x89PNG\r\n\x1a", None),
-            (b"%PDF", Some("text/plain")),
+            (b"%PDF", Some(TEXT)),
             (b"\xff\xd8", None),
-            (b"GIF88a", Some("text/plain")),
+            (b"GIF88a", Some(TEXT)),
             (b"RIFF\x10\0\0\0WEBQ", None),
-            (b"RIFF1234WEBQ", Some("text/plain")),
-            (b"RIFF1234WEB", Some("text/plain")),
+            (b"RIFF1234WEBQ", Some(TEXT)),
+            (b"RIFF1234WEB", Some(TEXT)),
             (b"text with a NUL\0", None),
             (b"\xc3\x28 not UTF-8", None),
         ] {

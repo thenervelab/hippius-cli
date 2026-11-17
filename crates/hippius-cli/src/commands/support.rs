@@ -203,14 +203,23 @@ pub(crate) fn secret_in(
             || config.holds_a_stored_token(text)
     };
     // The texts joined too, so a token split between the subject and the message is found.
-    let mut all = Zeroizing::new(String::with_capacity(
-        texts.iter().map(|text| text.len() + 1).sum(),
-    ));
-    for text in texts {
-        all.push_str(text);
-        all.push('\n');
-    }
-    for text in texts.iter().copied().chain([all.as_str()]) {
+    // One text joined is itself and a line break, which holds nothing it does not, so it is
+    // not scanned twice: an attachment's text runs to 5 MB.
+    let all = (texts.len() > 1).then(|| {
+        let mut all = Zeroizing::new(String::with_capacity(
+            texts.iter().map(|text| text.len() + 1).sum(),
+        ));
+        for text in texts {
+            all.push_str(text);
+            all.push('\n');
+        }
+        all
+    });
+    for text in texts
+        .iter()
+        .copied()
+        .chain(all.as_deref().map(String::as_str))
+    {
         // Cleared when dropped, and sized up front so it never grows and leaves a copy
         // behind. Whitespace and the invisible characters that join a word are dropped, so a
         // wrapped token is whole again.

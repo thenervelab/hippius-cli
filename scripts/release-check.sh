@@ -1527,7 +1527,7 @@ confirmation_required|DELETE|hip_dry_run_check|{"items":["192.0.2.1"]}|cdn lists
 confirmation_required|POST|-|{"subject":"hipc-release-check","description":"release check message\n","priority":"low"}|support tickets create --subject hipc-release-check --priority low --body-file @DIR@/message
 -|POST|7|{"body":"release check message\n"}|support tickets reply 7 --body-file @DIR@/message
 -|PATCH|7|{"status":"closed"}|support tickets update 7 --status closed
-confirmation_required|POST|7 3|{"file":{"filename":"message","content_type":"text/plain","bytes":22}}|support tickets messages attach 7 3 --file @DIR@/message
+confirmation_required|POST|7 3|{"file":{"filename":"message","content_type":"text/plain; charset=utf-8","bytes":22}}|support tickets messages attach 7 3 --file @DIR@/message
 -|POST|-|{"name":"hipc-release-check"}|account referrals create --name hipc-release-check
 -|PATCH|4|{"name":"hipc-release-check"}|account referrals update 4 --name hipc-release-check
 EOF

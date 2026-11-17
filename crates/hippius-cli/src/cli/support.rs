@@ -112,13 +112,16 @@ pub(crate) enum TicketMessages {
     /// Sends the file as a multipart/form-data upload to the message, such as the one hipc
     /// support tickets reply answered with. The file is checked before anything is sent, the
     /// dry run included: it must hold 1 to 5000000 bytes (5 MB), and be a PNG, JPEG, GIF,
-    /// WebP, or PDF file by its first bytes, or UTF-8 text, sent as text/plain; the file name
-    /// is not looked at. The API documents no size or type limit, so these are hipc's own: the
-    /// support chat's 5 MB for pictures, with PDF and text added. The server may still refuse
-    /// a file they let through. A file that holds an API token, as it is or
-    /// split by whitespace, or an access key, is refused, as a ticket's text is: the bytes are
-    /// read as text, so a token in an image's metadata or an uncompressed PDF is found, but
-    /// not one shown in a screenshot. The question names the file, its size, and the ticket.
+    /// WebP, or PDF file by its first bytes, or UTF-8 text, sent as text/plain with
+    /// charset=utf-8; the file name is not looked at. The API documents no size or type
+    /// limit, so these are hipc's own: the support chat's 5 MB for pictures, with PDF and
+    /// text added. The server may still refuse a file that passes these checks. A file that
+    /// holds an API token, as it is or split by whitespace, or an access key, is refused, as a
+    /// ticket's text is: the bytes are read as text, so a token in an image's metadata or an
+    /// uncompressed PDF is found, but not one shown in a screenshot. A quote, a backslash, a
+    /// control character, or a character that changes how text reads, such as a bidi
+    /// override, is sent as _ in the file name. The question names the file, its size and
+    /// type, the message, and the ticket.
     /// A dry run shows the file's name, type, and size in place of its bytes.
     #[command(after_help = examples(&[
         "hipc support tickets messages attach 42 3 --file screenshot.png --yes",

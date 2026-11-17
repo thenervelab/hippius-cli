@@ -15,7 +15,10 @@
 //! The boundary is `hipc-` and a random UUID, drawn again until the file's bytes do not hold
 //! it, so the delimiter never appears inside the part (RFC 2046 section 5.1.1). The file name
 //! is written inside a quoted string, so a `"`, a `\`, or a control character in it, which
-//! would end the string or the header line, is written as `_`; RFC 7578 section 4.2 leaves
+//! would end the string or the header line, is written as `_`, and so is a character that
+//! changes how the name reads ([`changes_how_text_reads`]: a bidi override that shows
+//! `exe.png` as `gnp.exe`, a zero-width joiner), since a person reads the name in the support
+//! tool and in the question. RFC 7578 section 4.2 leaves
 //! the name's encoding to the sender, and a name in UTF-8 is sent as it is, as browsers send
 //! one. Built by hand rather than with a crate: it is one part with three header lines, and
 //! ureq 3.5 has no multipart builder.
@@ -26,6 +29,7 @@ use serde_json::{Value, json};
 
 use crate::error::Result;
 use crate::ids::random_uuid;
+use crate::phrase::changes_how_text_reads;
 
 /// The name a file is sent under when its own has no character left, such as an empty one.
 const UNNAMED: &str = "attachment";
@@ -148,14 +152,15 @@ fn holds(bytes: &[u8], needle: &[u8]) -> bool {
 }
 
 /// `name` with each character that would end a quoted header string or its line, a `"`, a
-/// `\`, or a control character, written as `_`, and [`UNNAMED`] for an empty name.
+/// `\`, or a control character, or that changes how the name reads, written as `_`, and
+/// [`UNNAMED`] for an empty name.
 fn header_safe(name: &str) -> String {
     if name.is_empty() {
         return UNNAMED.to_owned();
     }
     name.chars()
         .map(|c| {
-            if c == '"' || c == '\\' || c.is_control() {
+            if c == '"' || c == '\\' || c.is_control() || changes_how_text_reads(c) {
                 '_'
             } else {
                 c
@@ -253,6 +258,9 @@ mod tests {
             ("a\r\nContent-Type: x.txt", "a__Content-Type: x.txt"),
             ("tab\there\u{7f}\u{85}", "tab_here__"),
             ("résumé 1.pdf", "résumé 1.pdf"),
+            // A right-to-left override, a zero-width joiner, a soft hyphen, a word joiner.
+            ("a\u{202e}gnp.exe", "a_gnp.exe"),
+            ("in\u{200d}voice\u{ad}.pdf\u{2060}", "in_voice_.pdf_"),
             ("", "attachment"),
         ] {
             let form =

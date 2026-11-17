@@ -966,6 +966,17 @@ fn a_file_form_is_described_by_its_file_and_sets_no_key() {
         "{shown}"
     );
     assert!(!shown.contains("my words"), "{shown}");
+    // The body's own `Debug` shows its kind and size, never its bytes or the file's name.
+    let body = format!("{:?}", request.body.as_ref().unwrap());
+    assert!(body.starts_with("Form(FileForm {"), "{body}");
+    assert!(body.contains("size: 8"), "{body}");
+    assert!(
+        !body.contains("my words") && !body.contains("a.txt"),
+        "{body}"
+    );
+    let json_body = Request::new(Method::Post, "/x/").json(&json!({"password": "hunter2"}));
+    let body = format!("{:?}", json_body.body.as_ref().unwrap());
+    assert_eq!(body, "Json { len: 22 }");
     // A route whose rule reads the body's `secrets` takes a form as setting nothing.
     let launch = Request::new(Method::Post, "/compute/app-engine/apps/").file_form(form);
     assert_eq!(flag_names(&c, &launch), NONE);
