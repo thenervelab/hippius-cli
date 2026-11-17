@@ -1194,6 +1194,59 @@ fn a_failed_create_that_answers_an_id_is_deleted_by_it() {
     );
 }
 
+/// A balance that fell by exactly what the month's metered usage rose by meanwhile passes
+/// (an hourly charge for what the account already had); one that fell by more, or with a
+/// usage total that is not a whole number, such as "NaN", still fails.
+#[test]
+fn a_balance_moved_only_by_metered_usage_passes() {
+    // The first read answers `before`, every later one `after`.
+    let reads = |home: &Home, name: &str, field: &str, before: &str, after: &str| {
+        format!(
+            concat!(
+                "if [ -e '{0}' ]; then v='{3}'; else v='{2}'; touch '{0}'; fi; ",
+                "printf '{{\"{1}\":\"%s\"}}\\n' \"$v\"; exit 0"
+            ),
+            home.path().join(name).display(),
+            field,
+            before,
+            after
+        )
+    };
+    for (usage_after, passes) in [
+        ("500000000000000001", true),
+        ("400000000000000001", false),
+        ("NaN", false),
+    ] {
+        let home = Home::new();
+        let balance = reads(&home, "balance-read", "balance", "10", "9.5");
+        let usage = reads(&home, "usage-read", "total", "1", usage_after);
+        let (wrapper, _) = scripted_hipc(
+            &home,
+            "",
+            &[
+                ("*\" billing balance \"*", &balance),
+                ("*\" billing usage \"*", &usage),
+                FREE_DRIVE,
+            ],
+        );
+        let (_, log) = offline(
+            &home,
+            wrapper.to_str().expect("UTF-8"),
+            &["--tier", "spend", "--yes-spend", "drive"],
+        );
+        assert_eq!(
+            log.contains("by exactly the metered usage the account was charged meanwhile"),
+            passes,
+            "{usage_after}: {log}"
+        );
+        assert_eq!(
+            log.contains("check: the balance moved from \"10\" to \"9.5\": FAIL"),
+            !passes,
+            "{usage_after}: {log}"
+        );
+    }
+}
+
 /// The balance may move only after a purchase's create exited 0; an answer of y
 /// alone, or a create that failed, spent nothing.
 #[test]
@@ -2824,7 +2877,8 @@ fn what_the_server_made_for_a_purchase_is_reported_apart() {
     let snapshot = concat!(
         "case \"$HOME\" in */snapshot/home) case \" $* \" in ",
         "*\" s3 buckets list \"* | *\" s3 tokens list \"* | *\" network peers list \"*) ;; ",
-        "*\" --json \"*\" list \"* | *\" --json \"*\" get \"* | *\" billing balance \"*) ",
+        "*\" --json \"*\" list \"* | *\" --json \"*\" get \"* | *\" billing balance \"* ",
+        "| *\" billing usage \"*) ",
         "printf '%s\\n' '{\"items\":[],\"next_page_token\":null}'; exit 0 ;; esac ;; esac"
     );
     let (wrapper, _) = scripted_hipc(

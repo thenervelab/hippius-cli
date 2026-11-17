@@ -36,7 +36,7 @@ use serde_json::{Map, Value};
 use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::cli::{Funding, PlanSetting, StorageCap};
-use crate::context::{self, ConfirmedStep, Context, DryRun, Gate, Step, Write, WritePlan};
+use crate::context::{self, Asked, ConfirmedStep, Context, DryRun, Gate, Step, Write, WritePlan};
 
 /// Whether `error` is the API's refusal of a call made before `route` set the account's service up:
 /// a 403 whose `detail` is exactly `You must call <route> first.`, the sentence both setup routes
@@ -554,11 +554,10 @@ pub(crate) fn send_from_catalog(
         return ctx.call_confirmed(client, write, consequence);
     };
     let plan = WritePlan::new(&[&catalog.read], write);
-    let checked = match ctx.check_write(client, &plan)? {
-        Write::DryRun(doc) => return Ok(ConfirmedStep::DryRun(doc)),
-        Write::Checked(checked) => checked,
+    let confirmed = match ctx.check_and_confirm(client, &plan, consequence)? {
+        Asked::DryRun(doc) => return Ok(ConfirmedStep::DryRun(doc)),
+        Asked::Confirmed(confirmed) => confirmed,
     };
-    let confirmed = ctx.confirm_write(checked, &write.action(), consequence)?;
     catalog.check(ctx, client)?;
     let response = ctx.send_confirmed(client, write, &confirmed)?;
     Ok(ConfirmedStep::Sent(response, confirmed))
