@@ -1525,6 +1525,46 @@ fn a_field_error_loses_every_value_a_secret_field_sent() {
     }
 }
 
+/// Two sent values that overlap where a field error repeats them, and a token that overlaps
+/// itself, are each one `<redacted>`: a pass per value, longest first, would leave `-tail-7`
+/// of the second value, and one per match would leave `x7` of the token.
+#[test]
+fn overlapping_secrets_in_an_error_body_are_one_redacted_span() {
+    let sent = sent_secret_spellings(Some(
+        br#"{"password":"hunter2-Q81","api_key":"Q81-tail-7"}"#,
+    ));
+    let token = token_spellings("x7x7x7x7");
+    let error = status_error(&StatusAnswer {
+        attempt: &attempt(),
+        write: true,
+        not_done_on_503: false,
+        status: 400,
+        body: concat!(
+            r#"{"password":["hunter2-Q81-tail-7 is taken"],"#,
+            r#""detail":"bad x7x7x7x7x7 token"}"#
+        )
+        .as_bytes(),
+        retry_after: None,
+        request_id: None,
+        location: None,
+        body_unread: None,
+        token_spellings: &token,
+        sent_secrets: &sent,
+    });
+    let json = error.to_json();
+    assert_eq!(
+        json["error"]["details"],
+        serde_json::json!({
+            "password": ["<redacted> is taken"],
+            "detail": "bad <redacted> token"
+        })
+    );
+    let text = json.to_string();
+    for part in ["Q81", "-tail", "x7"] {
+        assert!(!text.contains(part), "{text}");
+    }
+}
+
 /// A JSON body is written into a buffer of its exact size, measured first, so no smaller
 /// copy of it was freed on the way.
 #[test]

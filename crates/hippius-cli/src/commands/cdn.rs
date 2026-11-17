@@ -30,7 +30,7 @@ use crate::commands::{
     Decided, Input, Printed, print_body, print_body_or, print_keyed_list, print_with,
     read_then_write, require_public,
 };
-use crate::context::{self, Context, Gate, Write, WritePlan};
+use crate::context::{self, Asked, Context, Gate, WritePlan};
 use crate::units::{DECIMALS, Decimal, compare};
 
 /// The largest `--cors-file` read, in bytes. Arbitrary: swagger's limits (32 origins, and
@@ -765,12 +765,12 @@ fn dns_setup(ctx: &Context<'_>, args: &DnsSetup) -> Result<Printed> {
     };
     let client = ctx.load_authed_client()?;
     let draft = request(&credentials.placeholder_body());
-    let checked = match ctx.check_write(&client, &WritePlan::new(&[], &draft))? {
-        Write::DryRun(doc) => return Ok(doc.into()),
-        Write::Checked(checked) => checked,
-    };
     let consequence = "it adds or changes records in the domain's DNS zone at the provider";
-    let confirmed = ctx.confirm_write(checked, &draft.action(), Some(consequence))?;
+    let plan = WritePlan::new(&[], &draft);
+    let confirmed = match ctx.check_and_confirm(&client, &plan, Some(consequence))? {
+        Asked::DryRun(doc) => return Ok(doc.into()),
+        Asked::Confirmed(confirmed) => confirmed,
+    };
     let action = draft.action();
     // The credential is put in a body only once the write is confirmed. The body's copies of
     // it are cleared once it is serialized, and the request's bytes when it is dropped

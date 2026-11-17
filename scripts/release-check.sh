@@ -1348,6 +1348,21 @@ network_checks() {
     ".method == \"POST\" and
     .url == \"$DEAD_ORIGIN$(route "network isolation update" POST)\" and
     .body == {\"isolation_mode\":\"deny_intra\"}"
+  # The network writes from #73, each dry-run offline: no tier writes to the network.
+  offline "network groups create --dry-run" 0 --dry-run network groups create --name build-boxes
+  offline "network policies create --dry-run" 0 \
+    --dry-run network policies create --source-group 5 --dest-group 6
+  offline "network policies update --dry-run" 0 --dry-run network policies update 9 --enabled false
+  offline "network vpcs create --dry-run" 0 --dry-run network vpcs create --name office
+  offline "network vpcs delete --dry-run" 0 --dry-run network vpcs delete 3
+  offline "network vpcs resources create --dry-run" 0 \
+    --dry-run network vpcs resources create 3 --name lan --address 10.0.0.0/24
+  offline "network vpcs resources update --dry-run" 0 \
+    --dry-run network vpcs resources update 3 7 --address 10.0.0.6
+  offline "network vpcs resources delete --dry-run" 0 --dry-run network vpcs resources delete 3 7
+  offline "network vpcs routers create --dry-run" 0 \
+    --dry-run network vpcs routers create 3 --peer 12
+  offline "network vpcs routers delete --dry-run" 0 --dry-run network vpcs routers delete 3 4
   offline "network peer id with a slash" 2 network peers get ../12
   expect_code "a peer id with a slash is usage" usage
   offline "membership on the network sends the header" 0 --account "$other" --dry-run \
