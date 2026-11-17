@@ -531,8 +531,9 @@ impl<'a> Context<'a> {
     }
 
     /// The checks before a write's question: [`Context::call`] makes them for one request,
-    /// `commands::read_then_write` for a write that reads first, and a command whose steps
-    /// those do not fit calls this itself. Under `--dry-run` this is the document of `plan`,
+    /// `commands::read_then_write` for a write that reads first, [`Context::check_and_confirm`]
+    /// with the question for a write asked before any read, and a command whose steps those do
+    /// not fit calls this itself. Under `--dry-run` this is the document of `plan`,
     /// every request it sends. Otherwise the draft write's own refusals come first (a
     /// membership the route cannot use), then the token, so a confirmed write never fails on
     /// either (tenet 5), and nothing has been sent yet.

@@ -1491,7 +1491,8 @@ fn a_value_with_control_characters_is_redacted_in_every_spelling() {
 }
 
 /// Two values that overlap where an answer or a refusal repeats them are one `<redacted>`: a
-/// pass per value, longest first, would leave `-tail-3` of the second.
+/// pass per value would leave `db-pw-` of the first (longest first) or `-tail-3` of the
+/// second (shortest first).
 #[test]
 fn overlapping_values_are_one_redacted_span() {
     let files = files();
@@ -1508,6 +1509,9 @@ fn overlapping_values_are_one_redacted_span() {
     );
     let run = Hipc::against(&files.home, &server).run(&args);
     assert_eq!(run.ok()["note"], "x <redacted> y");
+    for part in ["db-pw", "Kx55", "tail-3"] {
+        assert!(!run.stderr().contains(part), "{}", run.stderr());
+    }
     let refused = json!({"detail": "x db-pw-Kx55-tail-3 y"});
     let server = answering_server(
         &["DB_PASSWORD", "API_KEY"],
@@ -1518,7 +1522,7 @@ fn overlapping_values_are_one_redacted_span() {
         run.fails(1, "validation")["details"],
         json!({"detail": "x <redacted> y"})
     );
-    for part in ["Kx55", "tail-3"] {
+    for part in ["db-pw", "Kx55", "tail-3"] {
         assert!(!run.stderr().contains(part), "{}", run.stderr());
     }
 }

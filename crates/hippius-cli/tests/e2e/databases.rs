@@ -1780,6 +1780,7 @@ fn credentials_dir_redacts_overlapping_values_as_one_span() {
     no_secret(&run);
     assert_eq!(doc["note"], "x <redacted> y");
     assert!(!run.stdout().contains("tail-41"), "{}", run.stdout());
+    assert!(!run.stderr().contains("tail-41"), "{}", run.stderr());
 }
 
 /// A number that is a withheld value becomes the string `<redacted>`, and a field name that is
