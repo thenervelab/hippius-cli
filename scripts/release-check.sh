@@ -1525,7 +1525,7 @@ confirmation_required|POST|hip_dry_run_check|{"items":["192.0.2.1"]}|cdn lists i
 confirmation_required|PUT|hip_dry_run_check|{"items":["192.0.2.1"]}|cdn lists items update hip_dry_run_check --items-file @DIR@/items.txt --remove-others
 confirmation_required|DELETE|hip_dry_run_check|{"items":["192.0.2.1"]}|cdn lists items delete hip_dry_run_check --items-file @DIR@/items.txt
 confirmation_required|POST|-|{"subject":"hipc-release-check","description":"release check message\n","priority":"low"}|support tickets create --subject hipc-release-check --priority low --body-file @DIR@/message
--|POST|7|{"body":"release check message\n"}|support tickets reply 7 --body-file @DIR@/message
+-|POST|7|{"body":"release check message\n","client_msg_id":"3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42"}|support tickets reply 7 --body-file @DIR@/message --client-msg-id 3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42
 -|PATCH|7|{"status":"closed"}|support tickets update 7 --status closed
 confirmation_required|POST|7 3|{"file":{"filename":"message","content_type":"text/plain; charset=utf-8","bytes":22}}|support tickets messages attach 7 3 --file @DIR@/message
 -|POST|-|{"name":"hipc-release-check"}|account referrals create --name hipc-release-check
