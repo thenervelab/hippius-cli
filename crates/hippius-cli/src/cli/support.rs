@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand, ValueEnum};
 
-use crate::cli::values::{Spaces, label};
+use crate::cli::values::{Spaces, is_uuid, label};
 use crate::cli::{ListArgs, SUPPORT_EXAMPLES, TICKET_ID, examples, examples_with_guide, number};
 
 #[derive(Debug, Subcommand)]
@@ -36,13 +36,16 @@ pub(crate) enum Tickets {
     /// Open a ticket that a person on the support team reads; needs --yes
     ///
     /// The message is read from a file, or from stdin with --body-file -, never from argv. A
-    /// subject or message that holds an API token, HIPPIUS_TOKEN or one the config file stores,
-    /// as it is, quoted, percent-encoded, or split by whitespace, or an access key whose
-    /// checksum holds, is refused before anything is sent. The check catches an accident, such
-    /// as a pasted config file, not a secret encoded on purpose.
+    /// subject, message, category, resource type, or resource id that holds an API token,
+    /// HIPPIUS_TOKEN or one the config file stores, as it is, quoted, percent-encoded, or split
+    /// by whitespace, or an access key whose checksum holds, is refused before anything is
+    /// sent. The check catches an accident, such as a pasted config file, not a secret encoded
+    /// on purpose.
     #[command(after_help = examples(&[
         "hipc support tickets create --subject Refund --body-file message.txt --yes",
         "hipc support tickets create --subject Down --priority urgent --body-file message.txt --yes",
+        "hipc support tickets create --subject Down --category general --resource-type vm \
+         --resource-id vm_1 --body-file message.txt --yes",
         "hipc --dry-run support tickets create --subject Refund --body-file message.txt",
     ]))]
     Create(TicketCreate),
@@ -50,9 +53,13 @@ pub(crate) enum Tickets {
     ///
     /// The message is read as for create. A reply is not confirmed: the ticket already exists,
     /// and a person reads the reply there. A message that holds an API token, HIPPIUS_TOKEN or
-    /// one the config file stores, or an access key, is refused, as it is for create.
+    /// one the config file stores, or an access key, is refused, as it is for create. Each
+    /// reply is sent with a client_msg_id, a new UUID unless --client-msg-id gives one; a dry
+    /// run shows it in the body.
     #[command(after_help = examples(&[
         "hipc support tickets reply 42 --body-file message.txt",
+        "hipc support tickets reply 42 --body-file message.txt \
+         --client-msg-id 3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0c",
     ]))]
     Reply {
         /// The ticket id, from hipc support tickets list
@@ -60,6 +67,14 @@ pub(crate) enum Tickets {
         ticket_id: u64,
         #[command(flatten)]
         body: TicketBody,
+        /// The client_msg_id to send, a UUID; without it each run sends a new one
+        ///
+        /// Pass the one a failed run or a dry run printed, to send the reply again under the
+        /// same id. The API documents client_msg_id as a string of at most 64 characters and
+        /// does not say what it does with an id it has seen, so a second run may still post
+        /// the reply twice: check hipc support tickets messages list first.
+        #[arg(long, value_name = "UUID", value_parser = client_msg_id)]
+        client_msg_id: Option<String>,
     },
     /// Close a ticket; needs --yes
     ///
@@ -158,6 +173,20 @@ pub(crate) struct TicketCreate {
     /// How urgent it is; without it the server picks the default
     #[arg(long)]
     pub(crate) priority: Option<TicketPriority>,
+    /// The ticket's category, one line of 1 to 50 characters
+    ///
+    /// Free text: the API lists no categories. The Hippius desktop app offers billing,
+    /// storage, and general.
+    #[arg(long, value_parser = ticket_category)]
+    pub(crate) category: Option<String>,
+    /// The kind of resource the ticket is about, one line of 1 to 50 characters
+    ///
+    /// Free text: the API lists no resource types.
+    #[arg(long, value_parser = ticket_resource_type)]
+    pub(crate) resource_type: Option<String>,
+    /// The id of the resource the ticket is about, one line of 1 to 255 characters
+    #[arg(long, value_parser = ticket_resource_id)]
+    pub(crate) resource_id: Option<String>,
     #[command(flatten)]
     pub(crate) body: TicketBody,
 }
@@ -198,4 +227,36 @@ impl TicketPriority {
 /// A subject is a [`label`].
 fn ticket_subject(value: &str) -> Result<String, String> {
     label(value, 1..=255, Spaces::Kept, "a subject")
+}
+
+/// `--category`. Swagger's `TicketCreate.category` is a string of at most 50 characters with
+/// no list of values, so any [`label`] that long is taken.
+fn ticket_category(value: &str) -> Result<String, String> {
+    label(value, 1..=50, Spaces::Kept, "a category")
+}
+
+/// `--resource-type`. Swagger's `TicketCreate.resource_type` is a string of at most 50
+/// characters with no list of values, so any [`label`] that long is taken.
+fn ticket_resource_type(value: &str) -> Result<String, String> {
+    label(value, 1..=50, Spaces::Kept, "a resource type")
+}
+
+/// `--resource-id`. Swagger's `TicketCreate.resource_id` is a string of at most 255
+/// characters, and a person reads it on the ticket, so it is a [`label`].
+fn ticket_resource_id(value: &str) -> Result<String, String> {
+    label(value, 1..=255, Spaces::Kept, "a resource id")
+}
+
+/// `--client-msg-id`: a UUID, as each reply makes one. Swagger allows any string of at most 64
+/// characters; a UUID is 36, so the id a run printed always fits.
+fn client_msg_id(value: &str) -> Result<String, String> {
+    if is_uuid(value) {
+        Ok(value.to_owned())
+    } else {
+        Err(
+            "a client_msg_id is a UUID such as `3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0c`, as a reply \
+             prints it"
+                .to_owned(),
+        )
+    }
 }

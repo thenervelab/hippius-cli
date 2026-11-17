@@ -9,7 +9,7 @@
 //! upload) and the chat handoff stay on `hipc api`.
 
 use hippius::routes::support;
-use hippius::{Error, Failure, Request, Result, phrase, view_of};
+use hippius::{Error, Failure, Request, Result, SideEffects, phrase, view_of};
 use zeroize::Zeroizing;
 
 use crate::cli::{
@@ -35,21 +35,43 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Support) -> Result<Printed> {
         }
         Tickets::Create(args) => {
             let description = message(&args.body)?;
-            let client = client_without_token_in(ctx, &[&args.subject, &description])?;
+            // The one-line texts first and the message last, as the joined text is scanned in
+            // this order: a key whose first words end a flag and whose last open the message
+            // is found whole.
+            let fields = [&args.category, &args.resource_type, &args.resource_id];
+            let texts: Vec<&str> = [&args.subject]
+                .into_iter()
+                .chain(fields.into_iter().flatten())
+                .map(String::as_str)
+                .chain([description.as_str()])
+                .collect();
+            let client = client_without_token_in(ctx, &texts)?;
             let request = create_request(args, &description);
             let gate = Gate::Confirm {
                 consequence: Some("a person on the Hippius support team reads it"),
             };
             print_body(ctx, &client, &request, gate)
         }
-        Tickets::Reply { ticket_id, body } => {
+        Tickets::Reply {
+            ticket_id,
+            body,
+            client_msg_id,
+        } => {
             let text = message(body)?;
             let client = client_without_token_in(ctx, &[&text])?;
+            let id = match client_msg_id {
+                Some(id) => id.clone(),
+                None => hippius::new_idempotency_key()?,
+            };
             let request = Request::to(&support::MESSAGE_CREATE, [ticket_id])
-                .json(&support::MessageCreateBody { body: &text })
+                .json(&support::MessageCreateBody {
+                    body: &text,
+                    client_msg_id: &id,
+                })
                 .listed_by("hipc support tickets list")
                 .about(format!("reply to the ticket `{ticket_id}`"));
             print_body(ctx, &client, &request, Gate::Open)
+                .map_err(|error| reply_failed(ctx, error, *ticket_id, &id, client_msg_id.is_some()))
         }
         Tickets::Update { ticket_id, status } => close(ctx, *ticket_id, *status),
         Tickets::Messages(TicketMessages::List { ticket_id, list }) => {
@@ -114,12 +136,36 @@ fn list_tickets(ctx: &Context<'_>, args: &TicketList) -> Result<Printed> {
     list::run(ctx, &ctx.load_authed_client()?, &request, &args.list)
 }
 
-/// `POST /api/support/tickets/ {"subject", "description", "priority"?}`.
+/// The error of a reply that may have been posted: its hint names the messages list, to see
+/// whether it was, and the run's own command line with `--client-msg-id` added, unless the run
+/// already gave one, so a second run sends the same `client_msg_id`. Swagger documents no
+/// deduplication by that id, so the hint promises none. Any other error is returned as it is.
+fn reply_failed(ctx: &Context<'_>, error: Error, ticket_id: u64, id: &str, given: bool) -> Error {
+    if !matches!(error.side_effects(), SideEffects::Partial) {
+        return error;
+    }
+    let mut args = ctx.args().to_vec();
+    if !given {
+        let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
+        args.splice(end..end, ["--client-msg-id".to_owned(), id.to_owned()]);
+    }
+    error.with_hint(format!(
+        "run `hipc support tickets messages list {ticket_id}` to see whether the reply was \
+         posted; to send it again with the same client_msg_id, run `{}`",
+        phrase::command(&args)
+    ))
+}
+
+/// `POST /api/support/tickets/ {"subject", "description", "priority"?, "category"?,
+/// "resource_type"?, "resource_id"?}`.
 fn create_request(args: &TicketCreate, description: &str) -> Request {
     let body = support::TicketCreateBody {
         subject: &args.subject,
         description,
         priority: args.priority.map(crate::cli::TicketPriority::code),
+        category: args.category.as_deref(),
+        resource_type: args.resource_type.as_deref(),
+        resource_id: args.resource_id.as_deref(),
     };
     Request::to(&support::TICKET_CREATE, [])
         .json(&body)
@@ -142,7 +188,7 @@ fn client_without_token_in(ctx: &Context<'_>, texts: &[&str]) -> Result<hippius:
                 secret.what()
             ),
             format!(
-                "remove {} from the subject and the message; the support team never needs it",
+                "remove {} from the ticket text; the support team never needs it",
                 secret.it()
             ),
         ));

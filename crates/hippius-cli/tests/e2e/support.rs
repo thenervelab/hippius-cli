@@ -338,7 +338,12 @@ fn create_and_reply_dry_runs_show_the_body_and_send_nothing() {
         draft(&doc)["url"],
         format!("{}/api/support/tickets/7/messages/", server.url())
     );
-    assert_eq!(draft(&doc)["body"], json!({ "body": TEXT }));
+    let id = draft(&doc)["body"]["client_msg_id"].as_str().unwrap();
+    assert_uuid(id);
+    assert_eq!(
+        draft(&doc)["body"],
+        json!({ "body": TEXT, "client_msg_id": id })
+    );
     assert_eq!(doc["requests"].as_array().unwrap().len(), 1);
     assert_eq!(doc["requests"][0]["body"], draft(&doc)["body"]);
     assert!(server.requests().is_empty());
@@ -377,16 +382,43 @@ fn a_create_or_reply_answered_502_or_503_is_partial() {
     }
 }
 
+/// A reply sends the body and a `client_msg_id`, a new version-4 UUID each run.
 #[test]
-fn reply_needs_no_yes_and_sends_only_the_body() {
+fn reply_needs_no_yes_and_sends_the_body_with_a_new_client_msg_id_each_run() {
     let server = Server::start(vec![message_route(Reply::json(201, MESSAGE))]);
     let home = Home::new();
     let file = body_file(&home, TEXT);
-    let doc = Hipc::against(&home, &server)
-        .run(&["support", "tickets", "reply", "7", "--body-file", &file])
-        .ok();
+    let args = ["support", "tickets", "reply", "7", "--body-file", &file];
+    let doc = Hipc::against(&home, &server).run(&args).ok();
     assert_eq!(doc, serde_json::from_str::<Value>(MESSAGE).unwrap());
-    assert_eq!(server.only_request().json(), json!({ "body": TEXT }));
+    Hipc::against(&home, &server).run(&args).ok();
+    let sent: Vec<Value> = server
+        .requests()
+        .iter()
+        .map(crate::common::Recorded::json)
+        .collect();
+    let ids: Vec<&str> = sent
+        .iter()
+        .map(|body| body["client_msg_id"].as_str().unwrap())
+        .collect();
+    for (body, id) in sent.iter().zip(&ids) {
+        assert_uuid(id);
+        assert_eq!(body, &json!({ "body": TEXT, "client_msg_id": id }));
+    }
+    assert_ne!(ids[0], ids[1]);
+}
+
+/// `id` is a lowercase version-4 UUID, as `hipc` makes one.
+fn assert_uuid(id: &str) {
+    let groups: Vec<&str> = id.split('-').collect();
+    let lengths: Vec<usize> = groups.iter().map(|group| group.len()).collect();
+    assert_eq!(lengths, [8, 4, 4, 4, 12], "{id}");
+    assert!(
+        id.bytes()
+            .all(|b| b == b'-' || b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "{id}"
+    );
+    assert!(groups[2].starts_with('4'), "{id}");
 }
 
 /// A person reads a ticket, so a subject or a message that holds an API token is refused
@@ -537,7 +569,7 @@ fn a_ticket_text_with_a_split_token_or_an_access_key_is_refused() {
         );
         assert_eq!(
             error["hint"],
-            "remove the 12 words from the subject and the message; the support team never needs it"
+            "remove the 12 words from the ticket text; the support team never needs it"
         );
         assert!(!error.to_string().contains("curtain"), "{error}");
     }
@@ -1255,4 +1287,324 @@ fn a_close_of_a_missing_ticket_names_the_list_and_changed_nothing() {
     // The read found nothing, so the `PATCH` is never sent.
     assert_eq!(server.requests().len(), 1);
     assert_eq!(server.requests()[0].method, "GET");
+}
+
+/// The flags of a create that set `category`, `resource_type`, and `resource_id`.
+const FIELD_FLAGS: [(&str, &str, usize); 3] = [
+    ("--category", "category", 50),
+    ("--resource-type", "resource_type", 50),
+    ("--resource-id", "resource_id", 255),
+];
+
+/// A create of the subject `Down` with the message in `file`, then `extra`.
+fn create_args<'a>(file: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    let base = [
+        "support",
+        "tickets",
+        "create",
+        "--subject",
+        "Down",
+        "--body-file",
+        file,
+    ];
+    [&base[..], extra].concat()
+}
+
+/// `--category`, `--resource-type`, and `--resource-id` are sent as given, each only when
+/// given, and a dry run shows them in the body.
+#[test]
+fn create_sends_the_category_and_the_resource_only_when_given() {
+    let server = Server::start(vec![ticket_route(Reply::json(201, TICKET))]);
+    let home = Home::new();
+    let file = body_file(&home, TEXT);
+    let create = |extra: &[&'static str]| create_args(&file, extra);
+    let all = [
+        "--category",
+        "general",
+        "--resource-type",
+        "vm",
+        "--resource-id",
+        "vm 1",
+    ];
+    Hipc::against(&home, &server)
+        .run(&create(&[&all[..], &["--yes"]].concat()))
+        .ok();
+    let expected = json!({
+        "subject": "Down",
+        "description": TEXT,
+        "category": "general",
+        "resource_type": "vm",
+        "resource_id": "vm 1",
+    });
+    assert_eq!(server.only_request().json(), expected);
+    let doc = Hipc::tokenless(&home, &server)
+        .run(&[&["--dry-run"], &create(&all)[..]].concat())
+        .ok();
+    assert_eq!(draft(&doc)["body"], expected);
+    for (flag, field, _) in FIELD_FLAGS {
+        let doc = Hipc::new(&home)
+            .run(&[&["--dry-run"], &create(&[flag, "x"])[..]].concat())
+            .ok();
+        assert_eq!(
+            draft(&doc)["body"],
+            json!({"subject": "Down", "description": TEXT, field: "x"}),
+            "{flag}"
+        );
+    }
+    assert_eq!(server.requests().len(), 1);
+}
+
+/// Swagger lists no values for `category` or `resource_type`, only a length, so each new flag
+/// takes any one line of 1 to its maximum characters, counted as characters, and refuses an
+/// empty, blank, longer, or multi-line value before anything is sent.
+#[test]
+fn the_category_and_resource_flags_take_one_line_up_to_swaggers_length() {
+    let server = Server::start(vec![ticket_route(Reply::json(201, TICKET))]);
+    let home = Home::new();
+    let file = body_file(&home, TEXT);
+    for (flag, field, max) in FIELD_FLAGS {
+        let what = flag.trim_start_matches("--").replace('-', " ");
+        let long = "a".repeat(max + 1);
+        for value in ["", "  ", long.as_str(), "two\nlines"] {
+            let error = Hipc::against(&home, &server)
+                .run(&[
+                    "support",
+                    "tickets",
+                    "create",
+                    "--subject",
+                    "Down",
+                    flag,
+                    value,
+                    "--body-file",
+                    &file,
+                    "--yes",
+                ])
+                .fails(2, "usage");
+            let says = if value.contains('\n') {
+                format!("a {what} holds no control character or line break")
+            } else {
+                format!("a {what} is one line of 1 to {max} characters")
+            };
+            assert!(
+                error["message"].as_str().unwrap().contains(&says),
+                "{flag} {value:?}: {error}"
+            );
+        }
+        let widest = "é".repeat(max);
+        Hipc::against(&home, &server)
+            .run(&[
+                "support",
+                "tickets",
+                "create",
+                "--subject",
+                "Down",
+                flag,
+                &widest,
+                "--body-file",
+                &file,
+                "--yes",
+            ])
+            .ok();
+        assert_eq!(server.requests().last().unwrap().json()[field], widest);
+    }
+    assert_eq!(server.requests().len(), FIELD_FLAGS.len());
+}
+
+/// A person reads the category and the resource too, so a token split by whitespace in any of
+/// them is refused as in the message, and so is an access key split between one of them and
+/// the message; a dry run included. Neither refusal quotes the text, and nothing is sent.
+#[test]
+fn a_category_or_resource_that_holds_a_token_or_an_access_key_is_refused() {
+    let server = Server::start(vec![]);
+    let home = Home::new();
+    home.write_config(
+        "[profiles.other]\ntoken = \"tok_stored_0123456789abcdef\"\n\
+         token_origin = \"https://api.hippius.com\"\n",
+    );
+    let key = crate::common::SEED_PHRASES[0];
+    let (first, last) = key.split_at(key.match_indices(' ').nth(5).map_or(0, |(at, _)| at));
+    let token_file = body_file(&home, TEXT);
+    let key_file = home.file("rest.txt", last.as_bytes());
+    let key_file = key_file.to_str().unwrap();
+    for (flag, _, _) in FIELD_FLAGS {
+        for (value, file, what) in [
+            (
+                "tok_stored_ 0123456789abcdef",
+                token_file.as_str(),
+                "an API token",
+            ),
+            (first, key_file, "what looks like an access key"),
+        ] {
+            for dry in [&["--dry-run"][..], &[]] {
+                let args = [
+                    dry,
+                    &[
+                        "support",
+                        "tickets",
+                        "create",
+                        "--subject",
+                        "Down",
+                        flag,
+                        value,
+                        "--body-file",
+                        file,
+                        "--yes",
+                    ],
+                ]
+                .concat();
+                let error = Hipc::against(&home, &server).run(&args).fails(2, "usage");
+                assert_eq!(
+                    error["message"],
+                    format!(
+                        "the ticket text holds {what}, which a person on the Hippius support \
+                         team would read"
+                    ),
+                    "{flag} {value:?}"
+                );
+                assert!(!error.to_string().contains("6789"), "{error}");
+                assert!(!error.to_string().contains("curtain"), "{error}");
+            }
+        }
+    }
+    let error = Hipc::against(&home, &server)
+        .run(&[
+            "support",
+            "tickets",
+            "create",
+            "--subject",
+            "Down",
+            "--resource-id",
+            "tok_stored_ 0123456789abcdef",
+            "--body-file",
+            &token_file,
+            "--yes",
+        ])
+        .fails(2, "usage");
+    assert_eq!(
+        error["hint"],
+        "remove the token from the ticket text; the support team never needs it"
+    );
+    assert!(server.requests().is_empty());
+}
+
+/// `--client-msg-id` sends the id given, as typed, in the dry run and in the request.
+#[test]
+fn a_reply_with_client_msg_id_sends_that_id() {
+    let server = Server::start(vec![message_route(Reply::json(201, MESSAGE))]);
+    let home = Home::new();
+    let file = body_file(&home, TEXT);
+    let id = "3F2C9A1E-7b4d-4e8a-9c01-5d6e7f8a9b0c";
+    let args = [
+        "support",
+        "tickets",
+        "reply",
+        "7",
+        "--body-file",
+        &file,
+        "--client-msg-id",
+        id,
+    ];
+    let doc = Hipc::tokenless(&home, &server)
+        .run(&[&["--dry-run"], &args[..]].concat())
+        .ok();
+    assert_eq!(draft(&doc)["body"]["client_msg_id"], id);
+    Hipc::against(&home, &server).run(&args).ok();
+    assert_eq!(
+        server.only_request().json(),
+        json!({ "body": TEXT, "client_msg_id": id })
+    );
+}
+
+/// `--client-msg-id` is a UUID, as a reply makes one: anything else is usage before the
+/// message is read or anything is sent.
+#[test]
+fn a_client_msg_id_that_is_not_a_uuid_is_usage() {
+    let server = Server::start(vec![]);
+    let home = Home::new();
+    let file = body_file(&home, TEXT);
+    for id in [
+        "",
+        "retry-1",
+        "3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0",
+        "3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0c-",
+        "3f2c9a1e7b4d4e8a9c015d6e7f8a9b0c",
+        "3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0g",
+    ] {
+        let error = Hipc::against(&home, &server)
+            .run(&[
+                "support",
+                "tickets",
+                "reply",
+                "7",
+                "--body-file",
+                &file,
+                "--client-msg-id",
+                id,
+            ])
+            .fails(2, "usage");
+        assert!(
+            error["message"].as_str().unwrap().contains(
+                "a client_msg_id is a UUID such as `3f2c9a1e-7b4d-4e8a-9c01-5d6e7f8a9b0c`, as a \
+                 reply prints it"
+            ),
+            "{id:?}: {error}"
+        );
+    }
+    assert!(server.requests().is_empty());
+}
+
+/// A reply that may have been posted names the messages list, to see whether it was, and the
+/// run's command line with the `client_msg_id` it sent, so a second run sends the same id. A
+/// second run that fails again names itself unchanged. It stays `partial` and not retryable:
+/// swagger documents no deduplication by the id.
+#[test]
+fn a_reply_that_may_have_been_posted_names_its_client_msg_id_for_a_retry() {
+    let failed = || message_route(Reply::json(502, r#"{"error":"x"}"#));
+    let server = Server::start(vec![failed()]);
+    let home = Home::new();
+    let file = body_file(&home, TEXT);
+    let args = vec!["support", "tickets", "reply", "7", "--body-file", &file];
+    let error = Hipc::against(&home, &server)
+        .run(&args)
+        .fails(1, "unavailable");
+    assert_eq!(error["side_effects"], "partial");
+    assert_eq!(error["retryable"], false);
+    let id = server.only_request().json()["client_msg_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_uuid(&id);
+    let retry = [&args[..], &["--client-msg-id", &id]].concat();
+    let hint = |args: &[&str]| {
+        format!(
+            "run `hipc support tickets messages list 7` to see whether the reply was posted; to \
+             send it again with the same client_msg_id, run `hipc {}`",
+            args.join(" ")
+        )
+    };
+    assert_eq!(error["hint"], hint(&retry));
+
+    let again = Hipc::against(&home, &server)
+        .run(&retry)
+        .fails(1, "unavailable");
+    assert_eq!(again["hint"], hint(&retry));
+    let posted = Server::start(vec![message_route(Reply::json(201, MESSAGE))]);
+    Hipc::against(&home, &posted).run(&retry).ok();
+    for request in [&server.requests()[1], &posted.only_request()] {
+        assert_eq!(request.json(), json!({ "body": TEXT, "client_msg_id": id }));
+    }
+
+    // A refusal the server answers before posting anything keeps its own hint.
+    let missing = Server::start(vec![route_of(
+        &support::MESSAGE_CREATE,
+        [&7],
+        Reply::not_found(),
+    )]);
+    let error = Hipc::against(&home, &missing)
+        .run(&args)
+        .fails(1, "not_found");
+    assert_eq!(
+        error["hint"],
+        "run `hipc support tickets list` to see what exists"
+    );
 }

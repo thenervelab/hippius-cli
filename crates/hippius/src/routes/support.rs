@@ -40,6 +40,15 @@ pub struct TicketCreateBody<'a> {
     /// Its priority, when one is chosen.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<&'a str>,
+    /// Its category, when one is given: free text, since swagger lists no values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<&'a str>,
+    /// The kind of resource it is about, when one is given: free text, as `category` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_type: Option<&'a str>,
+    /// The id of the resource it is about, when one is given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<&'a str>,
 }
 
 impl fmt::Debug for TicketCreateBody<'_> {
@@ -48,6 +57,9 @@ impl fmt::Debug for TicketCreateBody<'_> {
             .field("subject_bytes", &self.subject.len())
             .field("description_bytes", &self.description.len())
             .field("priority", &self.priority)
+            .field("category_bytes", &self.category.map(str::len))
+            .field("resource_type_bytes", &self.resource_type.map(str::len))
+            .field("resource_id_bytes", &self.resource_id.map(str::len))
             .finish()
     }
 }
@@ -64,12 +76,16 @@ pub struct TicketUpdateBody<'a> {
 pub struct MessageCreateBody<'a> {
     /// The reply's text.
     pub body: &'a str,
+    /// The id the client gives the reply. Swagger types it as a string of at most 64
+    /// characters and says nothing of what the server does with a repeated one.
+    pub client_msg_id: &'a str,
 }
 
 impl fmt::Debug for MessageCreateBody<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MessageCreateBody")
             .field("body_bytes", &self.body.len())
+            .field("client_msg_id", &self.client_msg_id)
             .finish()
     }
 }
@@ -96,11 +112,24 @@ mod tests {
             subject: "help",
             description: "my words",
             priority: None,
+            category: Some("my words"),
+            resource_type: Some("my words"),
+            resource_id: Some("my words"),
         };
-        let reply = MessageCreateBody { body: "my words" };
+        let reply = MessageCreateBody {
+            body: "my words",
+            client_msg_id: "id",
+        };
         for shown in [format!("{create:?}"), format!("{reply:?}")] {
             assert!(!shown.contains("my words"), "{shown}");
             assert!(shown.contains("_bytes: 8"), "{shown}");
+        }
+        let shown = format!("{create:?}");
+        for field in ["category", "resource_type", "resource_id"] {
+            assert!(
+                shown.contains(&format!("{field}_bytes: Some(8)")),
+                "{shown}"
+            );
         }
     }
 }
