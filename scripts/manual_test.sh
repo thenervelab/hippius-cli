@@ -2904,19 +2904,50 @@ snapshot_put() {
   mv "$1.new" "$1"
 }
 
-# Writes the snapshot to $1 and prints it.
-# Whether the balance fell by exactly what the month's metered usage rose by between two
-# snapshots: an hourly charge for what the account already had (S3 storage, a running VM)
-# that landed during the run. Both are read as doubles, so equal means within 1e-12 credits,
-# far below one hour of the smallest charge; usage is in base units (10^18 per credit).
-metered_only() {
-  jq -e -n --slurpfile b "$1" --slurpfile a "$2" '
-    ($b[0].balance | tonumber) as $was | ($a[0].balance | tonumber) as $is
-    | ($b[0].usage | tonumber) as $u0 | ($a[0].usage | tonumber) as $u1
-    | ($was - $is) as $drop | (($u1 - $u0) / 1e18) as $metered
-    | $drop > 0 and ($drop - $metered | fabs) < 1e-12' >/dev/null 2>&1
+# A credit amount in base units (10^18 per credit) as a digit string: "14.5" gives
+# "14500000000000000000". Empty when the value is not a plain decimal of at most 18 places,
+# such as null, "NaN", or an error object, so a bad read never compares equal.
+base_units() {
+  local value="$1" whole fraction
+  [[ "$value" =~ ^([0-9]+)(\.([0-9]{1,18}))?$ ]] || return 0
+  whole="${BASH_REMATCH[1]}"
+  fraction="${BASH_REMATCH[3]}000000000000000000"
+  whole="${whole}${fraction:0:18}"
+  whole="${whole#"${whole%%[!0]*}"}"
+  printf '%s' "${whole:-0}"
 }
 
+# The sum of two digit strings of any length, nine digits at a time, so no amount is rounded.
+add_digits() {
+  local a="$1" b="$2" out="" carry=0 x y sum
+  while [[ -n "$a" || -n "$b" || $carry -ne 0 ]]; do
+    if ((${#a} > 9)); then x="${a: -9}" a="${a:0:${#a}-9}"; else x="$a" a=""; fi
+    if ((${#b} > 9)); then y="${b: -9}" b="${b:0:${#b}-9}"; else y="$b" b=""; fi
+    sum=$((10#${x:-0} + 10#${y:-0} + carry))
+    carry=$((sum / 1000000000))
+    out="$(printf '%09d' $((sum % 1000000000)))$out"
+  done
+  out="${out#"${out%%[!0]*}"}"
+  printf '%s' "${out:-0}"
+}
+
+# Whether the balance fell by exactly what the month's metered usage rose by between two
+# snapshots: an hourly charge for what the account already had (S3 storage, a running VM)
+# that landed during the run. Exact, in base units: balance before + usage before equals
+# balance after + usage after, with usage risen. A read that is not a plain amount, a month
+# that rolled over (usage fell), or any other difference is no match.
+metered_only() {
+  local b0 b1 u0 u1
+  b0="$(base_units "$(jq -r '.balance' "$1" 2>/dev/null)")"
+  b1="$(base_units "$(jq -r '.balance' "$2" 2>/dev/null)")"
+  u0="$(jq -r '.usage' "$1" 2>/dev/null)"
+  u1="$(jq -r '.usage' "$2" 2>/dev/null)"
+  [[ -n "$b0" && -n "$b1" && "$u0" =~ ^[0-9]+$ && "$u1" =~ ^[0-9]+$ ]] || return 1
+  [[ "$u0" != "$u1" ]] || return 1
+  [[ "$(add_digits "$b0" "$u0")" == "$(add_digits "$b1" "$u1")" ]]
+}
+
+# Writes the snapshot to $1 and prints it.
 take_snapshot() {
   local out="$1" name argv vm
   local -a args vms=()
@@ -3431,7 +3462,7 @@ compare_snapshots() {
     record PASS "the balance moved by the purchases"
   elif metered_only "$WORK/before.json" "$WORK/after.json"; then
     say "check: the balance moved from $before to $after, by exactly the metered usage the" \
-      "account was charged meanwhile (hipc billing usage total), not by this run: PASS"
+      "account was charged meanwhile (the hipc billing usage total rose by the same): PASS"
     record PASS "the balance moved only by the account's metered usage"
   else
     say "check: the balance moved from $before to $after: FAIL (nothing this run does is billed; a running VM or a metered service can move it, so check by hand)"
