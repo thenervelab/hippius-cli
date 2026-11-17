@@ -1608,3 +1608,222 @@ fn a_reply_that_may_have_been_posted_names_its_client_msg_id_for_a_retry() {
         "run `hipc support tickets list` to see what exists"
     );
 }
+
+/// A key or a token split between the message and a flag is found whichever comes first, and
+/// so is one split across three texts, or between two flags: the texts are scanned in every
+/// order. The argv scan does not see these, since no flag holds the whole secret. A dry run is
+/// refused too, and nothing is sent.
+#[test]
+fn a_secret_split_between_texts_in_any_order_is_refused() {
+    let server = Server::start(vec![]);
+    let home = Home::new();
+    home.write_config(
+        "[profiles.other]\ntoken = \"tok_stored_0123456789abcdef\"\n\
+         token_origin = \"https://api.hippius.com\"\n",
+    );
+    let words: Vec<&str> = crate::common::SEED_PHRASES[0].split_whitespace().collect();
+    let (first, last) = (words[..6].join(" "), words[6..].join(" "));
+    let (one, two, three) = (
+        words[..4].join(" "),
+        words[4..8].join(" "),
+        words[8..].join(" "),
+    );
+    let long = "x ".repeat(2 * 4096);
+    let key = "what looks like an access key";
+    let token = "an API token";
+    let cases: [(String, &[&str], &str); 8] = [
+        (format!("hello\n{first}"), &["--category", &last], key),
+        (format!("hello\n{first}"), &["--subject", &last], key),
+        (
+            format!("{last}\nthanks"),
+            &["--subject", &first, "--resource-type", "vm"],
+            key,
+        ),
+        (three, &["--resource-id", &one, "--subject", &two], key),
+        (format!("{long}{first}"), &["--category", &last], key),
+        (format!("{last} {long}"), &["--subject", &first], key),
+        (
+            "see tok_stored_01234".to_owned(),
+            &["--category", "56789abcdef"],
+            token,
+        ),
+        (
+            TEXT.to_owned(),
+            &[
+                "--subject",
+                "56789abcdef",
+                "--resource-id",
+                "tok_stored_01234",
+            ],
+            token,
+        ),
+    ];
+    for (message, flags, what) in &cases {
+        let file = body_file(&home, message);
+        // The path goes first: words of a temporary directory (`home`) are on the word list,
+        // and next to half a key they would make the argv scan answer instead.
+        let mut args = vec!["support", "tickets", "create", "--body-file", &file];
+        if !flags.contains(&"--subject") {
+            args.extend(["--subject", "Help"]);
+        }
+        args.extend(flags.iter().copied());
+        for dry in [true, false] {
+            let args = if dry {
+                [&["--dry-run"], &args[..]].concat()
+            } else {
+                [&args[..], &["--yes"]].concat()
+            };
+            let error = Hipc::against(&home, &server).run(&args).fails(2, "usage");
+            assert_eq!(
+                error["message"],
+                format!(
+                    "the ticket text holds {what}, which a person on the Hippius support team \
+                     would read"
+                ),
+                "{flags:?}"
+            );
+            assert!(!error.to_string().contains("curtain"), "{error}");
+            assert!(!error.to_string().contains("6789"), "{error}");
+        }
+    }
+    assert!(server.requests().is_empty());
+}
+
+/// A long message is joined to the other texts by its edges alone, and the cut between them
+/// joins nothing: half a key that ends its first 4096 characters and half that opens its last
+/// 4096 are not one key, so the ticket is sent; the same key whole is refused.
+#[test]
+fn the_cut_in_a_long_message_joins_no_secret() {
+    let server = Server::start(vec![ticket_route(Reply::json(201, TICKET))]);
+    let home = Home::new();
+    // A key whose checksum holds (the BIP-39 test vector), which the harness lets a request
+    // carry, unlike its own phrases.
+    let (first, last) = ("abandon ".repeat(6), "abandon ".repeat(5) + "about");
+    let first = first.trim_end();
+    let head = format!("{} {first}", "a".repeat(4096 - first.len() - 1));
+    let tail = format!("{last} {}", "c".repeat(4096 - last.len() - 1));
+    let message = format!("{head} {} {tail}", "b".repeat(1000));
+    let file = body_file(&home, &message);
+    Hipc::against(&home, &server)
+        .run(&[
+            "support",
+            "tickets",
+            "create",
+            "--subject",
+            "Help",
+            "--category",
+            "general",
+            "--body-file",
+            &file,
+            "--yes",
+        ])
+        .ok();
+    assert_eq!(server.only_request().json()["description"], message);
+    let file = body_file(&home, &format!("{first} {last}"));
+    Hipc::against(&home, &server)
+        .run(&[
+            "support",
+            "tickets",
+            "create",
+            "--subject",
+            "Help",
+            "--body-file",
+            &file,
+            "--yes",
+        ])
+        .fails(2, "usage");
+    assert_eq!(server.requests().len(), 1);
+}
+
+/// The hint of a reply that may have been posted is the run's own command line, quoted for a
+/// shell, with global flags kept and `--client-msg-id` put before a `--`; a run that read the
+/// message from stdin says it reads it again. A timeout gets it as a 5xx does. A 2xx whose body
+/// cannot be read posted the reply, so its hint only names the list.
+#[test]
+fn the_retry_hint_quotes_the_command_and_is_given_only_when_the_reply_may_not_be_posted() {
+    let home = Home::new();
+    let dir = home.path().join("my dir");
+    std::fs::create_dir(&dir).unwrap();
+    let file = dir.join("message.txt");
+    std::fs::write(&file, TEXT).unwrap();
+    let file = file.to_str().unwrap();
+    let list = "run `hipc support tickets messages list 7` to see whether the reply was posted";
+    let failing = |reply: Reply| Server::start(vec![message_route(reply)]);
+    let sent_id = |server: &Server| {
+        server.only_request().json()["client_msg_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+
+    let server = failing(Reply::json(502, r#"{"error":"x"}"#));
+    let error = Hipc::against(&home, &server)
+        .run(&[
+            "--output",
+            "json",
+            "support",
+            "tickets",
+            "reply",
+            "--body-file",
+            file,
+            "--",
+            "7",
+        ])
+        .fails(1, "unavailable");
+    let id = sent_id(&server);
+    assert_eq!(
+        error["hint"],
+        format!(
+            "{list}; to send it again with the same client_msg_id, run `hipc --output json \
+             support tickets reply --body-file '{file}' --client-msg-id {id} -- 7`"
+        )
+    );
+
+    // A 500 may not have posted the reply either, so it gets the command to send it again.
+    let server = failing(Reply::json(500, r#"{"error":"x"}"#));
+    let error = Hipc::against(&home, &server)
+        .run(&["support", "tickets", "reply", "7", "--body-file", file])
+        .fails(1, "internal");
+    assert_eq!(error["side_effects"], "partial");
+    let id = sent_id(&server);
+    assert_eq!(
+        error["hint"],
+        format!(
+            "{list}; to send it again with the same client_msg_id, run `hipc support tickets \
+             reply 7 --body-file '{file}' --client-msg-id {id}`"
+        )
+    );
+
+    let server = failing(Reply::never());
+    let error = Hipc::against(&home, &server)
+        .stdin(TEXT.as_bytes())
+        .run(&[
+            "support",
+            "tickets",
+            "reply",
+            "7",
+            "--body-file",
+            "-",
+            "--request-timeout",
+            "1",
+        ])
+        .fails(1, "timeout");
+    assert_eq!(error["side_effects"], "partial");
+    assert_eq!(error["retryable"], false);
+    let id = sent_id(&server);
+    assert_eq!(
+        error["hint"],
+        format!(
+            "{list}; to send it again with the same client_msg_id, run `hipc support tickets \
+             reply 7 --body-file - --request-timeout 1 --client-msg-id {id}`, with the message \
+             on stdin again"
+        )
+    );
+
+    let server = failing(Reply::json(201, "not json"));
+    let error = Hipc::against(&home, &server)
+        .run(&["support", "tickets", "reply", "7", "--body-file", file])
+        .fails(1, "internal");
+    assert_eq!(error["side_effects"], "partial");
+    assert_eq!(error["hint"], list);
+}
