@@ -531,6 +531,13 @@ mod tests {
                 .is_some_and(|hint| hint.ends_with("it declares none")),
             "{error:?}"
         );
+        let error = neither_stored_nor_given(source, "DB_PASSWORD", true);
+        assert!(
+            error
+                .hint()
+                .is_some_and(|hint| hint.starts_with("add `DB_PASSWORD` and its value to the file")),
+            "{error:?}"
+        );
         let error = neither_stored_nor_given(source, "DB_PASSWORD", false);
         assert!(
             error
