@@ -798,12 +798,12 @@ fn an_app_engine_body_with_secrets_is_refused() {
         (
             Method::Put,
             "/compute/app-engine/apps/vm-1/compose/",
-            "not in this version",
+            "apps update --secrets-file",
         ),
         (
             Method::Patch,
             "/compute/app-engine/apps/vm-1/compose",
-            "not in this version",
+            "apps update --secrets-file",
         ),
         (Method::Post, "/compute/app-engine/validate", "validate`"),
     ] {

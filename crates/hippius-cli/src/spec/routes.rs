@@ -31,7 +31,6 @@ pub(super) fn routes(path: &[&str]) -> Vec<&'static Endpoint> {
         ["api"] => sends![
             account::DELETION_REQUEST,
             account::DELETION_WITHDRAW,
-            compute::APP_ENGINE_COMPOSE_UPDATE,
             operator::NODE_STORAGE_UPDATE,
         ],
         ["compute", "app-engine", rest @ ..] => of_compute_app_engine(rest),
@@ -311,8 +310,17 @@ fn of_compute_app_engine(path: &[&str]) -> Vec<&'static Endpoint> {
             compute::APP_ENGINE_APP,
             compute::BACKUP_OPTIONS
         ],
+        ["apps", "update"] => sends![
+            compute::APP_ENGINE_COMPOSE_UPDATE,
+            compute::APP_ENGINE_VALIDATE,
+            compute::APP_ENGINE_APP
+        ],
         ["apps", "runtime"] => sends![compute::APP_ENGINE_RUNTIME],
         ["guest-components", "get"] => sends![compute::APP_ENGINE_GUEST_COMPONENTS],
+        ["guest-components", "update"] => sends![
+            compute::APP_ENGINE_GUEST_UPGRADE_CREATE,
+            compute::APP_ENGINE_GUEST_COMPONENTS
+        ],
         ["guest-components", "update-status"] => sends![compute::APP_ENGINE_GUEST_UPGRADE],
         _ => Vec::new(),
     }

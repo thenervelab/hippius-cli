@@ -553,6 +553,10 @@ const WRITTEN_OUT: &[(&str, &str)] = &[
         "/api/compute/app-engine/apps/{vm_id}/guest-components/",
     ),
     ("GET", "/api/compute/app-engine/apps/{vm_id}/guest-upgrade/"),
+    (
+        "POST",
+        "/api/compute/app-engine/apps/{vm_id}/guest-upgrade/",
+    ),
     ("POST", "/api/compute/app-engine/validate/"),
     ("POST", "/api/compute/app-engine/fix/"),
     ("PUT", "/api/compute/app-engine/apps/{vm_id}/compose/"),

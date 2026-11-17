@@ -7,6 +7,7 @@ mod account;
 mod api;
 mod app_engine;
 mod app_engine_create;
+mod app_engine_update;
 mod auth;
 mod backups;
 mod billing;

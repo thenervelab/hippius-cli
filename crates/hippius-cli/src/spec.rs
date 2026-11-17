@@ -1030,6 +1030,10 @@ mod tests {
                 ),
                 ("s3 configure".to_owned(), "the AWS profile already exists"),
                 (
+                    "compute app-engine guest-components update".to_owned(),
+                    "a newer guest components release is offered"
+                ),
+                (
                     "compute runners settings update".to_owned(),
                     "against the settings it reads first, `--enabled` or `--allow-public-repos` \
                      is `true` where the setting is not, `--max-concurrent` is higher than \

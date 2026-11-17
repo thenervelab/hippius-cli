@@ -1849,6 +1849,11 @@ app_engine() {
     -- hipc --output text compute app-engine guest-components get "$app"
   step read net "Read the guest component update" "see whether an update is pending or done" \
     -- hipc --output text compute app-engine guest-components update-status "$app"
+  # Without --yes this never posts: exit 0 when no newer release is offered, or
+  # confirmation_required when one is. An error code needs JSON, not text.
+  step read net/confirmation_required "See whether a guest update is offered" \
+    "without --yes nothing is posted: exit 0 when none is offered, or confirmation_required when one is" \
+    -- hipc --json compute app-engine guest-components update "$app"
   block_end
   # A compose the platform refuses exits 1 `validation`, with every issue listed.
   step read net/permission,validation "Validate a compose" \
@@ -3679,7 +3684,8 @@ network vpcs resources create: it changes who reaches what on the private networ
 network vpcs resources update: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
 network vpcs resources delete: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
 network vpcs routers create: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
-network vpcs routers delete: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network'
+network vpcs routers delete: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
+compute app-engine apps update: replaces the compose or the secrets of a running app and restarts its VM; the script has no App Engine write tier'
 
 if [[ $EXCLUDED_ONLY == 1 ]]; then
   printf '%s\n' "$EXCLUDED"

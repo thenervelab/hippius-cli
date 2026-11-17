@@ -200,6 +200,12 @@ routes! {
         .scoped()
         .project();
 
+    /// Schedules an upgrade of an app's guest components onto one release.
+    APP_ENGINE_GUEST_UPGRADE_CREATE: 1 =
+        Route::post("/api/compute/app-engine/apps/{vm_id}/guest-upgrade/")
+            .scoped()
+            .project();
+
     /// Checks a compose file; changes nothing.
     APP_ENGINE_VALIDATE: 0 = Route::post("/api/compute/app-engine/validate/")
         .scoped()
@@ -213,17 +219,18 @@ routes! {
     /// Rewrites a compose file to fit; changes nothing.
     APP_ENGINE_FIX: 0 = Route::post("/api/compute/app-engine/fix/").scoped().project();
 
-    /// Replaces an app's compose file. No command sends it yet; with secrets in the body it is
-    /// refused, since only a private file may carry them.
-    APP_ENGINE_COMPOSE_UPDATE: 1 = Route::put("/api/compute/app-engine/apps/{vm_id}/compose/")
-        .scoped()
-        .project()
-        .guard(Guard::RefusedWhenSet {
-            key: "secrets",
-            why: APP_SECRETS,
-            hint: "a compose update with secrets is not in this version of `hipc`: send the \
-                   body without `secrets`, or change the app's secrets in the console",
-        });
+    /// Replaces an app's compose, its secrets, or both. `apps update` sends it. `hipc api`
+    /// refuses a body that sets `secrets`: only a private file may carry them.
+    APP_ENGINE_COMPOSE_UPDATE: 1 =
+        Route::put("/api/compute/app-engine/apps/{vm_id}/compose/")
+            .scoped()
+            .project()
+            .guard(Guard::RefusedWhenSet {
+                key: "secrets",
+                why: APP_SECRETS,
+                hint: "run `hipc compute app-engine apps update --secrets-file`, which reads \
+                       the values from a private file and keeps them out of every output",
+            });
 }
 
 /// The body of [`VM_CREATE`]: exactly the flags given, nothing defaulted.
@@ -386,6 +393,41 @@ pub struct SshKeyCreateBody<'a> {
 pub struct ComposeBody<'a> {
     /// The compose file's text, unchanged.
     pub compose: &'a str,
+}
+
+/// The body of [`APP_ENGINE_COMPOSE_UPDATE`]: the compose byte for byte, `secrets` when
+/// there are any, and nothing else. Either field may be left out. Its `Debug` leaves
+/// `secrets` out.
+#[derive(Serialize)]
+pub struct AppComposeUpdateBody<'a> {
+    /// The compose file's text, unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compose: Option<&'a str>,
+    /// The secret values by name, or their placeholders in a dry run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<&'a Value>,
+}
+
+/// Leaves `secrets` out: it holds the values sent.
+impl std::fmt::Debug for AppComposeUpdateBody<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppComposeUpdateBody")
+            .field("compose_bytes", &self.compose.map(str::len))
+            .field("secrets", &self.secrets.map(|_| "<withheld>"))
+            .finish_non_exhaustive()
+    }
+}
+
+/// The body of [`APP_ENGINE_GUEST_UPGRADE_CREATE`]. `expected_current_release` is sent as
+/// `null` for the bare base: leaving the field out would skip the check.
+#[derive(Debug, Serialize)]
+pub struct GuestUpgradeBody {
+    /// Swagger requires `true`.
+    pub confirm: bool,
+    /// The release to install: the `newest_release` the read showed.
+    pub release: u64,
+    /// The release the read showed, or `null` for the bare base.
+    pub expected_current_release: Option<u64>,
 }
 
 /// The body of [`APP_ENGINE_APP_CREATE`]: the flavor, the compose byte for byte, `secrets`
@@ -583,13 +625,37 @@ pub struct Evidence {
     pub verify_command: Slot<Value>,
 }
 
-/// The guest components of [`APP_ENGINE_GUEST_COMPONENTS`], as far as its warning decides on
-/// it.
+/// The guest components of [`APP_ENGINE_GUEST_COMPONENTS`], as far as its warning and an
+/// upgrade decide on it.
 #[derive(Debug, Default, Deserialize)]
 pub struct GuestComponents {
+    /// The release the VM runs; `null` on the bare base.
+    #[serde(default)]
+    pub release: Slot<u64>,
+    /// The only release an upgrade may install; `null` when none is offered.
+    #[serde(default)]
+    pub newest_release: Slot<u64>,
+    /// Whether a newer release than `release` is offered.
+    #[serde(default, deserialize_with = "field")]
+    pub update_available: Option<bool>,
     /// Whether an earlier upgrade failed, and Hippius must recover the VM.
     #[serde(default, deserialize_with = "field")]
     pub needs_operator: Option<bool>,
+    /// The upgrade in progress, when the read names one. Missing, null, and a value that is
+    /// not an object are `None`.
+    #[serde(default, deserialize_with = "nested")]
+    pub upgrade: Option<GuestUpgradeJob>,
+}
+
+/// One guest-components upgrade, as far as an update decides whether one is running.
+///
+/// The guest-components read nests it under `upgrade`. Only `in_flight` decides; the rest
+/// of the job is left unread.
+#[derive(Debug, Default, Deserialize)]
+pub struct GuestUpgradeJob {
+    /// Whether this upgrade is still running.
+    #[serde(default, deserialize_with = "field")]
+    pub in_flight: Option<bool>,
 }
 
 /// The guest upgrade of [`APP_ENGINE_GUEST_UPGRADE`], as far as its note decides on it.
@@ -735,6 +801,61 @@ mod tests {
         let shown = format!("{body:?}");
         assert!(!shown.contains("hunter2"), "{shown}");
         assert!(shown.contains("<withheld>"), "{shown}");
+        let update = AppComposeUpdateBody {
+            compose: None,
+            secrets: Some(&secrets),
+        };
+        let shown = format!("{update:?}");
+        assert!(!shown.contains("hunter2"), "{shown}");
+        assert!(shown.contains("<withheld>"), "{shown}");
+    }
+
+    /// A compose update sends only the fields given, and a guest upgrade sends `null` for the
+    /// bare base rather than leaving the check out.
+    #[test]
+    fn an_update_body_sends_only_what_is_given() {
+        let compose = AppComposeUpdateBody {
+            compose: Some("services: {}"),
+            secrets: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&compose).unwrap(),
+            r#"{"compose":"services: {}"}"#
+        );
+        let secrets = json!({ "TOKEN": "x" });
+        let secrets_only = AppComposeUpdateBody {
+            compose: None,
+            secrets: Some(&secrets),
+        };
+        assert_eq!(
+            serde_json::to_string(&secrets_only).unwrap(),
+            r#"{"secrets":{"TOKEN":"x"}}"#
+        );
+        let bare = GuestUpgradeBody {
+            confirm: true,
+            release: 7,
+            expected_current_release: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&bare).unwrap(),
+            json!({
+                "confirm": true,
+                "release": 7,
+                "expected_current_release": null,
+            })
+        );
+        let named = GuestUpgradeBody {
+            expected_current_release: Some(3),
+            ..bare
+        };
+        assert_eq!(
+            serde_json::to_value(&named).unwrap(),
+            json!({
+                "confirm": true,
+                "release": 7,
+                "expected_current_release": 3,
+            })
+        );
     }
 
     /// A refusal names its slug in `error` or in `code`.
