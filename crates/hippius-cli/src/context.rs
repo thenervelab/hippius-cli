@@ -42,6 +42,15 @@ pub(crate) enum ConfirmedStep {
     DryRun(DryRun),
 }
 
+/// The outcome of [`Context::check_and_confirm`].
+#[derive(Debug)]
+pub(crate) enum Asked {
+    /// The write passed its checks and its question; nothing has been sent yet.
+    Confirmed(Confirmed),
+    /// `--dry-run`: this document describes the requests, and nothing was sent.
+    DryRun(DryRun),
+}
+
 /// Whether a request needs a confirmation before it is sent.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Gate<'a> {
@@ -495,13 +504,29 @@ impl<'a> Context<'a> {
         request: &Request,
         consequence: Option<&str>,
     ) -> Result<ConfirmedStep> {
-        match self.check_write(client, &WritePlan::new(&[], request))? {
-            Write::DryRun(doc) => Ok(ConfirmedStep::DryRun(doc)),
-            Write::Checked(checked) => {
-                let confirmed = self.confirm_write(checked, &request.action(), consequence)?;
+        match self.check_and_confirm(client, &WritePlan::new(&[], request), consequence)? {
+            Asked::DryRun(doc) => Ok(ConfirmedStep::DryRun(doc)),
+            Asked::Confirmed(confirmed) => {
                 let response = self.send_confirmed(client, request, &confirmed)?;
                 Ok(ConfirmedStep::Sent(response, confirmed))
             }
+        }
+    }
+
+    /// [`Context::check_write`] of `plan`, then, unless it is a dry run, the question of its
+    /// draft's action with `consequence` ([`Context::confirm_write`]): for a write whose
+    /// question needs nothing a read gives, so it is asked before anything is sent.
+    pub(crate) fn check_and_confirm(
+        &self,
+        client: &Client,
+        plan: &WritePlan<'_>,
+        consequence: Option<&str>,
+    ) -> Result<Asked> {
+        match self.check_write(client, plan)? {
+            Write::DryRun(doc) => Ok(Asked::DryRun(doc)),
+            Write::Checked(checked) => self
+                .confirm_write(checked, &plan.draft.action(), consequence)
+                .map(Asked::Confirmed),
         }
     }
 
