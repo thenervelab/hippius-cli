@@ -1490,6 +1490,39 @@ fn a_value_with_control_characters_is_redacted_in_every_spelling() {
     }
 }
 
+/// Two values that overlap where an answer or a refusal repeats them are one `<redacted>`: a
+/// pass per value, longest first, would leave `-tail-3` of the second.
+#[test]
+fn overlapping_values_are_one_redacted_span() {
+    let files = files();
+    let secrets = path_text(&files.home.file(
+        "overlap.json",
+        br#"{"DB_PASSWORD":"db-pw-Kx55","API_KEY":"Kx55-tail-3"}"#,
+    ));
+    let args = create_args(&files.compose, &["--secrets-file", &secrets, "--yes"]);
+    let mut answer: Value = serde_json::from_str(&launched("provisioning")).unwrap();
+    answer["note"] = json!("x db-pw-Kx55-tail-3 y");
+    let server = answering_server(
+        &["DB_PASSWORD", "API_KEY"],
+        Reply::json(202, &answer.to_string()),
+    );
+    let run = Hipc::against(&files.home, &server).run(&args);
+    assert_eq!(run.ok()["note"], "x <redacted> y");
+    let refused = json!({"detail": "x db-pw-Kx55-tail-3 y"});
+    let server = answering_server(
+        &["DB_PASSWORD", "API_KEY"],
+        Reply::json(400, &refused.to_string()),
+    );
+    let run = Hipc::against(&files.home, &server).run(&args);
+    assert_eq!(
+        run.fails(1, "validation")["details"],
+        json!({"detail": "x <redacted> y"})
+    );
+    for part in ["Kx55", "tail-3"] {
+        assert!(!run.stderr().contains(part), "{}", run.stderr());
+    }
+}
+
 /// A name the server would not take is described in the dry run, never printed.
 #[test]
 fn the_dry_run_describes_a_name_that_is_not_a_secret_name() {

@@ -257,6 +257,29 @@ fn an_error_says_only_its_status() {
     );
 }
 
+/// Two credential values that overlap where the request id repeats them are one `<redacted>`:
+/// a pass per value, longest first, would leave `-tail-9` of the session token.
+#[test]
+fn overlapping_credentials_in_the_request_id_are_one_redacted_span() {
+    let file = concat!(
+        r#"{"access_key_id":"AKIAEXAMPLE","secret_access_key":"aws-secret-Zr42","#,
+        r#""session_token":"Zr42-tail-9"}"#
+    );
+    let server = Server::start(vec![route_of(
+        &cdn::HOSTNAME_DNS_SETUP,
+        [&ZONE, &HOST],
+        Reply::json(400, "{}").header("X-Request-Id", "req-aws-secret-Zr42-tail-9"),
+    )]);
+    let home = Home::new();
+    let path = path_text(&home.file("aws.json", file.as_bytes()));
+    let run = Hipc::against(&home, &server).run(&setup_args("route53", &path, &["--yes"]));
+    let error = run.fails(1, "validation");
+    assert_eq!(error["request_id"], "req-<redacted>");
+    for part in ["Zr42", "tail-9"] {
+        assert!(!run.stderr().contains(part), "{}", run.stderr());
+    }
+}
+
 /// Without `--yes` it exits 2 `confirmation_required` and sends nothing; a dry run needs no
 /// token and shows a placeholder where the credential goes.
 #[test]

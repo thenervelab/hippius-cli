@@ -1761,6 +1761,27 @@ fn credentials_dir_redacts_a_secret_repeated_outside_credentials() {
     assert_eq!(doc["credentials"]["username"], "app");
 }
 
+/// Two withheld values that overlap where a field repeats them are one `<redacted>`: a pass
+/// per value, longest first, would leave `-tail-41` of the second.
+#[test]
+fn credentials_dir_redacts_overlapping_values_as_one_span() {
+    let mut answer = with_credentials(database("provisioning"));
+    answer["credentials"]["extra"] = json!("9f2c-tail-41");
+    answer["note"] = json!(format!("x {PASSWORD}-tail-41 y"));
+    let server = Server::start(vec![route_of(
+        &databases::DATABASE_CREATE,
+        [],
+        Reply::json(202, &answer.to_string()),
+    )]);
+    let home = Home::new();
+    let dir = empty_dir(&home, "creds");
+    let run = create_into(&home, &server, &dir, &[]);
+    let doc = run.ok();
+    no_secret(&run);
+    assert_eq!(doc["note"], "x <redacted> y");
+    assert!(!run.stdout().contains("tail-41"), "{}", run.stdout());
+}
+
 /// A number that is a withheld value becomes the string `<redacted>`, and a field name that is
 /// one, or holds one of eight characters or more, becomes `<redacted>` (tenet 9); a field name
 /// that holds only a shorter one is kept.
