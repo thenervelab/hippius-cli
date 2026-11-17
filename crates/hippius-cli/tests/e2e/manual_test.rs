@@ -2824,7 +2824,8 @@ fn what_the_server_made_for_a_purchase_is_reported_apart() {
     let snapshot = concat!(
         "case \"$HOME\" in */snapshot/home) case \" $* \" in ",
         "*\" s3 buckets list \"* | *\" s3 tokens list \"* | *\" network peers list \"*) ;; ",
-        "*\" --json \"*\" list \"* | *\" --json \"*\" get \"* | *\" billing balance \"*) ",
+        "*\" --json \"*\" list \"* | *\" --json \"*\" get \"* | *\" billing balance \"* ",
+        "| *\" billing usage \"*) ",
         "printf '%s\\n' '{\"items\":[],\"next_page_token\":null}'; exit 0 ;; esac ;; esac"
     );
     let (wrapper, _) = scripted_hipc(

@@ -125,6 +125,7 @@ scenario setup: install hipc, log in for the snapshot, snapshot the account
   [read] hipc --json account projects list
   [read] hipc --json account billing-accounts list
   [read] hipc --json billing balance
+  [read] hipc --json billing usage
   [read] hipc --json compute public-ip get <vm> (for each VM)
 ```
 
@@ -681,6 +682,7 @@ scenario teardown: work off the ledger, snapshot again, diff, log out, scan the 
   [read] hipc --json account projects list
   [read] hipc --json account billing-accounts list
   [read] hipc --json billing balance
+  [read] hipc --json billing usage
   [read] hipc --json compute public-ip get <vm> (for each VM)
   [check] the account is as it was found
   [check] the balance is unchanged

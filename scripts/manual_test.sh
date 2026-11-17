@@ -2792,7 +2792,8 @@ s3-subscription s3 subscription get
 hub-subscription hub subscription get
 projects account projects list
 billing-accounts account billing-accounts list
-balance billing balance'
+balance billing balance
+usage billing usage'
 
 # What the snapshot keeps of an answer, so a second snapshot compares equal unless something
 # was created, deleted, or changed plan:
@@ -2800,6 +2801,8 @@ balance billing balance'
 #   sorted, so the API's order does not matter; sizes, timestamps and VM states are dropped.
 #   A list that is not complete (see `complete`) is kept as {"incomplete": true}, a failure.
 # - the balance: the `balance` field alone, compared on its own line.
+# - the month's metered usage: its `total`, in base units, which explains a balance that
+#   moved by the hourly charges of what the account already had (the balance check).
 # - a VM's public IP: its address, or null.
 # - any other document: the fields that say which plan is active (active, status, plan,
 #   plan_id, plan_code, mode, period, subscription_id, cancelled_at, canceled_at,
@@ -2818,6 +2821,7 @@ def pick_doc:
   elif type == "array" then map(pick_doc) | sort
   else . end;
 if $name == "balance" then .balance
+elif $name == "usage" then .total
 elif $name == "drive-subscription" then .
 elif ($name | startswith("public-ip:")) then (.public_ip.address? // null)
 elif rows != null then
@@ -2901,6 +2905,18 @@ snapshot_put() {
 }
 
 # Writes the snapshot to $1 and prints it.
+# Whether the balance fell by exactly what the month's metered usage rose by between two
+# snapshots: an hourly charge for what the account already had (S3 storage, a running VM)
+# that landed during the run. Both are read as doubles, so equal means within 1e-12 credits,
+# far below one hour of the smallest charge; usage is in base units (10^18 per credit).
+metered_only() {
+  jq -e -n --slurpfile b "$1" --slurpfile a "$2" '
+    ($b[0].balance | tonumber) as $was | ($a[0].balance | tonumber) as $is
+    | ($b[0].usage | tonumber) as $u0 | ($a[0].usage | tonumber) as $u1
+    | ($was - $is) as $drop | (($u1 - $u0) / 1e18) as $metered
+    | $drop > 0 and ($drop - $metered | fabs) < 1e-12' >/dev/null 2>&1
+}
+
 take_snapshot() {
   local out="$1" name argv vm
   local -a args vms=()
@@ -3329,7 +3345,7 @@ compare_snapshots() {
   # shellcheck disable=SC2016 # jq source.
   local allow="$DRIVE_CANCELLED $JQ_DEFS"'
     ('"$server_made"') as $made
-    | del(.balance)
+    | del(.balance, .usage)
     | if (.buckets | type) == "array" then .buckets -= $made.buckets else . end
     | if (."s3-tokens" | type) == "array" then ."s3-tokens" -= $made.tokens else . end
     | if $vm and $before[0]."network-peers" == {"error": "network_unprovisioned"} and
@@ -3413,6 +3429,10 @@ compare_snapshots() {
     say "check: the balance moved from $before to $after, as the purchases this run made" \
       "spend it: PASS"
     record PASS "the balance moved by the purchases"
+  elif metered_only "$WORK/before.json" "$WORK/after.json"; then
+    say "check: the balance moved from $before to $after, by exactly the metered usage the" \
+      "account was charged meanwhile (hipc billing usage total), not by this run: PASS"
+    record PASS "the balance moved only by the account's metered usage"
   else
     say "check: the balance moved from $before to $after: FAIL (nothing this run does is billed; a running VM or a metered service can move it, so check by hand)"
     record FAIL "the balance moved from $before to $after"
