@@ -321,7 +321,10 @@ mod tests {
     #[test]
     fn the_compose_long_help_adds_the_server_limit_and_the_stdin_rule() {
         let long = compose_long_help();
-        assert!(long.starts_with(&format!("{}\n\n", compose_help())), "{long}");
+        assert!(
+            long.starts_with(&format!("{}\n\n", compose_help())),
+            "{long}"
+        );
         assert!(
             long.contains("at most max_compose_bytes from hipc compute app-engine get"),
             "{long}"

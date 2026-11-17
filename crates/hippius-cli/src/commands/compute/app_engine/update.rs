@@ -506,17 +506,37 @@ mod tests {
 
         let bare = json!({ "vm_id": "vm-1a2b" });
         let error = check_merged_secrets(&bare, None, None, "vm-1a2b", source).unwrap_err();
-        assert!(
-            error.message().contains("without `secret_names`"),
-            "{}",
-            error.message()
-        );
+        let message = error.message();
+        assert!(message.contains("without `secret_names`"), "{message}");
         let odd = json!({ "secret_names": "DB_PASSWORD" });
         let error = check_merged_secrets(&app, Some(&odd), None, "vm-1a2b", source).unwrap_err();
+        let message = error.message();
+        assert!(message.contains("not a list of names"), "{message}");
+    }
+
+    /// A compose that declares no secret says so in the hint, and a declared name with no
+    /// stored value and no secrets file at all asks for the file.
+    #[test]
+    fn the_secret_refusals_name_what_is_declared_and_what_to_pass() {
+        let source = "the compose file `compose.yaml`";
+        let error = undeclared_names(2, source, &[]);
+        assert_eq!(
+            error.message(),
+            "the secrets file gives 2 secrets that the compose file `compose.yaml` does not \
+             declare"
+        );
         assert!(
-            error.message().contains("not a list of names"),
-            "{}",
-            error.message()
+            error
+                .hint()
+                .is_some_and(|hint| hint.ends_with("it declares none")),
+            "{error:?}"
+        );
+        let error = neither_stored_nor_given(source, "DB_PASSWORD", false);
+        assert!(
+            error
+                .hint()
+                .is_some_and(|hint| hint.starts_with(&format!("pass `{SECRETS_FLAG}` a mode-0600"))),
+            "{error:?}"
         );
     }
 

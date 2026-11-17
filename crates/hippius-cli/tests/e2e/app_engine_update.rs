@@ -938,6 +938,25 @@ fn a_re_read_that_still_offers_an_update_is_conflict() {
     assert_eq!(server.requests()[2].method, "GET");
 }
 
+/// A re-read after the 409 that hipc cannot act on is internal, with the hint to read the
+/// guest components again; nothing more is posted.
+#[test]
+fn a_re_read_hipc_cannot_read_is_internal() {
+    let home = Home::new();
+    let offered = components(&json!(3), &json!(7), Some(true));
+    let server = already_current(&offered, r#"{"release":7}"#);
+    let run = Hipc::against(&home, &server).run(&guest_args(&["--yes"]));
+    assert_eq!(run.code(), Some(1), "{}", run.stderr());
+    let error: Value = serde_json::from_str(run.stderr().lines().last().unwrap()).unwrap();
+    assert_eq!(error["error"]["code"], "internal");
+    assert_eq!(
+        error["error"]["hint"],
+        "run `hipc compute app-engine guest-components get vm-1a2b` and read it again"
+    );
+    assert_eq!(server.requests().len(), 3);
+    assert_eq!(server.requests()[1].method, "POST");
+}
+
 /// A re-read that offers nothing, without equal numbers, exits 0 and says so.
 #[test]
 fn a_re_read_with_no_newer_release_says_none_is_offered() {
