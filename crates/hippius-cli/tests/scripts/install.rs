@@ -425,16 +425,17 @@ fn a_directory_named_hip_in_the_install_dir_is_refused() {
 #[test]
 fn a_signal_cleans_up_and_exits_with_its_number() {
     for (signal, code) in [("HUP", 129), ("INT", 130), ("TERM", 143)] {
-        let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
-        // tar runs from main itself, so its parent is the installer. The shell runs its
-        // trap once tar returns; tar waits a second after the kill so the signal is already
-        // latched then, however loaded the machine. Without the wait, the installer could go
-        // on to check the unpacked file first and fail with 1 rather than the signal's code.
-        // The installer's PATH has no sleep, so the real one is called by its path.
-        machine.replace(
-            "tar",
-            &format!("kill -{signal} $PPID; exec '{}' 1", tool("sleep").display()),
+        // A non-interactive sh cannot trap a signal that was ignored when it started: a HUP
+        // under nohup, an INT in a job started with `&`. The installer would then ignore it
+        // too and fail with 1, so say why rather than fail on the exit code.
+        assert!(
+            sh_can_trap(signal),
+            "this test process ignores SIG{signal} (started under nohup, or as a background \
+             job?), so the installer's sh cannot trap it; run the suite in the foreground"
         );
+        let machine = Machine::new("Linux", "x86_64", &["curl", "sha256sum"]);
+        // tar runs from main itself, so its parent is the installer.
+        machine.replace("tar", &format!("kill -{signal} $PPID"));
         let target = "x86_64-unknown-linux-musl";
         let (tarball, sum) = hipc_tarball();
         let base = serve(release("v1.0.0", target, &tarball, &sums(&sum, target)));
@@ -1340,4 +1341,16 @@ fn a_dangling_hip_symlink_gets_the_note_too() {
     assert!(out.status.success(), "{stderr}");
     let note = old_hip_note(&dir.join("hip"));
     assert!(stderr.contains(&note), "{note}: {stderr}");
+}
+
+/// Whether a `/bin/sh` started from this process can trap `signal`, as the installer's
+/// does: the shell exits 9 from its trap when it can, and 0 when the signal was ignored on
+/// entry, which a non-interactive sh cannot undo.
+fn sh_can_trap(signal: &str) -> bool {
+    let status = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("trap 'exit 9' {signal}; kill -{signal} $$; exit 0"))
+        .status()
+        .expect("run /bin/sh");
+    status.code() == Some(9)
 }

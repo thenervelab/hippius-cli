@@ -105,6 +105,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      # Code under a non-Linux cfg compiles only here, so clippy runs here too (#71).
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # No test calls the live API. The live check is scripts/release-check.sh, which a
       # maintainer runs by hand with their own token.
       - run: cargo test --workspace --locked

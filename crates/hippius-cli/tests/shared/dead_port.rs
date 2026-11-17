@@ -41,9 +41,11 @@ fn closed_port() -> SocketAddrV4 {
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::time::Duration;
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind a loopback port");
-    let SocketAddr::V4(bound) = listener.local_addr().expect("the port") else {
-        unreachable!("bound on 127.0.0.1");
-    };
+    // Bound on 127.0.0.1, so only the port is read and the address is rebuilt from it.
+    let bound = SocketAddrV4::new(
+        Ipv4Addr::LOCALHOST,
+        listener.local_addr().expect("the port").port(),
+    );
     drop(listener);
     let refused = TcpStream::connect_timeout(&SocketAddr::V4(bound), Duration::from_secs(2))
         .is_err_and(|error| error.kind() == std::io::ErrorKind::ConnectionRefused);
