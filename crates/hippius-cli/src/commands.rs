@@ -109,6 +109,14 @@ pub(crate) struct Input<'a> {
     pub(crate) what: &'static str,
 }
 
+/// What `-` names to [`Input::open`]: stdin, for every file flag but one whose input needs a
+/// file of its own, such as an attachment, which needs a file name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dash {
+    Stdin,
+    File,
+}
+
 /// What [`Input::open`] opened: stdin, or a regular file that passed the checks.
 #[derive(Debug)]
 enum Opened {
@@ -136,7 +144,13 @@ impl Input<'_> {
     /// and the AWS credentials file are refused whatever path or link names them, and so is
     /// stdin when it is one of them ([`Input::refuse_secret_store`]).
     pub(crate) fn read(&self, limit: u64) -> Result<Vec<u8>> {
-        self.read_from(self.path, limit)
+        self.read_from(self.path, Dash::Stdin, limit)
+    }
+
+    /// [`Input::read`] of a flag that takes no stdin: `-` is a path like any other, and a
+    /// refusal's hint does not offer stdin.
+    pub(crate) fn read_file(&self, limit: u64) -> Result<Vec<u8>> {
+        self.read_from(self.path, Dash::File, limit)
     }
 
     /// [`Input::read_text`], but a symlink is followed, for a file a dotfile manager links,
@@ -150,24 +164,24 @@ impl Input<'_> {
             self.read(limit)?
         } else {
             let target = std::fs::canonicalize(self.path).map_err(|e| self.unreadable(&e))?;
-            self.read_from(&target, limit)?
+            self.read_from(&target, Dash::Stdin, limit)?
         };
         self.utf8(bytes)
     }
 
     /// [`Input::read`] of `path`, the input's path or the target it links to.
-    fn read_from(&self, path: &Path, limit: u64) -> Result<Vec<u8>> {
+    fn read_from(&self, path: &Path, dash: Dash, limit: u64) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        match self.open(path)? {
+        match self.open(path, dash)? {
             Opened::Stdin => self.take(std::io::stdin().lock(), limit, &mut bytes)?,
             Opened::File(file) => self.take(file, limit, &mut bytes)?,
         }
         Ok(bytes)
     }
 
-    /// Opens `path` for [`Input::read`], held to its checks.
-    fn open(&self, path: &Path) -> Result<Opened> {
-        if path == Path::new("-") {
+    /// Opens `path` for [`Input::read`], held to its checks, with `-` as `dash` says.
+    fn open(&self, path: &Path, dash: Dash) -> Result<Opened> {
+        if dash == Dash::Stdin && path == Path::new("-") {
             // A pipe or a terminal is never one of the two files; a redirect from one is.
             let opened = std::io::stdin()
                 .as_fd()
@@ -179,7 +193,10 @@ impl Input<'_> {
         }
         // `-` is named because `/dev/stdin` and `<(...)` are refused too: on Linux the path
         // is a symlink into `/proc`, on macOS a pipe.
-        let hint = || format!("pass a regular file to `{}`, or `-` for stdin", self.flag);
+        let hint = || match dash {
+            Dash::Stdin => format!("pass a regular file to `{}`, or `-` for stdin", self.flag),
+            Dash::File => format!("pass a regular file to `{}`", self.flag),
+        };
         let file = hippius::open_regular(path).map_err(|e| match e {
             hippius::OpenRegularError::Symlink => Error::usage(
                 format!(
@@ -336,7 +353,7 @@ impl Input<'_> {
         let mut bytes = Zeroizing::new(Vec::with_capacity(
             usize::try_from(limit + 1).expect("a secret's limit fits a usize"),
         ));
-        match self.open(self.path)? {
+        match self.open(self.path, Dash::Stdin)? {
             Opened::Stdin => {
                 let stdin = std::io::stdin();
                 self.take(crate::hidden::Unbuffered(stdin.as_fd()), limit, &mut bytes)?;

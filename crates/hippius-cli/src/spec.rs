@@ -23,7 +23,7 @@ use crate::cli::api::rules::{self, Voice};
 /// The verb shelf of tenet 2: every word a leaf may end in as a verb, in the order tenet 2
 /// lists them. A test holds every leaf to it.
 #[cfg(test)]
-const VERBS: [&str; 40] = [
+const VERBS: [&str; 41] = [
     "list",
     "get",
     "create",
@@ -64,6 +64,7 @@ const VERBS: [&str; 40] = [
     "decline",
     "validate",
     "fix",
+    "attach",
 ];
 
 /// `schema_version` in the `hipc schema` document. Bump it when a field of a document `hipc`
@@ -270,6 +271,12 @@ macro_rules! support_secret {
 /// When a support ticket or reply refuses with `usage`: a person reads it (tenet 5).
 const TICKET_HOLDS_A_TOKEN: &str = concat!(
     "the subject or the message, alone or the two together, holds ",
+    support_secret!()
+);
+
+/// When a support attachment refuses with `usage`: a person reads it (tenet 5).
+const ATTACHMENT_HOLDS_A_TOKEN: &str = concat!(
+    "the file, its bytes read as text, holds ",
     support_secret!()
 );
 
@@ -811,9 +818,8 @@ mod tests {
         // `support` holds the `tickets` group, not one command. The others hold only `list`,
         // because a list is `<noun> list`, and fill when their writes land (`compute
         // kubernetes backups` holds `list` alone until the backup writes are added, `hub
-        // events` until the API has another events route, and `support tickets messages` until
-        // an attachment upload joins it); a group not named here that holds one command fails,
-        // so this list only shrinks.
+        // events` until the API has another events route); a group not named here that holds
+        // one command fails, so this list only shrinks.
         let one = |path: &str| (path.to_owned(), 1);
         assert_eq!(
             lonely,
@@ -821,7 +827,6 @@ mod tests {
                 one("hipc hub events"),
                 one("hipc compute kubernetes backups"),
                 one("hipc support"),
-                one("hipc support tickets messages"),
             ]
         );
     }
@@ -1272,7 +1277,7 @@ mod tests {
         assert_eq!(presign["reveal_when"], Value::Null);
     }
 
-    /// Only `hipc api` and the two support writes, which refuse a text that holds a token, have
+    /// Only `hipc api` and the three support writes, which refuse a text that holds a token, have
     /// a refusal whatever the flags; `hipc api`'s guards are the flags of every
     /// `RouteFlag`, each with the code it refuses with, and the schema prints them as
     /// `guards`, with no separate `route_flags`.
@@ -1280,9 +1285,10 @@ mod tests {
     fn the_api_route_flags_are_its_guards() {
         let root = Cli::command();
         for path in command_paths(&root) {
-            let support_write = path.len() == 3
+            let support_write = (path.len() == 3
                 && path[..2] == ["support", "tickets"]
-                && ["create", "reply"].contains(&path[2].as_str());
+                && ["create", "reply"].contains(&path[2].as_str()))
+                || path == ["support", "tickets", "messages", "attach"];
             assert_eq!(
                 row(&path).unwrap().refused_when.is_some(),
                 path == ["api"] || support_write,

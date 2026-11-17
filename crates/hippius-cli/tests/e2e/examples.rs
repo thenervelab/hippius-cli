@@ -164,6 +164,8 @@ fn example_home() -> Home {
     );
     home.file("bucket.json", br#"{"name":"photos"}"#);
     home.file("message.txt", b"the VM does not boot\n");
+    home.file("screenshot.png", b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR");
+    home.file("vm.log", b"boot: kernel panic\n");
     home.file("items.json", br#"{"items":["203.0.113.7"]}"#);
     home.file(
         "cors.json",

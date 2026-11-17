@@ -3736,6 +3736,7 @@ network vpcs resources update: it changes who reaches what on the private networ
 network vpcs resources delete: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
 network vpcs routers create: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
 network vpcs routers delete: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
+support tickets messages attach: a person on the support team reads every attachment, so no tier sends one; the release check runs its dry run, and the tests its refusals
 compute app-engine apps update: replaces the compose or the secrets of a running app and restarts its VM; the script has no App Engine write tier'
 
 if [[ $EXCLUDED_ONLY == 1 ]]; then

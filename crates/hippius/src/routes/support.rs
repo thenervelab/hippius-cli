@@ -26,6 +26,11 @@ routes! {
     /// Replies on a ticket.
     MESSAGE_CREATE: 1 = Route::post("/api/support/tickets/{ticket_id}/messages/").personal();
 
+    /// Attaches a file to a message of a ticket, as a `multipart/form-data` upload.
+    ATTACHMENT_CREATE: 2 =
+        Route::post("/api/support/tickets/{ticket_id}/messages/{message_id}/attachments/")
+            .personal();
+
     /// The status of the Hippius services.
     SERVICES_STATUS: 0 = Route::get("/api/services/status/").own_account();
 }

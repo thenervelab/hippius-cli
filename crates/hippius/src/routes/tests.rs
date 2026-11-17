@@ -732,6 +732,10 @@ const WRITTEN_OUT: &[(&str, &str)] = &[
     ("PATCH", "/api/support/tickets/{ticket_id}/"),
     ("GET", "/api/support/tickets/{ticket_id}/messages/"),
     ("POST", "/api/support/tickets/{ticket_id}/messages/"),
+    (
+        "POST",
+        "/api/support/tickets/{ticket_id}/messages/{message_id}/attachments/",
+    ),
     ("GET", "/api/services/status/"),
 ];
 

@@ -5,11 +5,14 @@ use std::path::PathBuf;
 use clap::{Args, Subcommand, ValueEnum};
 
 use crate::cli::values::{Spaces, is_uuid, label};
-use crate::cli::{ListArgs, SUPPORT_EXAMPLES, TICKET_ID, examples, examples_with_guide, number};
+use crate::cli::{
+    ListArgs, MESSAGE_ID, SUPPORT_EXAMPLES, TICKET_ID, examples, examples_with_guide, number,
+};
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Support {
-    /// Open, list, read, reply to, and close support tickets, and read their messages
+    /// Open, list, read, reply to, and close support tickets, and read and attach files to
+    /// their messages
     #[command(subcommand)]
     #[command(after_help = examples_with_guide(SUPPORT_EXAMPLES, "/use/console/support"))]
     Tickets(Tickets),
@@ -93,10 +96,11 @@ pub(crate) enum Tickets {
         #[arg(long)]
         status: TicketUpdateStatus,
     },
-    /// A ticket's messages, yours and the support team's
+    /// A ticket's messages, yours and the support team's, and the files attached to yours
     #[command(subcommand)]
     #[command(after_help = examples(&[
         "hipc support tickets messages list 42",
+        "hipc support tickets messages attach 42 3 --file screenshot.png --yes",
     ]))]
     Messages(TicketMessages),
 }
@@ -118,6 +122,44 @@ pub(crate) enum TicketMessages {
         #[command(flatten)]
         list: ListArgs,
     },
+    /// Attach a file to a message of a ticket, for the support team to read; needs --yes
+    ///
+    /// Sends the file as a multipart/form-data upload to the message, such as the one hipc
+    /// support tickets reply answered with. The file is checked before anything is sent, the
+    /// dry run included: it must hold 1 to 5000000 bytes (5 MB), and be a PNG, JPEG, GIF,
+    /// WebP, or PDF file by its first bytes, or UTF-8 text, sent as text/plain with
+    /// charset=utf-8; the file name is not looked at. The API documents no size or type
+    /// limit, so these are hipc's own: the support chat's 5 MB for pictures, with PDF and
+    /// text added. The server may still refuse a file that passes these checks. A file that
+    /// holds an API token, as it is or split by whitespace, or an access key, is refused, as a
+    /// ticket's text is: the bytes are read as text, so a token in an image's metadata or an
+    /// uncompressed PDF is found, but not one shown in a screenshot. A quote, a backslash, a
+    /// control character, or a character that changes how text reads, such as a bidi
+    /// override, is sent as _ in the file name. The question names the file, its size and
+    /// type, the message, and the ticket.
+    /// A dry run shows the file's name, type, and size in place of its bytes.
+    #[command(after_help = examples(&[
+        "hipc support tickets messages attach 42 3 --file screenshot.png --yes",
+        "hipc --dry-run support tickets messages attach 42 3 --file vm.log",
+    ]))]
+    Attach(MessageAttach),
+}
+
+/// The file `hipc support tickets messages attach` sends, and the message it goes to.
+#[derive(Debug, Args)]
+pub(crate) struct MessageAttach {
+    /// The ticket id, from hipc support tickets list
+    #[arg(value_parser = number(TICKET_ID))]
+    pub(crate) ticket_id: u64,
+    /// The message id, from hipc support tickets messages list
+    #[arg(value_parser = number(MESSAGE_ID))]
+    pub(crate) message_id: u64,
+    /// The file to attach, sent under its own name
+    ///
+    /// It is read only as a regular file, never through a symlink. stdin is refused: an
+    /// attachment needs a file name, and the question may read the terminal.
+    #[arg(long, value_name = "PATH", value_parser = attachment_file)]
+    pub(crate) file: PathBuf,
 }
 
 /// The status a customer may give a ticket. Swagger's `TicketUpdate.status` lists four, but
@@ -220,6 +262,14 @@ impl TicketPriority {
             Self::Urgent => "urgent",
         }
     }
+}
+
+/// `--file` of an attachment: any path but `-`, which every other file flag takes for stdin.
+fn attachment_file(value: &str) -> Result<PathBuf, String> {
+    if value == "-" {
+        return Err("an attachment is read from a file, not stdin; pass its path".to_owned());
+    }
+    Ok(PathBuf::from(value))
 }
 
 /// A ticket subject. Swagger's `TicketCreate.subject` is 1 to 255 characters, and the

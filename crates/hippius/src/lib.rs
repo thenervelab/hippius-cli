@@ -29,6 +29,7 @@ mod ids;
 mod json;
 mod kubernetes;
 mod method;
+mod multipart;
 pub mod phrase;
 mod private_file;
 mod private_object;
@@ -58,6 +59,7 @@ pub use crate::ids::new_idempotency_key;
 pub use crate::json::{Next, Page, cursor_page, envelope, envelope_beside, page, page_beside};
 pub use crate::kubernetes::{ClusterKey, MatchedKey, SignedOperation};
 pub use crate::method::Method;
+pub use crate::multipart::FileForm;
 pub use crate::private_file::{on_lock_wait, take_split_link_warnings};
 pub use crate::redact::{
     holds_secret, insert_unique, redact_all, redact_name, redact_value, redact_value_all,

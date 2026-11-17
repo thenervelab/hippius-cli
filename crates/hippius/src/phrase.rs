@@ -136,6 +136,59 @@ pub fn shell_word(word: &str) -> String {
     }
 }
 
+/// Characters that are not control characters (category Cc) but still change how a
+/// line reads: the format characters (category Cf: bidi overrides and isolates, which
+/// can reverse an id or URL a person copies, zero-width and tag characters), the
+/// Unicode line and paragraph separators, and the invisible fillers and variation
+/// selectors that make `prod` and `prod` plus a filler look the same.
+///
+/// The Cf rows come from `DerivedGeneralCategory.txt` of Unicode 15; the rest are the
+/// assigned `Default_Ignorable_Code_Point` characters of `DerivedCoreProperties.txt` that
+/// are not Cf, and the Braille blank. A Unicode release that adds a Cf or default-ignorable
+/// character needs a row here.
+pub fn changes_how_text_reads(c: char) -> bool {
+    matches!(
+        c,
+        // Category Cf, from the Unicode 15 tables.
+        '\u{00AD}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+            // Line and paragraph separators (Zl, Zp).
+            | '\u{2028}'..='\u{2029}'
+            // Invisible fillers and the combining grapheme joiner.
+            | '\u{034F}'
+            | '\u{115F}'..='\u{1160}'
+            | '\u{17B4}'..='\u{17B5}'
+            | '\u{3164}'
+            | '\u{FFA0}'
+            // Variation selectors, the Mongolian free ones included (Mn, Unicode 14).
+            | '\u{180B}'..='\u{180D}'
+            | '\u{180F}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{E0100}'..='\u{E01EF}'
+            // The Braille blank (So), a common invisible filler.
+            | '\u{2800}'
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

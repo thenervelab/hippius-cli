@@ -11949,6 +11949,61 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
     },
     {
       "path": [
+        "support",
+        "tickets",
+        "messages",
+        "attach"
+      ],
+      "about": "Attach a file to a message of a ticket, for the support team to read; needs --yes",
+      "effect": "non_idempotent",
+      "confirmation": true,
+      "reveal": false,
+      "pagination": false,
+      "confirmation_when": null,
+      "reveal_when": null,
+      "refused_when": "the file, its bytes read as text, holds `HIPPIUS_TOKEN` or a token a profile of the config file stores, as it is, quoted, percent-encoded, or behind a JSON escape, also when whitespace or an invisible joining character splits it, or an access key: 12 to 24 words of the BIP-39 list in a row whose checksum holds, with anything that is not a letter read as a space",
+      "guards": [],
+      "args": [
+        {
+          "name": "ticket_id",
+          "value_name": "TICKET_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The ticket id, from hipc support tickets list"
+        },
+        {
+          "name": "message_id",
+          "value_name": "MESSAGE_ID",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The message id, from hipc support tickets messages list"
+        }
+      ],
+      "flags": [
+        {
+          "name": "--file",
+          "value_name": "PATH",
+          "required": true,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The file to attach, sent under its own name"
+        }
+      ],
+      "required_groups": [],
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/support/tickets/{ticket_id}/messages/{message_id}/attachments/"
+        }
+      ]
+    },
+    {
+      "path": [
         "network",
         "get"
       ],

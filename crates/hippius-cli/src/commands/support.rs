@@ -1,12 +1,14 @@
 //! `hipc support tickets`: open a ticket, list the token's own tickets, read one, reply, list
-//! its messages, and close it.
+//! its messages, attach a file to one, and close it.
 //!
 //! Every route is under `/api/support/tickets/`, which acts as the signed-in user whatever
 //! account is selected, so the account header is never sent there. A new ticket is read by
 //! a person, so it needs `--yes`; a reply to an open ticket does not. A close ends the
 //! support team's work on the ticket, as a cancel does, so it needs `--yes` too. The message
-//! of a create or a reply is read from `--body-file`, never from argv. Attachments (a file
-//! upload) and the chat handoff stay on `hipc api`.
+//! of a create or a reply is read from `--body-file`, never from argv. An attachment is
+//! confirmed as a new ticket is ([`attach`]). The chat handoff stays on `hipc api`.
+
+mod attach;
 
 use hippius::routes::support;
 use hippius::{Error, Failure, Request, Result, SideEffects, phrase, view_of};
@@ -80,6 +82,7 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Support) -> Result<Printed> {
                 .about(format!("list the messages of the ticket `{ticket_id}`"));
             list::run(ctx, &ctx.load_authed_client()?, &request, list)
         }
+        Tickets::Messages(TicketMessages::Attach(args)) => attach::run(ctx, args),
     }
 }
 
@@ -274,6 +277,15 @@ pub(crate) fn secret_in(
     texts: &[&str],
 ) -> Result<Option<Secret>> {
     let found = secret_finder(ctx, config)?;
+    if let Some(secret) = texts.iter().copied().find_map(&found) {
+        return Ok(Some(secret));
+    }
+    // The texts joined too, so a token split between the subject and the message is found.
+    // One text joined is itself and a line break, which holds nothing it does not, so it is
+    // not scanned twice: an attachment's text runs to 5 MB.
+    if texts.len() < 2 {
+        return Ok(None);
+    }
     let mut all = Zeroizing::new(String::with_capacity(
         texts.iter().map(|text| text.len() + 1).sum(),
     ));
@@ -281,7 +293,7 @@ pub(crate) fn secret_in(
         all.push_str(text);
         all.push('\n');
     }
-    Ok(texts.iter().copied().chain([all.as_str()]).find_map(found))
+    Ok(found(&all))
 }
 
 /// The secret `texts`, the separate texts of one ticket or reply, hold, as [`secret_in`]
