@@ -938,6 +938,44 @@ fn a_re_read_that_still_offers_an_update_is_conflict() {
     assert_eq!(server.requests()[2].method, "GET");
 }
 
+/// A 202 to the upgrade whose body hipc cannot read is `partial`: the upgrade was accepted.
+#[test]
+fn an_accepted_upgrade_with_an_unreadable_body_is_partial() {
+    let home = Home::new();
+    let offered = components(&json!(3), &json!(7), Some(true));
+    let server = Server::start(vec![
+        route_of(
+            &compute::APP_ENGINE_GUEST_COMPONENTS,
+            [&"vm-1a2b"],
+            Reply::json(200, &offered),
+        ),
+        route_of(
+            &compute::APP_ENGINE_GUEST_UPGRADE_CREATE,
+            [&"vm-1a2b"],
+            Reply::bytes(202, "application/json", b"not json"),
+        ),
+    ]);
+    let run = Hipc::against(&home, &server).run(&guest_args(&["--yes"]));
+    assert_eq!(run.code(), Some(1), "{}", run.stderr());
+    let error: Value = serde_json::from_str(run.stderr().lines().last().unwrap()).unwrap();
+    assert_eq!(error["error"]["side_effects"], "partial", "{error}");
+    assert_eq!(server.requests().len(), 2);
+}
+
+/// An update whose 2xx answer hipc cannot read fails, and nothing it prints holds a secret.
+#[test]
+fn an_update_answer_that_cannot_be_read_fails_without_a_secret() {
+    let files = files();
+    let server = validate_then(
+        &["DB_PASSWORD", "API_KEY"],
+        Reply::bytes(202, "application/json", b"not json"),
+    );
+    let run = Hipc::against(&files.home, &server).run(&update_args(&files, &["--yes"]));
+    assert_eq!(run.code(), Some(1), "{}", run.stderr());
+    assert_run_clean(&run);
+    assert_eq!(server.requests().last().unwrap().method, "PUT");
+}
+
 /// A re-read after the 409 that hipc cannot act on is internal, with the hint to read the
 /// guest components again; nothing more is posted.
 #[test]

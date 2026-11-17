@@ -550,6 +550,8 @@ mod tests {
     /// `Debug` names the compose file and counts secrets. The file text is not shown.
     #[test]
     fn loaded_debug_names_the_compose_file_and_not_its_text() {
+        use std::os::unix::fs::PermissionsExt as _;
+
         let loaded = Loaded {
             vm_id: "vm-1a2b",
             compose: Some(Compose {
@@ -565,5 +567,29 @@ mod tests {
         assert!(shown.contains("compose.yaml"), "{shown}");
         assert!(shown.contains("secret_count"), "{shown}");
         assert!(!shown.contains("secret-image"), "{shown}");
+
+        // With secrets loaded, it counts them and prints no value.
+        let dir = std::env::temp_dir().join(format!("hipc-loaded-debug-{}", std::process::id()));
+        drop(std::fs::remove_dir_all(&dir));
+        std::fs::create_dir(&dir).expect("create a temporary directory");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .expect("make the directory private");
+        let path = dir.join("secrets.json");
+        std::fs::write(
+            &path,
+            br#"{"DB_PASSWORD":"value-never-shown","API_KEY":"x"}"#,
+        )
+        .expect("write the secrets file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("make the file private");
+        let loaded = Loaded {
+            secrets: Some(AppSecrets::load(&path, SECRETS_FLAG).expect("load the secrets")),
+            change: Change::Secrets,
+            ..loaded
+        };
+        let shown = format!("{loaded:?}");
+        assert!(shown.contains("secret_count: Some(2)"), "{shown}");
+        assert!(!shown.contains("value-never-shown"), "{shown}");
+        std::fs::remove_dir_all(&dir).expect("remove the temporary directory");
     }
 }

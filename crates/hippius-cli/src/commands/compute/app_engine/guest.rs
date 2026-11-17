@@ -16,8 +16,8 @@ use serde_json::{Value, json};
 
 use super::{APPS_LIST_COMMAND, unavailable_hint, warn_needs_operator};
 use crate::cli::AppTarget;
-use crate::commands::Printed;
 use crate::commands::compute::refused_as;
+use crate::commands::{Printed, run_hint};
 use crate::context::{Checked, Context, Write, WritePlan};
 
 /// The release number a dry run cannot know until the read.
@@ -240,14 +240,11 @@ fn upgrade_in_flight(read: &GuestComponents) -> bool {
 
 fn already_in_flight(ctx: &Context<'_>, vm_id: &str) -> Error {
     let words = format!("compute app-engine guest-components update-status {vm_id}");
-    let command = ctx
-        .next_command(&words)
-        .unwrap_or_else(|| format!("hipc {words}"));
     Error::new(
         Failure::Conflict,
         format!("an upgrade of the guest components of the app `{vm_id}` is already in flight"),
     )
-    .with_hint(format!("poll the upgrade with `{command}`"))
+    .with_hint(run_hint(ctx, &words, "to poll the upgrade"))
 }
 
 fn reread(vm_id: &str) -> String {
