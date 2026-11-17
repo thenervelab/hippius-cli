@@ -225,7 +225,7 @@ fn gate(
 /// route. The route is the row a request reaches ([`Client::route_of`]), so a slashless or
 /// suffixed path names its route too. A consequence a curated command builds from the read
 /// or the id, such as a database delete's, is not here.
-const CONSEQUENCES: [(&Endpoint, &str); 14] = [
+const CONSEQUENCES: [(&Endpoint, &str); 19] = [
     (
         routes::drive::SUBSCRIPTION_CANCEL.endpoint(),
         drive::CANCELLED,
@@ -257,6 +257,23 @@ const CONSEQUENCES: [(&Endpoint, &str); 14] = [
     (
         routes::network::PEER_DELETE.endpoint(),
         network::PEER_REMOVED,
+    ),
+    (
+        routes::network::GROUP_DELETE.endpoint(),
+        network::GROUP_DELETED,
+    ),
+    (
+        routes::network::POLICY_DELETE.endpoint(),
+        network::POLICY_DELETED,
+    ),
+    (routes::network::VPC_DELETE.endpoint(), network::VPC_DELETED),
+    (
+        routes::network::VPC_RESOURCE_DELETE.endpoint(),
+        network::RESOURCE_REMOVED,
+    ),
+    (
+        routes::network::VPC_ROUTER_DELETE.endpoint(),
+        network::ROUTER_REMOVED,
     ),
     (
         routes::compute::BACKUP_POLICY_DELETE.endpoint(),

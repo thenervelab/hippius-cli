@@ -54,7 +54,9 @@ pub(crate) use crate::cli::kubernetes::{
     NodePools, NodeReplace, Nodes, OperationTarget, Operations,
 };
 pub(crate) use crate::cli::network::{
-    Groups, Network, Peers, Policies, VpcResources, VpcRouters, Vpcs,
+    Groups, Isolation, IsolationMode, Network, Peers, Policies, PolicyAction, PolicyCreate,
+    PolicyFields, PolicyUpdate, Protocol, ResourceFields, ResourceKind, ResourceUpdate,
+    VpcResources, VpcRouters, Vpcs,
 };
 pub(crate) use crate::cli::projects::{
     Budget, BudgetUpdate, ProjectCreate, ProjectTransfer, ProjectTransfers, ProjectUpdate, Quota,
@@ -448,11 +450,12 @@ pub(crate) enum Command {
     #[command(subcommand)]
     #[command(after_help = examples_with_guide(SUPPORT_EXAMPLES, "/use/console/support"))]
     Support(Support),
-    /// The account's private network: its peers, groups, access policies, and VPC networks
+    /// The account's private network: its peers, groups, access policies, VPC networks,
+    /// isolation, and topology
     ///
     /// An account's network is created by hipc network create, or by the first hipc network
     /// get; until then the other network commands answer that it is not set up. Enrolling a
-    /// device, its enroll keys, and the isolation mode stay on hipc api.
+    /// device and its enroll keys stay on hipc api.
     #[command(subcommand)]
     #[command(after_help = examples_with_guide(
         NETWORK_EXAMPLES,
@@ -535,7 +538,8 @@ const SUPPORT_EXAMPLES: &[&str] = &[
 const NETWORK_EXAMPLES: &[&str] = &[
     "hipc network create --yes",
     "hipc network peers list",
-    "hipc network get --yes",
+    "hipc network topology",
+    "hipc network groups update 5 --peer 12 --peer 13 --yes",
     "hipc network peers delete 12 --yes",
 ];
 const API_EXAMPLES: &[&str] = &[
@@ -872,21 +876,24 @@ fn reveal_long_help() -> String {
     text
 }
 
-/// The short help of `hipc api`: the writes need `--yes`, and so does every read of the
-/// library's provisioning table, named from the table as [`reveal_long_help`] names the
-/// secret table, so the help, `hipc schema`, and the guard cannot drift. The methods of one
-/// route are joined on its line: `GET or HEAD /network/me/`. It is the line `hipc --help`
-/// shows for the command, so it stays short; the auth and account rules go in the long help.
+/// The short help of `hipc api`: the writes need `--yes`, and so does a `GET` or `HEAD` of
+/// every route of the library's provisioning table, named from the table as
+/// [`reveal_long_help`] names the secret table, so the help, `hipc schema`, and the guard
+/// cannot drift: `GET or HEAD of /network/me/ or /network/topology/`. It is the line `hipc
+/// --help` shows for the command, so it stays short; the auth and account rules go in the
+/// long help.
 fn api_about() -> String {
-    // A `HEAD` reaches the `GET` row of its route, so it provisions as the `GET` does.
-    let reads: Vec<String> = hippius::routes::all()
+    // A `HEAD` reaches the `GET` row of its route, so it provisions as the `GET` does, and
+    // only a read provisions.
+    let routes: Vec<String> = hippius::routes::all()
         .filter(|row| row.provisions())
-        .map(|row| format!("{} or HEAD {}", row.method(), typed_route(row.template())))
+        .inspect(|row| debug_assert_eq!(row.method(), hippius::Method::Get, "{row:?}"))
+        .map(|row| typed_route(row.template()))
         .collect();
     format!(
-        "Call any console API endpoint; a method other than GET or HEAD needs --yes, as does \
-         {}, which may create the network",
-        reads.join(" and ")
+        "Call any console API endpoint; a write needs --yes, as does GET or HEAD of {}, which \
+         may create the network",
+        hippius::phrase::join(&routes, "or")
     )
 }
 
@@ -1276,7 +1283,10 @@ mod tests {
         let about = api_about();
         assert_eq!(help_problem(&about, true), None, "{about}");
         assert!(
-            about.ends_with(", as does GET or HEAD /network/me/, which may create the network"),
+            about.ends_with(
+                ", as does GET or HEAD of /network/me/ or /network/topology/, which may create \
+                 the network"
+            ),
             "{about}"
         );
         // `hipc --help` wraps the line at the width of the other commands'; a longer one
@@ -1292,14 +1302,14 @@ mod tests {
         let mut root = Cli::command();
         let root_help = root.render_help().to_string();
         assert!(
-            root_help.contains("GET or HEAD /network/me/"),
+            root_help.contains("GET or HEAD of /network/me/"),
             "{root_help}"
         );
         let api = root
             .find_subcommand_mut("api")
             .expect("hipc api is a command");
         let long = api.render_long_help().to_string();
-        assert!(long.contains("GET or HEAD /network/me/"), "{long}");
+        assert!(long.contains("GET or HEAD of /network/me/"), "{long}");
         // Each refused route is named from its row, with the row's reason and hint.
         assert!(
             long.contains(

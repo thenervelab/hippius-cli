@@ -174,8 +174,8 @@ fn schema_lists_every_command_with_its_bits() {
 }
 
 /// `guards` names each exit-2 refusal that a write's own flag gets past, on every command
-/// that makes it: `--remove-others`, `--public`, Hub's `--replace`, and `hipc api`'s
-/// `--change-isolation`.
+/// that makes it: `--remove-others`, `--public`, Hub's `--replace`, and the network
+/// isolation switch's `--change-isolation`.
 #[test]
 fn schema_guards_name_each_refusal_a_flag_of_the_command_gets_past() {
     let doc = json(&hipc(&["schema"]).stdout);
@@ -211,6 +211,9 @@ fn schema_guards_name_each_refusal_a_flag_of_the_command_gets_past() {
             "cdn waf rules update",
             "cdn waf rate-limits update",
             "cdn lists items update",
+            "network groups update",
+            "network policies update",
+            "network vpcs resources update",
             "api",
         ]
     );
@@ -225,8 +228,11 @@ fn schema_guards_name_each_refusal_a_flag_of_the_command_gets_past() {
         ]
     );
     assert_eq!(guarded("replace_required"), ["hub subscription subscribe"]);
-    // `hipc api`'s own route flag is a guard like the others, with its own code.
-    assert_eq!(guarded("change_isolation_required"), ["api"]);
+    // The isolation switch and `hipc api` on its route share one flag, with its own code.
+    assert_eq!(
+        guarded("change_isolation_required"),
+        ["network isolation update", "api"]
+    );
     let hub = commands
         .iter()
         .find(|c| c["path"] == serde_json::json!(["hub", "subscription", "subscribe"]))
@@ -741,8 +747,8 @@ fn an_unknown_word_or_flag_gets_the_help_hint() {
     let stderr = text(&run.stderr);
     assert!(
         stderr.starts_with(
-            "error: a subcommand is required; `hipc network policies` holds `list`\nhint: run \
-             `hipc network policies --help`\n\n"
+            "error: a subcommand is required; `hipc network policies` holds `list`, `create`, \
+             `update`, and `delete`\nhint: run `hipc network policies --help`\n\n"
         ),
         "{stderr}"
     );

@@ -1756,6 +1756,45 @@ fn a_whole_list_replace_needs_remove_others_first() {
     );
 }
 
+/// A network policy PATCH that sends `ports` and a VPC resource PATCH that sends `groups`
+/// replace a whole list, as `hipc network policies update --port` and `vpcs resources update
+/// --group` do, so they need `--remove-others`; a PATCH that sets neither key does not.
+#[test]
+fn a_network_list_replace_needs_remove_others() {
+    let server = Server::start(vec![
+        route("PATCH", "/api/network/policies/9/", Reply::json(200, "{}")),
+        route(
+            "PATCH",
+            "/api/network/networks/3/resources/7/",
+            Reply::json(200, "{}"),
+        ),
+    ]);
+    let home = Home::new();
+    let ports = home.file("ports.json", br#"{"ports":["22"]}"#);
+    let groups = home.file("groups.json", br#"{"groups":[5]}"#);
+    let name = home.file("name.json", br#"{"name":"x"}"#);
+    let [ports, groups, name] = [&ports, &groups, &name].map(|p| p.to_str().unwrap());
+    let hipc = || Hipc::against(&home, &server);
+    for (path, body) in [
+        ("/network/policies/9/", ports),
+        ("/network/networks/3/resources/7/", groups),
+    ] {
+        let argv = ["api", "PATCH", path, BODY, body, "--yes"];
+        hipc().run(&argv).fails(2, "remove_others_required");
+        hipc()
+            .run(&["api", "PATCH", path, BODY, name])
+            .fails(2, "confirmation_required");
+        hipc().run(&[&argv[..], &["--remove-others"]].concat()).ok();
+    }
+    assert_eq!(
+        server.calls(),
+        [
+            "PATCH /api/network/policies/9/",
+            "PATCH /api/network/networks/3/resources/7/",
+        ]
+    );
+}
+
 /// The whole-list and whole-document replaces swagger documents without a curated command
 /// need `--remove-others` too: a zone's WAF rules and rate limits, a WAF list's items (and
 /// a list PATCH that sends `items`), and an operator node's storage document.

@@ -276,7 +276,8 @@ pub struct ProjectCreateBody<'a> {
 }
 
 /// The body that names or renames something: [`PROJECT_UPDATE`], [`BILLING_ACCOUNT_CREATE`],
-/// [`BILLING_ACCOUNT_UPDATE`], [`REFERRAL_CODE_CREATE`], and [`REFERRAL_CODE_UPDATE`].
+/// [`BILLING_ACCOUNT_UPDATE`], [`REFERRAL_CODE_CREATE`], [`REFERRAL_CODE_UPDATE`], and
+/// [`VPC_CREATE`](crate::routes::network::VPC_CREATE).
 #[derive(Debug, Serialize)]
 pub struct NameBody<'a> {
     /// The name.

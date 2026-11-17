@@ -381,7 +381,7 @@ fn the_api_hub_delete_prompt_says_it_cannot_be_undone() {
 }
 
 /// Each `hipc api` request, and the consequence its question gives, or none.
-const API_CONSEQUENCES: [(&str, &str, Option<&str>); 16] = [
+const API_CONSEQUENCES: [(&str, &str, Option<&str>); 21] = [
     (
         "DELETE",
         "/registry/subscriptions/7/",
@@ -453,6 +453,37 @@ const API_CONSEQUENCES: [(&str, &str, Option<&str>); 16] = [
     ),
     (
         "DELETE",
+        "/network/groups/5",
+        Some(
+            "its peers lose the access its policies give them, and a group made again gets a \
+             new id",
+        ),
+    ),
+    (
+        "DELETE",
+        "/network/policies/9/",
+        Some("the traffic it allowed is no longer allowed by it, and traffic it dropped may pass"),
+    ),
+    (
+        "DELETE",
+        "/network/networks/3/",
+        Some("peers lose the routes it gave them to its resources"),
+    ),
+    (
+        "DELETE",
+        "/network/networks/3/resources/7/",
+        Some("peers lose their route to it"),
+    ),
+    (
+        "DELETE",
+        "/network/networks/3/routers/4/",
+        Some(
+            "the VPC network's traffic no longer goes through that peer, and with no router \
+             left its resources are out of reach",
+        ),
+    ),
+    (
+        "DELETE",
         "/compute/vms/vm-1/backup/",
         Some("the backups already taken are kept 7 days, billed while kept, then deleted"),
     ),
@@ -487,6 +518,57 @@ fn the_api_prompt_gives_the_curated_consequence() {
         };
         assert!(shown.contains(&question), "{path}: {shown:?}");
     }
+}
+
+/// The network prompts say what each write does to who reaches whom: the isolation switch
+/// by its mode, and a group's peers by what is added and removed. The answer is no, so
+/// nothing is sent.
+#[test]
+fn the_network_prompts_say_who_reaches_whom() {
+    let env = [("HIPPIUS_API_URL", no_server()), ("HIPPIUS_TOKEN", TOKEN)];
+    for (mode, consequence) in [
+        (
+            "allow_intra",
+            "every peer of the network can reach every other, and policies can only widen that",
+        ),
+        (
+            "deny_intra",
+            "peers reach each other only where a policy allows it, and every other connection \
+             between them closes",
+        ),
+    ] {
+        let args = [
+            "--output",
+            "text",
+            "network",
+            "isolation",
+            "update",
+            "--mode",
+            mode,
+            "--change-isolation",
+        ];
+        let (output, shown) = at_a_terminal(&args, &env, b"n\n", true);
+        assert_eq!(output.status.code(), Some(2), "{shown:?}");
+        let question = format!(
+            "this will switch the private network's isolation to `{mode}`; {consequence}; \
+             continue? [y/N] "
+        );
+        assert!(shown.contains(&question), "{shown:?}");
+    }
+    let (output, shown) = at_a_terminal(
+        &["--output", "text", "network", "policies", "delete", "9"],
+        &env,
+        b"n\n",
+        true,
+    );
+    assert_eq!(output.status.code(), Some(2), "{shown:?}");
+    assert!(
+        shown.contains(
+            "this will delete the network policy `9`; the traffic it allowed is no longer \
+             allowed by it, and traffic it dropped may pass; continue? [y/N] "
+        ),
+        "{shown:?}"
+    );
 }
 
 /// The Hub key rotate and delete prompts name the key and say that every CI job using its

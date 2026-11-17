@@ -42,6 +42,8 @@ mod login_prompt;
 mod manual_test;
 mod network;
 mod network_create;
+mod network_groups;
+mod network_writes;
 mod next_steps;
 mod notifications;
 mod pagination;

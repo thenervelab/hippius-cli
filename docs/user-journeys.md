@@ -487,7 +487,7 @@ scenario cdn: prices, an estimate, zones, hostnames and WAF; a zone is created o
 
 ### 8. Private network and Kubernetes
 
-A developer reads the private network and the managed Kubernetes clusters. The network summary and a kubeconfig fetch are shown, not sent.
+A developer reads the private network, its isolation mode and topology included, and the managed Kubernetes clusters. The network summary, an isolation switch, and a kubeconfig fetch are shown, not sent: no tier changes who reaches what on the network.
 
 This journey expects an account that already has a private network and Kubernetes access. On an account whose private network was never set up, every network list answers 403 `permission` ("You must call /api/network/provision/ first."; a newer `hipc` says the network is not set up and names the command that sets it up). The script records that as the state `network_unprovisioned`, with a note, and an account without Kubernetes access answers the cluster list `not_found`; the steps and the snapshot accept both, so the run goes on. It is the end of this journey for that account, not a prompt to run `hipc network create --yes`, which creates the network for good; no tier sends it except as a dry run.
 
@@ -502,6 +502,9 @@ scenario network-kubernetes: the private network and Kubernetes; the network sum
   [dry-run] hipc --output text network peers delete <peer> --yes --dry-run
   [read] hipc --json network groups list
   [read] hipc --json network policies list
+  [read] hipc --json network isolation get
+  [read] hipc --json network topology
+  [dry-run] hipc --output text network isolation update --mode deny_intra --change-isolation --yes --dry-run
   [read] hipc --json network vpcs list
   [read] hipc --output text network vpcs resources list <vpc>
   [read] hipc --output text network vpcs routers list <vpc>

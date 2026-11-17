@@ -2269,6 +2269,21 @@ scenario_network_kubernetes() {
   step read net/not_found,network_unprovisioned "List the network policies" \
     "see which groups may reach which" \
     -- hipc --json network policies list
+  step read net/not_found,network_unprovisioned "Read the isolation mode" \
+    "see whether peers reach each other without a policy" \
+    -- hipc --json network isolation get
+  # The topology's first read for an account creates its network, but hipc reads the group
+  # list first and stops at its 403 when the network was never set up, so this is a read.
+  step read net/not_found,network_unprovisioned "Read the topology" \
+    "see the groups, peers, resources, and policies as one graph" \
+    -- hipc --json network topology
+  # The network writes (groups, policies, VPC networks, resources, routers, the isolation
+  # mode) change who reaches what on a network people and services may be using, so no tier
+  # sends one; the isolation switch is shown as a dry run.
+  step dry-run ok "Preview switching the isolation mode" \
+    "see the request; peers would reach each other only where a policy allows it" \
+    -- hipc --output text network isolation update --mode deny_intra --change-isolation --yes \
+    --dry-run
   step read net/not_found,network_unprovisioned "List the VPC networks" \
     "see the private networks and their CIDRs" \
     -- hipc --json network vpcs list
@@ -3657,6 +3672,19 @@ billing gamma hotkeys delete: the API has gamma payments off until gamma is enab
 billing gamma conversions create: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
 billing gamma conversions list: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
 billing gamma conversions get: the API has gamma payments off until gamma is enabled on subnet 75, and a run needs a funded Bittensor hotkey
+network groups create: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
+network groups update: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
+network groups delete: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
+network policies create: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
+network policies update: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
+network policies delete: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
+network vpcs create: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
+network vpcs delete: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
+network vpcs resources create: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
+network vpcs resources update: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
+network vpcs resources delete: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
+network vpcs routers create: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
+network vpcs routers delete: it changes who reaches what on the private network, which people and services may be using, and no tier writes to the network
 compute app-engine apps update: replaces the compose or the secrets of a running app and restarts its VM; the script has no App Engine write tier'
 
 if [[ $EXCLUDED_ONLY == 1 ]]; then
