@@ -4,7 +4,7 @@ All notable changes to `hipc`, named `hip` up to 0.14.0, are listed here. The fo
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.17.0] - 2026-11-18
 
 ### Added
 
@@ -41,12 +41,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - `hipc compute kubernetes clusters delete` names in its question, and in a text-mode note once the delete is accepted, the backup buckets it leaves: the backups guide says a cluster created with backups on keeps each bucket that holds etcd snapshots or Velero backups, billed until it is deleted. The note says how to find them (names that start with `hippius-k8s-<cluster_id>-` and end in `-etcd` or `-velero`, in `hipc s3 buckets list`) and how to remove them, as `compute databases delete` does for its backup bucket.
 - `hipc api`'s short help says a write needs `--yes`, as does a `GET` or `HEAD` of `/network/me/` or `/network/topology/`, which may create the network: the console's network types say the topology's first read creates it too, so `hipc api` now confirms a read of that route, as it does the summary's.
 - `docs/agents.md` is cut from 34 KB to under 8 KB: how to find a command, the loop, the output and error contract, the safety rules, and one example per service. What only some tasks need moves to four short pages under `docs/agents/` (accounts, secrets, Hub, `hipc api`). TENETS tenet 16 says a page never lists a command's flags or every command of a group; `--help` and `hipc schema` do, and a test holds the agent pages to a size.
-
 - The install sections of the README and `docs/getting-started.md` give the install script, with `brew uninstall hipc` before it for a machine that has the IPFS-era `hipc`, and say what each other channel installs until the release publishes it: `brew install thenervelab/tap/hipc` the IPFS-era `hipc` 0.0.7 until `HOMEBREW_TAP_TOKEN` is set, and `pip`, `uv tool`, or `pipx install hippius` the old Hippius Python SDK until `PYPI_PUBLISH` is on. TENETS tenet 13 says the tap holds the IPFS-era formula until then.
-
-### Fixed
-
-- The Hub double-subscribe marker is dated by the later of the local clock and the `Date` of the subscriptions read, and aged by the earlier of the two, as the hAlpha top-up's in-flight check ages a purchase. So the window is never shorter than by the local clock alone, and when both runs read a `Date`, a local clock that steps forward between them (an NTP correction) or runs fast no longer ages the marker out of its 10 minutes and lets a second subscribe charge twice. While the two clocks disagree, the window is longer by the difference. A marker that may not age out soon is refused with the hint to remove it once `hipc hub subscription get` lists the last subscribe, rather than with a wait: one dated more than 10 minutes after both clocks, or one the later clock puts 10 minutes in the past and the earlier does not, such as under a `Date` that stopped. The marker is still `at` in seconds, so a marker 0.16 wrote is read as before, and an earlier `hipc` reads a new one. A local clock set before 1970 is now `internal` before the subscribe is sent, whatever the `Date`.
 
 ### Removed
 
@@ -54,6 +49,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 ### Fixed
 
+- The Hub double-subscribe marker is dated by the later of the local clock and the `Date` of the subscriptions read, and aged by the earlier of the two, as the hAlpha top-up's in-flight check ages a purchase. So the window is never shorter than by the local clock alone, and when both runs read a `Date`, a local clock that steps forward between them (an NTP correction) or runs fast no longer ages the marker out of its 10 minutes and lets a second subscribe charge twice. While the two clocks disagree, the window is longer by the difference. A marker that may not age out soon is refused with the hint to remove it once `hipc hub subscription get` lists the last subscribe, rather than with a wait: one dated more than 10 minutes after both clocks, or one the later clock puts 10 minutes in the past and the earlier does not, such as under a `Date` that stopped. The marker is still `at` in seconds, so a marker 0.16 wrote is read as before, and an earlier `hipc` reads a new one. A local clock set before 1970 is now `internal` before the subscribe is sent, whatever the `Date`.
 - `hipc s3 configure` warns when the AWS credentials file or the AWS config file has another hard link. The rewrite renames a new file over that name, so the other name keeps the old contents. The credentials warning says the S3 keys are included; the config-file warning does not, since that file holds the endpoint and no key. Text mode prints a `warning:` that names the file; JSON adds the same text to `warnings`. A file with one link does not warn, and a dry run writes nothing, so it does not warn either. TENETS tenet 8 says so.
 
 ## [0.16.0] - 2026-11-12
