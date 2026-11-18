@@ -14,8 +14,8 @@ use hippius::{
 use serde_json::{Map, Value, json};
 
 use crate::cli::{
-    AclUpdate, BucketAcl, BucketObjects, Buckets, Configure, ObjectsList, Presign, S3,
-    S3Subscription, TokenCreate, TokenKind, TokenRotate, TokenTarget, Tokens,
+    AclUpdate, BucketAcl, BucketName, BucketObjects, Buckets, Configure, DOCS_URL, ObjectsList,
+    Presign, S3, S3Subscription, TokenCreate, TokenKind, TokenRotate, TokenTarget, Tokens,
 };
 use crate::commands::files::{save_secret, shown_once};
 use crate::commands::{
@@ -286,7 +286,63 @@ fn update_acl(ctx: &Context<'_>, args: &AclUpdate) -> Result<Printed> {
     let gate = Gate::Confirm {
         consequence: Some("every statement the file leaves out is removed"),
     };
-    print_body_or(ctx, &ctx.load_authed_client()?, &request, gate, done)
+    print_body_or(ctx, &ctx.load_authed_client()?, &request, gate, done).map_err(|error| {
+        if public_policy_blocked(&error) {
+            error.with_hint(unblock_public_policy_hint(name))
+        } else {
+            error
+        }
+    })
+}
+
+/// Whether `error` is S3's refusal of the bucket policy as the API passes it on: a 400 or a
+/// 403 whose `detail` is the S3 client's `AccessDenied` on `PutBucketPolicy`. A new bucket
+/// starts with Block Public Access on, as on AWS, and S3 refuses a public policy with a 403
+/// `AccessDenied` while the bucket's `BlockPublicPolicy` is on. The API answers it as a 400
+/// today; a 403 is matched too, so the hint stays if the API passes S3's status on. The
+/// answer has no code of its own, so its words decide: both names must be there, so another
+/// refusal keeps its own error, and if the wording changes the error stays as the server gave
+/// it, without the hint. Another status with these words is not this refusal.
+fn public_policy_blocked(error: &Error) -> bool {
+    matches!(error.http_status(), Some(400 | 403))
+        && error
+            .details()
+            .and_then(|body| body.get("detail"))
+            .and_then(Value::as_str)
+            .is_some_and(|detail| {
+                detail.contains("(AccessDenied)") && detail.contains("PutBucketPolicy")
+            })
+}
+
+/// The fix for [`public_policy_blocked`]. The API has no route to Block Public Access and
+/// `hipc` does not talk to the S3 endpoint (tenet 10), so the hint names the S3 client calls.
+///
+/// - It reads the settings first and turns them off only when `BlockPublicPolicy` is on: the
+///   same words could have another cause, and the write sets all four flags, so on a bucket
+///   with no settings that is public through ACLs, `IgnorePublicAcls` would hide its objects.
+/// - The write turns off the two flags a public policy needs off: `BlockPublicPolicy`, which
+///   refuses it, and `RestrictPublicBuckets`, which keeps anonymous reads refused once it is
+///   stored. The ACL flags stay on.
+/// - Both calls name an AWS profile: without one the AWS CLI signs with its default profile,
+///   often AWS keys of its own. The profile must hold the account's S3 master token: a sub
+///   token scoped to the bucket with read and write is refused (`AccessDenied`, tried on
+///   s3.hippius.com).
+///
+/// A bucket name holds only lowercase letters, digits, `.`, and `-` ([`BucketName::parse`]),
+/// so it goes into the command line unquoted.
+fn unblock_public_policy_hint(name: &BucketName) -> String {
+    let profile = "<master-profile>";
+    let endpoint = "--endpoint-url https://s3.hippius.com";
+    format!(
+        "run `aws --profile {profile} s3api get-public-access-block --bucket {name} \
+         {endpoint}`, and when `BlockPublicPolicy` is true, `aws --profile {profile} s3api \
+         put-public-access-block --bucket {name} --public-access-block-configuration \
+         BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=false,\
+         RestrictPublicBuckets=false {endpoint}`, then this command again; `{profile}` is an \
+         AWS profile with the account's S3 master token, written by `hipc s3 configure \
+         --aws-profile {profile}`, as a sub token is refused (`{DOCS_URL}/storage/s3/advanced\
+         #make-a-bucket-or-object-public`)"
+    )
 }
 
 fn tokens(ctx: &Context<'_>, command: &Tokens) -> Result<Printed> {

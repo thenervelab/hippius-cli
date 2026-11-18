@@ -562,7 +562,7 @@ fn examples(lines: &[&str]) -> String {
 
 /// The docs site. The top-level help links it, and each group's help links its guide there
 /// ([`examples_with_guide`]).
-const DOCS_URL: &str = "https://docs.hippius.com";
+pub(crate) const DOCS_URL: &str = "https://docs.hippius.com";
 
 /// A group's `Examples:` section, then a line linking its guide, `path` under [`DOCS_URL`]
 /// such as `/use/cdn`. An agent that reads the group's help follows a URL printed there, to

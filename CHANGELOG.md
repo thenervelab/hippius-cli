@@ -4,6 +4,12 @@ All notable changes to `hipc`, named `hip` up to 0.14.0, are listed here. The fo
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `hipc s3 buckets acl update` on a new bucket explains why S3 refuses a public policy. New buckets block public policies, as on AWS, and the API passes S3's refusal on as a 400 with no hint. That error keeps its code and the server's words, and now has a hint: `aws s3api get-public-access-block` to check the bucket, then, when `BlockPublicPolicy` is on, the `put-public-access-block` command that turns it and `RestrictPublicBuckets` off, both with an AWS profile that holds the account's S3 master token (a sub token is refused), and the docs page. A 403 with the same words gets the same hint, in case the API passes S3's status on. The API has no route to those settings and `hipc` does not talk to the S3 endpoint, so `hipc` does not change them itself. The long help says the same. Any other refusal keeps its error unchanged.
+
 ## [0.17.0] - 2026-11-18
 
 ### Added

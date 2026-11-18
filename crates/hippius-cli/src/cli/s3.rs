@@ -377,6 +377,12 @@ pub(crate) enum BucketAcl {
     /// it replaces the whole policy, so every statement the file leaves out is removed. hipc does
     /// not judge the policy, so both flags are always required, as hipc api requires them on the
     /// same route.
+    ///
+    /// A new bucket blocks public policies, as on AWS: S3 refuses a policy that makes it readable
+    /// by anyone while the bucket's BlockPublicPolicy setting is on, and keeps anonymous reads
+    /// refused while RestrictPublicBuckets is on. Both are turned off with an S3 client (aws
+    /// s3api put-public-access-block) and the account's S3 master token; a sub token is refused.
+    /// hipc cannot change those settings; the error's hint gives the commands.
     #[command(after_help = examples(&[
         "hipc s3 buckets acl update photos --policy-file policy.json --public --remove-others --yes",
     ]))]
