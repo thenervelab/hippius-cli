@@ -583,6 +583,115 @@ fn bucket_acl_update_answered_with_no_body_prints_what_it_did() {
     );
 }
 
+/// What the API answers when S3 refuses the policy because the bucket blocks public
+/// policies: the answer a new bucket gets, as the live API sent it.
+const PUBLIC_POLICY_BLOCKED: &str = concat!(
+    r#"{"detail":"An error occurred (AccessDenied) when calling the PutBucketPolicy "#,
+    r#"operation: Access Denied"}"#
+);
+
+/// The hint for that refusal on the bucket `photos`.
+const UNBLOCK_HINT: &str = concat!(
+    "run `aws --profile <master-profile> s3api get-public-access-block --bucket photos ",
+    "--endpoint-url https://s3.hippius.com`, and when `BlockPublicPolicy` is true, ",
+    "`aws --profile <master-profile> s3api put-public-access-block --bucket photos ",
+    "--public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,",
+    "BlockPublicPolicy=false,RestrictPublicBuckets=false --endpoint-url https://s3.hippius.com`, ",
+    "then this command again; `<master-profile>` is an AWS profile with the account's S3 master ",
+    "token, written by `hipc s3 configure --aws-profile <master-profile>`, as a sub token is ",
+    "refused (`https://docs.hippius.com/storage/s3/advanced#make-a-bucket-or-object-public`)"
+);
+
+/// Runs `acl update photos` with every flag it needs against `reply`, and returns the error,
+/// which exits 1 as every API refusal does.
+fn acl_update_failing_with(reply: Reply, code: &str) -> serde_json::Value {
+    let server = Server::start(vec![route_of(&s3::BUCKET_ACL_SET, [&"photos"], reply)]);
+    let home = Home::new();
+    let policy = home.file("policy.json", POLICY.as_bytes());
+    Hipc::against(&home, &server)
+        .run(&[
+            "s3",
+            "buckets",
+            "acl",
+            "update",
+            "photos",
+            "--policy-file",
+            policy.to_str().expect("the test home path is UTF-8"),
+            "--public",
+            "--remove-others",
+            "--yes",
+        ])
+        .fails(1, code)
+}
+
+/// A new bucket blocks public policies, as on AWS, so S3 refuses the policy and the API
+/// passes the refusal on as a 400. The error stays the server's, and the hint names the S3
+/// client calls that check the settings and turn the two flags off, for this bucket.
+#[test]
+fn bucket_acl_update_refused_by_block_public_access_hints_the_s3_calls() {
+    let error = acl_update_failing_with(Reply::json(400, PUBLIC_POLICY_BLOCKED), "validation");
+    assert_eq!(error["http_status"], 400);
+    assert_eq!(error["side_effects"], "none");
+    assert_eq!(error["retryable"], false);
+    assert_eq!(
+        error["details"],
+        serde_json::from_str::<serde_json::Value>(PUBLIC_POLICY_BLOCKED).unwrap()
+    );
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.ends_with(
+            "the API says `An error occurred (AccessDenied) when calling the PutBucketPolicy \
+             operation: Access Denied`"
+        ),
+        "{message}"
+    );
+    assert_eq!(error["hint"], UNBLOCK_HINT);
+}
+
+/// S3's own status for the refusal is 403: if the API passes it on, the hint stays.
+#[test]
+fn bucket_acl_update_refused_by_block_public_access_as_a_403_keeps_the_hint() {
+    let error = acl_update_failing_with(Reply::json(403, PUBLIC_POLICY_BLOCKED), "permission");
+    assert_eq!(error["http_status"], 403);
+    assert_eq!(error["hint"], UNBLOCK_HINT);
+}
+
+/// Only that refusal gets the hint: another 400 or 403, an `AccessDenied` on another call,
+/// another refusal of the same call, a 400 without a `detail`, and the same words under
+/// another status keep the error as the server gave it.
+#[test]
+fn bucket_acl_update_other_refusals_get_no_block_public_access_hint() {
+    let cases = [
+        (
+            r#"{"detail":"Policy has invalid resource"}"#,
+            400,
+            "validation",
+        ),
+        (
+            r#"{"detail":"An error occurred (AccessDenied) when calling the GetBucketPolicy operation: Access Denied"}"#,
+            400,
+            "validation",
+        ),
+        (
+            r#"{"detail":"An error occurred (MalformedPolicy) when calling the PutBucketPolicy operation: bad"}"#,
+            400,
+            "validation",
+        ),
+        (r#"{"policy":["required"]}"#, 400, "validation"),
+        (
+            r#"{"detail":"You do not have permission to perform this action."}"#,
+            403,
+            "permission",
+        ),
+        (PUBLIC_POLICY_BLOCKED, 422, "validation"),
+        (PUBLIC_POLICY_BLOCKED, 409, "conflict"),
+    ];
+    for (body, status, code) in cases {
+        let error = acl_update_failing_with(Reply::json(status, body), code);
+        assert_eq!(error["hint"], serde_json::Value::Null, "{body}: {error}");
+    }
+}
+
 #[test]
 fn bucket_acl_update_refuses_a_bad_name_or_a_policy_that_is_not_an_object() {
     let server = Server::start(vec![]);
