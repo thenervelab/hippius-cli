@@ -183,7 +183,7 @@ pub(crate) enum Transactions {
     #[command(after_help = examples(&[
         "hipc billing transactions list",
         "hipc billing transactions list --limit 20",
-        "hipc billing transactions list --search stripe --sort -amount",
+        "hipc billing transactions list --search stripe",
         "hipc billing transactions list --all",
     ]))]
     List(TransactionList),
@@ -200,71 +200,11 @@ pub(crate) enum Transactions {
 
 #[derive(Debug, Args)]
 pub(crate) struct TransactionList {
-    /// Only the transactions that match this text in a field the API searches
-    ///
-    /// The API does not say which fields it searches.
+    /// Search the transactions for this text; the API does not document which fields it searches
     #[arg(long, value_name = "TEXT", value_parser = transaction_search)]
     pub(crate) search: Option<String>,
-    /// The order by one field, reversed by a leading -; when left out, the newest come first
-    ///
-    /// The fields are those of a transaction; the API does not say which it orders by, and it
-    /// ignores a field it does not order by, so the list then comes in its default order.
-    #[arg(long, value_name = "FIELD", allow_hyphen_values = true)]
-    pub(crate) sort: Option<TransactionSort>,
     #[command(flatten)]
     pub(crate) list: ListArgs,
-}
-
-/// The fields of a transaction, as swagger's `billing_transactions_list` answers it, that its
-/// `ordering` could take, each ascending or, with a leading `-` as the API's ordering filter
-/// reads it, descending. Swagger names no ordering field, and the API ignores one it does not
-/// know, so only these are taken: `id` and `credit_amount`, a string of base units, are left
-/// out, since neither gives a useful order.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum TransactionSort {
-    #[value(name = "created_at")]
-    CreatedAt,
-    #[value(name = "-created_at")]
-    CreatedAtDescending,
-    #[value(name = "amount")]
-    Amount,
-    #[value(name = "-amount")]
-    AmountDescending,
-    #[value(name = "credits")]
-    Credits,
-    #[value(name = "-credits")]
-    CreditsDescending,
-    #[value(name = "currency")]
-    Currency,
-    #[value(name = "-currency")]
-    CurrencyDescending,
-    #[value(name = "payment_type")]
-    PaymentType,
-    #[value(name = "-payment_type")]
-    PaymentTypeDescending,
-    #[value(name = "status")]
-    Status,
-    #[value(name = "-status")]
-    StatusDescending,
-}
-
-impl TransactionSort {
-    pub(crate) fn code(self) -> &'static str {
-        match self {
-            Self::CreatedAt => "created_at",
-            Self::CreatedAtDescending => "-created_at",
-            Self::Amount => "amount",
-            Self::AmountDescending => "-amount",
-            Self::Credits => "credits",
-            Self::CreditsDescending => "-credits",
-            Self::Currency => "currency",
-            Self::CurrencyDescending => "-currency",
-            Self::PaymentType => "payment_type",
-            Self::PaymentTypeDescending => "-payment_type",
-            Self::Status => "status",
-            Self::StatusDescending => "-status",
-        }
-    }
 }
 
 #[derive(Debug, Subcommand)]

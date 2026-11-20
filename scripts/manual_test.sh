@@ -1059,8 +1059,6 @@ scenario_account_billing() {
     -- hipc --output text billing stripe
   step read net "List the subscriptions" "see every paid plan in one place" \
     -- hipc --output text billing subscriptions
-  step read net "List the largest transactions" "see the biggest charges and credits first" \
-    -- hipc --output text billing transactions list --sort -amount --limit 5
   step read net "List recent transactions" "see what was charged and credited" \
     -- hipc --json billing transactions list --limit 5
   transaction="$(pick "<transaction>" "$MISSING_UUID" 'first(rows // [] | .[] | .id)')"

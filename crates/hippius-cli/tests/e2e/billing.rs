@@ -387,11 +387,10 @@ fn transactions_query(flags: &[&str]) -> String {
     query.to_owned()
 }
 
-/// `search` and `ordering` go in the query only when their flag is given, under the names
-/// swagger's `billing_transactions_list` spells, percent-encoded, before the page size and
-/// the page.
+/// `search` goes in the query only when `--search` is given, under the name swagger's
+/// `billing_transactions_list` spells, percent-encoded, before the page size and the page.
 #[test]
-fn transactions_send_search_and_ordering_only_when_given() {
+fn transactions_send_search_only_when_given() {
     assert_eq!(transactions_query(&[]), "?page_size=100");
     let cases: &[(&[&str], &str)] = &[
         (&["--search", "stripe"], "search=stripe"),
@@ -401,10 +400,6 @@ fn transactions_send_search_and_ordering_only_when_given() {
         ),
         (&["--search", " padded "], "search=%20padded%20"),
         (&["--search=-amount"], "search=-amount"),
-        (
-            &["--sort", "-created_at", "--search", "card"],
-            "search=card&ordering=-created_at",
-        ),
     ];
     for (flags, query) in cases {
         assert_eq!(
@@ -413,34 +408,20 @@ fn transactions_send_search_and_ordering_only_when_given() {
             "{flags:?}"
         );
     }
-    for field in [
-        "created_at",
-        "amount",
-        "credits",
-        "currency",
-        "payment_type",
-        "status",
-    ] {
-        for sort in [field.to_owned(), format!("-{field}")] {
-            let expected = format!("?ordering={sort}&page_size=100");
-            assert_eq!(transactions_query(&["--sort", &sort]), expected);
-            assert_eq!(transactions_query(&[&format!("--sort={sort}")]), expected);
-        }
-    }
     assert_eq!(
         transactions_query(&["--search", "x", "--limit", "5", "--page-token", "3"]),
         "?search=x&page_size=5&page=3"
     );
     assert_eq!(
-        transactions_query(&["--sort", "status", "--all"]),
-        "?ordering=status&page_size=100"
+        transactions_query(&["--search", "x", "--all"]),
+        "?search=x&page_size=100"
     );
 }
 
-/// Both filters are kept on each page `--all` reads and on the page `--page-token` names.
+/// The search is kept on each page `--all` reads and on the page `--page-token` names.
 #[test]
-fn transactions_keep_search_and_ordering_on_every_page() {
-    let filters = "search=top%20up&ordering=-amount";
+fn transactions_keep_the_search_on_every_page() {
+    let filters = "search=top%20up";
     let first = format!("/api/billing/transactions/?{filters}&page_size=1");
     let second = format!("/api/billing/transactions/?{filters}&page_size=1&page=2");
     let next = format!("{{base}}/api/billing/transactions/?{filters}&page=2");
@@ -466,8 +447,6 @@ fn transactions_keep_search_and_ordering_on_every_page() {
         "list",
         "--search",
         "top up",
-        "--sort",
-        "-amount",
         "--limit",
         "1",
     ];
@@ -483,32 +462,13 @@ fn transactions_keep_search_and_ordering_on_every_page() {
     assert_eq!(targets, [first, second.clone(), second]);
 }
 
-/// A blank search, or an order that is not a transaction field with at most one leading `-`,
-/// is usage, and nothing is sent: the API would list every transaction, or ignore the order.
+/// A blank search, or one holding a control or invisible character, is usage, and nothing is
+/// sent: a blank one would list every transaction.
 #[test]
-fn transactions_refuse_a_blank_search_and_an_unknown_order_and_send_nothing() {
+fn transactions_refuse_a_blank_or_unprintable_search_and_send_nothing() {
     let server = Server::start(vec![]);
     let home = Home::new();
     let refused: &[(&[&str], &str)] = &[
-        (&["--sort", "id"], "invalid value `id` for `--sort <FIELD>`"),
-        (
-            &["--sort", "credit_amount"],
-            "invalid value `credit_amount`",
-        ),
-        (&["--sort", "Amount"], "invalid value `Amount`"),
-        (&["--sort", "+amount"], "invalid value `+amount`"),
-        (&["--sort", "--amount"], "invalid value `--amount`"),
-        (&["--sort", "-"], "invalid value `-`"),
-        (&["--sort", ""], "a value is required for `--sort <FIELD>`"),
-        (
-            &["--sort", "amount,status"],
-            "invalid value `amount,status`",
-        ),
-        (&["--sort", "payment-type"], "invalid value `payment-type`"),
-        (
-            &["--sort", "created_at", "--sort", "amount"],
-            "cannot be used multiple times",
-        ),
         (
             &["--search", ""],
             "a search text is not blank; leave out --search to list every transaction",

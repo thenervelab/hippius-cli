@@ -23,7 +23,7 @@ use serde_json::{Map, Value, json};
 
 use crate::cli::{
     AutoReload, AutoReloadUpdate, Billing, BillingProfile, Invoices, ProfileUpdate, ReloadCap,
-    TopUp, TopUpMethod, TransactionList, TransactionSort, Transactions,
+    TopUp, TopUpMethod, TransactionList, Transactions,
 };
 use crate::commands::credits::{AmountPath, shown_in_credits};
 use crate::commands::files::write_output_file;
@@ -141,15 +141,11 @@ const USAGE_AMOUNTS: &[AmountPath] = &[
     &["hours", "*", "lines", "*", "amount"],
 ];
 
-/// `GET /api/billing/transactions/`, with `search` and `ordering` each only when its flag is
-/// given. Every page is read from this one request, so a later page keeps both.
+/// `GET /api/billing/transactions/`, with `search` only when `--search` is given. Every page
+/// is read from this one request, so a later page keeps it.
 fn transactions_request(args: &TransactionList) -> Request {
     let request = Request::to(&billing::TRANSACTIONS, []).about("list the transactions");
-    let filters = [
-        ("search", args.search.as_deref()),
-        ("ordering", args.sort.map(TransactionSort::code)),
-    ];
-    with_query(request, &filters)
+    with_query(request, &[("search", args.search.as_deref())])
 }
 
 /// Prints the server's body, with `amounts` in credits in text mode ([`shown_in_credits`]).

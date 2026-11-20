@@ -2074,29 +2074,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "repeats": false,
           "possible_values": [],
           "default": null,
-          "help": "Only the transactions that match this text in a field the API searches"
-        },
-        {
-          "name": "--sort",
-          "value_name": "FIELD",
-          "required": false,
-          "repeats": false,
-          "possible_values": [
-            "created_at",
-            "-created_at",
-            "amount",
-            "-amount",
-            "credits",
-            "-credits",
-            "currency",
-            "-currency",
-            "payment_type",
-            "-payment_type",
-            "status",
-            "-status"
-          ],
-          "default": null,
-          "help": "The order by one field, reversed by a leading -; when left out, the newest come first"
+          "help": "Search the transactions for this text; the API does not document which fields it searches"
         },
         {
           "name": "--limit",

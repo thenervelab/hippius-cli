@@ -175,7 +175,6 @@ scenario account-billing: read the account, its members, the balance and the bil
   [read] hipc --output text billing balance
   [read] hipc --output text billing stripe
   [read] hipc --output text billing subscriptions
-  [read] hipc --output text billing transactions list --sort -amount --limit 5
   [read] hipc --json billing transactions list --limit 5
   [read] hipc --output text billing transactions get <transaction>
   [read] hipc --json billing top-up-status <transaction>
@@ -197,7 +196,7 @@ scenario account-billing: read the account, its members, the balance and the bil
 ```
 
 - Reads: every step but the dry runs, including the marketing consent, the audit trail, the referral links and their analytics, the legacy Stripe plan, the first transaction (skipped when there is none) and its card top-up outcome, which is `not_found` for a transaction that is not a card top-up, and the first invoice's PDF, saved in the temporary home (skipped when there is no invoice). Writes, all dry runs in every tier: a notification change and a consent withdrawal (each reaches the owner's email), a referral link create or rename (a link has no delete, and the first create mints the code for good), a billing profile change, auto-reload off, a card setup (a Stripe checkout), and a top-up, which spends money.
-- The user sees the account, the notification settings and consent, the members and the audit trail, the balance and runway, the plans, the five largest and the last five transactions, the last five invoices, one transaction whole and whether it was a paid card top-up, an invoice file, the name and address the invoices carry, the month's summary and usage, the auto-reload settings and history, and the request each change would send.
+- The user sees the account, the notification settings and consent, the members and the audit trail, the balance and runway, the plans, the last five transactions and invoices, one transaction whole and whether it was a paid card top-up, an invoice file, the name and address the invoices carry, the month's summary and usage, the auto-reload settings and history, and the request each change would send.
 
 ### 3. Drive
 

@@ -80,7 +80,7 @@ pub(crate) use crate::cli::backups::{
 pub(crate) use crate::cli::billing::{
     AutoReload, AutoReloadUpdate, Billing, BillingProfile, CHAIN_MINIMUM, Gamma, GammaConversions,
     GammaHotkeys, Invoices, ProfileUpdate, ReloadCap, TopUp, TopUpMethod, TransactionList,
-    TransactionSort, Transactions, conversion_id,
+    Transactions, conversion_id,
 };
 pub(crate) use crate::cli::cdn::{
     Cdn, CdnCap, CdnEstimate, CdnHostnames, CdnPurge, CdnPurges, CdnRules, CdnStats, CdnZones,
@@ -1031,7 +1031,6 @@ mod tests {
             GroupBy,
             RuleAction,
             waf::ListKind,
-            billing::TransactionSort,
         );
     }
 
