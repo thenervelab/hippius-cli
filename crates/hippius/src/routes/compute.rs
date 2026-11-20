@@ -419,13 +419,17 @@ impl std::fmt::Debug for AppComposeUpdateBody<'_> {
 }
 
 /// The body of [`APP_ENGINE_GUEST_UPGRADE_CREATE`]. `expected_current_release` is sent as
-/// `null` for the bare base: leaving the field out would skip the check.
+/// `null` for the bare base: leaving the field out would skip the check. `not_before` is
+/// left out when not given, and the server then upgrades now.
 #[derive(Debug, Serialize)]
-pub struct GuestUpgradeBody {
+pub struct GuestUpgradeBody<'a> {
     /// Swagger requires `true`.
     pub confirm: bool,
     /// The release to install: the `newest_release` the read showed.
     pub release: u64,
+    /// The earliest time the upgrade may start, RFC 3339.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<&'a str>,
     /// The release the read showed, or `null` for the bare base.
     pub expected_current_release: Option<u64>,
 }
@@ -811,7 +815,7 @@ mod tests {
     }
 
     /// A compose update sends only the fields given, and a guest upgrade sends `null` for the
-    /// bare base rather than leaving the check out.
+    /// bare base rather than leaving the check out, and `not_before` only when given.
     #[test]
     fn an_update_body_sends_only_what_is_given() {
         let compose = AppComposeUpdateBody {
@@ -834,6 +838,7 @@ mod tests {
         let bare = GuestUpgradeBody {
             confirm: true,
             release: 7,
+            not_before: None,
             expected_current_release: None,
         };
         assert_eq!(
@@ -853,6 +858,19 @@ mod tests {
             json!({
                 "confirm": true,
                 "release": 7,
+                "expected_current_release": 3,
+            })
+        );
+        let scheduled = GuestUpgradeBody {
+            not_before: Some("2026-12-01T02:00:00Z"),
+            ..named
+        };
+        assert_eq!(
+            serde_json::to_value(&scheduled).unwrap(),
+            json!({
+                "confirm": true,
+                "release": 7,
+                "not_before": "2026-12-01T02:00:00Z",
                 "expected_current_release": 3,
             })
         );

@@ -6073,7 +6073,17 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "help": "The vm_id from hipc compute app-engine apps list"
         }
       ],
-      "flags": [],
+      "flags": [
+        {
+          "name": "--not-before",
+          "value_name": "TIME",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The earliest time the upgrade may start, in RFC 3339 such as 2026-12-01T02:00:00Z"
+        }
+      ],
       "required_groups": [],
       "routes": [
         {
