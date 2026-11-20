@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use hippius::routes::Paging;
 use hippius::{Client, Error, Next, Page, Request, Result, phrase};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::cli::{
     CursorArgs, ListArgs, MAX_CONTINUATION_TOKEN_BYTES, ObjectsList, continuation_token,
@@ -102,9 +102,12 @@ pub(crate) fn run_with(
     let start = flags.page_token.unwrap_or(first_page);
     let mut asked = start.to_owned();
     let mut items = Vec::new();
+    // A bucket's folders under `--delimiter`, every page's, printed before the objects.
+    let mut folders = Vec::new();
+    let mut seen_folders = HashSet::new();
     let mut after_first_page = false;
     walk(ctx, client, first, start, |answer| {
-        let page = read_page(paging, answer)?;
+        let mut page = read_page(paging, answer)?;
         if paging.numbered() {
             // A first page asked by `--page-token` may be gone because the list shrank since
             // the token was printed; a later page under `--all`, because it shrank while it
@@ -121,10 +124,16 @@ pub(crate) fn run_with(
             return Ok(Turn::Done(Printed::List(page.envelope()?)));
         }
         let next = page.next_page_token()?;
+        if matches!(paging, Paging::Continuation) {
+            take_folders(&mut page.fields, &mut folders, &mut seen_folders);
+        }
         items.extend(page.items);
         let Some(token) = next else {
-            let items = std::mem::take(&mut items);
-            return Ok(Turn::Done(Printed::List(Value::Array(items))));
+            let listed = std::mem::take(&mut folders)
+                .into_iter()
+                .chain(std::mem::take(&mut items))
+                .collect();
+            return Ok(Turn::Done(Printed::List(Value::Array(listed))));
         };
         after_first_page = true;
         asked.clone_from(&token);
@@ -411,14 +420,16 @@ fn with_items_as_results(answer: Value, key: &str) -> Value {
 }
 
 /// Reads an S3 `ListObjectsV2` answer, a page of a bucket's objects: `Contents`, with
-/// `NextContinuationToken` as the token and the answer's other fields, such as `KeyCount` and
-/// `IsTruncated`, beside them. `Contents` may be missing, as boto3 leaves it out of
-/// an empty page. An empty `NextContinuationToken` is no token, as the AWS SDK paginators
-/// read it, so a loop never sends it and fetches the first page again.
+/// `NextContinuationToken` as the token and the answer's other fields, such as `KeyCount`,
+/// `IsTruncated`, and the folders of `CommonPrefixes`, beside them. `Contents` may be
+/// missing, as boto3 leaves it out of an empty page, and so may `CommonPrefixes`. An empty
+/// `NextContinuationToken` is no token, as the AWS SDK paginators read it, so a loop never
+/// sends it and fetches the first page again.
 ///
 /// # Errors
 ///
-/// `internal` when the answer is not an object, its `Contents` is not an array, its token is
+/// `internal` when the answer is not an object, its `Contents` is not an array, its
+/// `CommonPrefixes` is not an array of objects that each hold a text `Prefix`, its token is
 /// not text or is one `--page-token` would refuse, or it is an `IsTruncated: true` page with
 /// no token or has an `IsTruncated` that is neither a boolean nor `null`: reading that
 /// as the last page would print a short list as if it were complete. A page with
@@ -434,6 +445,17 @@ fn objects_page(answer: Value) -> Result<Page> {
         Some(Value::Array(items)) => items,
         Some(_) => return Err(not_a_list()),
     };
+    let folder = |entry: &Value| entry.get("Prefix").is_some_and(Value::is_string);
+    match fields.get("CommonPrefixes") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(folders)) if folders.iter().all(folder) => {}
+        Some(_) => {
+            return Err(Error::internal(
+                "the API's `CommonPrefixes` is not a list of folders, each with a text \
+                 `Prefix`, so the folders cannot be read",
+            ));
+        }
+    }
     let next = match fields.shift_remove("NextContinuationToken") {
         None | Some(Value::Null) => None,
         Some(Value::String(token)) => Some(token).filter(|token| !token.is_empty()),
@@ -479,6 +501,27 @@ fn objects_page(answer: Value) -> Result<Page> {
         next: next.map(Next::Token),
         fields,
     })
+}
+
+/// Moves the folders of a page [`objects_page`] read, its `CommonPrefixes` entries, from its
+/// `fields` to the end of `folders`, each `Prefix` once: a folder whose keys span two pages
+/// may be answered on both, and `seen` holds the prefixes already in `folders`.
+fn take_folders(
+    fields: &mut Map<String, Value>,
+    folders: &mut Vec<Value>,
+    seen: &mut HashSet<String>,
+) {
+    let Some(Value::Array(page)) = fields.shift_remove("CommonPrefixes") else {
+        return;
+    };
+    for folder in page {
+        // `objects_page` let through only entries whose `Prefix` is text.
+        if let Some(Value::String(prefix)) = folder.get("Prefix")
+            && seen.insert(prefix.clone())
+        {
+            folders.push(folder);
+        }
+    }
 }
 
 /// The most pages one command follows. Arbitrary: far more than any account's list holds
