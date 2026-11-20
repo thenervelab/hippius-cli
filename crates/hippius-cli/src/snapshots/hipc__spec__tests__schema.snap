@@ -13359,7 +13359,17 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "refused_when": null,
       "guards": [],
       "args": [],
-      "flags": [],
+      "flags": [
+        {
+          "name": "--system",
+          "value_name": null,
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "Also show the system groups, which Hippius manages for managed services, and the policies between them"
+        }
+      ],
       "required_groups": [],
       "routes": [
         {
