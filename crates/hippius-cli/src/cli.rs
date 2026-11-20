@@ -113,7 +113,7 @@ pub(crate) use crate::cli::s3::{
 };
 pub(crate) use crate::cli::support::{
     MessageAttach, Support, TicketBody, TicketCreate, TicketList, TicketMessages, TicketPriority,
-    TicketUpdateStatus, Tickets,
+    TicketSort, TicketUpdateStatus, Tickets,
 };
 
 /// `hipc`: the Hippius console control plane.
@@ -1022,6 +1022,7 @@ mod tests {
             TokenKind,
             TicketUpdateStatus,
             support::TicketStatus,
+            support::TicketSort,
             TicketPriority,
             WafMode,
             WafTier,

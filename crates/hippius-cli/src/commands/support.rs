@@ -15,9 +15,10 @@ use hippius::{Error, Failure, Request, Result, SideEffects, phrase, view_of};
 use zeroize::Zeroizing;
 
 use crate::cli::{
-    Support, TicketBody, TicketCreate, TicketList, TicketMessages, TicketUpdateStatus, Tickets,
+    Support, TicketBody, TicketCreate, TicketList, TicketMessages, TicketPriority, TicketSort,
+    TicketUpdateStatus, Tickets,
 };
-use crate::commands::{Decided, Input, Printed, list, print_body, read_then_write};
+use crate::commands::{Decided, Input, Printed, list, print_body, read_then_write, with_query};
 use crate::context::{self, Context, Gate, WritePlan};
 
 /// The largest message read, in bytes. Swagger sets no maximum on a ticket's `description`
@@ -124,7 +125,9 @@ fn close(ctx: &Context<'_>, ticket_id: u64, status: TicketUpdateStatus) -> Resul
     read_then_write(ctx, &client, &plan, decide, |sent| sent?.document())
 }
 
-/// `GET /api/support/tickets/`, with `status` only when `--status` is given.
+/// `GET /api/support/tickets/`, with each filter only when its flag is given: `status`,
+/// `search`, `priority`, `category`, `needs_reply=true`, and `ordering`. Every page is read
+/// from this one request, so a later page keeps the filters.
 fn list_tickets(ctx: &Context<'_>, args: &TicketList) -> Result<Printed> {
     let request = Request::to(&support::TICKETS, []);
     let request = match args.status {
@@ -133,6 +136,14 @@ fn list_tickets(ctx: &Context<'_>, args: &TicketList) -> Result<Printed> {
             .about(format!("list the `{}` tickets", status.code())),
         None => request.about("list the tickets"),
     };
+    let filters = [
+        ("search", args.search.as_deref()),
+        ("priority", args.priority.map(TicketPriority::code)),
+        ("category", args.category.as_deref()),
+        ("needs_reply", args.needs_reply.then_some("true")),
+        ("ordering", args.sort.map(TicketSort::code)),
+    ];
+    let request = with_query(request, &filters);
     list::run(ctx, &ctx.load_authed_client()?, &request, &args.list)
 }
 
