@@ -36,11 +36,12 @@ use crate::selector::{BillingId, ProjectId, Selected, Selector, is_id};
 use crate::source::Source;
 use crate::url::{with_trailing_slash, without_query_values};
 
-/// The prefixes of the routes that take a project: compute, managed databases, Kubernetes,
-/// runners, S3 buckets and keys, and the CDN. The S3 plan (`/api/s3/`) stays the account's,
-/// apart from its two reads below, and so does the accounts API.
+/// The prefixes of the routes that take a project: compute, Agent Core, managed databases,
+/// Kubernetes, runners, S3 buckets and keys, and the CDN. The S3 plan (`/api/s3/`) stays the
+/// account's, apart from its two reads below, and so does the accounts API.
 const PROJECT_PREFIXES: &[&str] = &[
     "/api/compute/",
+    "/api/agentcore/",
     "/api/databases/",
     "/api/kubernetes/",
     "/api/runners/",
@@ -387,13 +388,21 @@ mod tests {
     const ROUTES: &[(&str, Take, Take, Take)] = {
         use Take::{Named, Refuse, Send, Skip};
         &[
-            // Compute, databases, Kubernetes, runners, object store, and the CDN take a
-            // project and no billing account.
+            // Compute, Agent Core, databases, Kubernetes, runners, object store, and the CDN
+            // take a project and no billing account.
             ("/api/compute/vms/", Send, Send, Refuse),
             ("/api/compute/vms/v1/firewall/", Send, Send, Refuse),
             ("/api/compute/prices/", Send, Send, Refuse),
             ("/api/compute/charge-cap/", Send, Send, Refuse),
             ("/api/compute/feasibility/?flavor=small", Send, Send, Refuse),
+            ("/api/agentcore/instances/", Send, Send, Refuse),
+            ("/api/agentcore/instances/vm-1/stop/", Send, Send, Refuse),
+            (
+                "/api/agentcore/instances/vm-1/agent/v1/files",
+                Send,
+                Send,
+                Refuse,
+            ),
             ("/api/databases/", Send, Send, Refuse),
             ("/api/databases/12/restore/", Send, Send, Refuse),
             ("/api/kubernetes/clusters/", Send, Send, Refuse),

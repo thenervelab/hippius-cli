@@ -32,6 +32,7 @@ use crate::url::{with_trailing_slash, without_query, without_query_values};
 const SCOPED_PREFIXES: &[&str] = &[
     "/api/accounts/",
     "/api/compute/",
+    "/api/agentcore/",
     "/api/databases/",
     "/api/kubernetes/",
     "/api/runners/",

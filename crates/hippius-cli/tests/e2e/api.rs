@@ -2,7 +2,9 @@
 
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, TOKEN, draft, route};
+use crate::common::{
+    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Run, Server, TOKEN, draft, route,
+};
 
 /// The flag that sends a request body from a file.
 const BODY: &str = "--body-file";
@@ -546,6 +548,111 @@ fn the_account_header_follows_the_route_class() {
         .run(&["api", "GET", "/compute/vms/"])
         .code();
     assert_eq!(server.requests()[5].header("x-hippius-account"), None);
+}
+
+/// Agent Core instances are VMs, and the console sends the account and the project on every
+/// `/api/agentcore/` route, as it does on `/api/compute/`: a read and a write, from flags or
+/// from variables, go out with both headers, and a dry run lists them (#83).
+#[test]
+fn agentcore_routes_take_the_account_and_the_project() {
+    let server = Server::start(vec![
+        route("GET", "/api/agentcore/instances/", Reply::json(200, "[]")),
+        route(
+            "POST",
+            "/api/agentcore/instances/vm-1/stop/",
+            Reply::json(202, "{}"),
+        ),
+    ]);
+    let home = Home::new();
+    let flags = ["--account", MEMBER, "--project", PROJECT];
+    let read = ["api", "--reveal", "GET", "/agentcore/instances/"];
+    Hipc::against(&home, &server)
+        .run(&[&flags[..], &read[..]].concat())
+        .ok();
+    sent_unknown(
+        &Hipc::against(&home, &server)
+            .env("HIPPIUS_ACCOUNT", MEMBER)
+            .env("HIPPIUS_PROJECT", PROJECT)
+            .run(&["api", "POST", "/agentcore/instances/vm-1/stop/", "--yes"]),
+    );
+    let sent: Vec<_> = server
+        .requests()
+        .iter()
+        .map(|r| {
+            (
+                r.method.clone(),
+                r.path().to_owned(),
+                r.header("x-hippius-account").map(str::to_owned),
+                r.header("x-hippius-project").map(str::to_owned),
+            )
+        })
+        .collect();
+    let headers = (Some(MEMBER.to_owned()), Some(PROJECT.to_owned()));
+    assert_eq!(
+        sent,
+        [
+            (
+                "GET".to_owned(),
+                "/api/agentcore/instances/".to_owned(),
+                headers.0.clone(),
+                headers.1.clone(),
+            ),
+            (
+                "POST".to_owned(),
+                "/api/agentcore/instances/vm-1/stop/".to_owned(),
+                headers.0,
+                headers.1,
+            ),
+        ]
+    );
+    let path = "/agentcore/instances/vm-1/agent/v1/files";
+    let run = Hipc::against(&home, &server)
+        .run(&[&flags[..], &["api", "--reveal", "GET", path, "--dry-run"]].concat());
+    assert_eq!(
+        run.dry_ok(),
+        crate::common::one_request_dry_run(json!({
+            "method": "GET",
+            "url": format!("{}/api{path}", server.url()),
+            "account_header": MEMBER,
+            "project_header": PROJECT,
+            "billing_header": null,
+            "body": null
+        }))
+    );
+    assert_eq!(server.requests().len(), 2, "the dry run sent nothing");
+
+    // Agent Core takes no billing account, and a route outside its prefix stays refused.
+    Hipc::against(&home, &server)
+        .run(&[
+            "--billing",
+            BILLING,
+            "api",
+            "GET",
+            "/agentcore/instances/",
+            "--reveal",
+        ])
+        .fails(2, "billing_scope_unsupported");
+    Hipc::against(&home, &server)
+        .run(&[
+            "--account",
+            MEMBER,
+            "api",
+            "GET",
+            "/agentcorex/instances/",
+            "--reveal",
+        ])
+        .fails(2, "account_scope_unsupported");
+    Hipc::against(&home, &server)
+        .run(&[
+            "--project",
+            PROJECT,
+            "api",
+            "GET",
+            "/agentcorex/instances/",
+            "--reveal",
+        ])
+        .fails(2, "project_scope_unsupported");
+    assert_eq!(server.requests().len(), 2, "the refusals sent nothing");
 }
 
 #[test]
