@@ -563,3 +563,273 @@ fn the_help_points_at_the_aws_cli_with_the_profile_s3_configure_writes() {
         configure.stdout()
     );
 }
+
+/// A `ListObjectsV2` page as [`listing`] writes it, with `folders` as its `CommonPrefixes`.
+fn folder_listing(folders: &[&str], keys: &[&str], next: Option<&str>) -> String {
+    let mut answer: Value =
+        serde_json::from_str(&listing(keys, next)).expect("listing writes JSON");
+    let folders: Vec<Value> = folders.iter().map(|f| json!({"Prefix": f})).collect();
+    answer["CommonPrefixes"] = folders.into();
+    answer.to_string()
+}
+
+fn text(server: &Server, args: &[&str]) -> String {
+    let argv = objects(args);
+    let mut full = vec!["--output", "text"];
+    full.extend(argv.iter().map(String::as_str));
+    let run = Hipc::against(&Home::new(), server).run(&full);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    run.stdout().to_owned()
+}
+
+#[test]
+fn delimiter_goes_after_the_prefix_and_before_the_token_and_is_left_out_without_the_flag() {
+    let server = Server::start(vec![page("", &listing(&[], None))]);
+    hipc(&server, &["photos", "--delimiter", "/"]).ok();
+    hipc(
+        &server,
+        &[
+            "photos",
+            "--prefix",
+            "2026/",
+            "--delimiter",
+            "/ &=",
+            "--page-token",
+            "t1",
+        ],
+    )
+    .ok();
+    hipc(&server, &["photos", "--prefix", "2026/"]).ok();
+    assert_eq!(
+        targets(&server),
+        [
+            format!("{PATH}?max_keys=100&delimiter=%2F"),
+            format!(
+                "{PATH}?max_keys=100&prefix=2026%2F&delimiter=%2F%20%26%3D&continuation_token=t1"
+            ),
+            format!("{PATH}?max_keys=100&prefix=2026%2F"),
+        ]
+    );
+}
+
+#[test]
+fn one_page_keeps_its_folders_in_common_prefixes_beside_the_objects() {
+    let server = Server::start(vec![page(
+        "",
+        &folder_listing(&["2025/", "2026/"], &["top.txt"], Some("t1")),
+    )]);
+    let doc = hipc(&server, &["photos", "--delimiter", "/"]).ok();
+    assert_eq!(doc["items"], json!([{"Key": "top.txt"}]));
+    assert_eq!(
+        doc["CommonPrefixes"],
+        json!([{"Prefix": "2025/"}, {"Prefix": "2026/"}])
+    );
+    assert_eq!(doc["next_page_token"], "t1");
+}
+
+#[test]
+fn all_puts_every_pages_folders_once_before_the_objects() {
+    let server = Server::start(vec![
+        page(
+            "?max_keys=2&delimiter=%2F&continuation_token=t1",
+            &folder_listing(&["b/", "c/"], &["y"], Some("t2")),
+        ),
+        page(
+            "?max_keys=2&delimiter=%2F&continuation_token=t2",
+            &listing(&["z"], None),
+        ),
+        page(
+            "?max_keys=2&delimiter=%2F",
+            &folder_listing(&["a/", "b/"], &["x"], Some("t1")),
+        ),
+    ]);
+    let all = hipc(
+        &server,
+        &["photos", "--limit", "2", "--delimiter", "/", "--all"],
+    )
+    .ok();
+    assert_eq!(
+        all,
+        json!([
+            {"Prefix": "a/"},
+            {"Prefix": "b/"},
+            {"Prefix": "c/"},
+            {"Key": "x"},
+            {"Key": "y"},
+            {"Key": "z"},
+        ])
+    );
+    assert_eq!(
+        targets(&server),
+        [
+            format!("{PATH}?max_keys=2&delimiter=%2F"),
+            format!("{PATH}?max_keys=2&delimiter=%2F&continuation_token=t1"),
+            format!("{PATH}?max_keys=2&delimiter=%2F&continuation_token=t2"),
+        ]
+    );
+    // A null `CommonPrefixes` is no folder.
+    let none = Server::start(vec![page(
+        "",
+        r#"{"Contents":[{"Key":"a"}],"CommonPrefixes":null,"IsTruncated":false}"#,
+    )]);
+    let all = hipc(&none, &["photos", "--delimiter", "/", "--all"]).ok();
+    assert_eq!(all, json!([{"Key": "a"}]));
+}
+
+/// A `ListObjectsV2` page with `folders` as its `CommonPrefixes` and `objects`, each a key
+/// and a size, as its `Contents`, all written on 2026-11-01.
+fn sized_listing(folders: &[&str], objects: &[(&str, u64)], next: Option<&str>) -> String {
+    let contents: Vec<Value> = objects
+        .iter()
+        .map(
+            |(key, size)| json!({"Key": key, "LastModified": "2026-11-01T10:00:00Z", "Size": size}),
+        )
+        .collect();
+    let folders: Vec<Value> = folders.iter().map(|f| json!({"Prefix": f})).collect();
+    let mut answer = json!({
+        "Contents": contents,
+        "CommonPrefixes": folders,
+        "IsTruncated": next.is_some(),
+    });
+    if let Some(next) = next {
+        answer["NextContinuationToken"] = next.into();
+    }
+    answer.to_string()
+}
+
+#[test]
+fn text_mode_prints_the_folders_as_rows_marked_folder_before_the_objects() {
+    let body = sized_listing(&["2026/"], &[("top.txt", 12), ("2026/", 0)], None);
+    let server = Server::start(vec![page("", &body)]);
+    // A zero-byte folder marker shares the folder's key; only the folder's Size says folder.
+    let rows = concat!(
+        "Key      Size    LastModified\n",
+        "2026/    folder\n",
+        "top.txt  12      2026-11-01T10:00:00Z\n",
+        "2026/    0       2026-11-01T10:00:00Z\n",
+    );
+    let one_page = text(&server, &["photos", "--delimiter", "/"]);
+    assert_eq!(one_page, format!("{rows}IsTruncated: false\n"));
+    assert_eq!(
+        text(&server, &["photos", "--delimiter", "/", "--all"]),
+        rows
+    );
+    // A page with no folders prints as before.
+    let plain = Server::start(vec![page("", &sized_listing(&[], &[("a.jpg", 5)], None))]);
+    assert_eq!(
+        text(&plain, &["photos"]),
+        concat!(
+            "Key    LastModified          Size\n",
+            "a.jpg  2026-11-01T10:00:00Z  5\n",
+            "IsTruncated: false\n",
+        )
+    );
+}
+
+#[test]
+fn text_mode_prints_a_page_of_folders_only() {
+    let body = r#"{"CommonPrefixes":[{"Prefix":"a/"},{"Prefix":"b/"}],"IsTruncated":false}"#;
+    let server = Server::start(vec![page("", body)]);
+    assert_eq!(
+        text(&server, &["photos", "--delimiter", "/"]),
+        concat!(
+            "Key  Size\n",
+            "a/   folder\n",
+            "b/   folder\n",
+            "IsTruncated: false\n",
+        )
+    );
+}
+
+#[test]
+fn text_mode_all_prints_every_pages_folders_once_before_the_objects() {
+    let server = Server::start(vec![
+        page(
+            "?max_keys=2&delimiter=%2F&continuation_token=t1",
+            &sized_listing(&["b/", "c/"], &[("y", 2)], None),
+        ),
+        page(
+            "?max_keys=2&delimiter=%2F",
+            &sized_listing(&["a/", "b/"], &[("x", 1)], Some("t1")),
+        ),
+    ]);
+    assert_eq!(
+        text(
+            &server,
+            &["photos", "--limit", "2", "--delimiter", "/", "--all"]
+        ),
+        concat!(
+            "Key  Size    LastModified\n",
+            "a/   folder\n",
+            "b/   folder\n",
+            "c/   folder\n",
+            "x    1       2026-11-01T10:00:00Z\n",
+            "y    2       2026-11-01T10:00:00Z\n",
+        )
+    );
+}
+
+#[test]
+fn common_prefixes_that_are_not_folders_are_internal() {
+    for prefixes in [
+        r#"{"Prefix":"a/"}"#,
+        r#"["a/"]"#,
+        r#"[{"Prefix":7}]"#,
+        "[{}]",
+        "7",
+    ] {
+        let body = format!(r#"{{"Contents":[],"CommonPrefixes":{prefixes}}}"#);
+        let server = Server::start(vec![page("", &body)]);
+        let error = hipc(&server, &["photos", "--delimiter", "/"]).fails(1, "internal");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("`CommonPrefixes` is not a list of folders"),
+            "{body}: {error}"
+        );
+        hipc(&server, &["photos", "--delimiter", "/", "--all"]).fails(1, "internal");
+    }
+}
+
+#[test]
+fn an_empty_delimiter_is_usage_before_any_request() {
+    let server = Server::start(vec![]);
+    let error = hipc(&server, &["photos", "--delimiter", ""]).fails(2, "usage");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("the text that separates the levels of a key"),
+        "{error}"
+    );
+    hipc(&server, &["photos", "--delimiter=", "--all"]).fails(2, "usage");
+    assert!(server.requests().is_empty());
+}
+
+#[test]
+fn a_dry_run_names_the_delimiter() {
+    let server = Server::start(vec![]);
+    let argv = objects(&[
+        "photos",
+        "--prefix",
+        "a/",
+        "--delimiter",
+        "/",
+        "--all",
+        "--dry-run",
+    ]);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let doc = Hipc::tokenless(&Home::new(), &server)
+        .env("HIPPIUS_ACCOUNT", MEMBER)
+        .run(&argv)
+        .ok();
+    assert_eq!(
+        draft(&doc)["url"],
+        format!(
+            "{}{PATH}?max_keys=100&prefix=a%2F&delimiter=%2F",
+            server.url()
+        )
+    );
+    assert!(server.requests().is_empty());
+}

@@ -1209,6 +1209,8 @@ scenario_s3() {
   [[ -n "$first_bucket" ]] || SKIP_REASON="the account has no bucket"
   step read net "List a bucket's objects" "see its first keys; the listing moves no bytes" \
     -- hipc --output text s3 buckets objects list "$first_bucket" --limit 10
+  step read net "List a bucket's top folders" "see its folders first, then its top-level keys" \
+    -- hipc --output text s3 buckets objects list "$first_bucket" --delimiter / --limit 10
   step read net "List the bucket ACLs" "see which buckets are public" \
     -- hipc --output text s3 buckets acl list
   step read net "List the S3 tokens" "see the access keys that exist" \

@@ -24,6 +24,7 @@ use crate::commands::{
     require_reveal_or_file, subscribed,
 };
 use crate::context::{self, Context, Gate, Question};
+use crate::output::Mode;
 
 pub(crate) fn run(ctx: &Context<'_>, command: &S3) -> Result<Printed> {
     match command {
@@ -151,9 +152,11 @@ fn buckets(ctx: &Context<'_>, command: &Buckets) -> Result<Printed> {
 /// `GET /api/objectstore/buckets/<name>/objects/` (swagger `objectstore_buckets_objects_list`):
 /// an S3 `ListObjectsV2` answer, paged by `max_keys` and `continuation_token`. One page prints
 /// the envelope of its `Contents`, with `NextContinuationToken` as `next_page_token` and the
-/// answer's other fields beside; `--all` sends each token back until none is left, and prints
-/// one JSON array. Swagger's `delimiter` is left out: its `CommonPrefixes` are not objects,
-/// and `--all` would drop them.
+/// answer's other fields beside, `CommonPrefixes` included; `--all` sends each token back
+/// until none is left, and prints one JSON array, every page's `CommonPrefixes` entries,
+/// each prefix once, before the objects (`list::run_with`). `--delimiter` goes on every
+/// page, as `--prefix` does. Text mode prints each folder as a row of its own
+/// ([`folders_as_rows`]).
 fn list_objects(ctx: &Context<'_>, args: &ObjectsList) -> Result<Printed> {
     let name = &args.bucket_name;
     let limit = args.limit.to_string();
@@ -169,10 +172,57 @@ fn list_objects(ctx: &Context<'_>, args: &ObjectsList) -> Result<Printed> {
         if let Some(prefix) = &args.prefix {
             request = request.query("prefix", prefix);
         }
+        if let Some(delimiter) = &args.delimiter {
+            request = request.query("delimiter", delimiter);
+        }
         list::at_page(request, paging, token)
     };
     let client = ctx.load_authed_client()?;
-    list::run_with(ctx, &client, paging, args.into(), page_request)
+    let printed = list::run_with(ctx, &client, paging, args.into(), page_request)?;
+    Ok(match ctx.mode() {
+        Mode::Text => folders_as_rows(printed),
+        Mode::Json => printed,
+    })
+}
+
+/// A list of a bucket's objects as a person reads it: each folder S3 grouped under
+/// `--delimiter`, `{"Prefix": "2026/"}`, becomes a row whose `Key` is the folder, which
+/// already ends in the delimiter, and whose `Size` is `folder`, so it is not read as a
+/// zero-byte object of the same key; the other object columns are left blank, as a folder
+/// has no date. A page's `CommonPrefixes` move from beside the table to its first rows,
+/// so they are not printed twice; the array `--all` prints holds them first already. A
+/// dry run's document is left as it is.
+fn folders_as_rows(printed: Printed) -> Printed {
+    match printed {
+        Printed::List(Value::Array(items)) => Printed::List(Value::Array(folder_rows(items))),
+        Printed::List(Value::Object(mut page)) => {
+            let folders = match page.shift_remove("CommonPrefixes") {
+                Some(Value::Array(folders)) => folders,
+                _ => Vec::new(),
+            };
+            if let Some(Value::Array(items)) = page.get_mut("items") {
+                let objects = std::mem::take(items);
+                *items = folder_rows(folders.into_iter().chain(objects).collect());
+            }
+            Printed::List(Value::Object(page))
+        }
+        printed
+        @ (Printed::List(_) | Printed::Document(_) | Printed::Raw(_) | Printed::Body(_)) => printed,
+    }
+}
+
+/// `items` with each folder, an entry with a text `Prefix` and no `Key`, as the row
+/// `{"Key": <the folder>, "Size": "folder"}`; an object is left as it is.
+fn folder_rows(items: Vec<Value>) -> Vec<Value> {
+    items
+        .into_iter()
+        .map(|item| match item.get("Prefix") {
+            Some(Value::String(folder)) if item.get("Key").is_none() => {
+                json!({ "Key": folder, "Size": "folder" })
+            }
+            _ => item,
+        })
+        .collect()
 }
 
 /// `GET /api/objectstore/buckets/<name>/presigned-url/?key=<key>[&expires_in=<seconds>]`
@@ -815,6 +865,47 @@ pub(crate) const CANCELLED: &str = "the plan stays until the end of the month pa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only an entry with a text `Prefix` and no `Key` is a folder; an object, even one
+    /// holding a `Prefix`, and any other document are left as they are.
+    #[test]
+    fn folders_become_rows_whose_key_is_the_folder() {
+        let all = folders_as_rows(Printed::List(json!([
+            {"Prefix": "a/"},
+            {"Prefix": "b/", "Key": "b/x"},
+            {"Prefix": 7},
+            {"Key": "c"},
+        ])));
+        let rows = json!([
+            {"Key": "a/", "Size": "folder"},
+            {"Prefix": "b/", "Key": "b/x"},
+            {"Prefix": 7},
+            {"Key": "c"},
+        ]);
+        assert!(
+            matches!(&all, Printed::List(all) if *all == rows),
+            "{all:?}"
+        );
+        let page = folders_as_rows(Printed::List(json!({
+            "items": [{"Key": "c"}],
+            "CommonPrefixes": [{"Prefix": "a/"}],
+            "next_page_token": null,
+        })));
+        let rows = json!({
+            "items": [{"Key": "a/", "Size": "folder"}, {"Key": "c"}],
+            "next_page_token": null,
+        });
+        assert!(
+            matches!(&page, Printed::List(page) if *page == rows),
+            "{page:?}"
+        );
+        let dry_run = json!({"dry_run": true, "requests": []});
+        let kept = folders_as_rows(Printed::Document(dry_run.clone()));
+        assert!(
+            matches!(&kept, Printed::Document(kept) if *kept == dry_run),
+            "{kept:?}"
+        );
+    }
 
     #[test]
     fn token_documents_are_snake_case_with_kind_first() {

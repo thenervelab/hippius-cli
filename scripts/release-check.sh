@@ -700,6 +700,10 @@ storage_checks() {
     result SKIP "s3 buckets acl get" "the account has no bucket"
     result SKIP "s3 buckets objects list" "the account has no bucket"
   fi
+  offline "s3 buckets objects list --delimiter --dry-run" 0 --dry-run \
+    s3 buckets objects list "$MISSING_BUCKET" --delimiter /
+  expect_requests "a folder listing sends the delimiter" \
+    "GET $(route "s3 buckets objects list" GET "$MISSING_BUCKET")?max_keys=100&delimiter=%2F"
   online "s3 tokens list" 0 s3 tokens list
   expect "token kinds" 'all(.items[]; .kind == "master" or .kind == "sub")'
   expect "no secret in a listing" 'all(.items[]; .secret == null)'
