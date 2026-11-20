@@ -2,7 +2,9 @@
 
 use serde_json::json;
 
-use crate::common::{Hipc, Home, MEMBER, Reply, Run, Server, TOKEN, draft, route};
+use crate::common::{
+    BILLING, Hipc, Home, MEMBER, PROJECT, Reply, Run, Server, TOKEN, draft, route,
+};
 
 /// The flag that sends a request body from a file.
 const BODY: &str = "--body-file";
@@ -548,6 +550,111 @@ fn the_account_header_follows_the_route_class() {
     assert_eq!(server.requests()[5].header("x-hippius-account"), None);
 }
 
+/// Agent Core instances are VMs, and the console sends the account and the project on every
+/// `/api/agentcore/` route, as it does on `/api/compute/`: a read and a write, from flags or
+/// from variables, go out with both headers, and a dry run lists them (#83).
+#[test]
+fn agentcore_routes_take_the_account_and_the_project() {
+    let server = Server::start(vec![
+        route("GET", "/api/agentcore/instances/", Reply::json(200, "[]")),
+        route(
+            "POST",
+            "/api/agentcore/instances/vm-1/stop/",
+            Reply::json(202, "{}"),
+        ),
+    ]);
+    let home = Home::new();
+    let flags = ["--account", MEMBER, "--project", PROJECT];
+    let read = ["api", "--reveal", "GET", "/agentcore/instances/"];
+    Hipc::against(&home, &server)
+        .run(&[&flags[..], &read[..]].concat())
+        .ok();
+    sent_unknown(
+        &Hipc::against(&home, &server)
+            .env("HIPPIUS_ACCOUNT", MEMBER)
+            .env("HIPPIUS_PROJECT", PROJECT)
+            .run(&["api", "POST", "/agentcore/instances/vm-1/stop/", "--yes"]),
+    );
+    let sent: Vec<_> = server
+        .requests()
+        .iter()
+        .map(|r| {
+            (
+                r.method.clone(),
+                r.path().to_owned(),
+                r.header("x-hippius-account").map(str::to_owned),
+                r.header("x-hippius-project").map(str::to_owned),
+            )
+        })
+        .collect();
+    let headers = (Some(MEMBER.to_owned()), Some(PROJECT.to_owned()));
+    assert_eq!(
+        sent,
+        [
+            (
+                "GET".to_owned(),
+                "/api/agentcore/instances/".to_owned(),
+                headers.0.clone(),
+                headers.1.clone(),
+            ),
+            (
+                "POST".to_owned(),
+                "/api/agentcore/instances/vm-1/stop/".to_owned(),
+                headers.0,
+                headers.1,
+            ),
+        ]
+    );
+    let path = "/agentcore/instances/vm-1/agent/v1/files";
+    let run = Hipc::against(&home, &server)
+        .run(&[&flags[..], &["api", "--reveal", "GET", path, "--dry-run"]].concat());
+    assert_eq!(
+        run.dry_ok(),
+        crate::common::one_request_dry_run(json!({
+            "method": "GET",
+            "url": format!("{}/api{path}", server.url()),
+            "account_header": MEMBER,
+            "project_header": PROJECT,
+            "billing_header": null,
+            "body": null
+        }))
+    );
+    assert_eq!(server.requests().len(), 2, "the dry run sent nothing");
+
+    // Agent Core takes no billing account, and a route outside its prefix stays refused.
+    Hipc::against(&home, &server)
+        .run(&[
+            "--billing",
+            BILLING,
+            "api",
+            "GET",
+            "/agentcore/instances/",
+            "--reveal",
+        ])
+        .fails(2, "billing_scope_unsupported");
+    Hipc::against(&home, &server)
+        .run(&[
+            "--account",
+            MEMBER,
+            "api",
+            "GET",
+            "/agentcorex/instances/",
+            "--reveal",
+        ])
+        .fails(2, "account_scope_unsupported");
+    Hipc::against(&home, &server)
+        .run(&[
+            "--project",
+            PROJECT,
+            "api",
+            "GET",
+            "/agentcorex/instances/",
+            "--reveal",
+        ])
+        .fails(2, "project_scope_unsupported");
+    assert_eq!(server.requests().len(), 2, "the refusals sent nothing");
+}
+
 #[test]
 fn all_follows_next_links_into_one_array() {
     let server = Server::start(vec![
@@ -1016,6 +1123,40 @@ fn a_terminal_ticket_needs_reveal_first() {
     assert!(server.requests().is_empty());
     let doc = sent_unknown(&hipc().run(&["api", "POST", path, "--yes", "--reveal"]));
     assert_eq!(doc["ticket"], "t1ck3t");
+    assert_eq!(server.requests().len(), 1);
+}
+
+/// An Agent Core socket ticket opens the instance's events, screen, or tunnel socket for 30
+/// seconds, as a terminal ticket opens a shell, so it needs `--reveal` too, also in a shared
+/// account and a project (#83).
+#[test]
+fn an_agent_socket_ticket_needs_reveal_first() {
+    let server = Server::start(vec![route(
+        "POST",
+        "/api/agentcore/instances/vm-1/agent-sockets/",
+        Reply::json(
+            201,
+            r#"{"ticket":"t1ck3t","url":"wss://x","expires_in":30}"#,
+        ),
+    )]);
+    let hipc = || Hipc::against(&Home::new(), &server);
+    let path = "/agentcore/instances/vm-1/agent-sockets/";
+    let scope = ["--account", MEMBER, "--project", PROJECT];
+    let error = hipc()
+        .run(&[&scope[..], &["api", "POST", path, "--yes"]].concat())
+        .fails(2, "reveal_required");
+    assert_eq!(
+        error["hint"],
+        format!("run `hipc --account {MEMBER} --project {PROJECT} api POST {path} --yes --reveal`")
+    );
+    assert!(server.requests().is_empty());
+    let doc = sent_unknown(
+        &hipc().run(&[&scope[..], &["api", "POST", path, "--yes", "--reveal"]].concat()),
+    );
+    assert_eq!(doc["ticket"], "t1ck3t");
+    let sent = &server.requests()[0];
+    assert_eq!(sent.header("x-hippius-account"), Some(MEMBER));
+    assert_eq!(sent.header("x-hippius-project"), Some(PROJECT));
     assert_eq!(server.requests().len(), 1);
 }
 

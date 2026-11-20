@@ -32,6 +32,7 @@ use crate::url::{with_trailing_slash, without_query, without_query_values};
 const SCOPED_PREFIXES: &[&str] = &[
     "/api/accounts/",
     "/api/compute/",
+    "/api/agentcore/",
     "/api/databases/",
     "/api/kubernetes/",
     "/api/runners/",
@@ -119,6 +120,10 @@ const SECRET_ROUTES: &[(Method, &str)] = &[
     (Method::Post, "/api/databases/{n}/backup-token/"),
     (Method::Post, "/api/network/peers/enroll/"),
     (Method::Post, "/api/compute/vms/{vm_id}/terminal-ticket/"),
+    (
+        Method::Post,
+        "/api/agentcore/instances/{vm_id}/agent-sockets/",
+    ),
     (Method::Post, "/api/infrastructure/compute-miners/prepare/"),
     (Method::Post, "/api/chat/visitors/"),
     (Method::Post, "/api/chat/transfer/"),
