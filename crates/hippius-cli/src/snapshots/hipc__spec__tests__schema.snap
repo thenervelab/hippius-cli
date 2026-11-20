@@ -3839,6 +3839,15 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "help": "Only the keys that start with this text, such as 2026/"
         },
         {
+          "name": "--delimiter",
+          "value_name": "TEXT",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "Group the keys into folders at this text after the prefix, such as /"
+        },
+        {
           "name": "--limit",
           "value_name": "LIMIT",
           "required": false,
