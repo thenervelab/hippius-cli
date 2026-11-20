@@ -64,6 +64,7 @@ const PLAN_ROUTES: &[(&str, RouteClass)] = {
         ("/api/agentcore/instances/", Scoped),
         ("/api/agentcore/instances/vm-1/backups/restore/", Scoped),
         ("/api/agentcore/instances/vm-1/agent/v1/files", Scoped),
+        ("/api/agentcorex/instances/", OwnAccount),
         ("/api/databases/", Scoped),
         ("/api/databases/metrics/", Personal),
         ("/api/databases/12/backup-token/", Personal),
@@ -471,6 +472,7 @@ fn a_secret_route_issues_a_secret_with_or_without_its_trailing_slash() {
         "/api/databases/7/restore",
         "/api/network/peers/enroll",
         "/api/compute/vms/vm-1/terminal-ticket",
+        "/api/agentcore/instances/vm-1/agent-sockets",
     ] {
         assert!(returns_secret(Method::Post, path), "{path}");
     }
@@ -503,6 +505,7 @@ fn a_secret_route_matches_its_own_method_and_no_other() {
         (Method::Post, "/api/databases/7/backup-token/"),
         (Method::Post, "/api/network/peers/enroll/"),
         (Method::Post, "/api/compute/vms/vm-1/terminal-ticket/"),
+        (Method::Post, "/api/agentcore/instances/vm-1/agent-sockets/"),
         (Method::Post, "/api/infrastructure/compute-miners/prepare/"),
         (Method::Post, "/api/chat/visitors/"),
         (Method::Post, "/api/chat/transfer/"),
@@ -547,6 +550,9 @@ fn a_secret_route_matches_its_own_method_and_no_other() {
         "/api/compute/vms/a/b/terminal-ticket/",
         "/api/compute/vms/vm-1/",
         "/api/compute/vms/vm-1/terminal-ticket/x/",
+        "/api/agentcore/instances/agent-sockets/",
+        "/api/agentcore/instances/vm-1/",
+        "/api/agentcore/instances/vm-1/agent-sockets/x/",
         "/api/auth/token/x/",
         "/api/auth/",
         "/api/network/peers/",

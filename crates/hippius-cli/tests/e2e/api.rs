@@ -1126,6 +1126,40 @@ fn a_terminal_ticket_needs_reveal_first() {
     assert_eq!(server.requests().len(), 1);
 }
 
+/// An Agent Core socket ticket opens the instance's events, screen, or tunnel socket for 30
+/// seconds, as a terminal ticket opens a shell, so it needs `--reveal` too, also in a shared
+/// account and a project (#83).
+#[test]
+fn an_agent_socket_ticket_needs_reveal_first() {
+    let server = Server::start(vec![route(
+        "POST",
+        "/api/agentcore/instances/vm-1/agent-sockets/",
+        Reply::json(
+            201,
+            r#"{"ticket":"t1ck3t","url":"wss://x","expires_in":30}"#,
+        ),
+    )]);
+    let hipc = || Hipc::against(&Home::new(), &server);
+    let path = "/agentcore/instances/vm-1/agent-sockets/";
+    let scope = ["--account", MEMBER, "--project", PROJECT];
+    let error = hipc()
+        .run(&[&scope[..], &["api", "POST", path, "--yes"]].concat())
+        .fails(2, "reveal_required");
+    assert_eq!(
+        error["hint"],
+        format!("run `hipc --account {MEMBER} --project {PROJECT} api POST {path} --yes --reveal`")
+    );
+    assert!(server.requests().is_empty());
+    let doc = sent_unknown(
+        &hipc().run(&[&scope[..], &["api", "POST", path, "--yes", "--reveal"]].concat()),
+    );
+    assert_eq!(doc["ticket"], "t1ck3t");
+    let sent = &server.requests()[0];
+    assert_eq!(sent.header("x-hippius-account"), Some(MEMBER));
+    assert_eq!(sent.header("x-hippius-project"), Some(PROJECT));
+    assert_eq!(server.requests().len(), 1);
+}
+
 /// The pages of one list share its path, so a `next` link to another path is refused
 /// before it is sent: it could reach a route whose answer holds a secret, such as the
 /// account's master token, without `--reveal`.

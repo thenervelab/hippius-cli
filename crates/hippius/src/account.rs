@@ -120,6 +120,10 @@ const SECRET_ROUTES: &[(Method, &str)] = &[
     (Method::Post, "/api/databases/{n}/backup-token/"),
     (Method::Post, "/api/network/peers/enroll/"),
     (Method::Post, "/api/compute/vms/{vm_id}/terminal-ticket/"),
+    (
+        Method::Post,
+        "/api/agentcore/instances/{vm_id}/agent-sockets/",
+    ),
     (Method::Post, "/api/infrastructure/compute-miners/prepare/"),
     (Method::Post, "/api/chat/visitors/"),
     (Method::Post, "/api/chat/transfer/"),

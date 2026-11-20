@@ -403,6 +403,8 @@ mod tests {
                 Send,
                 Refuse,
             ),
+            // A lookalike of the Agent Core prefix takes neither.
+            ("/api/agentcorex/instances/", Refuse, Refuse, Refuse),
             ("/api/databases/", Send, Send, Refuse),
             ("/api/databases/12/restore/", Send, Send, Refuse),
             ("/api/kubernetes/clusters/", Send, Send, Refuse),
