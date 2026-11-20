@@ -676,30 +676,97 @@ fn all_puts_every_pages_folders_once_before_the_objects() {
     assert_eq!(all, json!([{"Key": "a"}]));
 }
 
-#[test]
-fn text_mode_prints_the_folders_as_rows_before_the_objects() {
-    let body = folder_listing(&["2026/"], &["top.txt"], None);
-    let server = Server::start(vec![page("", &body)]);
-    for args in [
-        &["photos", "--delimiter", "/"][..],
-        &["photos", "--delimiter", "/", "--all"],
-    ] {
-        let out = text(&server, args);
-        let lines: Vec<&str> = out.lines().collect();
-        assert!(lines[0].starts_with("Key"), "{out}");
-        assert!(lines[1].starts_with("2026/"), "{out}");
-        assert!(lines[2].starts_with("top.txt"), "{out}");
-        assert_eq!(
-            out.matches("2026/").count(),
-            1,
-            "the folder is printed once: {out}"
-        );
-        assert!(!out.contains("CommonPrefixes"), "{out}");
+/// A `ListObjectsV2` page with `folders` as its `CommonPrefixes` and `objects`, each a key
+/// and a size, as its `Contents`, all written on 2026-11-01.
+fn sized_listing(folders: &[&str], objects: &[(&str, u64)], next: Option<&str>) -> String {
+    let contents: Vec<Value> = objects
+        .iter()
+        .map(
+            |(key, size)| json!({"Key": key, "LastModified": "2026-11-01T10:00:00Z", "Size": size}),
+        )
+        .collect();
+    let folders: Vec<Value> = folders.iter().map(|f| json!({"Prefix": f})).collect();
+    let mut answer = json!({
+        "Contents": contents,
+        "CommonPrefixes": folders,
+        "IsTruncated": next.is_some(),
+    });
+    if let Some(next) = next {
+        answer["NextContinuationToken"] = next.into();
     }
+    answer.to_string()
+}
+
+#[test]
+fn text_mode_prints_the_folders_as_rows_marked_folder_before_the_objects() {
+    let body = sized_listing(&["2026/"], &[("top.txt", 12), ("2026/", 0)], None);
+    let server = Server::start(vec![page("", &body)]);
+    // A zero-byte folder marker shares the folder's key; only the folder's Size says folder.
+    let rows = concat!(
+        "Key      Size    LastModified\n",
+        "2026/    folder\n",
+        "top.txt  12      2026-11-01T10:00:00Z\n",
+        "2026/    0       2026-11-01T10:00:00Z\n",
+    );
+    let one_page = text(&server, &["photos", "--delimiter", "/"]);
+    assert_eq!(one_page, format!("{rows}IsTruncated: false\n"));
+    assert_eq!(
+        text(&server, &["photos", "--delimiter", "/", "--all"]),
+        rows
+    );
     // A page with no folders prints as before.
-    let plain = Server::start(vec![page("", &listing(&["a.jpg"], None))]);
-    let out = text(&plain, &["photos"]);
-    assert!(out.lines().nth(1).unwrap().starts_with("a.jpg"), "{out}");
+    let plain = Server::start(vec![page("", &sized_listing(&[], &[("a.jpg", 5)], None))]);
+    assert_eq!(
+        text(&plain, &["photos"]),
+        concat!(
+            "Key    LastModified          Size\n",
+            "a.jpg  2026-11-01T10:00:00Z  5\n",
+            "IsTruncated: false\n",
+        )
+    );
+}
+
+#[test]
+fn text_mode_prints_a_page_of_folders_only() {
+    let body = r#"{"CommonPrefixes":[{"Prefix":"a/"},{"Prefix":"b/"}],"IsTruncated":false}"#;
+    let server = Server::start(vec![page("", body)]);
+    assert_eq!(
+        text(&server, &["photos", "--delimiter", "/"]),
+        concat!(
+            "Key  Size\n",
+            "a/   folder\n",
+            "b/   folder\n",
+            "IsTruncated: false\n",
+        )
+    );
+}
+
+#[test]
+fn text_mode_all_prints_every_pages_folders_once_before_the_objects() {
+    let server = Server::start(vec![
+        page(
+            "?max_keys=2&delimiter=%2F&continuation_token=t1",
+            &sized_listing(&["b/", "c/"], &[("y", 2)], None),
+        ),
+        page(
+            "?max_keys=2&delimiter=%2F",
+            &sized_listing(&["a/", "b/"], &[("x", 1)], Some("t1")),
+        ),
+    ]);
+    assert_eq!(
+        text(
+            &server,
+            &["photos", "--limit", "2", "--delimiter", "/", "--all"]
+        ),
+        concat!(
+            "Key  Size    LastModified\n",
+            "a/   folder\n",
+            "b/   folder\n",
+            "c/   folder\n",
+            "x    1       2026-11-01T10:00:00Z\n",
+            "y    2       2026-11-01T10:00:00Z\n",
+        )
+    );
 }
 
 #[test]

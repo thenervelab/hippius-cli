@@ -187,8 +187,9 @@ fn list_objects(ctx: &Context<'_>, args: &ObjectsList) -> Result<Printed> {
 
 /// A list of a bucket's objects as a person reads it: each folder S3 grouped under
 /// `--delimiter`, `{"Prefix": "2026/"}`, becomes a row whose `Key` is the folder, which
-/// already ends in the delimiter, with the object columns left blank, as a folder has no
-/// size or date. A page's `CommonPrefixes` move from beside the table to its first rows,
+/// already ends in the delimiter, and whose `Size` is `folder`, so it is not read as a
+/// zero-byte object of the same key; the other object columns are left blank, as a folder
+/// has no date. A page's `CommonPrefixes` move from beside the table to its first rows,
 /// so they are not printed twice; the array `--all` prints holds them first already. A
 /// dry run's document is left as it is.
 fn folders_as_rows(printed: Printed) -> Printed {
@@ -205,17 +206,20 @@ fn folders_as_rows(printed: Printed) -> Printed {
             }
             Printed::List(Value::Object(page))
         }
-        other => other,
+        printed
+        @ (Printed::List(_) | Printed::Document(_) | Printed::Raw(_) | Printed::Body(_)) => printed,
     }
 }
 
 /// `items` with each folder, an entry with a text `Prefix` and no `Key`, as the row
-/// `{"Key": <the folder>}`; an object is left as it is.
+/// `{"Key": <the folder>, "Size": "folder"}`; an object is left as it is.
 fn folder_rows(items: Vec<Value>) -> Vec<Value> {
     items
         .into_iter()
         .map(|item| match item.get("Prefix") {
-            Some(Value::String(folder)) if item.get("Key").is_none() => json!({ "Key": folder }),
+            Some(Value::String(folder)) if item.get("Key").is_none() => {
+                json!({ "Key": folder, "Size": "folder" })
+            }
             _ => item,
         })
         .collect()
@@ -872,8 +876,12 @@ mod tests {
             {"Prefix": 7},
             {"Key": "c"},
         ])));
-        let rows =
-            json!([{"Key": "a/"}, {"Prefix": "b/", "Key": "b/x"}, {"Prefix": 7}, {"Key": "c"}]);
+        let rows = json!([
+            {"Key": "a/", "Size": "folder"},
+            {"Prefix": "b/", "Key": "b/x"},
+            {"Prefix": 7},
+            {"Key": "c"},
+        ]);
         assert!(
             matches!(&all, Printed::List(all) if *all == rows),
             "{all:?}"
@@ -883,7 +891,10 @@ mod tests {
             "CommonPrefixes": [{"Prefix": "a/"}],
             "next_page_token": null,
         })));
-        let rows = json!({"items": [{"Key": "a/"}, {"Key": "c"}], "next_page_token": null});
+        let rows = json!({
+            "items": [{"Key": "a/", "Size": "folder"}, {"Key": "c"}],
+            "next_page_token": null,
+        });
         assert!(
             matches!(&page, Printed::List(page) if *page == rows),
             "{page:?}"

@@ -8,7 +8,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 ### Added
 
-- `hipc s3 buckets objects list <bucket> --delimiter /` lists a bucket one folder level at a time, as `aws s3 ls` does. The delimiter goes on every page, after `--prefix`. S3 answers the folders in `CommonPrefixes` in place of the keys under them: a page keeps `CommonPrefixes` beside `items`, and `--all` puts each folder once, as `{"Prefix": "2026/"}`, before the objects in its array, even when two pages answer the same folder. Text mode prints the folders as rows before the objects. An empty `--delimiter` is `usage` before any request. (#85)
+- `hipc s3 buckets objects list <bucket> --delimiter /` lists a bucket one folder level at a time, as `aws s3 ls` does. The delimiter goes on every page, after `--prefix`. S3 answers the folders in `CommonPrefixes` in place of the keys under them: a page keeps `CommonPrefixes` beside `items`, and `--all` puts each folder once, as `{"Prefix": "2026/"}`, before the objects in its array, even when two pages answer the same folder. Text mode prints the folders as rows before the objects, with `folder` in the Size column, so a folder never reads as an empty object of the same name. An empty `--delimiter` is `usage` before any request. (#85)
 
 ### Fixed
 

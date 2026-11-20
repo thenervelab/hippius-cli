@@ -327,7 +327,8 @@ pub(crate) struct ObjectsList {
     ///
     /// S3 answers each folder, in CommonPrefixes, in place of the keys under it. A page keeps
     /// CommonPrefixes beside items; --all puts each folder once, as {"Prefix": ...}, before
-    /// the objects in its array. Text mode prints the folders as rows before the objects.
+    /// the objects in its array. Text mode prints the folders as rows before the objects,
+    /// with folder in the Size column.
     #[arg(long, value_name = "TEXT", value_parser = delimiter)]
     pub(crate) delimiter: Option<String>,
     /// Objects per page, 1 to 1000
