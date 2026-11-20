@@ -3993,7 +3993,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "tokens",
         "list"
       ],
-      "about": "Every S3 token, master and sub",
+      "about": "The S3 tokens, master and sub",
       "effect": "read_only",
       "confirmation": false,
       "reveal": false,

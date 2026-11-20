@@ -412,7 +412,7 @@ pub(crate) struct AclUpdate {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Tokens {
-    /// Every S3 token, master and sub
+    /// The S3 tokens, master and sub
     ///
     /// The master and the sub tokens are two lists, read whole and printed as one: every page
     /// of each is followed, up to the caps --all has, so this list takes no page flags, and
@@ -461,7 +461,8 @@ pub(crate) struct TokenList {
     /// Only the tokens in this status, master and sub alike; repeat or comma-separate for more
     ///
     /// The server filters the sub tokens, and hipc the master tokens by their status, so a
-    /// dry run shows the filter on the sub-token request alone.
+    /// dry run shows the filter on the sub-token request alone. A master token with no status,
+    /// or one hipc does not know, is left out while a filter is given.
     #[arg(long, value_enum, value_delimiter = ',')]
     pub(crate) status: Vec<TokenStatus>,
 }
