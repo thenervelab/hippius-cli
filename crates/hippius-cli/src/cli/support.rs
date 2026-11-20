@@ -24,6 +24,8 @@ pub(crate) enum Tickets {
     #[command(after_help = examples(&[
         "hipc support tickets list",
         "hipc support tickets list --status open",
+        "hipc support tickets list --search invoice --priority urgent",
+        "hipc support tickets list --needs-reply --sort -priority",
         "hipc support tickets list --all",
     ]))]
     List(TicketList),
@@ -183,8 +185,55 @@ pub(crate) struct TicketList {
     /// Only the tickets in this status
     #[arg(long)]
     pub(crate) status: Option<TicketStatus>,
+    /// Only the tickets whose subject or messages hold this text
+    #[arg(long, value_name = "TEXT", value_parser = search_text)]
+    pub(crate) search: Option<String>,
+    /// Only the tickets of this priority
+    #[arg(long)]
+    pub(crate) priority: Option<TicketPriority>,
+    /// Only the tickets of this category, one line of 1 to 50 characters, as create takes it
+    #[arg(long, value_parser = ticket_category)]
+    pub(crate) category: Option<String>,
+    /// Only the tickets whose last message is yours, which wait for the support team's reply
+    #[arg(long)]
+    pub(crate) needs_reply: bool,
+    /// The order, reversed by a leading -; when left out, the newest activity comes first
+    #[arg(long, value_name = "FIELD", allow_hyphen_values = true)]
+    pub(crate) sort: Option<TicketSort>,
     #[command(flatten)]
     pub(crate) list: ListArgs,
+}
+
+/// The `ordering` values of swagger's `support_tickets_list`, each ascending or, with a
+/// leading `-` as the API's ordering filter reads it, descending. The API ignores a value it
+/// does not know, so only these are taken.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum TicketSort {
+    #[value(name = "needs_reply")]
+    NeedsReply,
+    #[value(name = "-needs_reply")]
+    NeedsReplyDescending,
+    #[value(name = "priority")]
+    Priority,
+    #[value(name = "-priority")]
+    PriorityDescending,
+    #[value(name = "status")]
+    Status,
+    #[value(name = "-status")]
+    StatusDescending,
+}
+
+impl TicketSort {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::NeedsReply => "needs_reply",
+            Self::NeedsReplyDescending => "-needs_reply",
+            Self::Priority => "priority",
+            Self::PriorityDescending => "-priority",
+            Self::Status => "status",
+            Self::StatusDescending => "-status",
+        }
+    }
 }
 
 /// The ticket statuses of swagger's `support_tickets_list` filter.
@@ -244,7 +293,8 @@ pub(crate) struct TicketBody {
     pub(crate) body_file: PathBuf,
 }
 
-/// The ticket priorities of swagger's `TicketCreate`.
+/// The ticket priorities of swagger's `TicketCreate`, which its `support_tickets_list`
+/// filter lists too.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub(crate) enum TicketPriority {
     Low,
@@ -283,6 +333,17 @@ fn ticket_subject(value: &str) -> Result<String, String> {
 /// no list of values, so any [`label`] that long is taken.
 fn ticket_category(value: &str) -> Result<String, String> {
     label(value, 1..=50, Spaces::Kept, "a category")
+}
+
+/// `--search` of a ticket list. Swagger's `search` is a string with no length, so any
+/// [`label`] is taken but an empty or blank one, which would match every ticket.
+fn search_text(value: &str) -> Result<String, String> {
+    if value.trim().is_empty() {
+        return Err(
+            "a search text is not blank; leave out --search to list every ticket".to_owned(),
+        );
+    }
+    label(value, 0..=usize::MAX, Spaces::Kept, "a search text")
 }
 
 /// `--resource-type`. Swagger's `TicketCreate.resource_type` is a string of at most 50

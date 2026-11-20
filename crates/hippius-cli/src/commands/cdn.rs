@@ -28,7 +28,7 @@ use crate::commands::cdn::rule_list::{CACHE_RULES, ListUpdate, read_rules, updat
 use crate::commands::spend_cap::{self, InForce, NewCap};
 use crate::commands::{
     Decided, Input, Printed, print_body, print_body_or, print_keyed_list, print_with,
-    read_then_write, require_public,
+    read_then_write, require_public, with_query,
 };
 use crate::context::{self, Asked, Context, Gate, WritePlan};
 use crate::units::{DECIMALS, Decimal, compare};
@@ -880,16 +880,6 @@ fn stats(ctx: &Context<'_>, client: &Client, args: &CdnStats) -> Result<Printed>
         ("region", args.region.as_deref()),
     ];
     print_body(ctx, client, &with_query(request, &query), Gate::Open)
-}
-
-/// `request` with each query parameter of `query` that has a value, in order.
-fn with_query(mut request: Request, query: &[(&str, Option<&str>)]) -> Request {
-    for (name, value) in query {
-        if let Some(value) = value {
-            request = request.query(name, value);
-        }
-    }
-    request
 }
 
 /// What a CDN zone delete ends, for its question and `hipc api`'s.

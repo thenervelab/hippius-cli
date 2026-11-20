@@ -11623,6 +11623,63 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "help": "Only the tickets in this status"
         },
         {
+          "name": "--search",
+          "value_name": "TEXT",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "Only the tickets whose subject or messages hold this text"
+        },
+        {
+          "name": "--priority",
+          "value_name": "PRIORITY",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "low",
+            "normal",
+            "high",
+            "urgent"
+          ],
+          "default": null,
+          "help": "Only the tickets of this priority"
+        },
+        {
+          "name": "--category",
+          "value_name": "CATEGORY",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "Only the tickets of this category, one line of 1 to 50 characters, as create takes it"
+        },
+        {
+          "name": "--needs-reply",
+          "value_name": null,
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "Only the tickets whose last message is yours, which wait for the support team's reply"
+        },
+        {
+          "name": "--sort",
+          "value_name": "FIELD",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "needs_reply",
+            "-needs_reply",
+            "priority",
+            "-priority",
+            "status",
+            "-status"
+          ],
+          "default": null,
+          "help": "The order, reversed by a leading -; when left out, the newest activity comes first"
+        },
+        {
           "name": "--limit",
           "value_name": "LIMIT",
           "required": false,
