@@ -370,6 +370,168 @@ fn bad_page_arguments_are_usage_without_a_request() {
     assert!(server.requests().is_empty());
 }
 
+/// The query of the URL a dry run of `hipc billing transactions list` with `flags` would
+/// read; nothing is sent.
+fn transactions_query(flags: &[&str]) -> String {
+    let server = Server::start(vec![]);
+    let args = [&["--dry-run", "billing", "transactions", "list"], flags].concat();
+    let doc = Hipc::against(&Home::new(), &server).run(&args).ok();
+    assert_eq!(doc["dry_run"], true);
+    assert!(server.requests().is_empty());
+    let url = draft(&doc)["url"]
+        .as_str()
+        .expect("a dry run shows the URL");
+    let (_, query) = url
+        .split_once("/api/billing/transactions/")
+        .expect("the list route");
+    query.to_owned()
+}
+
+/// `search` and `ordering` go in the query only when their flag is given, under the names
+/// swagger's `billing_transactions_list` spells, percent-encoded, before the page size and
+/// the page.
+#[test]
+fn transactions_send_search_and_ordering_only_when_given() {
+    assert_eq!(transactions_query(&[]), "?page_size=100");
+    let cases: &[(&[&str], &str)] = &[
+        (&["--search", "stripe"], "search=stripe"),
+        (
+            &["--search", "a b&c#d=e+f/g?h%i é"],
+            "search=a%20b%26c%23d%3De%2Bf%2Fg%3Fh%25i%20%C3%A9",
+        ),
+        (&["--search", " padded "], "search=%20padded%20"),
+        (&["--search=-amount"], "search=-amount"),
+        (
+            &["--sort", "-created_at", "--search", "card"],
+            "search=card&ordering=-created_at",
+        ),
+    ];
+    for (flags, query) in cases {
+        assert_eq!(
+            transactions_query(flags),
+            format!("?{query}&page_size=100"),
+            "{flags:?}"
+        );
+    }
+    for field in [
+        "created_at",
+        "amount",
+        "credits",
+        "currency",
+        "payment_type",
+        "status",
+    ] {
+        for sort in [field.to_owned(), format!("-{field}")] {
+            let expected = format!("?ordering={sort}&page_size=100");
+            assert_eq!(transactions_query(&["--sort", &sort]), expected);
+            assert_eq!(transactions_query(&[&format!("--sort={sort}")]), expected);
+        }
+    }
+    assert_eq!(
+        transactions_query(&["--search", "x", "--limit", "5", "--page-token", "3"]),
+        "?search=x&page_size=5&page=3"
+    );
+    assert_eq!(
+        transactions_query(&["--sort", "status", "--all"]),
+        "?ordering=status&page_size=100"
+    );
+}
+
+/// Both filters are kept on each page `--all` reads and on the page `--page-token` names.
+#[test]
+fn transactions_keep_search_and_ordering_on_every_page() {
+    let filters = "search=top%20up&ordering=-amount";
+    let first = format!("/api/billing/transactions/?{filters}&page_size=1");
+    let second = format!("/api/billing/transactions/?{filters}&page_size=1&page=2");
+    let next = format!("{{base}}/api/billing/transactions/?{filters}&page=2");
+    let server = Server::start(vec![
+        route(
+            "GET",
+            &first,
+            Reply::json(
+                200,
+                &format!(r#"{{"next":"{next}","results":[{{"id":"a"}}]}}"#),
+            ),
+        ),
+        route(
+            "GET",
+            &second,
+            Reply::json(200, r#"{"next":null,"results":[{"id":"b"}]}"#),
+        ),
+    ]);
+    let home = Home::new();
+    let flags = [
+        "billing",
+        "transactions",
+        "list",
+        "--search",
+        "top up",
+        "--sort",
+        "-amount",
+        "--limit",
+        "1",
+    ];
+    let doc = Hipc::against(&home, &server)
+        .run(&[&flags[..], &["--all"]].concat())
+        .ok();
+    assert_eq!(doc, json!([{"id": "a"}, {"id": "b"}]));
+    let doc = Hipc::against(&home, &server)
+        .run(&[&flags[..], &["--page-token", "2"]].concat())
+        .ok();
+    assert_eq!(doc["items"], json!([{"id": "b"}]));
+    let targets: Vec<String> = server.requests().into_iter().map(|r| r.target).collect();
+    assert_eq!(targets, [first, second.clone(), second]);
+}
+
+/// A blank search, or an order that is not a transaction field with at most one leading `-`,
+/// is usage, and nothing is sent: the API would list every transaction, or ignore the order.
+#[test]
+fn transactions_refuse_a_blank_search_and_an_unknown_order_and_send_nothing() {
+    let server = Server::start(vec![]);
+    let home = Home::new();
+    let refused: &[(&[&str], &str)] = &[
+        (&["--sort", "id"], "invalid value `id` for `--sort <FIELD>`"),
+        (
+            &["--sort", "credit_amount"],
+            "invalid value `credit_amount`",
+        ),
+        (&["--sort", "Amount"], "invalid value `Amount`"),
+        (&["--sort", "+amount"], "invalid value `+amount`"),
+        (&["--sort", "--amount"], "invalid value `--amount`"),
+        (&["--sort", "-"], "invalid value `-`"),
+        (&["--sort", ""], "a value is required for `--sort <FIELD>`"),
+        (
+            &["--sort", "amount,status"],
+            "invalid value `amount,status`",
+        ),
+        (&["--sort", "payment-type"], "invalid value `payment-type`"),
+        (
+            &["--sort", "created_at", "--sort", "amount"],
+            "cannot be used multiple times",
+        ),
+        (
+            &["--search", ""],
+            "a search text is not blank; leave out --search to list every transaction",
+        ),
+        (&["--search", " \t "], "a search text is not blank"),
+        (
+            &["--search", "two\nlines"],
+            "a search text holds no control character",
+        ),
+        (
+            &["--search", "a\u{202e}b"],
+            "a search text holds no invisible character",
+        ),
+    ];
+    for (flags, says) in refused {
+        let args = [&["billing", "transactions", "list"], *flags].concat();
+        let error = Hipc::against(&home, &server).run(&args).fails(2, "usage");
+        let message = error["message"].as_str().unwrap();
+        assert!(message.contains(says), "{flags:?}: {message}");
+    }
+    assert!(server.requests().is_empty());
+}
+
 #[test]
 fn transactions_and_stripe_refuse_a_membership_locally() {
     let server = Server::start(vec![]);
