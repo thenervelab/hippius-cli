@@ -2195,6 +2195,10 @@ selector_checks() {
   local other="$1" project="proj_0a1b2c3d4e5f60718293" billing="bill_9f8e7d6c5b4a39281706"
   offline "project on vms sends the header" 0 --project "$project" --dry-run compute vms list
   expect_dry_run "project header" ".project_header == \"$project\""
+  offline "membership and project on Agent Core" 0 --account "$other" --project "$project" \
+    --dry-run api GET /agentcore/instances/ --reveal
+  expect_dry_run "Agent Core takes both headers" \
+    ".account_header == \"$other\" and .project_header == \"$project\""
   offline "project on the S3 plan read" 0 --project "$project" --dry-run s3 plans
   expect_dry_run "S3 plan read takes a project" ".project_header == \"$project\""
   offline "billing on the balance sends the header" 0 --billing "$billing" --dry-run \

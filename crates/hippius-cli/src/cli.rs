@@ -167,8 +167,8 @@ pub(crate) struct Global {
     /// The project to act in: default, or an id from hipc account projects list; overrides
     /// HIPPIUS_PROJECT
     ///
-    /// Only compute, databases, Kubernetes, runners, S3 buckets and sub tokens, CDN, and the S3
-    /// plan reads take a project; a master S3 token does not. A personal route goes out
+    /// Only compute, Agent Core, databases, Kubernetes, runners, S3 buckets and sub tokens, CDN,
+    /// and the S3 plan reads take a project; a master S3 token does not. A personal route goes out
     /// without it, and any other request exits 2 until --project default is passed. A project
     /// stored with hipc account projects use is skipped on reads and refused on writes of the
     /// routes that do not take it, apart from the writes to a route that names a project or a

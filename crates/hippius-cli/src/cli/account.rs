@@ -322,12 +322,12 @@ pub(crate) enum Projects {
     Quota(Quota),
     /// Select the project later commands act in; does not touch the network
     ///
-    /// default clears the selection, so commands act in the Default project. Only compute,
-    /// databases, Kubernetes, runners, S3 buckets and sub tokens (not a master S3 token), CDN,
-    /// and the S3 plan reads take a project; the stored one goes on those, is skipped on reads of
-    /// every other route, and refuses a write there until --project default is passed, apart
-    /// from the writes that name a project (hipc account projects update, delete, transfer,
-    /// budget update and delete, and quota update) or a billing account (hipc account
+    /// default clears the selection, so commands act in the Default project. Only compute, Agent
+    /// Core, databases, Kubernetes, runners, S3 buckets and sub tokens (not a master S3 token),
+    /// CDN, and the S3 plan reads take a project; the stored one goes on those, is skipped on
+    /// reads of every other route, and refuses a write there until --project default is passed,
+    /// apart from the writes that name a project (hipc account projects update, delete,
+    /// transfer, budget update and delete, and quota update) or a billing account (hipc account
     /// billing-accounts update), which skip it too. Archiving it clears it.
     /// hipc account use clears it, since a project belongs to one account, and under an
     /// --account that names another account it is not read and cannot be stored.
