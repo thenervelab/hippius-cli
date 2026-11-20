@@ -25,9 +25,9 @@ use crate::cli::{WafEvents, WafMode, WafRateLimits, WafRules, WafTest, WafUpdate
 use crate::commands::cdn::rule_list::{
     CUSTOM_RULES, ListUpdate, RATE_LIMITS, read_rules, update_rules,
 };
-use crate::commands::cdn::{ZONES_LIST_COMMAND, fields_set, with_query};
+use crate::commands::cdn::{ZONES_LIST_COMMAND, fields_set};
 use crate::commands::replace::{Entry, Found, Replace, replace_list};
-use crate::commands::{Input, Printed, print_body, print_body_or, print_keyed_list};
+use crate::commands::{Input, Printed, print_body, print_body_or, print_keyed_list, with_query};
 use crate::context::{Context, Gate};
 
 const WAF_LISTS_LIST_COMMAND: &str = "hipc cdn lists list";

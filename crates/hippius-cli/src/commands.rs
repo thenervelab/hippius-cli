@@ -594,6 +594,16 @@ pub(crate) fn print_list_with(
     }
 }
 
+/// `request` with each query parameter of `query` that has a value, in order.
+pub(crate) fn with_query(mut request: Request, query: &[(&str, Option<&str>)]) -> Request {
+    for (name, value) in query {
+        if let Some(value) = value {
+            request = request.query(name, value);
+        }
+    }
+    request
+}
+
 /// Prints the server's body as it was sent. An empty 2xx is `internal`, `partial` after a
 /// write: a command whose route answers 204 uses [`print_body_or`].
 pub(crate) fn print_body(

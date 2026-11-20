@@ -2108,6 +2108,10 @@ refusal_checks() {
   offline "membership on support sends no header" 0 --account "$other" --dry-run \
     support tickets list
   expect_dry_run "support has no account header" '.account_header == null'
+  offline "ticket list filters --dry-run" 0 --dry-run support tickets list --search "vm down" \
+    --priority urgent --category general --needs-reply --sort -priority
+  expect_dry_run "ticket list sends each filter" '.url | endswith("/support/tickets/?search=vm%20down"
+    + "&priority=urgent&category=general&needs_reply=true&ordering=-priority&page_size=100")'
   offline "membership on a ticket close sends no header" 0 --account "$other" --dry-run \
     support tickets update 7 --status closed
   expect_dry_run "a close has no account header" '.account_header == null'

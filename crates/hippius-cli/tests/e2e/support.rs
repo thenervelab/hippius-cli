@@ -181,6 +181,181 @@ fn list_refuses_a_status_and_a_page_token_the_api_does_not_have() {
     }
 }
 
+/// The URL a dry run of `hipc support tickets list` with `flags` would read.
+fn list_url(home: &Home, flags: &[&str]) -> String {
+    let args = [&["--dry-run", "support", "tickets", "list"], flags].concat();
+    let doc = Hipc::new(home).run(&args).ok();
+    let url = draft(&doc)["url"]
+        .as_str()
+        .expect("a dry run shows the URL");
+    let (_, query) = url
+        .split_once("/api/support/tickets/")
+        .expect("the list route");
+    query.to_owned()
+}
+
+/// Each filter goes in the query only when its flag is given, under the name and with the
+/// values swagger's `support_tickets_list` spells, percent-encoded, before the page size.
+#[test]
+fn list_sends_each_filter_only_when_given_as_swagger_spells_it() {
+    let home = Home::new();
+    assert_eq!(list_url(&home, &[]), "?page_size=100");
+    let cases: &[(&[&str], &str)] = &[
+        (&["--search", "invoice"], "search=invoice"),
+        (
+            &["--search", "a b&c#d=e+f/g?h%i é"],
+            "search=a%20b%26c%23d%3De%2Bf%2Fg%3Fh%25i%20%C3%A9",
+        ),
+        (&["--search", " padded "], "search=%20padded%20"),
+        (&["--category", "general"], "category=general"),
+        (
+            &["--category", "my words&more"],
+            "category=my%20words%26more",
+        ),
+        (&["--needs-reply"], "needs_reply=true"),
+    ];
+    for (flags, query) in cases {
+        assert_eq!(
+            list_url(&home, flags),
+            format!("?{query}&page_size=100"),
+            "{flags:?}"
+        );
+    }
+    for priority in ["low", "normal", "high", "urgent"] {
+        assert_eq!(
+            list_url(&home, &["--priority", priority]),
+            format!("?priority={priority}&page_size=100")
+        );
+    }
+    for field in ["needs_reply", "priority", "status"] {
+        for sort in [field.to_owned(), format!("-{field}")] {
+            let expected = format!("?ordering={sort}&page_size=100");
+            assert_eq!(list_url(&home, &["--sort", &sort]), expected);
+            assert_eq!(list_url(&home, &[&format!("--sort={sort}")]), expected);
+        }
+    }
+}
+
+/// Every filter at once, with `--status`, is kept on each page `--all` reads and on the page
+/// `--page-token` names.
+#[test]
+fn list_keeps_every_filter_on_each_page() {
+    let filters = "status=open&search=vm%20down&priority=urgent&category=general\
+                   &needs_reply=true&ordering=-priority";
+    let server = Server::start(vec![
+        route(
+            "GET",
+            &format!("/api/support/tickets/?{filters}&page_size=1"),
+            Reply::json(200, PAGE_ONE),
+        ),
+        route(
+            "GET",
+            &format!("/api/support/tickets/?{filters}&page_size=1&page=2"),
+            Reply::json(200, PAGE_TWO),
+        ),
+    ]);
+    let home = Home::new();
+    let flags = [
+        "support",
+        "tickets",
+        "list",
+        "--status",
+        "open",
+        "--search",
+        "vm down",
+        "--priority",
+        "urgent",
+        "--category",
+        "general",
+        "--needs-reply",
+        "--sort",
+        "-priority",
+        "--limit",
+        "1",
+    ];
+    let doc = Hipc::against(&home, &server)
+        .run(&[&flags[..], &["--all"]].concat())
+        .ok();
+    assert_eq!(
+        doc,
+        json!([{"id": 7, "subject": "VM will not boot"}, {"id": 6, "subject": "Refund"}])
+    );
+    let doc = Hipc::against(&home, &server)
+        .run(&[&flags[..], &["--page-token", "2"]].concat())
+        .ok();
+    assert_eq!(doc["items"], json!([{"id": 6, "subject": "Refund"}]));
+    let targets: Vec<String> = server.requests().into_iter().map(|r| r.target).collect();
+    let page_two = format!("/api/support/tickets/?{filters}&page_size=1&page=2");
+    assert_eq!(
+        targets,
+        [
+            format!("/api/support/tickets/?{filters}&page_size=1"),
+            page_two.clone(),
+            page_two,
+        ]
+    );
+}
+
+/// A priority or an order the spec does not list, a blank search, a category outside one
+/// line of 1 to 50 characters, or a value given to `--needs-reply` is usage, and nothing is
+/// sent: the API ignores an ordering it does not know, and would list every ticket.
+#[test]
+fn list_refuses_a_filter_the_api_does_not_have_and_sends_nothing() {
+    let server = Server::start(vec![]);
+    let home = Home::new();
+    let long = "a".repeat(51);
+    let refused: &[(&[&str], &str)] = &[
+        (
+            &["--priority", "Low"],
+            "invalid value `Low` for `--priority",
+        ),
+        (&["--priority", "critical"], "invalid value `critical`"),
+        (&["--sort", "created_at"], "invalid value `created_at`"),
+        (&["--sort", "-updated_at"], "invalid value `-updated_at`"),
+        (&["--sort", "+priority"], "invalid value `+priority`"),
+        (
+            &["--sort", "priority,status"],
+            "invalid value `priority,status`",
+        ),
+        (&["--sort", "-"], "invalid value `-`"),
+        (&["--sort", "--priority"], "invalid value `--priority`"),
+        (&["--sort", "needs-reply"], "invalid value `needs-reply`"),
+        (&["--search", ""], "a search text is not blank"),
+        (&["--search", " \t "], "a search text is not blank"),
+        (
+            &["--search", "two\nlines"],
+            "a search text holds no control character",
+        ),
+        (
+            &["--search", "a\u{202e}b"],
+            "a search text holds no invisible character",
+        ),
+        (
+            &["--category", ""],
+            "a category is one line of 1 to 50 characters",
+        ),
+        (
+            &["--category", &long],
+            "a category is one line of 1 to 50 characters",
+        ),
+        (
+            &["--category", "a\nb"],
+            "a category holds no control character",
+        ),
+        (
+            &["--needs-reply=false"],
+            "unexpected value `false` for `--needs-reply`",
+        ),
+    ];
+    for (flags, says) in refused {
+        let args = [&["support", "tickets", "list"], *flags].concat();
+        let error = Hipc::against(&home, &server).run(&args).fails(2, "usage");
+        let message = error["message"].as_str().unwrap();
+        assert!(message.contains(says), "{flags:?}: {message}");
+    }
+    assert!(server.requests().is_empty());
+}
+
 #[test]
 fn get_prints_the_ticket_and_a_missing_one_names_the_list() {
     let server = Server::start(vec![
