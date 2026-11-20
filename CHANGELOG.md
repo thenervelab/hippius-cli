@@ -6,6 +6,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 ## [Unreleased]
 
+### Added
+
+- `hipc s3 buckets objects list <bucket> --delimiter /` lists a bucket one folder level at a time, as `aws s3 ls` does. The delimiter goes on every page, after `--prefix`. S3 answers the folders in `CommonPrefixes` in place of the keys under them: a page keeps `CommonPrefixes` beside `items`, and `--all` puts each folder once, as `{"Prefix": "2026/"}`, before the objects in its array, even when two pages answer the same folder. Text mode prints the folders as rows before the objects. An empty `--delimiter` is `usage` before any request. (#85)
+
 ### Fixed
 
 - `hipc s3 buckets acl update` on a new bucket explains why S3 refuses a public policy. New buckets block public policies, as on AWS, and the API passes S3's refusal on as a 400 with no hint. That error keeps its code and the server's words, and now has a hint: `aws s3api get-public-access-block` to check the bucket, then, when `BlockPublicPolicy` is on, the `put-public-access-block` command that turns it and `RestrictPublicBuckets` off, both with an AWS profile that holds the account's S3 master token (a sub token is refused), and the docs page. A 403 with the same words gets the same hint, in case the API passes S3's status on. The API has no route to those settings and `hipc` does not talk to the S3 endpoint, so `hipc` does not change them itself. The long help says the same. Any other refusal keeps its error unchanged.

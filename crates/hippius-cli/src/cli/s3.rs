@@ -297,6 +297,7 @@ pub(crate) enum BucketObjects {
     #[command(after_help = examples(&[
         "hipc s3 buckets objects list photos",
         "hipc s3 buckets objects list photos --prefix 2026/ --limit 50",
+        "hipc s3 buckets objects list photos --delimiter /",
         "hipc s3 buckets objects list photos --all",
     ]))]
     List(ObjectsList),
@@ -322,6 +323,13 @@ pub(crate) struct ObjectsList {
     /// Only the keys that start with this text, such as 2026/
     #[arg(long, value_name = "TEXT")]
     pub(crate) prefix: Option<String>,
+    /// Group the keys into folders at this text after the prefix, such as /
+    ///
+    /// S3 answers each folder, in CommonPrefixes, in place of the keys under it. A page keeps
+    /// CommonPrefixes beside items; --all puts each folder once, as {"Prefix": ...}, before
+    /// the objects in its array. Text mode prints the folders as rows before the objects.
+    #[arg(long, value_name = "TEXT", value_parser = delimiter)]
+    pub(crate) delimiter: Option<String>,
     /// Objects per page, 1 to 1000
     ///
     /// S3 answers at most 1000 keys a page.
@@ -333,6 +341,16 @@ pub(crate) struct ObjectsList {
     /// Follow every page: one JSON array, or one table in text mode
     #[arg(long)]
     pub(crate) all: bool,
+}
+
+/// An empty delimiter groups nothing, and S3 may read it as none, so it is refused rather
+/// than sent; any other text is the caller's, as S3 takes any.
+pub(crate) fn delimiter(text: &str) -> Result<String, String> {
+    if text.is_empty() {
+        Err("pass the text that separates the levels of a key, such as /".to_owned())
+    } else {
+        Ok(text.to_owned())
+    }
 }
 
 /// The longest continuation token `--page-token` takes, in bytes. Arbitrary: an S3 token is
