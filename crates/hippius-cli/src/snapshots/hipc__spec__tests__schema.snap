@@ -4003,7 +4003,22 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "refused_when": null,
       "guards": [],
       "args": [],
-      "flags": [],
+      "flags": [
+        {
+          "name": "--status",
+          "value_name": "STATUS",
+          "required": false,
+          "repeats": true,
+          "possible_values": [
+            "active",
+            "suspended",
+            "revoked",
+            "expired"
+          ],
+          "default": null,
+          "help": "Only the tokens in this status, master and sub alike; repeat or comma-separate for more"
+        }
+      ],
       "required_groups": [],
       "routes": [
         {

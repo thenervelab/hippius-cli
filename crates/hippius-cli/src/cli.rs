@@ -109,7 +109,7 @@ pub(crate) use crate::cli::runners::{
 pub(crate) use crate::cli::s3::{
     AclUpdate, BucketAcl, BucketObjects, Buckets, Configure, Funding, MAX_CONTINUATION_TOKEN_BYTES,
     ObjectsList, PlanSetting, Presign, S3, S3Subscription, ScopeType, StorageCap, TokenCreate,
-    TokenKind, TokenRotate, TokenTarget, Tokens, continuation_token,
+    TokenKind, TokenList, TokenRotate, TokenStatus, TokenTarget, Tokens, continuation_token,
 };
 pub(crate) use crate::cli::support::{
     MessageAttach, Support, TicketBody, TicketCreate, TicketList, TicketMessages, TicketPriority,
@@ -1020,6 +1020,7 @@ mod tests {
             ExposeProtocol,
             Funding,
             TokenKind,
+            TokenStatus,
             TicketUpdateStatus,
             support::TicketStatus,
             support::TicketSort,

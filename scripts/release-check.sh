@@ -703,6 +703,10 @@ storage_checks() {
   online "s3 tokens list" 0 s3 tokens list
   expect "token kinds" 'all(.items[]; .kind == "master" or .kind == "sub")'
   expect "no secret in a listing" 'all(.items[]; .secret == null)'
+  offline "s3 tokens list --status --dry-run" 0 --dry-run s3 tokens list --status expired,active
+  expect_requests "a token list sends the status to the sub tokens only" \
+    "GET $(route_ending "s3 tokens list" GET /master-tokens/)" \
+    "GET $(route_ending "s3 tokens list" GET /sub-tokens/)?status=active%2Cexpired"
   online "hub plans" 0 hub plans
   expect "hub catalog" '(.items | length) > 0 and all(.items[]; has("id") and has("name"))'
   online "hub plans --debug" 0 hub plans --debug

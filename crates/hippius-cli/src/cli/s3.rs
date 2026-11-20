@@ -420,8 +420,11 @@ pub(crate) enum Tokens {
     /// Secrets are never shown again; secret_preview is the last four characters.
     #[command(after_help = examples(&[
         "hipc s3 tokens list",
+        "hipc s3 tokens list --status active",
+        "hipc s3 tokens list --status suspended --status expired",
+        "hipc s3 tokens list --status suspended,expired",
     ]))]
-    List,
+    List(TokenList),
     /// Create a token; needs --yes, and --reveal or --secret-file
     ///
     /// The secret is shown once, so --reveal, which prints it on stdout, or --secret-file, which
@@ -450,6 +453,37 @@ pub(crate) enum Tokens {
         "hipc s3 tokens rotate --kind sub 0f8fad5b-d9cb-469f-a165-70867728950e --secret-file s3-new.secret --yes",
     ]))]
     Rotate(TokenRotate),
+}
+
+/// `hipc s3 tokens list`.
+#[derive(Debug, Args)]
+pub(crate) struct TokenList {
+    /// Only the tokens in this status, master and sub alike; repeat or comma-separate for more
+    ///
+    /// The server filters the sub tokens, and hipc the master tokens by their status, so a
+    /// dry run shows the filter on the sub-token request alone.
+    #[arg(long, value_enum, value_delimiter = ',')]
+    pub(crate) status: Vec<TokenStatus>,
+}
+
+/// A token's status, in the server's order, which is the order a filter sends them in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub(crate) enum TokenStatus {
+    Active,
+    Suspended,
+    Revoked,
+    Expired,
+}
+
+impl TokenStatus {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Suspended => "suspended",
+            Self::Revoked => "revoked",
+            Self::Expired => "expired",
+        }
+    }
 }
 
 /// Master tokens reach every bucket. Sub tokens are scoped to buckets, actions, and prefixes.

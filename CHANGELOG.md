@@ -9,6 +9,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 ### Added
 
 - `hipc support tickets list` filters by `--search <TEXT>` (the subject and the messages), `--priority low|normal|high|urgent`, `--category <CATEGORY>` (one line of 1 to 50 characters, as `create` takes it), and `--needs-reply` (the tickets whose last message is yours), and orders by `--sort needs_reply|priority|status`, reversed by a leading `-` (`--sort -priority`). Each is sent only when given, and is kept on every page `--page-token` and `--all` read. A blank search, a priority the API does not list, an order other than those three fields (with or without the leading `-`), and a category outside its rule are `usage`, and nothing is sent. (#84)
+- `hipc s3 tokens list --status <STATUS>` lists only the tokens in that status: `active`, `suspended`, `revoked`, or `expired`. Repeat the flag or give a comma list for more than one. The sub tokens are filtered by the server, which gets each status once as one comma-separated `status` on every page; the master-token route takes no filter, so `hipc` keeps the master tokens whose own `status` is one asked for. A status the server does not list is `usage` before any request. (#86)
 
 ### Fixed
 

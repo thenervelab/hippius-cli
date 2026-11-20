@@ -1213,6 +1213,8 @@ scenario_s3() {
     -- hipc --output text s3 buckets acl list
   step read net "List the S3 tokens" "see the access keys that exist" \
     -- hipc --output text s3 tokens list
+  step read net "List the live S3 tokens" "see only the access keys that still work" \
+    -- hipc --output text s3 tokens list --status active
   step read net "Read the S3 subscription history" "see past plan changes" \
     -- hipc --output text s3 subscription history --limit 5
   step read net/not_found,permission,owner_only "Read a card checkout" \
