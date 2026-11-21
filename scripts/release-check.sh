@@ -1450,6 +1450,7 @@ confirmation_required|DELETE|hipc-dry-run-check|null|s3 buckets delete hipc-dry-
 public_required|PUT|hipc-dry-run-check|{"policy":{"Statement":[]}}|s3 buckets acl update hipc-dry-run-check --policy-file @DIR@/policy.json
 reveal_required|POST|~/master-tokens/|{}|s3 tokens create --kind master
 reveal_required|GET|hipc-dry-run-check ?key=a.txt|null|s3 buckets objects presign hipc-dry-run-check a.txt
+reveal_required|GET|hipc-dry-run-check ?key=a.txt&action=put&expires_in=60|null|s3 buckets objects presign hipc-dry-run-check a.txt --upload --expires-in 60
 reveal_required|POST|~/sub-tokens/|{"scope_type":"single_bucket","bucket_names":["b"]}|s3 tokens create --kind sub --bucket b --scope-type single-bucket
 confirmation_required|POST|~sub-tokens/{token_id}/revoke/ @UUID@|null|s3 tokens revoke --kind sub @UUID@
 reveal_required|POST|~master-tokens/{token_id}/rotate/ @UUID@|null|s3 tokens rotate --kind master @UUID@
