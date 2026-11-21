@@ -104,7 +104,8 @@ pub(crate) use crate::cli::hub::{
     Visibility,
 };
 pub(crate) use crate::cli::runners::{
-    MonthlyCap, RunnerInstallations, RunnerLimit, RunnerSettings, RunnerSettingsUpdate, Runners,
+    MonthlyCap, RunnerInstallations, RunnerLimit, RunnerSettings, RunnerSettingsUpdate,
+    RunnerUsage, Runners, UsageDay,
 };
 pub(crate) use crate::cli::s3::{
     AclUpdate, BucketAcl, BucketObjects, Buckets, Configure, Funding, MAX_CONTINUATION_TOKEN_BYTES,

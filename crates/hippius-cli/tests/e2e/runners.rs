@@ -772,6 +772,127 @@ fn usage_prints_the_spend_as_sent() {
     assert_eq!(error["side_effects"], "none");
 }
 
+/// The usage target `hipc compute runners usage <args>` sends, after checking it sent one
+/// request and printed the answer as sent.
+fn usage_target(args: &[&str]) -> String {
+    let server = Server::start(vec![route_of(&runners::USAGE, [], Reply::json(200, USAGE))]);
+    let mut argv = vec!["usage"];
+    argv.extend(args);
+    assert_eq!(hipc(&server, &argv).ok(), parsed(USAGE), "{args:?}");
+    let request = server.only_request();
+    assert_eq!(request.method, "GET", "{args:?}");
+    request.target
+}
+
+/// Issue #97: no flag sends no `period`, as before the flags; `--period` is sent as given.
+#[test]
+fn usage_sends_the_period_as_given_and_none_without_a_flag() {
+    assert_eq!(usage_target(&[]), "/api/runners/usage/");
+    for period in ["current_month", "last_month", "7d", "30d"] {
+        assert_eq!(
+            usage_target(&["--period", period]),
+            format!("/api/runners/usage/?period={period}")
+        );
+    }
+}
+
+/// `--from` and `--to` send `period=custom` with both days, up to 366 days counting both
+/// ends, in a leap year or across one.
+#[test]
+fn usage_sends_a_custom_range_of_up_to_366_days() {
+    for (from, to) in [
+        ("2026-11-21", "2026-11-21"),
+        ("2026-01-01", "2026-03-31"),
+        ("2026-01-01", "2027-01-01"),
+        ("2024-01-01", "2024-12-31"),
+        ("2023-03-01", "2024-02-29"),
+    ] {
+        assert_eq!(
+            usage_target(&["--from", from, "--to", to]),
+            format!("/api/runners/usage/?period=custom&from={from}&to={to}")
+        );
+    }
+}
+
+/// Every refusal of the period flags is `usage`, before any request or token.
+#[test]
+fn usage_refuses_a_bad_period_or_range_before_any_request_or_token() {
+    let server = Server::start(vec![]);
+    let refused = |args: &[&str]| {
+        let mut argv = vec!["usage"];
+        argv.extend(args);
+        Hipc::tokenless(&Home::new(), &server)
+            .run(&runners(&argv))
+            .fails(2, "usage")
+    };
+    let says = |args: &[&str], says: &str| {
+        let error = refused(args);
+        let message = error["message"].as_str().expect("the message is a string");
+        assert!(message.contains(says), "{args:?}: {message}");
+        error
+    };
+    says(&["--from", "2026-01-01"], "`--to <DAY>`");
+    says(&["--to", "2026-01-01"], "`--from <DAY>`");
+    for args in [
+        &[
+            "--period",
+            "7d",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-01-02",
+        ][..],
+        &["--period", "7d", "--from", "2026-01-01"],
+        &["--period", "7d", "--to", "2026-01-02"],
+    ] {
+        says(args, "cannot be used with");
+    }
+    for period in ["month", "custom", "7D", "current-month", "1d", ""] {
+        says(&["--period", period], "for `--period <PERIOD>`");
+    }
+    for day in [
+        "2026-02-29",
+        "2026-04-31",
+        "2026-13-01",
+        "2026-1-01",
+        "26-01-01",
+        "2026/01/01",
+        "1969-12-31",
+        "",
+    ] {
+        says(
+            &["--from", day, "--to", "2026-01-02"],
+            "a day is YYYY-MM-DD, a date from 1970 on that exists, such as `2026-09-30`",
+        );
+        says(
+            &["--from", "2026-01-02", "--to", day],
+            "a day is YYYY-MM-DD, a date from 1970 on that exists, such as `2026-09-30`",
+        );
+    }
+    let error = refused(&["--from", "2026-03-02", "--to", "2026-03-01"]);
+    assert_eq!(
+        error["message"],
+        "`--from` `2026-03-02` is after `--to` `2026-03-01`"
+    );
+    assert_eq!(error["hint"], "pass a `--from` on or before `--to`");
+    for (from, to, days) in [
+        ("2026-01-01", "2027-01-02", 367),
+        ("2024-01-01", "2025-01-01", 367),
+        ("2020-01-01", "2026-01-01", 2193),
+    ] {
+        let error = refused(&["--from", from, "--to", to]);
+        assert_eq!(
+            error["message"],
+            format!("the range from `{from}` to `{to}` is {days} days, more than 366")
+        );
+        assert_eq!(
+            error["hint"],
+            "pass a range of at most 366 days, both ends counted"
+        );
+    }
+    assert!(server.requests().is_empty());
+}
+
 #[test]
 fn limit_get_prints_the_limit_as_sent() {
     let body = limit("\"50.000000\"");
@@ -1109,6 +1230,14 @@ fn the_limit_and_usage_commands_dry_run_without_a_token_or_a_request() {
     let url = format!("{}/api/runners/limit/", server.url());
     for (args, path) in [
         (&["usage"][..], "/api/runners/usage/"),
+        (
+            &["usage", "--period", "30d"],
+            "/api/runners/usage/?period=30d",
+        ),
+        (
+            &["usage", "--from", "2026-01-01", "--to", "2027-01-01"],
+            "/api/runners/usage/?period=custom&from=2026-01-01&to=2027-01-01",
+        ),
         (&["limit", "get"], "/api/runners/limit/"),
     ] {
         let doc = dry(args);
