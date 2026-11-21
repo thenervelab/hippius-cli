@@ -1330,9 +1330,9 @@ fn not_before_is_named_in_the_question_and_sent() {
     }
 }
 
-/// A time in the past, more than 30 days ahead, or not RFC 3339 is usage, exit 2, before
-/// anything is sent, the dry run included. The offset counts: midnight at +14:00 today is
-/// yesterday in UTC, and 23:30 at -05:00 on the 30th day is the 31st in UTC.
+/// A time in the past, more than 30 days ahead, not RFC 3339, or a leap second is usage, exit
+/// 2, before anything is sent, the dry run included. The offset counts: midnight at +14:00
+/// today is yesterday in UTC, and 23:30 at -05:00 on the 30th day is the 31st in UTC.
 #[test]
 fn not_before_outside_the_window_or_malformed_is_usage() {
     let home = Home::new();
@@ -1364,6 +1364,7 @@ fn not_before_outside_the_window_or_malformed_is_usage() {
         ("2026-12-01 02:00:00Z", ""),
         ("2026-12-01T02:00:00", " `2026-12-01T02:00:00`"),
         ("2026-02-30T02:00:00Z", ""),
+        ("2026-12-31T23:59:60Z", ""),
     ] {
         let server = Server::start(vec![]);
         let error = Hipc::against(&home, &server)
@@ -1373,7 +1374,7 @@ fn not_before_outside_the_window_or_malformed_is_usage() {
             error["message"],
             format!(
                 "invalid value{shown} for `--not-before <TIME>`: a time is RFC 3339, such as \
-                 `2026-12-01T02:00:00Z`"
+                 `YYYY-MM-DDTHH:MM:SSZ`"
             )
         );
         assert_eq!(

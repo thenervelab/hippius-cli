@@ -11,9 +11,13 @@
 //! exits 0 with the note the re-read supports. An upgrade already in flight is `conflict`
 //! before the question, and nothing is posted.
 //!
-//! `--not-before` must fall between now and 30 days ahead, the window swagger documents. The
-//! local clock decides, since nothing has been sent that could give the API's; a clock that
-//! is off lets the API refuse the post with its own 400 `guest-not-before-invalid`.
+//! `--not-before` must fall between now and 30 days ahead. Swagger documents only the upper
+//! bound ("at most 30 days ahead"); refusing a past time is hipc's own choice, since such a
+//! time is a typo, not a schedule. The local clock decides, since nothing has been sent that
+//! could give the API's; a clock that is off lets the API refuse the post with its own 400
+//! `guest-not-before-invalid`. The window is checked once, when the command starts: a time
+//! that passes while the question waits is sent as given, and the server decides what a time
+//! already past means.
 
 use std::time::SystemTime;
 
