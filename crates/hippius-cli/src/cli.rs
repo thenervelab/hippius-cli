@@ -41,7 +41,8 @@ pub(crate) mod values;
 mod waf;
 
 pub(crate) use crate::cli::app_engine::{
-    AppCreate, AppEngine, AppEngineApps, AppUpdate, GuestComponents, MAX_COMPOSE_BYTES,
+    AppCreate, AppEngine, AppEngineApps, AppUpdate, GuestComponents, GuestUpdate,
+    MAX_COMPOSE_BYTES, NotBefore,
 };
 pub(crate) use crate::cli::hub_keys::{HubKeys, KeyCreate};
 pub(crate) use crate::cli::hub_models::{HubEvents, HubModels};

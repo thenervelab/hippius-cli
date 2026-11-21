@@ -83,6 +83,9 @@ MISSING_UUID="0f8fad5b-d9cb-469f-a165-70867728950e"
 MISSING_DB="999999999"
 MISSING_ZONE="z000000000000"
 MISSING_LIST="hip_release_check_missing"
+# A week ahead, inside the 30 days a scheduled guest upgrade may wait: GNU date, then BSD.
+SOON="$(date -u -d '+7 days' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+  date -u -v+7d +%Y-%m-%dT%H:%M:%SZ)"
 MISSING_FLAVOR="hipc-release-check-missing"
 MISSING_BUCKET="hipc-release-check-missing"
 MISSING_KEY="999999999"
@@ -1414,10 +1417,10 @@ membership_checks() {
 # first word starting with `~` is the end of the route's template), the body, and the
 # arguments. The route itself is the one `hipc schema` lists for the command with that
 # method, that many placeholders, and that ending, so no path is copied here; a row that
-# leaves several routes, or none, fails. @DIR@ is
-# the directory of the input files. Rows pass 100 columns on purpose: one row per command
-# keeps each one whole for grep and for the "every command" check, and a here-doc row cannot
-# be continued on the next line. The ticket close is `-` because it reads the ticket before
+# leaves several routes, or none, fails. @DIR@ is the directory of the input files, and
+# @SOON@ a time a week ahead. Rows pass 100 columns on purpose: one row per command keeps
+# each one whole for grep and for the "every command" check, and a here-doc row cannot be
+# continued on the next line. The ticket close is `-` because it reads the ticket before
 # it asks, and offline that read fails before `confirmation_required` could be met.
 dry_run_table() {
   cat <<'EOF'
@@ -1505,6 +1508,7 @@ confirmation_required|DELETE|3|null|compute runners installations delete 3
 -|PUT|vm-1a2b|{"secrets":{"DB_PASSWORD":"<the DB_PASSWORD from --secrets-file>"}}|compute app-engine apps update vm-1a2b --secrets-file @DIR@/app-secrets.json
 -|PUT|vm-1a2b|{"compose":"services:\n  web:\n    image: nginx\n","secrets":{"DB_PASSWORD":"<the DB_PASSWORD from --secrets-file>"}}|compute app-engine apps update vm-1a2b --compose-file @DIR@/compose.yaml --secrets-file @DIR@/app-secrets.json
 -|POST|vm-1a2b|{"confirm":true,"release":"<the newest guest components release>","expected_current_release":"<the release the app runs>"}|compute app-engine guest-components update vm-1a2b
+-|POST|vm-1a2b|{"confirm":true,"release":"<the newest guest components release>","not_before":"@SOON@","expected_current_release":"<the release the app runs>"}|compute app-engine guest-components update vm-1a2b --not-before @SOON@
 -|POST|-|{"compose":"services:\n  web:\n    image: nginx\n"}|compute app-engine fix --compose-file @DIR@/compose.yaml --output-file @DIR@/fixed.yaml
 -|PUT|-|{"monthly_cap":"5"}|compute runners limit update --monthly-cap 5
 confirmation_required|POST|-|{"name":"hipc-dry","public_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReleaseCheck hipc@check"}|compute ssh-keys create --name hipc-dry --public-key-file @DIR@/id.pub
@@ -1680,6 +1684,8 @@ dry_run_row() {
   local dir="$1" refusal="$2" method="$3" path="$4" body="$5" line="$6" args name i
   line="${line//@UUID@/$MISSING_UUID}"
   line="${line//@ZONE@/$MISSING_ZONE}"
+  line="${line//@SOON@/$SOON}"
+  body="${body//@SOON@/$SOON}"
   path="${path//@UUID@/$MISSING_UUID}"
   path="${path//@ZONE@/$MISSING_ZONE}"
   read -r -a args <<<"$line"

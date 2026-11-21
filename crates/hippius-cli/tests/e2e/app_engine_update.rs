@@ -2,6 +2,8 @@
 //! the VM. Secrets are merged: a value in the file replaces the stored one, and a stored name
 //! left out is kept. A guest upgrade posts only when a newer release is offered.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use hippius::routes::compute;
 use serde_json::{Value, json};
 
@@ -1255,6 +1257,151 @@ fn needs_operator_warns_and_the_dry_run_uses_placeholders() {
         json!({
             "confirm": true,
             "release": "<the newest guest components release>",
+            "expected_current_release": "<the release the app runs>",
+        })
+    );
+    assert!(server.requests().is_empty());
+}
+
+/// `days` days from today by the local clock, at `clock`, a time of day and a zone, in RFC
+/// 3339. The time now is somewhere in today, so a time several hours from either end of the
+/// window is inside it or outside it whatever the hour the test runs.
+fn days_ahead(days: i64, clock: &str) -> String {
+    let today = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the test clock is after 1970")
+        .as_secs()
+        / 86_400;
+    let today = i64::try_from(today).expect("the day count fits an i64");
+    format!("{}T{clock}", hippius::date_of_unix_day(today + days))
+}
+
+fn offered_then_accepted() -> Server {
+    let offered = components(&json!(3), &json!(7), Some(true));
+    Server::start(vec![
+        route_of(
+            &compute::APP_ENGINE_GUEST_COMPONENTS,
+            [&"vm-1a2b"],
+            Reply::json(200, &offered),
+        ),
+        route_of(
+            &compute::APP_ENGINE_GUEST_UPGRADE_CREATE,
+            [&"vm-1a2b"],
+            Reply::json(202, &accepted_job()),
+        ),
+    ])
+}
+
+/// `--not-before` is named in the question and sent as `not_before`, as given. A time with
+/// an offset is sent with its offset; 23:30 at +14:00 is 09:30 UTC the same day, inside the
+/// window on the 29th day.
+#[test]
+fn not_before_is_named_in_the_question_and_sent() {
+    let home = Home::new();
+    for time in [days_ahead(7, "12:00:00Z"), days_ahead(29, "23:30:00+14:00")] {
+        let server = offered_then_accepted();
+        let error = Hipc::against(&home, &server)
+            .run(&guest_args(&["--not-before", &time]))
+            .fails(2, "confirmation_required");
+        assert_eq!(
+            error["message"],
+            format!(
+                "this would upgrade the guest components of the app `vm-1a2b` from release \
+                 `3` to release `7`, not before `{time}`, and `--yes` was not passed"
+            )
+        );
+        assert_eq!(server.only_request().path(), GUEST);
+
+        let server = offered_then_accepted();
+        let doc = Hipc::against(&home, &server)
+            .run(&guest_args(&["--not-before", &time, "--yes"]))
+            .ok();
+        assert_eq!(doc["job"]["state"], "pending");
+        assert_eq!(server.requests()[1].path(), GUEST_POST);
+        assert_eq!(
+            server.requests()[1].json(),
+            json!({
+                "confirm": true,
+                "release": 7,
+                "not_before": time,
+                "expected_current_release": 3,
+            })
+        );
+    }
+}
+
+/// A time in the past, more than 30 days ahead, not RFC 3339, or a leap second is usage, exit
+/// 2, before anything is sent, the dry run included. The offset counts: midnight at +14:00
+/// today is yesterday in UTC, and 23:30 at -05:00 on the 30th day is the 31st in UTC.
+#[test]
+fn not_before_outside_the_window_or_malformed_is_usage() {
+    let home = Home::new();
+    let past = "is in the past";
+    let ahead = "is more than 30 days ahead";
+    let window = "pass a time from now to 30 days ahead, or leave the flag out to upgrade now";
+    for (time, why) in [
+        ("2020-01-01T00:00:00Z".to_owned(), past),
+        (days_ahead(0, "00:00:00+14:00"), past),
+        (days_ahead(31, "12:00:00Z"), ahead),
+        (days_ahead(30, "23:30:00-05:00"), ahead),
+    ] {
+        for extra in [&["--yes"][..], &["--dry-run"]] {
+            let server = Server::start(vec![]);
+            let mut args = vec!["--not-before", time.as_str()];
+            args.extend(extra);
+            let error = Hipc::against(&home, &server)
+                .run(&guest_args(&args))
+                .fails(2, "usage");
+            assert_eq!(error["message"], format!("`--not-before` `{time}` {why}"));
+            assert_eq!(error["hint"], window);
+            assert!(server.requests().is_empty(), "{time}");
+        }
+    }
+    // A value as long as a token is left out of the message, in case it is a secret.
+    for (bad, shown) in [
+        ("tomorrow", " `tomorrow`"),
+        ("2026-12-01", " `2026-12-01`"),
+        ("2026-12-01 02:00:00Z", ""),
+        ("2026-12-01T02:00:00", " `2026-12-01T02:00:00`"),
+        ("2026-02-30T02:00:00Z", ""),
+        ("2026-12-31T23:59:60Z", ""),
+    ] {
+        let server = Server::start(vec![]);
+        let error = Hipc::against(&home, &server)
+            .run(&guest_args(&["--not-before", bad, "--yes"]))
+            .fails(2, "usage");
+        assert_eq!(
+            error["message"],
+            format!(
+                "invalid value{shown} for `--not-before <TIME>`: a time is RFC 3339, such as \
+                 `YYYY-MM-DDTHH:MM:SSZ`"
+            )
+        );
+        assert_eq!(
+            error["hint"],
+            "run `hipc compute app-engine guest-components update --help`"
+        );
+        assert!(server.requests().is_empty(), "{bad}");
+    }
+}
+
+/// The dry run shows `not_before` in the body, beside the release placeholders.
+#[test]
+fn the_dry_run_shows_not_before() {
+    let home = Home::new();
+    let time = days_ahead(7, "12:00:00Z");
+    let server = Server::start(vec![]);
+    let doc = Hipc::against(&home, &server)
+        .run(&guest_args(&["--not-before", &time, "--dry-run"]))
+        .ok();
+    assert_eq!(draft(&doc)["method"], "POST");
+    assert!(draft(&doc)["url"].as_str().unwrap().ends_with(GUEST_POST));
+    assert_eq!(
+        draft(&doc)["body"],
+        json!({
+            "confirm": true,
+            "release": "<the newest guest components release>",
+            "not_before": time,
             "expected_current_release": "<the release the app runs>",
         })
     );

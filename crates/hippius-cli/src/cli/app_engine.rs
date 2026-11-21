@@ -285,11 +285,16 @@ pub(crate) enum GuestComponents {
     /// note that read supports. An upgrade already in flight, upgrade.in_flight true, is
     /// refused before the question as conflict, and the hint names hipc compute app-engine
     /// guest-components update-status. Poll a scheduled upgrade with that command.
+    ///
+    /// With --not-before YYYY-MM-DDTHH:MM:SSZ (or an offset such as +02:00 in place of Z),
+    /// the post also sends not_before, and the upgrade waits until that time. A time in the
+    /// past, or more than 30 days ahead by the local clock, is refused as usage before
+    /// anything is sent. The question names the time, and the dry run shows not_before.
     #[command(after_help = examples(&[
         "hipc compute app-engine guest-components update vm-1a2b",
         "hipc compute app-engine guest-components update vm-1a2b --yes",
     ]))]
-    Update(AppTarget),
+    Update(GuestUpdate),
     /// The app's latest guest components upgrade: its release, state, and outcome
     ///
     /// job is null when the app was never upgraded.
@@ -297,6 +302,44 @@ pub(crate) enum GuestComponents {
         "hipc compute app-engine guest-components update-status vm-1a2b",
     ]))]
     UpdateStatus(AppTarget),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct GuestUpdate {
+    #[command(flatten)]
+    pub(crate) app: AppTarget,
+    /// The earliest time the upgrade may start, in RFC 3339: YYYY-MM-DDTHH:MM:SSZ
+    ///
+    /// Z or an offset such as +02:00, from now to at most 30 days ahead. Without it the
+    /// upgrade starts now.
+    #[arg(long, value_name = "TIME", value_parser = not_before)]
+    pub(crate) not_before: Option<NotBefore>,
+}
+
+/// A `--not-before` time: the text sent as `not_before`, and the same instant in seconds
+/// since 1970, which the command checks against the clock before anything is sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NotBefore {
+    pub(crate) text: String,
+    pub(crate) seconds: u64,
+}
+
+/// A `--not-before`, read here so that a typo is refused before anything is sent: an RFC 3339
+/// time with `Z` or an offset, and a date that exists. A leap second (`:60`) is refused too:
+/// the reader in `hippius` takes one, as the API may write one, but the API's parser refuses
+/// it in a request, and only after the question was answered. A lowercase `t` or `z` is sent
+/// uppercase, as the API writes them. Whether the time is in the window the API takes is a
+/// matter of the clock, so the command checks that when it runs.
+fn not_before(value: &str) -> Result<NotBefore, String> {
+    let text = value.replace('t', "T").replace('z', "Z");
+    // A time that parsed is `YYYY-MM-DDTHH:MM:SS...`, so the seconds are 6..8 after the `T`.
+    let leap = text
+        .split_once('T')
+        .is_some_and(|(_, clock)| clock.get(6..8) == Some("60"));
+    hippius::rfc3339_seconds(&text)
+        .filter(|_| !leap)
+        .map(|seconds| NotBefore { text, seconds })
+        .ok_or_else(|| "a time is RFC 3339, such as `YYYY-MM-DDTHH:MM:SSZ`".to_owned())
 }
 
 /// The file `fix --output-file` writes `fixed_compose` to ([`new_file`]). `-` is refused
@@ -315,6 +358,58 @@ fn new_compose_file(text: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `--not-before` is an RFC 3339 time with a zone, read as the instant it names, and
+    /// sent as given but for a lowercase `t` or `z`.
+    #[test]
+    fn not_before_reads_an_rfc_3339_time() {
+        for (given, sent, seconds) in [
+            (
+                "2026-12-01T02:00:00Z",
+                "2026-12-01T02:00:00Z",
+                1_796_090_400,
+            ),
+            (
+                "2026-12-01t02:00:00z",
+                "2026-12-01T02:00:00Z",
+                1_796_090_400,
+            ),
+            (
+                "2026-12-01T04:00:00+02:00",
+                "2026-12-01T04:00:00+02:00",
+                1_796_090_400,
+            ),
+            (
+                "2026-11-30T21:00:00.5-05:00",
+                "2026-11-30T21:00:00.5-05:00",
+                1_796_090_400,
+            ),
+        ] {
+            assert_eq!(
+                not_before(given),
+                Ok(NotBefore {
+                    text: sent.to_owned(),
+                    seconds,
+                }),
+                "{given}"
+            );
+        }
+        for bad in [
+            "tomorrow",
+            "2026-12-01",
+            "2026-12-01 02:00:00Z",
+            "2026-12-01T02:00:00",
+            "2026-02-30T02:00:00Z",
+            "2026-12-01T02:00:00+24:00",
+            "2026-12-31T23:59:60Z",
+        ] {
+            assert_eq!(
+                not_before(bad),
+                Err("a time is RFC 3339, such as `YYYY-MM-DDTHH:MM:SSZ`".to_owned()),
+                "{bad}"
+            );
+        }
+    }
 
     /// The long help of `--compose-file` is the short help, then where the server's smaller
     /// limit is read and why `/dev/stdin` is refused.

@@ -1,21 +1,32 @@
 //! `hipc compute app-engine guest-components update`: read the guest components, and when a
 //! newer release is offered, `POST .../guest-upgrade/` onto it.
 //!
-//! The order (tenet 5): argv; the dry run, which sends nothing and shows a placeholder for
-//! the release numbers only a read can give; the token; `GET guest-components/`; then either
-//! nothing, when no newer release is offered, or the question and the post. No `--yes` is
-//! required when nothing is posted. The note says the app is on the newest release only when
-//! `release` and `newest_release` are the same number. A 409 `guest-already-current` reads
-//! the guest components again: an offer that is still an update is `conflict`, and that read
-//! is printed; otherwise the command exits 0 with the note the re-read supports. An upgrade
-//! already in flight is `conflict` before the question, and nothing is posted.
+//! The order (tenet 5): argv, with `--not-before` checked against the local clock; the dry
+//! run, which sends nothing and shows a placeholder for the release numbers only a read can
+//! give; the token; `GET guest-components/`; then either nothing, when no newer release is
+//! offered, or the question and the post. No `--yes` is required when nothing is posted. The
+//! note says the app is on the newest release only when `release` and `newest_release` are
+//! the same number. A 409 `guest-already-current` reads the guest components again: an offer
+//! that is still an update is `conflict`, and that read is printed; otherwise the command
+//! exits 0 with the note the re-read supports. An upgrade already in flight is `conflict`
+//! before the question, and nothing is posted.
+//!
+//! `--not-before` must fall between now and 30 days ahead. Swagger documents only the upper
+//! bound ("at most 30 days ahead"); refusing a past time is hipc's own choice, since such a
+//! time is a typo, not a schedule. The local clock decides, since nothing has been sent that
+//! could give the API's; a clock that is off lets the API refuse the post with its own 400
+//! `guest-not-before-invalid`. The window is checked once, when the command starts: a time
+//! that passes while the question waits is sent as given, and the server decides what a time
+//! already past means.
+
+use std::time::SystemTime;
 
 use hippius::routes::compute::{self, GuestComponents};
-use hippius::{Client, Error, Failure, Request, Response, Result, SideEffects, Slot, view_of};
+use hippius::{Client, Error, Failure, Now, Request, Response, Result, SideEffects, Slot, view_of};
 use serde_json::{Value, json};
 
 use super::{APPS_LIST_COMMAND, unavailable_hint, warn_needs_operator};
-use crate::cli::AppTarget;
+use crate::cli::{GuestUpdate, NotBefore};
 use crate::commands::compute::refused_as;
 use crate::commands::{Printed, run_hint};
 use crate::context::{Checked, Context, Write, WritePlan};
@@ -31,6 +42,9 @@ const CURRENT: &str = "<the release the app runs>";
 const RESTART: &str = "the VM restarts and its attestation measurement changes; volumes and \
      its network identity are kept";
 
+/// How far ahead `--not-before` may be, in seconds: swagger's "at most 30 days ahead".
+const MAX_WAIT_SECONDS: u64 = 30 * 24 * 60 * 60;
+
 /// What the guest-components read says to do.
 #[derive(Debug, PartialEq, Eq)]
 enum Offer {
@@ -40,11 +54,19 @@ enum Offer {
     Upgrade { current: Option<u64>, newest: u64 },
 }
 
-pub(super) fn update(ctx: &Context<'_>, target: &AppTarget) -> Result<Printed> {
-    let vm_id = target.vm_id.as_str();
+pub(super) fn update(ctx: &Context<'_>, args: &GuestUpdate) -> Result<Printed> {
+    let vm_id = args.app.vm_id.as_str();
+    let not_before = match &args.not_before {
+        Some(time) => {
+            let now = Now::of(None, SystemTime::now(), "schedule the guest upgrade")?;
+            check_window(time, now.latest)?;
+            Some(time.text.as_str())
+        }
+        None => None,
+    };
     let client = ctx.load_authed_client()?;
     let read = guest_read(vm_id);
-    let draft = guest_draft(vm_id);
+    let draft = guest_draft(vm_id, not_before);
     let checked = match ctx.check_write(&client, &WritePlan::new(&[&read], &draft))? {
         // The guest components are read before the question, which names the releases.
         Write::DryRun(doc) => {
@@ -75,12 +97,33 @@ pub(super) fn update(ctx: &Context<'_>, target: &AppTarget) -> Result<Printed> {
                     vm_id,
                     current,
                     newest,
+                    not_before,
                 },
                 checked,
             )
         }
         Err(error) => Err(error.with_hint(reread(vm_id))),
     }
+}
+
+/// Refuses a `--not-before` before `now` or more than [`MAX_WAIT_SECONDS`] after it, both in
+/// seconds since 1970, as usage: the API would refuse it, and nothing is sent yet.
+fn check_window(time: &NotBefore, now: u64) -> Result<()> {
+    let NotBefore { text, seconds } = time;
+    let hint = "pass a time from now to 30 days ahead, or leave the flag out to upgrade now";
+    if *seconds < now {
+        return Err(Error::usage(
+            format!("`--not-before` `{text}` is in the past"),
+            hint,
+        ));
+    }
+    if seconds - now > MAX_WAIT_SECONDS {
+        return Err(Error::usage(
+            format!("`--not-before` `{text}` is more than 30 days ahead"),
+            hint,
+        ));
+    }
+    Ok(())
 }
 
 /// `GET` the guest components. A missing app is `not_found` with the list hint.
@@ -91,12 +134,15 @@ fn guest_read(vm_id: &str) -> Request {
 }
 
 /// The post a dry run describes. The numbers are placeholders: a dry run does not read them.
-fn guest_draft(vm_id: &str) -> Request {
-    let body = json!({
+fn guest_draft(vm_id: &str, not_before: Option<&str>) -> Request {
+    let mut body = json!({
         "confirm": true,
         "release": NEWEST,
         "expected_current_release": CURRENT,
     });
+    if let Some(time) = not_before {
+        body["not_before"] = json!(time);
+    }
     Request::to(&compute::APP_ENGINE_GUEST_UPGRADE_CREATE, [&vm_id])
         .json(&body)
         .about(format!("upgrade the guest components of the app `{vm_id}`"))
@@ -110,12 +156,14 @@ fn read_components(ctx: &Context<'_>, client: &Client, read: &Request) -> Result
         .map_err(unavailable_hint)
 }
 
-/// The upgrade the read offered: which app, from which release, onto which.
+/// The upgrade the read offered: which app, from which release, onto which, and the
+/// `--not-before` time, if any.
 #[derive(Debug, Clone, Copy)]
 struct Upgrade<'a> {
     vm_id: &'a str,
     current: Option<u64>,
     newest: u64,
+    not_before: Option<&'a str>,
 }
 
 /// Asks, then posts the upgrade. `guest-already-current` is read again.
@@ -125,14 +173,10 @@ fn schedule(
     upgrade: Upgrade<'_>,
     checked: Checked,
 ) -> Result<Printed> {
-    let Upgrade {
-        vm_id,
-        current,
-        newest,
-    } = upgrade;
-    let action = upgrade_action(vm_id, current, newest);
+    let action = upgrade_action(&upgrade);
     let confirmed = ctx.confirm_write(checked, &action, Some(RESTART))?;
-    let request = upgrade_post(vm_id, current, newest, &action);
+    let request = upgrade_post(&upgrade, &action);
+    let vm_id = upgrade.vm_id;
     match ctx.send_confirmed(client, &request, &confirmed) {
         Ok(response) => accepted(ctx, vm_id, &response),
         Err(error) if refused_as(&error, 409, "guest-already-current") => {
@@ -143,13 +187,14 @@ fn schedule(
 }
 
 /// The post, with `expected_current_release` null on the bare base so the check is not skipped.
-fn upgrade_post(vm_id: &str, current: Option<u64>, newest: u64, action: &str) -> Request {
+fn upgrade_post(upgrade: &Upgrade<'_>, action: &str) -> Request {
     let body = compute::GuestUpgradeBody {
         confirm: true,
-        release: newest,
-        expected_current_release: current,
+        release: upgrade.newest,
+        not_before: upgrade.not_before,
+        expected_current_release: upgrade.current,
     };
-    Request::to(&compute::APP_ENGINE_GUEST_UPGRADE_CREATE, [&vm_id])
+    Request::to(&compute::APP_ENGINE_GUEST_UPGRADE_CREATE, [&upgrade.vm_id])
         .json(&body)
         .about(action)
         .listed_by(APPS_LIST_COMMAND)
@@ -204,13 +249,26 @@ fn still_offered(vm_id: &str, refused: Error, components: Value) -> Error {
         .with_side_effects(SideEffects::None)
 }
 
-/// What the upgrade does, for the question: the two release numbers the read showed.
-fn upgrade_action(vm_id: &str, current: Option<u64>, newest: u64) -> String {
+/// What the upgrade does, for the question: the two release numbers the read showed, and
+/// the `--not-before` time.
+fn upgrade_action(upgrade: &Upgrade<'_>) -> String {
+    let Upgrade {
+        vm_id,
+        current,
+        newest,
+        not_before,
+    } = upgrade;
     let from = match current {
         Some(release) => format!("release `{release}`"),
         None => "the bare base".to_owned(),
     };
-    format!("upgrade the guest components of the app `{vm_id}` from {from} to release `{newest}`")
+    let when = match not_before {
+        Some(time) => format!(", not before `{time}`"),
+        None => String::new(),
+    };
+    format!(
+        "upgrade the guest components of the app `{vm_id}` from {from} to release `{newest}`{when}"
+    )
 }
 
 fn already(vm_id: &str) -> String {
@@ -309,15 +367,29 @@ mod tests {
         offer(&read(value))
     }
 
+    fn upgrade(current: Option<u64>, not_before: Option<&str>) -> Upgrade<'_> {
+        Upgrade {
+            vm_id: "vm-1a2b",
+            current,
+            newest: 7,
+            not_before,
+        }
+    }
+
     #[test]
-    fn the_question_names_the_two_releases_and_the_restart() {
+    fn the_question_names_the_two_releases_the_time_and_the_restart() {
         assert_eq!(
-            upgrade_action("vm-1a2b", Some(3), 7),
+            upgrade_action(&upgrade(Some(3), None)),
             "upgrade the guest components of the app `vm-1a2b` from release `3` to release `7`"
         );
         assert_eq!(
-            upgrade_action("vm-1a2b", None, 7),
+            upgrade_action(&upgrade(None, None)),
             "upgrade the guest components of the app `vm-1a2b` from the bare base to release `7`"
+        );
+        assert_eq!(
+            upgrade_action(&upgrade(Some(3), Some("2026-12-01T02:00:00Z"))),
+            "upgrade the guest components of the app `vm-1a2b` from release `3` to release `7`, \
+             not before `2026-12-01T02:00:00Z`"
         );
         assert!(RESTART.contains("attestation measurement"));
         assert!(RESTART.contains("network identity"));
@@ -325,6 +397,33 @@ mod tests {
             already("vm-1a2b"),
             "`vm-1a2b` is already on the newest guest components release"
         );
+    }
+
+    /// The window is from now to 30 days ahead, both ends included, in whole seconds.
+    #[test]
+    fn not_before_is_refused_before_now_or_past_30_days() {
+        let now = 1_800_000_000;
+        let at = |seconds| NotBefore {
+            text: "T".to_owned(),
+            seconds,
+        };
+        for fine in [now, now + 1, now + MAX_WAIT_SECONDS] {
+            assert!(check_window(&at(fine), now).is_ok(), "{fine}");
+        }
+        let refused = |seconds| check_window(&at(seconds), now).unwrap_err();
+        for (seconds, why) in [
+            (now - 1, "`--not-before` `T` is in the past"),
+            (0, "`--not-before` `T` is in the past"),
+            (
+                now + MAX_WAIT_SECONDS + 1,
+                "`--not-before` `T` is more than 30 days ahead",
+            ),
+        ] {
+            let error = refused(seconds);
+            assert_eq!(error.message(), why);
+            assert_eq!(error.code(), hippius::Code::Usage);
+        }
+        assert_eq!(MAX_WAIT_SECONDS, 2_592_000);
     }
 
     /// Equal numbers are the newest release. A false flag, or a null newest, is not, even
