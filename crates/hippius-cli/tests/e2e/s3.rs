@@ -854,7 +854,19 @@ fn tokens_list_dry_run_describes_both_collections() {
     let doc = Hipc::against(&Home::new(), &server)
         .run(&["s3", "tokens", "list", "--dry-run"])
         .ok();
-    assert_eq!(doc["requests"].as_array().unwrap().len(), 2);
+    let urls: Vec<&str> = doc["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["url"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            format!("{}/api/objectstore/master-tokens/", server.url()),
+            format!("{}/api/objectstore/sub-tokens/", server.url()),
+        ]
+    );
     assert!(server.requests().is_empty());
 }
 
@@ -2408,6 +2420,193 @@ fn tokens_list_refuses_a_page_that_is_not_the_one_asked() {
         "run the command again, as the list may have changed while it was read"
     );
     assert_eq!(server.requests().len(), 3);
+}
+
+/// `--status` goes to the sub-token route as one `status`, and the master tokens, whose route
+/// takes no filter, are kept by their own `status`: one without a status, or with another,
+/// is left out. The sub tokens are the server's answer, unfiltered by hipc.
+#[test]
+fn tokens_list_status_filters_both_kinds() {
+    let server = Server::start(vec![
+        route_of(
+            &s3::MASTER_TOKENS,
+            [],
+            Reply::json(
+                200,
+                concat!(
+                    r#"[{"id":"m1","status":"active"},{"id":"m2","status":"revoked"},"#,
+                    r#"{"id":"m3"},{"id":"m4","status":"expired"}]"#
+                ),
+            ),
+        ),
+        route_of(
+            &s3::SUB_TOKENS,
+            [],
+            Reply::json(200, r#"[{"id":"s1","status":"active"}]"#),
+        ),
+    ]);
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&["s3", "tokens", "list", "--status", "active"])
+        .ok();
+    let ids: Vec<&str> = doc["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["m1", "s1"]);
+    let targets: Vec<String> = server.requests().into_iter().map(|r| r.target).collect();
+    assert_eq!(
+        targets,
+        [
+            "/api/objectstore/master-tokens/",
+            "/api/objectstore/sub-tokens/?status=active"
+        ]
+    );
+
+    let server = Server::start(vec![
+        route_of(
+            &s3::MASTER_TOKENS,
+            [],
+            Reply::json(
+                200,
+                concat!(
+                    r#"[{"id":"m1","status":"active"},{"id":"m2","status":"revoked"},"#,
+                    r#"{"id":"m3","status":"suspended"},{"id":"m4","status":"expired"}]"#
+                ),
+            ),
+        ),
+        route_of(&s3::SUB_TOKENS, [], Reply::json(200, "[]")),
+    ]);
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&[
+            "s3",
+            "tokens",
+            "list",
+            "--status",
+            "expired",
+            "--status",
+            "suspended",
+            "--status",
+            "expired",
+        ])
+        .ok();
+    let ids: Vec<&str> = doc["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["m3", "m4"]);
+    assert_eq!(
+        server.requests()[1].target,
+        "/api/objectstore/sub-tokens/?status=suspended%2Cexpired"
+    );
+}
+
+/// Every page of the sub tokens is asked for with the filter, not only the first.
+#[test]
+fn tokens_list_status_is_sent_on_every_page() {
+    let server = Server::start(vec![
+        route_of(&s3::MASTER_TOKENS, [], Reply::json(200, "[]")),
+        // The query-exact route comes first: the plain one ignores the query, and answers
+        // page 1 again, which a request without the filter would get.
+        route(
+            "GET",
+            "/api/objectstore/sub-tokens/?status=active%2Crevoked&page=2",
+            Reply::json(
+                200,
+                r#"{"count":2,"next":null,"previous":null,"results":[{"id":"b"}]}"#,
+            ),
+        ),
+        route_of(
+            &s3::SUB_TOKENS,
+            [],
+            Reply::json(
+                200,
+                concat!(
+                    r#"{"count":2,"next":"{base}/api/objectstore/sub-tokens/"#,
+                    r#"?page=2&status=active%2Crevoked","previous":null,"results":[{"id":"a"}]}"#
+                ),
+            ),
+        ),
+    ]);
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&["s3", "tokens", "list", "--status", "revoked,active"])
+        .ok();
+    let ids: Vec<&str> = doc["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["a", "b"]);
+    let targets: Vec<String> = server.requests().into_iter().map(|r| r.target).collect();
+    assert_eq!(
+        targets,
+        [
+            "/api/objectstore/master-tokens/",
+            "/api/objectstore/sub-tokens/?status=active%2Crevoked",
+            "/api/objectstore/sub-tokens/?status=active%2Crevoked&page=2",
+        ]
+    );
+}
+
+/// A status the server does not list, alone or in a comma list, or an empty one, is usage
+/// before any request.
+#[test]
+fn tokens_list_refuses_a_status_it_does_not_know() {
+    let server = Server::start(vec![]);
+    let possible = "[possible values: `active`, `suspended`, `revoked`, `expired`]";
+    for (status, message) in [
+        ("gone", "invalid value `gone`"),
+        ("Active", "invalid value `Active`"),
+        ("active,gone", "invalid value `gone`"),
+        ("", "a value is required"),
+        ("active,", "a value is required"),
+    ] {
+        let error = Hipc::against(&Home::new(), &server)
+            .run(&["s3", "tokens", "list", "--status", status])
+            .fails(2, "usage");
+        let shown = error["message"].as_str().unwrap();
+        assert!(shown.starts_with(message), "{status}: {shown}");
+        assert!(shown.contains("`--status <STATUS>`"), "{status}: {shown}");
+        assert!(shown.ends_with(possible), "{status}: {shown}");
+        assert_eq!(error["side_effects"], "none");
+    }
+    assert!(server.requests().is_empty());
+}
+
+/// The repeated flag, a comma list, and the two mixed with duplicates send the same query.
+#[test]
+fn tokens_list_dry_run_shows_the_status_on_the_sub_token_request() {
+    let server = Server::start(vec![]);
+    for flags in [
+        &["--status", "expired", "--status", "active"][..],
+        &["--status", "expired,active"],
+        &["--status", "active,expired,active", "--status", "expired"],
+    ] {
+        let args = [&["s3", "tokens", "list"][..], flags, &["--dry-run"]].concat();
+        let doc = Hipc::against(&Home::new(), &server).run(&args).ok();
+        let urls: Vec<&str> = doc["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["url"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            urls,
+            [
+                format!("{}/api/objectstore/master-tokens/", server.url()),
+                format!(
+                    "{}/api/objectstore/sub-tokens/?status=active%2Cexpired",
+                    server.url()
+                ),
+            ],
+            "{flags:?}"
+        );
+    }
+    assert!(server.requests().is_empty());
 }
 
 #[test]
