@@ -4,7 +4,7 @@ All notable changes to `hipc`, named `hip` up to 0.14.0, are listed here. The fo
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.17.1] - 2026-11-21
 
 ### Added
 
