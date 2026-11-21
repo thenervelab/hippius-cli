@@ -553,8 +553,8 @@ fn isolation_consequence(mode: IsolationMode) -> &'static str {
 /// would create the network (its row `provisions`). After the group list answered, the
 /// network exists, so the topology read creates nothing either and is sent as a read: it
 /// needs no confirmation, and a failure of it has no side effects. `system` adds the spec's
-/// `?system=1`, which keeps the network's system groups and the policies between them in the
-/// graph; it changes only what the read answers, not that it is one.
+/// `?system=1`, which keeps the network's system groups and the managed policies between
+/// them in the graph; it changes only what the read answers, not that it is one.
 fn topology(ctx: &Context<'_>, system: bool) -> Result<Printed> {
     let client = ctx.load_authed_client()?;
     let (probe, read) = topology_reads();

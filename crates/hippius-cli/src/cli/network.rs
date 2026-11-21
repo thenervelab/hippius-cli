@@ -72,18 +72,19 @@ pub(crate) enum Network {
     /// The first read of the topology creates the account's network, as the first hipc
     /// network get does, so hipc reads the group list first, which creates nothing and
     /// answers that the network is not set up when it has none; only then does it read the
-    /// topology, which then creates nothing either. The network's system groups and the
-    /// policies between them are left out, as the console shows it, unless --system is given.
-    /// Edge and node ids are kind:id, such as policy:9; the meta of each holds the plain id
-    /// the other commands take.
+    /// topology, which then creates nothing either. The system groups Hippius keeps for every
+    /// network (the default group and the devices and VMs groups) and the managed policies
+    /// between them are left out, as the console shows it, unless --system is given; a system
+    /// group that one of your own policies points at is kept either way. Edge and node ids are
+    /// kind:id, such as policy:9; the meta of each holds the plain id the other commands take.
     #[command(after_help = examples(&[
         "hipc network topology",
         "hipc network topology --system",
         "hipc --dry-run network topology",
     ]))]
     Topology {
-        /// Also show the system groups, which Hippius manages for managed services, and the
-        /// policies between them
+        /// Also show the system groups Hippius keeps for every network (the default group and
+        /// the devices and VMs groups) and the managed policies between them
         #[arg(long)]
         system: bool,
     },

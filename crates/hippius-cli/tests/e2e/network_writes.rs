@@ -698,23 +698,56 @@ fn topology_reads_the_group_list_then_the_topology() {
     );
 }
 
+/// A topology read with `?system=1`: the user's group `5`, the system groups `1` (the
+/// default group) and `2` (the devices group), and the managed policy between them.
+const SYSTEM_TOPOLOGY: &str = concat!(
+    r#"{"nodes":[{"id":"group:5","type":"group","label":"build-boxes","meta":{"group_id":5}},"#,
+    r#"{"id":"group:1","type":"group","label":"default","meta":{"group_id":1}},"#,
+    r#"{"id":"group:2","type":"group","label":"acme-devices","meta":{"group_id":2}}],"#,
+    r#""edges":[{"id":"policy:9","type":"policy","source":"group:2","target":"group:1","#,
+    r#""meta":{"policy_id":9,"source_group":2,"dest_group":1,"is_managed":true}}],"#,
+    r#""isolation_mode":"allow_intra"}"#
+);
+
 /// `--system` sends the spec's `?system=1` on the topology read, and only there: the group
-/// list still goes first, and the answer prints as the server sent it.
+/// list still goes first, and the answer, system groups and managed policies included,
+/// prints as the server sent it (#89).
 #[test]
 fn topology_system_asks_for_the_system_groups() {
     let server = Server::start(vec![
         route_of(&network::GROUPS, [], Reply::json(200, "[]")),
-        route_of(&network::TOPOLOGY, [], Reply::json(200, TOPOLOGY)),
+        route_of(&network::TOPOLOGY, [], Reply::json(200, SYSTEM_TOPOLOGY)),
     ]);
     let doc = Hipc::against(&Home::new(), &server)
         .run(&["network", "topology", "--system"])
         .ok();
-    assert_eq!(doc, serde_json::from_str::<Value>(TOPOLOGY).unwrap());
+    assert_eq!(doc, serde_json::from_str::<Value>(SYSTEM_TOPOLOGY).unwrap());
+    let run = Hipc::against(&Home::new(), &server)
+        .run(&["--output", "text", "network", "topology", "--system"]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    // The text form keeps every node and edge, the managed one included, as one JSON line.
+    assert_eq!(
+        run.stdout(),
+        concat!(
+            r#"nodes           [{"id":"group:5","type":"group","label":"build-boxes","#,
+            r#""meta":{"group_id":5}},"#,
+            r#"{"id":"group:1","type":"group","label":"default","meta":{"group_id":1}},"#,
+            r#"{"id":"group:2","type":"group","label":"acme-devices","meta":{"group_id":2}}]"#,
+            "\n",
+            r#"edges           [{"id":"policy:9","type":"policy","source":"group:2","#,
+            r#""target":"group:1","meta":{"policy_id":9,"source_group":2,"dest_group":1,"#,
+            r#""is_managed":true}}]"#,
+            "\n",
+            "isolation_mode  allow_intra\n",
+        )
+    );
     assert_eq!(
         server.targets(),
         [
             "GET /api/network/groups/",
-            "GET /api/network/topology/?system=1"
+            "GET /api/network/topology/?system=1",
+            "GET /api/network/groups/",
+            "GET /api/network/topology/?system=1",
         ]
     );
     // The switch takes no value.
