@@ -1903,6 +1903,10 @@ refusal_checks() {
   offline "artifact reference with a slash" 2 hub artifacts get hipc-check/app v1/x
   offline "membership on billing transactions" 2 --account "$other" billing transactions list
   expect_code "transactions refuse a membership" account_scope_unsupported
+  offline "transactions search --dry-run" 0 --dry-run billing transactions list \
+    --search "top up" --page-token 2
+  expect_dry_run "transactions send the search" '.url | endswith(
+    "/billing/transactions/?search=top%20up&page_size=100&page=2")'
   offline "membership on a top-up status" 2 --account "$other" \
     billing top-up-status "$MISSING_UUID"
   expect_code "a top-up status needs a billing account in a membership" \

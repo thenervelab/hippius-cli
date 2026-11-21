@@ -23,13 +23,13 @@ use serde_json::{Map, Value, json};
 
 use crate::cli::{
     AutoReload, AutoReloadUpdate, Billing, BillingProfile, Invoices, ProfileUpdate, ReloadCap,
-    TopUp, TopUpMethod, Transactions,
+    TopUp, TopUpMethod, TransactionList, Transactions,
 };
 use crate::commands::credits::{AmountPath, shown_in_credits};
 use crate::commands::files::write_output_file;
 use crate::commands::{
     Decided, Printed, failed_part, gamma, halpha, list, print_body, print_with, read_then_write,
-    sent_fields,
+    sent_fields, with_query,
 };
 use crate::context::{Context, Gate, WritePlan};
 use crate::units::{Usd, usd};
@@ -52,12 +52,9 @@ pub(crate) fn run(ctx: &Context<'_>, command: &Billing) -> Result<Printed> {
                 .about("get the legacy Stripe top-up plan"),
             Gate::Open,
         ),
-        Billing::Transactions(Transactions::List(args)) => list::run(
-            ctx,
-            &client()?,
-            &Request::to(&billing::TRANSACTIONS, []).about("list the transactions"),
-            args,
-        ),
+        Billing::Transactions(Transactions::List(args)) => {
+            list::run(ctx, &client()?, &transactions_request(args), &args.list)
+        }
         Billing::Transactions(Transactions::Get { transaction_id }) => print_body(
             ctx,
             &client()?,
@@ -143,6 +140,13 @@ const USAGE_AMOUNTS: &[AmountPath] = &[
     &["hours", "*", "lines", "*", "unit_price"],
     &["hours", "*", "lines", "*", "amount"],
 ];
+
+/// `GET /api/billing/transactions/`, with `search` only when `--search` is given. Every page
+/// is read from this one request, so a later page keeps it.
+fn transactions_request(args: &TransactionList) -> Request {
+    let request = Request::to(&billing::TRANSACTIONS, []).about("list the transactions");
+    with_query(request, &[("search", args.search.as_deref())])
+}
 
 /// Prints the server's body, with `amounts` in credits in text mode ([`shown_in_credits`]).
 fn print_in_credits(

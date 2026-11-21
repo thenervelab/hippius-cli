@@ -2068,6 +2068,15 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "args": [],
       "flags": [
         {
+          "name": "--search",
+          "value_name": "TEXT",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "Search the transactions for this text; the API does not document which fields it searches"
+        },
+        {
           "name": "--limit",
           "value_name": "LIMIT",
           "required": false,
