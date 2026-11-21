@@ -3868,7 +3868,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
         "objects",
         "presign"
       ],
-      "about": "A presigned URL that downloads one object; needs --reveal",
+      "about": "A presigned URL that downloads one object, or uploads it with --upload; needs --reveal",
       "effect": "read_only",
       "confirmation": false,
       "reveal": true,
@@ -3906,6 +3906,15 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
           "possible_values": [],
           "default": null,
           "help": "How long the URL works, in seconds, 1 to 604800 (7 days); the server's default is 3600"
+        },
+        {
+          "name": "--upload",
+          "value_name": null,
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "Presign an upload: anyone with this URL can upload to, and replace, <key> until it expires"
         },
         {
           "name": "--reveal",

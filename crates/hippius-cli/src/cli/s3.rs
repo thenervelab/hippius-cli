@@ -233,7 +233,7 @@ pub(crate) enum Buckets {
         "hipc s3 buckets acl get photos",
     ]))]
     Acl(BucketAcl),
-    /// A bucket's objects: list them, and presign a download URL; moves no bytes
+    /// A bucket's objects: list them, and presign a download or upload URL; moves no bytes
     #[command(subcommand)]
     #[command(after_help = examples(&[
         "hipc s3 buckets objects list photos",
@@ -283,6 +283,9 @@ pub(crate) struct Presign {
         value_parser = clap::value_parser!(u32).range(1..=MAX_PRESIGN_SECONDS)
     )]
     pub(crate) expires_in: Option<u32>,
+    /// Presign an upload: anyone with this URL can upload to, and replace, <key> until it expires
+    #[arg(long)]
+    pub(crate) upload: bool,
     /// Print the URL, which grants access to the object; required: without it nothing is sent
     #[arg(long)]
     pub(crate) reveal: bool,
@@ -301,14 +304,17 @@ pub(crate) enum BucketObjects {
         "hipc s3 buckets objects list photos --all",
     ]))]
     List(ObjectsList),
-    /// A presigned URL that downloads one object; needs --reveal
+    /// A presigned URL that downloads one object, or uploads it with --upload; needs --reveal
     ///
     /// Anyone holding the URL can read the object until it expires, with no other credential,
-    /// so it is a secret: without --reveal nothing is sent, and it goes only to stdout. hipc
-    /// moves no bytes; fetch the URL with curl or a browser.
+    /// so it is a secret: without --reveal nothing is sent, and it goes only to stdout. With
+    /// --upload, anyone holding the URL can upload to, and replace, the key until it expires.
+    /// Nothing changes on the server until someone uses the URL, so it needs no --yes. hipc
+    /// moves no bytes; fetch the URL with curl or a browser, or upload with curl -T.
     #[command(after_help = examples(&[
         "hipc s3 buckets objects presign photos 2026/cat.jpg --reveal",
         "hipc s3 buckets objects presign photos report.pdf --expires-in 600 --reveal",
+        "hipc s3 buckets objects presign photos inbox/a.pdf --upload --expires-in 600 --reveal",
     ]))]
     Presign(Presign),
 }
