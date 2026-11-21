@@ -911,6 +911,14 @@ compute_catalog_checks() {
   expect "jobs envelope" 'has("items") and has("next_page_token")'
   online "compute runners usage" 0 compute runners usage
   expect "runner usage object" 'type == "object"'
+  offline "compute runners usage --period --dry-run" 0 --dry-run compute runners usage \
+    --period last_month
+  expect_requests "a usage period is sent as given" \
+    "GET $(route "compute runners usage" GET)?period=last_month"
+  offline "compute runners usage --from --to --dry-run" 0 --dry-run compute runners usage \
+    --from 2026-01-01 --to 2026-03-31
+  expect_requests "a usage range is a custom period" \
+    "GET $(route "compute runners usage" GET)?period=custom&from=2026-01-01&to=2026-03-31"
   # The limit answers 404 while the server's runner usage limits are off.
   online "compute runners limit get" "0|1" compute runners limit get
   if [[ -s "$OUT/$n.err" ]]; then

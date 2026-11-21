@@ -32,7 +32,8 @@ use hippius::{
 use serde_json::{Value, json};
 
 use crate::cli::{
-    MonthlyCap, RunnerInstallations, RunnerLimit, RunnerSettings, RunnerSettingsUpdate, Runners,
+    MonthlyCap, RunnerInstallations, RunnerLimit, RunnerSettings, RunnerSettingsUpdate,
+    RunnerUsage, Runners, UsageDay,
 };
 use crate::commands::spend_cap::{self, InForce, NewCap};
 use crate::commands::{
@@ -71,8 +72,8 @@ pub(super) fn run(ctx: &Context<'_>, command: &Runners) -> Result<Printed> {
             list::run(ctx, &ctx.load_authed_client()?, &request, args)
         }
         Runners::Connect => connect(ctx, &ctx.load_authed_client()?),
-        Runners::Usage => {
-            let request = Request::to(&runners::USAGE, []).about("get the runner spend");
+        Runners::Usage(args) => {
+            let request = usage_request(args)?;
             print_body(ctx, &ctx.load_authed_client()?, &request, Gate::Open)
         }
         Runners::Limit(RunnerLimit::Get) => {
@@ -81,6 +82,58 @@ pub(super) fn run(ctx: &Context<'_>, command: &Runners) -> Result<Printed> {
         }
         Runners::Limit(RunnerLimit::Update { monthly_cap }) => update_limit(ctx, monthly_cap),
     }
+}
+
+/// The most days a custom range may span, both ends counted, as the live API refused a longer
+/// one on 2026-11-20.
+const MOST_USAGE_DAYS: u64 = 366;
+
+/// `GET /api/runners/usage/` with `period` as `--period` gives it, or `period=custom` with
+/// `from` and `to`, checked here so a range the server would refuse is `usage` before
+/// anything is sent. Without either, no `period` is sent and the server reads the current
+/// month, as before the flags existed.
+fn usage_request(args: &RunnerUsage) -> Result<Request> {
+    let request = Request::to(&runners::USAGE, []);
+    Ok(match (args.period, &args.from, &args.to) {
+        (Some(period), _, _) => request.query("period", period.code()).about(format!(
+            "get the runner spend for the period `{}`",
+            period.code()
+        )),
+        (None, Some(from), Some(to)) => {
+            usage_range(from, to)?;
+            request
+                .query("period", "custom")
+                .query("from", &from.text)
+                .query("to", &to.text)
+                .about(format!(
+                    "get the runner spend from `{}` to `{}`",
+                    from.text, to.text
+                ))
+        }
+        // No flag. Clap makes `--from` and `--to` need each other, so one alone never gets here.
+        (None, _, _) => request.about("get the runner spend"),
+    })
+}
+
+/// Refuses a range that ends before it starts, or spans more than [`MOST_USAGE_DAYS`].
+fn usage_range(from: &UsageDay, to: &UsageDay) -> Result<()> {
+    if from.unix_day > to.unix_day {
+        return Err(Error::usage(
+            format!("`--from` `{}` is after `--to` `{}`", from.text, to.text),
+            "pass a `--from` on or before `--to`",
+        ));
+    }
+    let days = to.unix_day - from.unix_day + 1;
+    if days > MOST_USAGE_DAYS {
+        return Err(Error::usage(
+            format!(
+                "the range from `{}` to `{}` is {days} days, more than {MOST_USAGE_DAYS}",
+                from.text, to.text
+            ),
+            format!("pass a range of at most {MOST_USAGE_DAYS} days, both ends counted"),
+        ));
+    }
+    Ok(())
 }
 
 fn read_limit() -> Request {
