@@ -203,7 +203,8 @@ pub(super) fn of_s3(path: &[&str]) -> Option<Spec> {
         ["buckets" | "tokens", "list"]
         | ["buckets", "acl", "list" | "get"]
         | ["buckets", "objects", "list"] => Some(READ_ONLY),
-        // A presigned URL reads the object with no other credential until it expires.
+        // A presigned URL reads the object, or with --upload replaces it, with no other
+        // credential until it expires.
         ["buckets", "objects", "presign"] => Some(Spec {
             reveal: Asks::Always,
             ..READ_ONLY

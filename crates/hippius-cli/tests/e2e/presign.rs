@@ -279,3 +279,154 @@ fn a_membership_and_a_project_go_on_the_request_and_a_billing_account_is_refused
         .fails(2, "billing_scope_unsupported");
     assert_eq!(server.requests().len(), 1);
 }
+
+/// `--upload` sends `action=put` after the key and before the expiry; without `--upload` the
+/// query holds no `action`, so the server's default, a download, applies. The upload URL is
+/// printed as the download URL is, on stdout only.
+#[test]
+fn upload_sends_action_put_with_and_without_an_expiry() {
+    let server = server();
+    let home = Home::new();
+    let presign = |extra: &[&'static str]| {
+        let mut args = vec![
+            "s3",
+            "buckets",
+            "objects",
+            "presign",
+            "photos",
+            "2026/cat.jpg",
+        ];
+        args.extend(extra);
+        args.push("--reveal");
+        Hipc::against(&home, &server).run(&args)
+    };
+    let run = presign(&["--upload", "--expires-in", "600"]);
+    assert!(run.ok()["url"].as_str().unwrap().contains(SIGNATURE));
+    assert_eq!(run.stderr(), "");
+    let run = presign(&["--upload"]);
+    assert!(run.ok()["url"].as_str().unwrap().contains(SIGNATURE));
+    assert_eq!(run.stderr(), "");
+    presign(&["--expires-in", "600"]).ok();
+    presign(&[]).ok();
+    let targets: Vec<String> = server.requests().into_iter().map(|r| r.target).collect();
+    assert_eq!(
+        targets,
+        [
+            format!("{PATH}?key=2026%2Fcat.jpg&action=put&expires_in=600"),
+            format!("{PATH}?key=2026%2Fcat.jpg&action=put"),
+            format!("{PATH}?key=2026%2Fcat.jpg&expires_in=600"),
+            format!("{PATH}?key=2026%2Fcat.jpg"),
+        ]
+    );
+}
+
+/// An upload URL is a secret as the download URL is: without `--reveal` it exits 2
+/// `reveal_required` and sends nothing, `--yes` or not, and no file flag stands in for
+/// `--reveal`, so the URL never lands in a file.
+#[test]
+fn upload_without_reveal_nothing_is_sent() {
+    let server = server();
+    let argv = [
+        "s3", "buckets", "objects", "presign", "photos", "a.txt", "--upload",
+    ];
+    for extra in [&[][..], &["--yes"]] {
+        let error = Hipc::against(&Home::new(), &server)
+            .run(&[&argv[..], extra].concat())
+            .fails(2, "reveal_required");
+        let hint = error["hint"].as_str().unwrap();
+        assert!(
+            hint.contains(" --upload") && hint.ends_with(" --reveal`"),
+            "{error}"
+        );
+    }
+    Hipc::against(&Home::new(), &server)
+        .run(&[&argv[..], &["--secret-file", "url.secret"]].concat())
+        .fails(2, "usage");
+    assert!(server.requests().is_empty());
+}
+
+/// `--debug` names `action` beside the other query parameters and shows no value.
+#[test]
+fn upload_debug_shows_query_names_and_no_values() {
+    let server = server();
+    let run = Hipc::against(&Home::new(), &server).run(&[
+        "--debug",
+        "s3",
+        "buckets",
+        "objects",
+        "presign",
+        "photos",
+        "secret-key.txt",
+        "--upload",
+        "--expires-in",
+        "60",
+        "--reveal",
+    ]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    assert!(run.stdout().contains(SIGNATURE), "{}", run.stdout());
+    let stderr = run.stderr();
+    assert!(
+        stderr.contains("presigned-url/?key=<redacted>&action=<redacted>&expires_in=<redacted>"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("action=put"), "{stderr}");
+    assert!(!stderr.contains("secret-key"), "{stderr}");
+    assert!(!stderr.contains(SIGNATURE), "{stderr}");
+}
+
+/// An upload's dry run needs no `--reveal`, no `--yes`, and no token, shows `action=put` in
+/// the exact URL, and sends nothing.
+#[test]
+fn an_upload_dry_run_shows_action_put_and_sends_nothing() {
+    let server = server();
+    let doc = Hipc::tokenless(&Home::new(), &server)
+        .run(&[
+            "--dry-run",
+            "s3",
+            "buckets",
+            "objects",
+            "presign",
+            "photos",
+            "a.txt",
+            "--upload",
+            "--expires-in",
+            "60",
+        ])
+        .ok();
+    assert_eq!(doc["dry_run"], true);
+    assert_eq!(doc["confirmation"], false);
+    assert_eq!(draft(&doc)["method"], "GET");
+    assert_eq!(
+        draft(&doc)["url"],
+        format!("{}{PATH}?key=a.txt&action=put&expires_in=60", server.url())
+    );
+    assert!(server.requests().is_empty());
+}
+
+/// A failed upload presign names what it was doing: an upload, not a download.
+#[test]
+fn a_failed_upload_names_the_upload() {
+    let server = Server::start(vec![route_of(
+        &s3::PRESIGNED_URL,
+        [&"photos"],
+        Reply::json(400, r#"{"detail":"bad key"}"#),
+    )]);
+    let presign = |extra: &[&'static str]| {
+        let mut args = vec!["s3", "buckets", "objects", "presign", "photos", "a.txt"];
+        args.extend(extra);
+        args.push("--reveal");
+        Hipc::against(&Home::new(), &server)
+            .run(&args)
+            .fails(1, "validation")
+    };
+    let upload = presign(&["--upload"]);
+    let download = presign(&[]);
+    assert_eq!(
+        upload["message"],
+        "cannot presign an upload to the bucket `photos`: the API says `bad key`"
+    );
+    assert_eq!(
+        download["message"],
+        "cannot presign a download from the bucket `photos`: the API says `bad key`"
+    );
+}

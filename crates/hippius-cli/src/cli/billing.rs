@@ -183,9 +183,10 @@ pub(crate) enum Transactions {
     #[command(after_help = examples(&[
         "hipc billing transactions list",
         "hipc billing transactions list --limit 20",
+        "hipc billing transactions list --search stripe",
         "hipc billing transactions list --all",
     ]))]
-    List(ListArgs),
+    List(TransactionList),
     /// One transaction: its amount, credits, status, and when it completed
     #[command(after_help = examples(&[
         "hipc billing transactions get 3f1c2b9e-8a1d-4c55-9a51-2f0d6c1e7b42",
@@ -195,6 +196,15 @@ pub(crate) enum Transactions {
         #[arg(value_parser = transaction_id)]
         transaction_id: String,
     },
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct TransactionList {
+    /// Search the transactions for this text; the API does not document which fields it searches
+    #[arg(long, value_name = "TEXT", value_parser = transaction_search)]
+    pub(crate) search: Option<String>,
+    #[command(flatten)]
+    pub(crate) list: ListArgs,
 }
 
 #[derive(Debug, Subcommand)]
@@ -689,6 +699,17 @@ fn transaction_id(text: &str) -> Result<String, String> {
     })
 }
 
+/// `--search` of the transaction list. Swagger's `search` is a string with no length, so any
+/// [`label`] is taken but an empty or blank one, which would match every transaction.
+fn transaction_search(value: &str) -> Result<String, String> {
+    if value.trim().is_empty() {
+        return Err(
+            "a search text is not blank; leave out --search to list every transaction".to_owned(),
+        );
+    }
+    label(value, 0..=usize::MAX, Spaces::Kept, "a search text")
+}
+
 /// A conversion id: a UUID, as the API answers it, which goes into the URL path.
 pub(crate) fn conversion_id(text: &str) -> Result<String, String> {
     idempotency_key(text).map_err(|_| {
@@ -786,6 +807,26 @@ mod tests {
             assert_eq!(super::alpha(text), Err(error.to_owned()), "{text:?}");
         }
         assert_eq!(CHAIN_MINIMUM.to_string(), "0.01");
+    }
+
+    /// A search text is kept as typed, its spaces included, and refused only when it is blank
+    /// or would not show on one line.
+    #[test]
+    fn a_transaction_search_is_kept_as_typed_and_never_blank() {
+        for text in ["x", " padded ", "a b&c é", "-amount"] {
+            assert_eq!(transaction_search(text).as_deref(), Ok(text));
+        }
+        for blank in ["", " ", "\t\n"] {
+            assert_eq!(
+                transaction_search(blank),
+                Err(
+                    "a search text is not blank; leave out --search to list every transaction"
+                        .to_owned()
+                )
+            );
+        }
+        let error = transaction_search("a\rb").unwrap_err();
+        assert!(error.starts_with("a search text holds no control character"));
     }
 
     #[test]

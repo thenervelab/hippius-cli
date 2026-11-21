@@ -176,6 +176,22 @@ pub(crate) fn rfc3339(text: &str) -> Option<(u64, u32)> {
     Some((seconds, nanos))
 }
 
+/// The days since 1970-01-01 of a UTC day written `YYYY-MM-DD`, or `None` for any other text,
+/// a day that does not exist (`2026-02-29`, `2026-13-01`), or a day before 1970.
+pub fn unix_day(text: &str) -> Option<u64> {
+    let date: Vec<&str> = text.split('-').collect();
+    let [year, month, day] = date[..] else {
+        return None;
+    };
+    let seconds = civil_seconds(
+        digits(year, 4)?,
+        digits(month, 2)?,
+        digits(day, 2)?,
+        [0, 0, 0],
+    )?;
+    Some(seconds / 86_400)
+}
+
 /// The days from 1970-01-01 to `year`-`month`-`day` in the proleptic Gregorian calendar, for a
 /// year from 1970: Howard Hinnant's `days_from_civil`
 /// (<https://howardhinnant.github.io/date_algorithms.html#days_from_civil>), which counts in
@@ -359,6 +375,40 @@ mod tests {
                     expected += 86_400;
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_unix_day_is_a_real_yyyy_mm_dd_from_1970() {
+        for (text, day) in [
+            ("1970-01-01", 0),
+            ("1970-01-02", 1),
+            ("2024-02-29", 19_782),
+            ("2026-11-03", 20_760),
+            ("2026-12-31", 20_818),
+        ] {
+            assert_eq!(unix_day(text), Some(day), "{text}");
+            assert_eq!(date_of_unix_day(i64::try_from(day).unwrap()), text);
+        }
+        for bad in [
+            "",
+            "2026-11",
+            "2026-11-03-01",
+            "2026-11-3",
+            "26-11-03",
+            "2026/11/03",
+            "2026-11-03T00:00:00Z",
+            " 2026-11-03",
+            "+026-11-03",
+            "2026-+1-03",
+            "2026-02-29",
+            "2026-04-31",
+            "2026-00-10",
+            "2026-13-01",
+            "2026-11-00",
+            "1969-12-31",
+        ] {
+            assert_eq!(unix_day(bad), None, "{bad}");
         }
     }
 

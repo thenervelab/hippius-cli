@@ -914,6 +914,14 @@ compute_catalog_checks() {
   expect "jobs envelope" 'has("items") and has("next_page_token")'
   online "compute runners usage" 0 compute runners usage
   expect "runner usage object" 'type == "object"'
+  offline "compute runners usage --period --dry-run" 0 --dry-run compute runners usage \
+    --period last_month
+  expect_requests "a usage period is sent as given" \
+    "GET $(route "compute runners usage" GET)?period=last_month"
+  offline "compute runners usage --from --to --dry-run" 0 --dry-run compute runners usage \
+    --from 2026-01-01 --to 2026-03-31
+  expect_requests "a usage range is a custom period" \
+    "GET $(route "compute runners usage" GET)?period=custom&from=2026-01-01&to=2026-03-31"
   # The limit answers 404 while the server's runner usage limits are off.
   online "compute runners limit get" "0|1" compute runners limit get
   if [[ -s "$OUT/$n.err" ]]; then
@@ -1342,6 +1350,10 @@ network_checks() {
   expect_requests "topology reads the group list first" \
     "GET $(route_ending "network topology" GET /groups/)" \
     "GET $(route_ending "network topology" GET /topology/)"
+  offline "network topology --system --dry-run" 0 --dry-run network topology --system
+  expect_requests "topology --system asks for the system groups" \
+    "GET $(route_ending "network topology" GET /groups/)" \
+    "GET $(route_ending "network topology" GET /topology/)?system=1"
   offline "network groups update --dry-run" 0 --dry-run network groups update 5 --peer 12
   expect_dry_run "group peers update reads first and posts one change per peer" \
     ".method == \"POST\" and
@@ -1453,6 +1465,7 @@ confirmation_required|DELETE|hipc-dry-run-check|null|s3 buckets delete hipc-dry-
 public_required|PUT|hipc-dry-run-check|{"policy":{"Statement":[]}}|s3 buckets acl update hipc-dry-run-check --policy-file @DIR@/policy.json
 reveal_required|POST|~/master-tokens/|{}|s3 tokens create --kind master
 reveal_required|GET|hipc-dry-run-check ?key=a.txt|null|s3 buckets objects presign hipc-dry-run-check a.txt
+reveal_required|GET|hipc-dry-run-check ?key=a.txt&action=put&expires_in=60|null|s3 buckets objects presign hipc-dry-run-check a.txt --upload --expires-in 60
 reveal_required|POST|~/sub-tokens/|{"scope_type":"single_bucket","bucket_names":["b"]}|s3 tokens create --kind sub --bucket b --scope-type single-bucket
 confirmation_required|POST|~sub-tokens/{token_id}/revoke/ @UUID@|null|s3 tokens revoke --kind sub @UUID@
 reveal_required|POST|~master-tokens/{token_id}/rotate/ @UUID@|null|s3 tokens rotate --kind master @UUID@
@@ -1897,6 +1910,10 @@ refusal_checks() {
   offline "artifact reference with a slash" 2 hub artifacts get hipc-check/app v1/x
   offline "membership on billing transactions" 2 --account "$other" billing transactions list
   expect_code "transactions refuse a membership" account_scope_unsupported
+  offline "transactions search --dry-run" 0 --dry-run billing transactions list \
+    --search "top up" --page-token 2
+  expect_dry_run "transactions send the search" '.url | endswith(
+    "/billing/transactions/?search=top%20up&page_size=100&page=2")'
   offline "membership on a top-up status" 2 --account "$other" \
     billing top-up-status "$MISSING_UUID"
   expect_code "a top-up status needs a billing account in a membership" \

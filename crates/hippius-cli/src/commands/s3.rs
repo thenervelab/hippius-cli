@@ -226,17 +226,18 @@ fn folder_rows(items: Vec<Value>) -> Vec<Value> {
         .collect()
 }
 
-/// `GET /api/objectstore/buckets/<name>/presigned-url/?key=<key>[&expires_in=<seconds>]`
-/// (swagger `objectstore_buckets_presigned-url_list`), answered with `{url}`. The URL reads
-/// the object with no other credential, so it needs `--reveal` and goes on stdout alone: no
-/// note repeats it, and the `--debug` line of the request shows the query names only
-/// (tenet 9). Swagger's `action=put`, an upload URL, is left to `hipc api`: `get`, its
-/// default, is not sent.
+/// `GET /api/objectstore/buckets/<name>/presigned-url/?key=<key>[&action=put]
+/// [&expires_in=<seconds>]` (swagger `objectstore_buckets_presigned-url_list`), answered with
+/// `{url}`. The URL reads the object, or with `--upload` replaces it, with no other credential,
+/// so it needs `--reveal` and goes on stdout alone: no note repeats it, and the `--debug` line
+/// of the request shows the query names only (tenet 9). `action=get`, the server's default, is
+/// not sent. An upload URL changes nothing until it is used, so it needs no `--yes`.
 fn presign(ctx: &Context<'_>, args: &Presign) -> Result<Printed> {
     let Presign {
         bucket_name,
         key,
         expires_in,
+        upload,
         reveal,
     } = args;
     if key.is_empty() {
@@ -248,10 +249,16 @@ fn presign(ctx: &Context<'_>, args: &Presign) -> Result<Printed> {
     require_reveal(ctx, *reveal)?;
     let request = Request::to(&s3::PRESIGNED_URL, [bucket_name])
         .query("key", key)
-        .listed_by("hipc s3 buckets list")
-        .about(format!(
+        .listed_by("hipc s3 buckets list");
+    let request = if *upload {
+        request
+            .query("action", "put")
+            .about(format!("presign an upload to the bucket `{bucket_name}`"))
+    } else {
+        request.about(format!(
             "presign a download from the bucket `{bucket_name}`"
-        ));
+        ))
+    };
     let request = match expires_in {
         Some(seconds) => request.query("expires_in", &seconds.to_string()),
         None => request,
