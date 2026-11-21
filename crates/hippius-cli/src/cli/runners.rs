@@ -73,8 +73,8 @@ pub(crate) enum Runners {
 /// `hipc compute runners usage`: a named period, or a custom range of days, never both.
 #[derive(Debug, Args)]
 pub(crate) struct RunnerUsage {
-    /// The period: current_month or last_month, as UTC months, or 7d or 30d, the last 7 or 30
-    /// UTC days with today
+    /// The period: current_month or last_month, as calendar months, or 7d or 30d, the last 7
+    /// or 30 UTC days with today
     #[arg(long, value_enum, conflicts_with_all = ["from", "to"])]
     pub(crate) period: Option<UsagePeriod>,
     /// The first day of a custom range, as YYYY-MM-DD in UTC; needs --to
@@ -89,10 +89,10 @@ pub(crate) struct RunnerUsage {
 /// 2026-11-20: swagger documents none of them, and any other value is a 400.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum UsagePeriod {
-    /// This month, from its first UTC day to now, which the server reads without --period
+    /// This month, from its first day to now, which the server reads without --period
     #[value(name = "current_month")]
     CurrentMonth,
-    /// The whole of last month, in UTC
+    /// The whole of last month
     #[value(name = "last_month")]
     LastMonth,
     /// The last 7 UTC days, today included

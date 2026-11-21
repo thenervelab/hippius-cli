@@ -7955,7 +7955,7 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
             "30d"
           ],
           "default": null,
-          "help": "The period: current_month or last_month, as UTC months, or 7d or 30d, the last 7 or 30 UTC days with today"
+          "help": "The period: current_month or last_month, as calendar months, or 7d or 30d, the last 7 or 30 UTC days with today"
         },
         {
           "name": "--from",
