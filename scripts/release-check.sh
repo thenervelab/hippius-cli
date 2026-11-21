@@ -1347,6 +1347,10 @@ network_checks() {
   expect_requests "topology reads the group list first" \
     "GET $(route_ending "network topology" GET /groups/)" \
     "GET $(route_ending "network topology" GET /topology/)"
+  offline "network topology --system --dry-run" 0 --dry-run network topology --system
+  expect_requests "topology --system asks for the system groups" \
+    "GET $(route_ending "network topology" GET /groups/)" \
+    "GET $(route_ending "network topology" GET /topology/)?system=1"
   offline "network groups update --dry-run" 0 --dry-run network groups update 5 --peer 12
   expect_dry_run "group peers update reads first and posts one change per peer" \
     ".method == \"POST\" and

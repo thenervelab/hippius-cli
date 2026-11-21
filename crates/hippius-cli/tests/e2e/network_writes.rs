@@ -651,6 +651,31 @@ fn dry_runs_list_the_exact_request_and_send_nothing() {
         urls,
         [url("/api/network/groups/"), url("/api/network/topology/")]
     );
+    // `--system` adds the spec's `?system=1` to the topology read alone, and keeps the list
+    // first, so it still needs no `--yes`.
+    let doc = Hipc::tokenless(&home, &server)
+        .env_remove("HIPPIUS_TOKEN")
+        .run(&["--dry-run", "network", "topology", "--system"])
+        .ok();
+    let requests = doc["requests"].as_array().unwrap();
+    let sent: Vec<(&str, &str)> = requests
+        .iter()
+        .map(|request| {
+            (
+                request["method"].as_str().unwrap(),
+                request["url"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            ("GET", url("/api/network/groups/").as_str()),
+            ("GET", url("/api/network/topology/?system=1").as_str()),
+        ]
+    );
+    assert_eq!(doc["confirmation"], false, "{doc}");
+    assert_eq!(doc["confirmation_when"], Value::Null, "{doc}");
     assert!(server.requests().is_empty());
 }
 
@@ -666,10 +691,69 @@ fn topology_reads_the_group_list_then_the_topology() {
         .run(&["network", "topology"])
         .ok();
     assert_eq!(doc, serde_json::from_str::<Value>(TOPOLOGY).unwrap());
+    // Without `--system` the topology read carries no query, as before the flag.
     assert_eq!(
-        server.calls(),
+        server.targets(),
         ["GET /api/network/groups/", "GET /api/network/topology/"]
     );
+}
+
+/// A topology read with `?system=1`: the user's group `5`, the system groups `1` (the
+/// default group) and `2` (the devices group), and the managed policy between them.
+const SYSTEM_TOPOLOGY: &str = concat!(
+    r#"{"nodes":[{"id":"group:5","type":"group","label":"build-boxes","meta":{"group_id":5}},"#,
+    r#"{"id":"group:1","type":"group","label":"default","meta":{"group_id":1}},"#,
+    r#"{"id":"group:2","type":"group","label":"acme-devices","meta":{"group_id":2}}],"#,
+    r#""edges":[{"id":"policy:9","type":"policy","source":"group:2","target":"group:1","#,
+    r#""meta":{"policy_id":9,"source_group":2,"dest_group":1,"is_managed":true}}],"#,
+    r#""isolation_mode":"allow_intra"}"#
+);
+
+/// `--system` sends the spec's `?system=1` on the topology read, and only there: the group
+/// list still goes first, and the answer, system groups and managed policies included,
+/// prints as the server sent it (#89).
+#[test]
+fn topology_system_asks_for_the_system_groups() {
+    let server = Server::start(vec![
+        route_of(&network::GROUPS, [], Reply::json(200, "[]")),
+        route_of(&network::TOPOLOGY, [], Reply::json(200, SYSTEM_TOPOLOGY)),
+    ]);
+    let doc = Hipc::against(&Home::new(), &server)
+        .run(&["network", "topology", "--system"])
+        .ok();
+    assert_eq!(doc, serde_json::from_str::<Value>(SYSTEM_TOPOLOGY).unwrap());
+    let run = Hipc::against(&Home::new(), &server)
+        .run(&["--output", "text", "network", "topology", "--system"]);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    // The text form keeps every node and edge, the managed one included, as one JSON line.
+    assert_eq!(
+        run.stdout(),
+        concat!(
+            r#"nodes           [{"id":"group:5","type":"group","label":"build-boxes","#,
+            r#""meta":{"group_id":5}},"#,
+            r#"{"id":"group:1","type":"group","label":"default","meta":{"group_id":1}},"#,
+            r#"{"id":"group:2","type":"group","label":"acme-devices","meta":{"group_id":2}}]"#,
+            "\n",
+            r#"edges           [{"id":"policy:9","type":"policy","source":"group:2","#,
+            r#""target":"group:1","meta":{"policy_id":9,"source_group":2,"dest_group":1,"#,
+            r#""is_managed":true}}]"#,
+            "\n",
+            "isolation_mode  allow_intra\n",
+        )
+    );
+    assert_eq!(
+        server.targets(),
+        [
+            "GET /api/network/groups/",
+            "GET /api/network/topology/?system=1",
+            "GET /api/network/groups/",
+            "GET /api/network/topology/?system=1",
+        ]
+    );
+    // The switch takes no value.
+    Hipc::against(&Home::new(), &server)
+        .run(&["network", "topology", "--system=1"])
+        .fails(2, "usage");
 }
 
 /// A network that was never set up answers the group list 403, so the topology, whose first
@@ -698,6 +782,18 @@ fn topology_of_a_network_never_set_up_sends_no_topology_read() {
         )
     );
     assert_eq!(server.calls(), ["GET /api/network/groups/"]);
+    // `--system` keeps the group list first, so it creates no network either.
+    let error = Hipc::against(&Home::new(), &server)
+        .run(&["network", "topology", "--system"])
+        .fails(1, "permission");
+    assert_eq!(
+        error["message"],
+        "cannot list the network's groups: the private network is not set up for this account"
+    );
+    assert_eq!(
+        server.targets(),
+        ["GET /api/network/groups/", "GET /api/network/groups/"]
+    );
     let failing = Server::start(vec![
         route_of(&network::GROUPS, [], Reply::json(200, "[]")),
         route_of(
