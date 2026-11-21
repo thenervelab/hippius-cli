@@ -2068,6 +2068,15 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "args": [],
       "flags": [
         {
+          "name": "--search",
+          "value_name": "TEXT",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "Search the transactions for this text; the API does not document which fields it searches"
+        },
+        {
           "name": "--limit",
           "value_name": "LIMIT",
           "required": false,
@@ -7951,7 +7960,40 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "refused_when": null,
       "guards": [],
       "args": [],
-      "flags": [],
+      "flags": [
+        {
+          "name": "--period",
+          "value_name": "PERIOD",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "current_month",
+            "last_month",
+            "7d",
+            "30d"
+          ],
+          "default": null,
+          "help": "The period: current_month or last_month, as calendar months, or 7d or 30d, the last 7 or 30 UTC days with today"
+        },
+        {
+          "name": "--from",
+          "value_name": "DAY",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The first day of a custom range, as YYYY-MM-DD in UTC; needs --to"
+        },
+        {
+          "name": "--to",
+          "value_name": "DAY",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The last day of a custom range, included, as YYYY-MM-DD in UTC; needs --from"
+        }
+      ],
       "required_groups": [],
       "routes": [
         {
@@ -13383,7 +13425,17 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "refused_when": null,
       "guards": [],
       "args": [],
-      "flags": [],
+      "flags": [
+        {
+          "name": "--system",
+          "value_name": null,
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "Also show the system groups Hippius keeps for every network (the default group and the devices and VMs groups) and the managed policies between them"
+        }
+      ],
       "required_groups": [],
       "routes": [
         {
