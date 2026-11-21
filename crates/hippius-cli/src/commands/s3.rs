@@ -15,7 +15,8 @@ use serde_json::{Map, Value, json};
 
 use crate::cli::{
     AclUpdate, BucketAcl, BucketName, BucketObjects, Buckets, Configure, DOCS_URL, ObjectsList,
-    Presign, S3, S3Subscription, TokenCreate, TokenKind, TokenRotate, TokenTarget, Tokens,
+    Presign, S3, S3Subscription, TokenCreate, TokenKind, TokenList, TokenRotate, TokenStatus,
+    TokenTarget, Tokens,
 };
 use crate::commands::files::{save_secret, shown_once};
 use crate::commands::{
@@ -397,7 +398,7 @@ fn unblock_public_policy_hint(name: &BucketName) -> String {
 
 fn tokens(ctx: &Context<'_>, command: &Tokens) -> Result<Printed> {
     match command {
-        Tokens::List => list_tokens(ctx, &ctx.load_authed_client()?),
+        Tokens::List(args) => list_tokens(ctx, &ctx.load_authed_client()?, args),
         Tokens::Create(args) => create_token(ctx, args),
         Tokens::Revoke(target) => revoke_token(ctx, target),
         Tokens::Rotate(args) => rotate_token(ctx, args),
@@ -434,11 +435,20 @@ impl TokenRoutes {
 
 /// Both collections, every page of each, as one list. Swagger gives the sub-token list
 /// `page` and `page_size`, so its `next` links are followed; the first request carries no
-/// parameters, and the server picks the page size.
-fn list_tokens(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
+/// paging parameters, and the server picks the page size.
+///
+/// With `--status`, every sub-token request, each page's included, carries `status`, and the
+/// server filters; the master-token route takes no filter, so hipc keeps the master tokens
+/// whose own `status` is one asked for.
+fn list_tokens(ctx: &Context<'_>, client: &Client, args: &TokenList) -> Result<Printed> {
+    let status = status_query(&args.status);
     let first_page = |kind: TokenKind| {
-        Request::to(&TokenRoutes::of(kind).list, [])
-            .about(format!("list the S3 `{}` tokens", kind.code()))
+        let request = Request::to(&TokenRoutes::of(kind).list, [])
+            .about(format!("list the S3 `{}` tokens", kind.code()));
+        match (kind, &status) {
+            (TokenKind::Sub, Some(status)) => request.query("status", status),
+            (TokenKind::Sub, None) | (TokenKind::Master, _) => request,
+        }
     };
     if ctx.dry_run() {
         let [master, sub] = [TokenKind::Master, TokenKind::Sub].map(first_page);
@@ -459,6 +469,9 @@ fn list_tokens(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
             list::answered_as_asked(&page, asked.as_deref().unwrap_or("1"), start_over)?;
             let next = page.next_page_token()?;
             for token in page.items {
+                if matches!(kind, TokenKind::Master) && !in_status(&token, &args.status) {
+                    continue;
+                }
                 let mut token = token_document(without_fields(token, &is_s3_secret), kind);
                 // Tenet 9: a listing shows `secret: null`, whatever the server sent.
                 if let Value::Object(fields) = &mut token {
@@ -478,6 +491,23 @@ fn list_tokens(ctx: &Context<'_>, client: &Client) -> Result<Printed> {
         })?;
     }
     Ok(Printed::List(hippius::envelope(items)))
+}
+
+/// The `status` query of `--status`: each status once, in the server's order, comma-separated,
+/// or `None` when the flag is not given.
+fn status_query(statuses: &[TokenStatus]) -> Option<String> {
+    let mut statuses = statuses.to_vec();
+    statuses.sort_unstable();
+    statuses.dedup();
+    let codes: Vec<&str> = statuses.iter().map(|status| status.code()).collect();
+    (!codes.is_empty()).then(|| codes.join(","))
+}
+
+/// Whether a token answer is in one of `statuses`, which, empty, takes every token. A token
+/// with no `status`, or one hipc does not know, is in none.
+fn in_status(token: &Value, statuses: &[TokenStatus]) -> bool {
+    let status = token.get("status").and_then(Value::as_str);
+    statuses.is_empty() || statuses.iter().any(|asked| status == Some(asked.code()))
 }
 
 fn create_token(ctx: &Context<'_>, args: &TokenCreate) -> Result<Printed> {
@@ -905,6 +935,35 @@ mod tests {
             matches!(&kept, Printed::Document(kept) if *kept == dry_run),
             "{kept:?}"
         );
+    }
+
+    #[test]
+    fn a_status_filter_sends_each_status_once_in_the_servers_order() {
+        use TokenStatus::{Active, Expired, Revoked, Suspended};
+        assert_eq!(status_query(&[]), None);
+        assert_eq!(status_query(&[Revoked]).as_deref(), Some("revoked"));
+        assert_eq!(
+            status_query(&[Expired, Revoked, Active, Expired, Suspended, Active]).as_deref(),
+            Some("active,suspended,revoked,expired")
+        );
+    }
+
+    #[test]
+    fn a_token_is_in_a_status_only_by_its_own_status_field() {
+        use TokenStatus::{Active, Expired, Revoked};
+        let revoked = json!({"id": "m", "status": "revoked"});
+        assert!(in_status(&revoked, &[]));
+        assert!(in_status(&revoked, &[Active, Revoked]));
+        assert!(!in_status(&revoked, &[Active, Expired]));
+        for unknown in [
+            json!({"id": "m"}),
+            json!({"status": null}),
+            json!({"status": "gone"}),
+        ] {
+            assert!(in_status(&unknown, &[]), "{unknown}");
+            assert!(!in_status(&unknown, &[Active]), "{unknown}");
+        }
+        assert!(!in_status(&json!("revoked"), &[Revoked]));
     }
 
     #[test]

@@ -234,6 +234,7 @@ scenario s3: buckets, tokens and an AWS profile; the write tier creates and dele
   [read] hipc --output text s3 buckets objects list <first-bucket> --delimiter / --limit 10
   [read] hipc --output text s3 buckets acl list
   [read] hipc --output text s3 tokens list
+  [read] hipc --output text s3 tokens list --status active
   [read] hipc --output text s3 subscription history --limit 5
   [read] hipc --json s3 subscription checkout 0f8fad5b-d9cb-469f-a165-70867728950e
   [dry-run] hipc --output text s3 subscription subscribe --plan pro --dry-run
