@@ -7927,7 +7927,40 @@ expression: "serde_json::to_string_pretty(&document).unwrap()"
       "refused_when": null,
       "guards": [],
       "args": [],
-      "flags": [],
+      "flags": [
+        {
+          "name": "--period",
+          "value_name": "PERIOD",
+          "required": false,
+          "repeats": false,
+          "possible_values": [
+            "current_month",
+            "last_month",
+            "7d",
+            "30d"
+          ],
+          "default": null,
+          "help": "The period: current_month or last_month, as UTC months, or 7d or 30d, the last 7 or 30 UTC days with today"
+        },
+        {
+          "name": "--from",
+          "value_name": "DAY",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The first day of a custom range, as YYYY-MM-DD in UTC; needs --to"
+        },
+        {
+          "name": "--to",
+          "value_name": "DAY",
+          "required": false,
+          "repeats": false,
+          "possible_values": [],
+          "default": null,
+          "help": "The last day of a custom range, included, as YYYY-MM-DD in UTC; needs --from"
+        }
+      ],
       "required_groups": [],
       "routes": [
         {

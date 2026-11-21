@@ -1910,6 +1910,8 @@ runners() {
     -- hipc --output text compute runners jobs
   step read net "Read the runner usage" "see what the runners cost this month" \
     -- hipc --output text compute runners usage
+  step read net "Read last month's runner usage" "see what the runners cost last month" \
+    -- hipc --output text compute runners usage --period last_month
   # A server without runner spend limits answers not_found ("not enabled on this server").
   step read net/not_found "Read the runner limit" "see the monthly runner spend cap" \
     -- hipc --json compute runners limit get

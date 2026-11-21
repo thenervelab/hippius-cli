@@ -399,6 +399,7 @@ scenario compute: prices and capacity, VMs, databases, runners and SSH keys; a l
   [dry-run] hipc --output text compute runners connect --dry-run
   [read] hipc --output text compute runners jobs
   [read] hipc --output text compute runners usage
+  [read] hipc --output text compute runners usage --period last_month
   [read] hipc --json compute runners limit get
   [write] hipc --json compute runners limit update --monthly-cap <cap+1> --yes
   [read] hipc --json compute runners limit get

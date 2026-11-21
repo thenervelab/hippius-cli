@@ -1,6 +1,6 @@
 //! The grammar of `hipc compute runners`.
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 use crate::cli::values::catalog;
 use crate::cli::{CursorArgs, INSTALLATION_ID, country_code, examples, number};
@@ -44,10 +44,17 @@ pub(crate) enum Runners {
     ]))]
     Connect,
     /// What the account's runners cost over a period, from the compute ledger
+    ///
+    /// Without --period or --from and --to, the server reads the current month. --from and --to
+    /// ask for a custom range of UTC days, both ends included, of at most 366 days; a day that
+    /// does not exist, a --from after --to, or a longer range is refused before anything is
+    /// sent. The answer names the period, from, and to it covers.
     #[command(after_help = examples(&[
         "hipc compute runners usage",
+        "hipc compute runners usage --period last_month",
+        "hipc compute runners usage --from 2026-01-01 --to 2026-03-31",
     ]))]
-    Usage,
+    Usage(RunnerUsage),
     /// The account's monthly spend limit on runners, not yet enabled on api.hippius.com, which
     /// answers 404
     ///
@@ -61,6 +68,73 @@ pub(crate) enum Runners {
         "hipc compute runners limit update --monthly-cap 50",
     ]))]
     Limit(RunnerLimit),
+}
+
+/// `hipc compute runners usage`: a named period, or a custom range of days, never both.
+#[derive(Debug, Args)]
+pub(crate) struct RunnerUsage {
+    /// The period: current_month or last_month, as UTC months, or 7d or 30d, the last 7 or 30
+    /// UTC days with today
+    #[arg(long, value_enum, conflicts_with_all = ["from", "to"])]
+    pub(crate) period: Option<UsagePeriod>,
+    /// The first day of a custom range, as YYYY-MM-DD in UTC; needs --to
+    #[arg(long, value_name = "DAY", value_parser = usage_day, requires = "to")]
+    pub(crate) from: Option<UsageDay>,
+    /// The last day of a custom range, included, as YYYY-MM-DD in UTC; needs --from
+    #[arg(long, value_name = "DAY", value_parser = usage_day, requires = "from")]
+    pub(crate) to: Option<UsageDay>,
+}
+
+/// The named periods of `GET /api/runners/usage/`, as checked against the live API on
+/// 2026-11-20: swagger documents none of them, and any other value is a 400.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum UsagePeriod {
+    /// This month, from its first UTC day to now, which the server reads without --period
+    #[value(name = "current_month")]
+    CurrentMonth,
+    /// The whole of last month, in UTC
+    #[value(name = "last_month")]
+    LastMonth,
+    /// The last 7 UTC days, today included
+    #[value(name = "7d")]
+    SevenDays,
+    /// The last 30 UTC days, today included
+    #[value(name = "30d")]
+    ThirtyDays,
+}
+
+impl UsagePeriod {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::CurrentMonth => "current_month",
+            Self::LastMonth => "last_month",
+            Self::SevenDays => "7d",
+            Self::ThirtyDays => "30d",
+        }
+    }
+}
+
+/// A day of `--from` or `--to`: the text sent, and its days since 1970, which the range
+/// checks compare.
+#[derive(Debug, Clone)]
+pub(crate) struct UsageDay {
+    pub(crate) text: String,
+    pub(crate) unix_day: u64,
+}
+
+const DAY_SHAPE: &str =
+    "a day is YYYY-MM-DD, a date from 1970 on that exists, such as `2026-09-30`";
+
+/// A day that exists, as `YYYY-MM-DD`: the server takes only that form, and a day such as
+/// `2026-02-30` is refused here rather than by the server.
+fn usage_day(text: &str) -> Result<UsageDay, String> {
+    match hippius::unix_day(text) {
+        Some(unix_day) => Ok(UsageDay {
+            text: text.to_owned(),
+            unix_day,
+        }),
+        None => Err(DAY_SHAPE.to_owned()),
+    }
 }
 
 #[derive(Debug, Subcommand)]
