@@ -879,7 +879,7 @@ fn reveal_long_help() -> String {
         "\nA GET of a route no command sends (one that no command of hipc schema lists in its \
          routes) needs --reveal too: hipc does not know what its answer holds. So does every \
          request but a HEAD through the Agent Core agent proxy, listed above: the API passes \
-         it to the agent inside the VM, whose answers nothing documents.\n",
+         it to the agent inside the VM, whose answers the API does not document.\n",
     );
     text
 }

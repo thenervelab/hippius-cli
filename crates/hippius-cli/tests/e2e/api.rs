@@ -1161,7 +1161,7 @@ fn an_agent_socket_ticket_needs_reveal_first() {
 }
 
 /// The Agent Core agent proxy passes a request to the agent inside the VM, whose answers
-/// nothing documents, so every request through it but a `HEAD` needs `--reveal`, writes
+/// the API does not document, so every request through it but a `HEAD` needs `--reveal`, writes
 /// included, and is refused before anything is sent without it: before the confirmation,
 /// and in a shared account and a project too (#100). With `--reveal --yes` it is sent with
 /// both headers, and a write still warns that `hipc` does not know the route.

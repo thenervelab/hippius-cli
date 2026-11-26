@@ -140,7 +140,9 @@ in another letter case). The secret, provisioning, permanent-delete, and guard c
 read it under every other API version (`account::in_every_version`), so a refused or secret
 route stays so on a version the API adds before a row names it; the row lookup itself
 reads the path only as written, so `hipc api` still treats such a path as a route it does
-not know.
+not know. A table pattern that ends in `{..}/` covers a whole subtree, its root included, so
+one entry holds every path under a pass-through such as the Agent Core agent proxy
+(`account::matches_pattern`).
 
 A placeholder's name says what fills it, and for a few names, the shape that fills it
 (`fits` in `routes.rs`, the one place a name decides a shape): `database_id` and

@@ -486,7 +486,7 @@ fn a_secret_route_issues_a_secret_with_or_without_its_trailing_slash() {
     }
 }
 
-/// Each route issues its secret to one method only: the other methods on the same path
+/// Each route issues its secret to its own methods only: the other methods on the same path
 /// read, change, or delete without an answer that holds the secret.
 #[test]
 fn a_secret_route_matches_its_own_method_and_no_other() {
@@ -1238,6 +1238,12 @@ fn the_guard_of_a_template_is_the_rule_of_its_path() {
 /// reaches only through `hipc api`.
 #[test]
 fn no_table_entry_is_a_route_a_row_decides() {
+    // A row decides its own route before the table, so a row under the agent proxy that
+    // did not reveal would lift the proxy's `--reveal` on its path, at any depth.
+    for row in routes::all() {
+        let path = with_trailing_slash(&filled(row.template())).to_ascii_lowercase();
+        assert!(!matches_pattern(AGENT_PROXY, &path), "{}", row.template());
+    }
     for &(method, pattern) in SECRET_ROUTES {
         let path = filled(pattern);
         assert_eq!(routes::row(method, &path), None, "{method} {pattern}");

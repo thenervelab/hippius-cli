@@ -104,6 +104,11 @@ pub(crate) fn not_done_on_503(method: Method, path: &str) -> bool {
     routes::row(method, without_query(path)).is_some_and(Endpoint::undone_on_503)
 }
 
+/// Every path through the Agent Core agent proxy, the agent's own root included (see
+/// [`SECRET_ROUTES`]). A row whose template this matches would decide its path before the
+/// table and could lift the `--reveal`, so a test refuses one.
+const AGENT_PROXY: &str = "/api/agentcore/instances/{vm_id}/agent/{..}/";
+
 /// The requests with no row whose answer holds a secret, each a method and a path pattern in
 /// the language of [`matches_pattern`]: `{n}` is one segment of ASCII digits, any other
 /// `{name}` one non-empty segment, and a last `{..}` the rest of the path. A row says it of
@@ -119,8 +124,8 @@ pub(crate) fn not_done_on_503(method: Method, path: &str) -> bool {
 ///
 /// The Agent Core agent proxy is listed whole, on every method, for the same reason: the API
 /// passes a request under `/api/agentcore/instances/{vm_id}/agent/` to the agent inside the
-/// VM and answers with what the agent answers, and nothing documents that agent's routes. The
-/// bare `agent/` is listed too, since the API does not say whether it reaches the agent's root.
+/// VM and answers with what the agent answers, and the API does not document the agent's
+/// routes. The bare `agent/` is listed too, since the API does not say whether it reaches the agent's root.
 const SECRET_ROUTES: &[(Method, &str)] = &[
     (Method::Get, "/api/databases/{n}/backup-token/"),
     (Method::Post, "/api/databases/{n}/backup-token/"),
@@ -158,10 +163,6 @@ const SECRET_ROUTES: &[(Method, &str)] = &[
     (Method::Patch, AGENT_PROXY),
     (Method::Delete, AGENT_PROXY),
 ];
-
-/// Every path through the Agent Core agent proxy, the agent's own root included (see
-/// [`SECRET_ROUTES`]).
-const AGENT_PROXY: &str = "/api/agentcore/instances/{vm_id}/agent/{..}/";
 
 /// Every request whose answer holds a secret, as a method and a path template: each row that
 /// reveals one, then the routes with no row that do. `hipc api --reveal`'s help lists them.
