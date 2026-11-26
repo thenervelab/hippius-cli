@@ -1265,15 +1265,7 @@ impl Client {
         self.note_deprecation(request.method, resolved.target.api_path(), &header);
         // The status has arrived, so it decides even when the body cannot be read: a 2xx
         // write was done (`partial`, not retryable), and a 4xx is that status's error.
-        // The limit is one byte past the cap: ureq 3.5.0 refuses a read once its limit is used
-        // up, before it sees the end of the body (`LimitReader::read` in `src/body/limit.rs`),
-        // so a limit of the cap itself would refuse a body of exactly the cap.
-        let (body, body_unread) = match response
-            .body_mut()
-            .with_config()
-            .limit(MAX_BODY_BYTES + 1)
-            .read_to_vec()
-        {
+        let (body, body_unread) = match read_body(&mut response, status) {
             Ok(body) => (body, None),
             // The status arrived, so the request reached the server whatever broke the
             // body: a TLS alert or an unreachable network here must not read as "not sent".
@@ -1784,6 +1776,29 @@ fn status_error(answer: &StatusAnswer<'_>) -> Error {
         return error.with_hint("check the API's answer in `details`, which `--json` prints");
     }
     answer.attempt.with_hint(error)
+}
+
+/// The body of an answer with `status`, at most [`MAX_BODY_BYTES`] long.
+///
+/// A redirect's body is not read, and is empty: a redirect is never followed, and its error
+/// is made from the status and `Location` alone. Since ureq-proto 0.7.1 a 3xx with neither
+/// `Content-Length` nor `Transfer-Encoding` has a body that ends only when the server closes,
+/// so a keep-alive server would hold the read until the request timeout.
+fn read_body(
+    response: &mut ureq::http::Response<ureq::Body>,
+    status: u16,
+) -> std::result::Result<Vec<u8>, ureq::Error> {
+    if (300..400).contains(&status) {
+        return Ok(Vec::new());
+    }
+    // The limit is the cap itself: since ureq 3.5.2 a body of exactly the limit is read, and
+    // only a byte past it is `BodyExceedsLimit` (the `BodyWithConfig::limit` docs). Before
+    // 3.5.2 the limit refused a body of exactly its size, so the manifest asks for 3.5.2.
+    response
+        .body_mut()
+        .with_config()
+        .limit(MAX_BODY_BYTES)
+        .read_to_vec()
 }
 
 /// The hint of a `410 Gone`: the API retired the route.

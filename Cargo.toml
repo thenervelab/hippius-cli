@@ -33,8 +33,9 @@ toml = { version = "1.1", default-features = false, features = ["parse", "serde"
 # version ureq uses, so no second copy is built.
 rustls = { version = "0.23", default-features = false }
 # rustls: HTTPS to api.hippius.com with bundled roots and no system OpenSSL. No gzip: the
-# console's JSON answers are small.
-ureq = { version = "3.5", default-features = false, features = ["rustls"] }
+# console's JSON answers are small. 3.5.2 at least: the body cap in
+# crates/hippius/src/client.rs relies on its limit reading a body of exactly the limit.
+ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
 # The Kubernetes cluster key (crates/hippius/src/kubernetes.rs): Ed25519 signatures over node
 # operations and the drop signatures, and libsodium sealed boxes for the kubeconfig. Both are
 # pure Rust and share curve25519-dalek 4, so the curve is built once. ed25519-dalek 3 moved to
