@@ -2663,6 +2663,9 @@ fn a_support_ticket_write_that_holds_a_token_is_refused() {
         ("POST", "/support/tickets/7/handoff/"),
         ("POST", "/support/chat/tickets/7/messages/"),
         ("DELETE", "/support/tickets/7/"),
+        // The root itself, with and without its slash (#100).
+        ("POST", "/support/"),
+        ("POST", "/support"),
     ];
     // Each body on the first route, then the first body on each other route, each with
     // `--yes`, and one dry run: the body check and the route match are apart, so this

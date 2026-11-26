@@ -105,8 +105,8 @@ pub(crate) fn not_done_on_503(method: Method, path: &str) -> bool {
 }
 
 /// Every path through the Agent Core agent proxy, the agent's own root included (see
-/// [`SECRET_ROUTES`]). A row whose template this matches would decide its path before the
-/// table and could lift the `--reveal`, so a test refuses one.
+/// [`SECRET_ROUTES`]). A row that a path through it reaches cannot lift its `--reveal`:
+/// a table entry adds the secret whatever the row says ([`decided`]).
 const AGENT_PROXY: &str = "/api/agentcore/instances/{vm_id}/agent/{..}/";
 
 /// The requests with no row whose answer holds a secret, each a method and a path pattern in
@@ -125,7 +125,8 @@ const AGENT_PROXY: &str = "/api/agentcore/instances/{vm_id}/agent/{..}/";
 /// The Agent Core agent proxy is listed whole, on every method, for the same reason: the API
 /// passes a request under `/api/agentcore/instances/{vm_id}/agent/` to the agent inside the
 /// VM and answers with what the agent answers, and the API does not document the agent's
-/// routes. The bare `agent/` is listed too, since the API does not say whether it reaches the agent's root.
+/// routes. The bare `agent/` is listed too, since the API does not say whether it reaches
+/// the agent's root.
 const SECRET_ROUTES: &[(Method, &str)] = &[
     (Method::Get, "/api/databases/{n}/backup-token/"),
     (Method::Post, "/api/databases/{n}/backup-token/"),
@@ -209,10 +210,24 @@ pub(crate) fn permanent(method: Method, path: &str) -> bool {
     decided(method, path, Endpoint::permanent, &[])
 }
 
-/// What the row of each form of `path` says by `from_row`, or for a form no row matches,
-/// whether `table` lists it; true when any form's answer is (for the forms, see
-/// [`returns_secret`]).
+/// True when `table` lists a form of `path`, or the row of a form says so by `from_row`
+/// (for the forms, see [`returns_secret`]). A table entry only adds: a row that a listed
+/// form also reaches cannot take it back, so a row added later under a listed subtree, such
+/// as the agent proxy's, does not lift its `--reveal`. No entry is a route a row decides
+/// today (a test holds that), so the order changes no answer now.
 fn decided(
+    method: Method,
+    path: &str,
+    from_row: fn(&Endpoint) -> bool,
+    table: &[(Method, &str)],
+) -> bool {
+    decided_by(routes::row, method, path, from_row, table)
+}
+
+/// [`decided`] with the rows that `row` finds in place of the route table's, so a test can
+/// add one.
+fn decided_by<'e>(
+    row: impl Fn(Method, &str) -> Option<&'e Endpoint>,
     method: Method,
     path: &str,
     from_row: fn(&Endpoint) -> bool,
@@ -226,9 +241,11 @@ fn decided(
     };
     in_every_version(path).iter().any(|path| {
         classify(path, false, |form| {
-            routes::row(method, form)
-                .map(from_row)
-                .or_else(|| listed(form).then_some(true))
+            if listed(form) {
+                Some(true)
+            } else {
+                row(method, form).map(from_row)
+            }
         })
     })
 }

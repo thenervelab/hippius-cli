@@ -1,6 +1,6 @@
 use super::*;
 use crate::error::Code;
-use crate::routes::RouteFlag;
+use crate::routes::{Route, RouteFlag};
 use crate::source::Source;
 
 const ID: &str = "acct_0123456789abcdef0123";
@@ -640,6 +640,43 @@ fn every_request_through_the_agent_proxy_but_a_head_issues_a_secret() {
             "{method}"
         );
     }
+}
+
+/// A table entry wins over a row: a row added later that a path through the agent proxy
+/// reaches, here one that matches its root and does not reveal, cannot lift the proxy's
+/// `--reveal`, while it still decides every path the table does not list. A revealing row
+/// reveals with no table at all.
+#[test]
+fn a_secret_table_entry_wins_over_a_row_that_reaches_its_path() {
+    const ACTION: Route<2> = Route::get("/api/agentcore/instances/{vm_id}/{action}/").scoped();
+    const SECRET: Route<1> = Route::get("/api/agentcore/instances/{vm_id}/secret/")
+        .scoped()
+        .reveals();
+    // The router's order: the template with more literal segments first.
+    let rows = [SECRET.endpoint(), ACTION.endpoint()];
+    let row = |method: Method, form: &str| {
+        let form = with_trailing_slash(form);
+        rows.into_iter()
+            .find(|row| row.method() == method && row.matches(&form))
+    };
+    let decide = |path: &str, table| decided_by(row, Method::Get, path, Endpoint::reveals, table);
+    let root = "/api/agentcore/instances/vm-1/agent/";
+    assert!(row(Method::Get, root).is_some_and(|row| !row.reveals()));
+    assert!(decide(root, SECRET_ROUTES));
+    assert!(decide("/api/agentcore/instances/vm-1/agent", SECRET_ROUTES));
+    assert!(!decide(root, &[]), "the row decides with no table");
+    assert!(!decide(
+        "/api/agentcore/instances/vm-1/stop/",
+        SECRET_ROUTES
+    ));
+    assert!(decide("/api/agentcore/instances/vm-1/secret/", &[]));
+    assert!(!decided_by(
+        row,
+        Method::Head,
+        root,
+        Endpoint::reveals,
+        SECRET_ROUTES
+    ));
 }
 
 /// A last `{..}` is the rest of the path, nothing included, and the segments before it match
