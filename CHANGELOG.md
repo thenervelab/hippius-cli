@@ -6,9 +6,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 ## [Unreleased]
 
-### Fixed
+### Changed
 
-- A redirect from the API is refused as soon as its status arrives. `hipc` no longer reads a redirect's body, so a redirect without `Content-Length` or `Transfer-Encoding` from a server that keeps the connection open no longer holds the command until `--request-timeout`. The error is unchanged, except that a redirect's body no longer appears in `details`.
+- `hipc` no longer reads the body of a redirect from the API, which it never follows, so that body no longer appears in `error.details`. The error's code and message are unchanged.
 
 ## [0.17.1] - 2026-11-21
 
