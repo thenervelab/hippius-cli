@@ -527,6 +527,20 @@ fn a_secret_route_matches_its_own_method_and_no_other() {
         (Method::Post, "/api/auth/sign-in-methods/step-up/verify/"),
         (Method::Post, "/api/network/infra/enroll/"),
         (Method::Post, "/api/chat/workspaces/w1/invites/"),
+        (Method::Get, "/api/agentcore/instances/vm-1/agent/v1/files/"),
+        (
+            Method::Post,
+            "/api/agentcore/instances/vm-1/agent/v1/files/",
+        ),
+        (Method::Put, "/api/agentcore/instances/vm-1/agent/v1/files/"),
+        (
+            Method::Patch,
+            "/api/agentcore/instances/vm-1/agent/v1/files/",
+        ),
+        (
+            Method::Delete,
+            "/api/agentcore/instances/vm-1/agent/v1/files/",
+        ),
     ];
     assert_eq!(
         routes.len(),
@@ -564,6 +578,100 @@ fn a_secret_route_matches_its_own_method_and_no_other() {
             assert!(!returns_secret(method, path), "{method} {path}");
         }
     }
+}
+
+/// Every request through the Agent Core agent proxy but a `HEAD` needs `--reveal`, at any
+/// depth, the agent's root included, in any letter case, under any API version, without its
+/// trailing slash, with a format suffix or a query, and whatever the rest of the path holds
+/// (#100). The client refuses a `.`, `..`, or empty segment and a percent-encoding before
+/// this check, so the server cannot route a path to the agent that the check read as
+/// another route (`client::tests`).
+#[test]
+fn every_request_through_the_agent_proxy_but_a_head_issues_a_secret() {
+    for path in [
+        "/api/agentcore/instances/vm-1/agent/",
+        "/api/agentcore/instances/vm-1/agent",
+        "/api/agentcore/instances/vm-1/agent/x/",
+        "/api/agentcore/instances/vm-1/agent/v1/files",
+        "/api/agentcore/instances/vm-1/agent/v1/files/a/b/c/d/e/",
+        "/api/agentcore/instances/vm-1/agent/v1/files.json",
+        "/api/agentcore/instances/vm-1/agent.json/",
+        "/api/agentcore/instances/vm-1/agent/v1/files/?x=1",
+        "/api/agentcore/instances/agent/agent/",
+        "/api/agentcore/instances/vm-1/agent/agent-sockets/",
+        "/api/agentcore/instances/vm-1/agent/../",
+        "/api/agentcore/instances/vm-1/agent/./x/",
+        "/api/agentcore/instances/vm-1/agent//x/",
+        "/api/agentcore/instances/vm-1/agent/x%2Fy/",
+        "/API/AgentCore/Instances/VM-1/AGENT/V1/Files/",
+        "/api/v2/agentcore/instances/vm-1/agent/v1/files/",
+    ] {
+        for method in METHODS {
+            let expected = method != Method::Head;
+            assert_eq!(returns_secret(method, path), expected, "{method} {path}");
+        }
+    }
+    // The other Agent Core routes keep their own answer: only the socket ticket's `POST` is
+    // a secret, and a route that merely starts with `agent` is no proxy.
+    for path in [
+        "/api/agentcore/",
+        "/api/agentcore/instances/",
+        "/api/agentcore/instances/vm-1/",
+        "/api/agentcore/instances/vm-1/stop/",
+        "/api/agentcore/instances/vm-1/backups/",
+        "/api/agentcore/instances/vm-1/backups/restore/",
+        "/api/agentcore/instances/vm-1/agents/x/",
+        "/api/agentcore/instances/vm-1/agent-sockets/x/",
+        "/api/agentcore/instances/agent/",
+        "/api/agentcore/instances//agent/",
+        "/api/agentcore/agent/x/",
+        "/api/agentcorex/instances/vm-1/agent/x/",
+        "/api/compute/vms/vm-1/agent/x/",
+    ] {
+        for method in METHODS {
+            assert!(!returns_secret(method, path), "{method} {path}");
+        }
+    }
+    let sockets = "/api/agentcore/instances/vm-1/agent-sockets/";
+    for method in METHODS {
+        assert_eq!(
+            returns_secret(method, sockets),
+            method == Method::Post,
+            "{method}"
+        );
+    }
+}
+
+/// A last `{..}` is the rest of the path, nothing included, and the segments before it match
+/// as in any other pattern.
+#[test]
+fn a_subtree_pattern_matches_its_root_and_every_path_under_it() {
+    let pattern = "/api/a/{id}/b/{..}/";
+    for path in [
+        "/api/a/1/b/",
+        "/api/a/1/b/c/",
+        "/api/a/1/b/c/d/",
+        "/api/a/1/b//",
+    ] {
+        assert!(matches_pattern(pattern, path), "{path}");
+    }
+    for path in [
+        "/api/a/1/b",
+        "/api/a/1/",
+        "/api/a//b/",
+        "/api/a/1/bc/",
+        "/api/a/1/c/d/",
+        "/api/x/1/b/c/",
+        "/api/a/1/b/c",
+    ] {
+        assert!(!matches_pattern(pattern, path), "{path}");
+    }
+    assert!(matches_pattern("/api/support/{..}/", "/api/support/"));
+    assert!(matches_pattern(
+        "/api/support/{..}/",
+        "/api/support/tickets/7/"
+    ));
+    assert!(!matches_pattern("/api/support/{..}/", "/api/supportx/"));
 }
 
 const METHODS: [Method; 6] = [

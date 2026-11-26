@@ -522,6 +522,55 @@ fn a_full_url_on_another_origin_is_refused() {
     }
 }
 
+/// A request through the Agent Core agent proxy issues a secret however its target is
+/// written (#100), and a path the server could route to the agent although it reads as
+/// another route is refused before the check: a `.` or `..` segment, an empty segment, a
+/// percent-encoded `/` or `.`, a `;`, a backslash, or a fragment.
+#[test]
+fn a_request_through_the_agent_proxy_issues_a_secret_however_it_is_written() {
+    let c = client(member());
+    for target in [
+        "/agentcore/instances/vm-1/agent/v1/files",
+        "/agentcore/instances/vm-1/agent/",
+        "/api/agentcore/instances/vm-1/agent/v1/files/",
+        "/agentcore/instances/vm-1/agent/v1/files/?path=/etc",
+        "https://api.hippius.com/api/agentcore/instances/vm-1/agent/v1/files/",
+        "/AgentCore/Instances/vm-1/Agent/V1/",
+        "/v2/agentcore/instances/vm-1/agent/x.json",
+    ] {
+        for method in [
+            Method::Get,
+            Method::Post,
+            Method::Put,
+            Method::Patch,
+            Method::Delete,
+        ] {
+            let request = Request::new(method, target);
+            assert!(c.returns_secret(&request).unwrap(), "{method} {target}");
+        }
+        let head = Request::new(Method::Head, target);
+        assert!(!c.returns_secret(&head).unwrap(), "{target}");
+    }
+    for target in [
+        "/agentcore/instances/vm-1/x/../agent/v1/",
+        "/agentcore/instances/vm-1/agent/../agent-sockets/",
+        "/agentcore/instances/vm-1/./agent/v1/",
+        "/agentcore/instances/vm-1//agent/v1/",
+        "/agentcore/instances/vm-1/agent%2Fv1/",
+        "/agentcore/instances/vm-1%2Fagent/v1/",
+        "/agentcore/instances/vm-1/%2e%2e/agent/v1/",
+        "/agentcore/instances/vm-1/agent%2fv1/",
+        "/agentcore/instances/vm-1/agent;x/v1/",
+        "/agentcore/instances/vm-1\\agent/v1/",
+        "/agentcore/instances/vm-1/#/../agent/v1/",
+    ] {
+        for method in [Method::Get, Method::Head, Method::Post, Method::Delete] {
+            let error = c.returns_secret(&Request::new(method, target)).unwrap_err();
+            assert_eq!(error.code(), Code::Usage, "{method} {target}");
+        }
+    }
+}
+
 /// The answer comes before the account rules, so `--reveal` can be checked first: a
 /// membership on a route that cannot act in another account still gets an answer.
 #[test]

@@ -1579,6 +1579,7 @@ remove_others_required|PATCH|/api/cdn/lists/hipc-check/|{"items":[]}|api PATCH /
 remove_others_required|PUT|/api/v1/operator/nodes/n1/storage/|{"rules":[]}|api PUT /v1/operator/nodes/n1/storage/ --body-file @DIR@/rules.json
 public_required|PUT|/api/objectstore/buckets/hipc-dry-run-check/acl/set/|{"grants":[]}|api PUT /objectstore/buckets/hipc-dry-run-check/acl/set/ --body-file @DIR@/grants.json
 public_required|PATCH|/api/registry/me/publicity/|{"public":true}|api PATCH /registry/me/publicity/ --body-file @DIR@/public.json
+reveal_required|POST|/api/agentcore/instances/@UUID@/agent/v1/files/|{"rules":[]}|api POST /agentcore/instances/@UUID@/agent/v1/files/ --body-file @DIR@/rules.json
 EOF
 }
 

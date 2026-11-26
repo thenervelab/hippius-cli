@@ -868,7 +868,7 @@ pub(crate) struct OneTimeSecret {
 fn reveal_long_help() -> String {
     let mut text = "Print a secret; required for the requests that return one, or nothing is \
                     sent\n\nThe requests that return one, where each <name> is one path \
-                    segment and <n> a number:\n"
+                    segment, <n> a number, and a final ... the rest of the path, if any:\n"
         .to_owned();
     for (method, route) in hippius::secret_routes() {
         if !UNLISTED_SECRET_ROUTES.contains(&(method, route)) {
@@ -877,7 +877,9 @@ fn reveal_long_help() -> String {
     }
     text.push_str(
         "\nA GET of a route no command sends (one that no command of hipc schema lists in its \
-         routes) needs --reveal too: hipc does not know what its answer holds.\n",
+         routes) needs --reveal too: hipc does not know what its answer holds. So does every \
+         request but a HEAD through the Agent Core agent proxy, listed above: the API passes \
+         it to the agent inside the VM, whose answers nothing documents.\n",
     );
     text
 }
@@ -963,13 +965,14 @@ const UNLISTED_SECRET_ROUTES: &[(hippius::Method, &str)] = &[
 ];
 
 /// A route of the secret table as a person types it to `hipc api`: without the /api prefix,
-/// and with `<id>` for `{id}`, because clap's help renderer reads `{n}` as a line break.
+/// with `<id>` for `{id}`, because clap's help renderer reads `{n}` as a line break, and
+/// with `...` for a last `{..}/`, the rest of the path.
 fn typed_route(route: &str) -> String {
-    route
-        .strip_prefix("/api")
-        .unwrap_or(route)
-        .replace('{', "<")
-        .replace('}', ">")
+    let route = route.strip_prefix("/api").unwrap_or(route);
+    let route = route
+        .strip_suffix("{..}/")
+        .map_or_else(|| route.to_owned(), |head| format!("{head}..."));
+    route.replace('{', "<").replace('}', ">")
 }
 
 #[cfg(test)]
@@ -1389,6 +1392,17 @@ mod tests {
             "{help}"
         );
         assert!(help.contains("A GET of a route no command sends"), "{help}");
+        // The agent proxy, on every method but HEAD, with its subtree written as `...`.
+        for method in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+            let line = format!("  {method} /agentcore/instances/<vm_id>/agent/...\n");
+            assert!(help.contains(&line), "{line:?} missing from:\n{help}");
+        }
+        assert!(!help.contains("HEAD /agentcore/"), "{help}");
+        assert!(!help.contains("{..}") && !help.contains("<..>"), "{help}");
+        assert!(
+            help.contains("through the Agent Core agent proxy"),
+            "{help}"
+        );
         for (method, route) in hippius::secret_routes() {
             assert!(route.starts_with("/api/"), "{route}");
             let line = format!("  {method} {}\n", typed_route(route));

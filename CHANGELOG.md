@@ -4,6 +4,12 @@ All notable changes to `hipc`, named `hip` up to 0.14.0, are listed here. The fo
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `hipc api` needs `--reveal` for every request through the Agent Core agent proxy, `/agentcore/instances/<vm_id>/agent/...`, at any depth and the agent's root `agent/` included, on every method but `HEAD`. The API passes such a request to the agent inside the VM and answers with what the agent answers, which nothing documents, so `hipc` cannot tell which answers hold a ticket, a token, or a key. Only a `GET` needed `--reveal` before, and a `POST`, `PUT`, `PATCH`, or `DELETE` printed the agent's answer without it. Without `--reveal` the request exits 2 `reveal_required` and nothing is sent, before the confirmation, in any letter case, without the trailing slash, with a format suffix or a query, and under any API version. A dry run needs neither flag and still sends nothing. A write still needs `--yes` and warns that `hipc` does not know the route. `hipc api --reveal --help` lists the proxy. (#100)
+
 ## [0.17.1] - 2026-11-21
 
 ### Added
