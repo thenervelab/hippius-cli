@@ -233,7 +233,7 @@ Plan purchases and changes are owner-only. A member tops up only a selected bill
 
 The source is https://github.com/thenervelab/hippius-cli. Each release is a GitHub release there: tarballs for macOS on Apple silicon and Intel and static (musl) Linux on x86_64 and aarch64, `SHA256SUMS`, and `SHA256SUMS.sigstore.json`, a cosign keyless signature of `SHA256SUMS` made by the release workflow. The macOS binaries are not notarized; after a browser download, run `xattr -d com.apple.quarantine ./hipc`.
 
-The install script checks the hash, and the signature when `cosign` is on `PATH`; `HIPC_INSTALL_REQUIRE_SIGNATURE=1` makes a missing `cosign` a failure. Homebrew installs the formula `hipc` from `thenervelab/tap`, a name taken over from the deprecated IPFS-era tool (tenet 1), which each release updates; Homebrew 7 needs `brew trust thenervelab/tap` first. PyPI ships binary-only wheels under the name `hippius` (`pip install hippius`), which install the command `hipc`, once the release workflow's `PYPI_PUBLISH` variable is turned on for the trusted publisher. `hipc` is not published to crates.io.
+The install script checks the hash, and the signature when `cosign` is on `PATH`; `HIPC_INSTALL_REQUIRE_SIGNATURE=1` makes a missing `cosign` a failure. Homebrew installs the formula `hipc` from `thenervelab/tap`, a name taken over from the deprecated IPFS-era tool (tenet 1), which each release updates; Homebrew 6 and later need `brew trust thenervelab/tap` first. PyPI ships binary-only wheels under the name `hippius` (`pip install hippius`), which install the command `hipc`, once the release workflow's `PYPI_PUBLISH` variable is turned on for the trusted publisher. `hipc` is not published to crates.io.
 
 ## 14. What we refuse
 

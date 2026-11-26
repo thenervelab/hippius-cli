@@ -18,7 +18,7 @@ curl -q --proto '=https' --tlsv1.2 -fsSL https://github.com/thenervelab/hippius-
   brew install thenervelab/tap/hipc
   ```
 
-  Homebrew 7.0.0 and later load a formula from a third-party tap only once the tap is trusted, and refuse `brew install hipc` by its short name until then. An older Homebrew does not need the `brew trust` line, and one older than 5.1.15 answers it with `Unknown command: trust`, which is harmless: the install line still runs. Each release updates the formula, and `brew upgrade hipc` installs it.
+  Homebrew 6.0.0 and later load a formula from a third-party tap only once the tap or the formula is trusted. Installing by the full name trusts that formula, but a command that names it by its short name, such as `brew upgrade hipc`, is refused until then, so the `brew trust` line trusts the whole tap. Homebrew before 6.0.0 does not need it, and one before 5.1.15 answers it with `Unknown command: brew trust`, which is harmless: the install line still runs. Each release updates the formula, and `brew upgrade hipc` installs it.
 - The tap's `hipc` was the IPFS-era tool of that name, version 0.0.x. On a machine that has it, `brew trust thenervelab/tap` and then `brew upgrade hipc` move it onto this one.
 - PyPI: the wheels are published as the project `hippius` and install the command `hipc` (`pip install hippius`, `uv tool install hippius`, or `pipx install hippius`) once the release's `PYPI_PUBLISH` switch is on; until then each of those installs the old Hippius Python SDK 0.2.77, not this command. Afterwards, to keep the old SDK, pin `hippius==0.2.77` in its own environment.
 - The PyPI project `hipc` is unrelated to Hippius.
