@@ -140,7 +140,7 @@ jobs:
         with:
           # The installer's bootstrap version, which it checks against a SHA-256 written in
           # the action itself; any other version is checked by a second signature download.
-          cosign-release: v3.0.6
+          cosign-release: v3.1.4
       - name: Sign
         working-directory: dist
         # cosign 3 writes a Sigstore bundle (certificate, signature, and Rekor entry in one
