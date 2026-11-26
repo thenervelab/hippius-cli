@@ -8,6 +8,8 @@ At a terminal it talks to a person. On a pipe it talks to a program: output is J
 
 macOS (Apple silicon and Intel) and Linux (x86_64 and aarch64).
 
+If Homebrew has the IPFS-era `hipc` 0.0.x (`brew list --versions hipc` shows it), run `brew uninstall hipc` first, so the old one does not come first on `PATH`, or move it onto this one with Homebrew as below.
+
 ```sh
 # into ~/.local/bin, no root, checks the release's checksum, and its signature when cosign
 # is installed (HIPC_INSTALL_REQUIRE_SIGNATURE=1 makes that required)
@@ -21,8 +23,7 @@ brew trust thenervelab/tap
 brew install thenervelab/tap/hipc
 ```
 
-- Recent Homebrew loads a formula from a third-party tap only once the tap is trusted, and refuses `brew install hipc` by its short name until then. `brew trust` exists from Homebrew 7.0.0 on; on an older Homebrew, skip that line. Each release updates the formula, and `brew upgrade hipc` installs it.
-- The tap's `hipc` was the IPFS-era tool of that name, version 0.0.x. On a machine that has it, `brew trust thenervelab/tap` and then `brew upgrade hipc` move it onto this one. If you install with the script instead, run `brew uninstall hipc` first, so the old one does not come first on `PATH`.
+- Homebrew: version 7.0.0 and later load a formula from a third-party tap only once the tap is trusted, and refuse `brew install hipc` by its short name until then. An older Homebrew does not need the `brew trust` line, and one older than 5.1.15 answers it with `Unknown command: trust`, which is harmless: the install line still runs. Each release updates the formula, and `brew upgrade hipc` installs it. The tap's `hipc` was the IPFS-era tool of that name, version 0.0.x. On a machine that has it, `brew trust thenervelab/tap` and then `brew upgrade hipc` move it onto this one.
 - PyPI: the wheels are published as the project `hippius` and install the command `hipc` (`pip install hippius`, `uv tool install hippius`, or `pipx install hippius`) once the release's `PYPI_PUBLISH` switch is on; until then each of those installs the old Hippius Python SDK 0.2.77, not this command. Afterwards, to keep the old SDK, pin `hippius==0.2.77` in its own environment.
 - The PyPI project `hipc` is unrelated to Hippius.
 
