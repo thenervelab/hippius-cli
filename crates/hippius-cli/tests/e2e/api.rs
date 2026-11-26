@@ -1159,6 +1159,144 @@ fn an_agent_socket_ticket_needs_reveal_first() {
     assert_eq!(server.requests().len(), 1);
 }
 
+/// The Agent Core agent proxy passes a request to the agent inside the VM, whose answers
+/// the API does not document, so every request through it but a `HEAD` needs `--reveal`, writes
+/// included, and is refused before anything is sent without it: before the confirmation,
+/// and in a shared account and a project too (#100). With `--reveal --yes` it is sent with
+/// both headers, and a write still warns that `hipc` does not know the route.
+#[test]
+fn every_request_through_the_agent_proxy_needs_reveal_first() {
+    let proxied = "/api/agentcore/instances/vm-1/agent/v1/files/";
+    let answer = r#"{"token":"s3cr3t"}"#;
+    let server = Server::start(
+        ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
+            .into_iter()
+            .map(|method| route(method, proxied, Reply::json(200, answer)))
+            .collect(),
+    );
+    let hipc = || Hipc::against(&Home::new(), &server);
+    let scope = ["--account", MEMBER, "--project", PROJECT];
+    let path = "/agentcore/instances/vm-1/agent/v1/files/";
+    for method in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+        for target in [
+            path,
+            "/agentcore/instances/vm-1/agent/v1/files",
+            "/AgentCore/Instances/vm-1/Agent/v1/files/",
+            "/agentcore/instances/vm-1/agent/",
+            "/agentcore/instances/vm-1/agent/v1/files/?x=1",
+        ] {
+            for extra in [&["--yes"][..], &[]] {
+                let argv = [&["api", method, target][..], extra].concat();
+                let error = hipc().run(&argv).fails(2, "reveal_required");
+                assert!(
+                    error["hint"]
+                        .as_str()
+                        .is_some_and(|h| h.contains("--reveal")),
+                    "{method} {target}: {error}"
+                );
+                if target == path {
+                    hipc()
+                        .run(&[&scope[..], &argv].concat())
+                        .fails(2, "reveal_required");
+                }
+            }
+        }
+    }
+    assert!(server.requests().is_empty(), "the refusals sent nothing");
+
+    // A write still needs `--yes` once it has `--reveal`.
+    hipc()
+        .run(&["api", "POST", path, "--reveal"])
+        .fails(2, "confirmation_required");
+    assert!(server.requests().is_empty());
+
+    for method in ["POST", "PUT", "PATCH", "DELETE"] {
+        let run = hipc().run(&[&scope[..], &["api", method, path, "--yes", "--reveal"]].concat());
+        assert_eq!(sent_unknown(&run)["token"], "s3cr3t", "{method}");
+    }
+    let read = hipc().run(&[&scope[..], &["api", "GET", path, "--reveal"]].concat());
+    assert_eq!(read.ok()["token"], "s3cr3t");
+    // A HEAD answer has no body to print, so it needs no `--reveal`.
+    assert_eq!(hipc().run(&["api", "HEAD", path]).code(), Some(0));
+    let sent: Vec<_> = server
+        .requests()
+        .iter()
+        .map(|r| {
+            (
+                r.method.clone(),
+                r.path().to_owned(),
+                r.header("x-hippius-account").map(str::to_owned),
+                r.header("x-hippius-project").map(str::to_owned),
+            )
+        })
+        .collect();
+    let scoped = |method: &str| {
+        (
+            method.to_owned(),
+            proxied.to_owned(),
+            Some(MEMBER.to_owned()),
+            Some(PROJECT.to_owned()),
+        )
+    };
+    assert_eq!(
+        sent,
+        [
+            scoped("POST"),
+            scoped("PUT"),
+            scoped("PATCH"),
+            scoped("DELETE"),
+            scoped("GET"),
+            ("HEAD".to_owned(), proxied.to_owned(), None, None),
+        ]
+    );
+}
+
+/// A dry run of a request through the agent proxy prints no answer, so it needs neither
+/// `--reveal` nor `--yes`, lists the request with the account and project headers, and sends
+/// nothing; a path the server could route to the agent although it reads as another route
+/// is refused, a dry run included (#100).
+#[test]
+fn a_dry_run_through_the_agent_proxy_sends_nothing() {
+    let server = Server::start(vec![]);
+    let hipc = || Hipc::against(&Home::new(), &server);
+    let scope = ["--account", MEMBER, "--project", PROJECT];
+    let path = "/agentcore/instances/vm-1/agent/v1/files/";
+    for method in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+        let run = hipc().run(&[&scope[..], &["api", method, path, "--dry-run"]].concat());
+        let mut expected = crate::common::one_request_dry_run(json!({
+            "method": method,
+            "url": format!("{}/api{path}", server.url()),
+            "account_header": MEMBER,
+            "project_header": PROJECT,
+            "billing_header": null,
+            "body": null
+        }));
+        // A write `hipc` does not know warns, in the dry run too.
+        if method != "GET" {
+            expected["warnings"] = json!([format!(
+                "`hipc` does not know `{method} {path}`: no command sends it, so `hipc` \
+                 cannot say what it changes"
+            )]);
+        }
+        assert_eq!(run.dry_ok(), expected, "{method}");
+    }
+    for target in [
+        "/agentcore/instances/vm-1/x/../agent/v1/",
+        "/agentcore/instances/vm-1/./agent/v1/",
+        "/agentcore/instances/vm-1//agent/v1/",
+        "/agentcore/instances/vm-1/agent%2Fv1/",
+        "/agentcore/instances/vm-1/%2e%2e/agent/v1/",
+        "/agentcore/instances/vm-1/#/../agent/v1/",
+    ] {
+        for extra in [&["--dry-run"][..], &["--yes", "--reveal"]] {
+            hipc()
+                .run(&[&["api", "POST", target][..], extra].concat())
+                .fails(2, "usage");
+        }
+    }
+    assert!(server.requests().is_empty(), "the dry runs sent nothing");
+}
+
 /// The pages of one list share its path, so a `next` link to another path is refused
 /// before it is sent: it could reach a route whose answer holds a secret, such as the
 /// account's master token, without `--reveal`.
@@ -2524,6 +2662,9 @@ fn a_support_ticket_write_that_holds_a_token_is_refused() {
         ("POST", "/support/tickets/7/handoff/"),
         ("POST", "/support/chat/tickets/7/messages/"),
         ("DELETE", "/support/tickets/7/"),
+        // The root itself, with and without its slash (#100).
+        ("POST", "/support/"),
+        ("POST", "/support"),
     ];
     // Each body on the first route, then the first body on each other route, each with
     // `--yes`, and one dry run: the body check and the route match are apart, so this

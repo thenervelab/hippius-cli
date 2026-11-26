@@ -135,8 +135,8 @@ pub(crate) fn run(ctx: &Context<'_>, args: &Api) -> Result<Printed> {
 }
 
 /// The writes whose body a person on the support team may read: every `POST`, `PUT`, `PATCH`,
-/// and `DELETE` under `/api/support/`, such as a new ticket, a reply, a ticket `PATCH`, or a
-/// chat handoff. Matched by [`hippius::Client::route_value`].
+/// and `DELETE` to `/api/support/` or under it, such as a new ticket, a reply, a ticket
+/// `PATCH`, or a chat handoff. Matched by [`hippius::Client::route_value`].
 const READ_BY_SUPPORT: &[(Method, &str, ())] = &[
     (Method::Post, "/api/support/{..}/", ()),
     (Method::Put, "/api/support/{..}/", ()),

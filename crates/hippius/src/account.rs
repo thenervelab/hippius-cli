@@ -104,10 +104,16 @@ pub(crate) fn not_done_on_503(method: Method, path: &str) -> bool {
     routes::row(method, without_query(path)).is_some_and(Endpoint::undone_on_503)
 }
 
+/// Every path through the Agent Core agent proxy, the agent's own root included (see
+/// [`SECRET_ROUTES`]). A row that a path through it reaches cannot lift its `--reveal`:
+/// a table entry adds the secret whatever the row says ([`decided`]).
+const AGENT_PROXY: &str = "/api/agentcore/instances/{vm_id}/agent/{..}/";
+
 /// The requests with no row whose answer holds a secret, each a method and a path pattern in
-/// which `{n}` is one segment of ASCII digits and any other `{name}` one non-empty segment. A
-/// row says it of its own route ([`Endpoint::reveals`]); this table holds the routes `hipc`
-/// reaches only through `hipc api`, and a test refuses an entry a row covers.
+/// the language of [`matches_pattern`]: `{n}` is one segment of ASCII digits, any other
+/// `{name}` one non-empty segment, and a last `{..}` the rest of the path. A row says it of
+/// its own route ([`Endpoint::reveals`]); this table holds the routes `hipc` reaches only
+/// through `hipc api`, and a test refuses an entry a row covers.
 ///
 /// Most answer with a one-time secret: a credential or a setup key the server shows once.
 /// Others answer with a secret that lasts: the account's master token, a short-lived shell or
@@ -115,6 +121,12 @@ pub(crate) fn not_done_on_503(method: Method, path: &str) -> bool {
 /// credential until it expires. A route whose answer is unknown but may carry a session or an
 /// invitation is listed too, which fails closed: the cost is one `--reveal`. A `HEAD` answer
 /// has no body to print, so no `HEAD` needs `--reveal`.
+///
+/// The Agent Core agent proxy is listed whole, on every method, for the same reason: the API
+/// passes a request under `/api/agentcore/instances/{vm_id}/agent/` to the agent inside the
+/// VM and answers with what the agent answers, and the API does not document the agent's
+/// routes. The bare `agent/` is listed too, since the API does not say whether it reaches
+/// the agent's root.
 const SECRET_ROUTES: &[(Method, &str)] = &[
     (Method::Get, "/api/databases/{n}/backup-token/"),
     (Method::Post, "/api/databases/{n}/backup-token/"),
@@ -146,6 +158,11 @@ const SECRET_ROUTES: &[(Method, &str)] = &[
     (Method::Post, "/api/auth/sign-in-methods/step-up/verify/"),
     (Method::Post, "/api/network/infra/enroll/"),
     (Method::Post, "/api/chat/workspaces/{workspace_id}/invites/"),
+    (Method::Get, AGENT_PROXY),
+    (Method::Post, AGENT_PROXY),
+    (Method::Put, AGENT_PROXY),
+    (Method::Patch, AGENT_PROXY),
+    (Method::Delete, AGENT_PROXY),
 ];
 
 /// Every request whose answer holds a secret, as a method and a path template: each row that
@@ -193,10 +210,25 @@ pub(crate) fn permanent(method: Method, path: &str) -> bool {
     decided(method, path, Endpoint::permanent, &[])
 }
 
-/// What the row of each form of `path` says by `from_row`, or for a form no row matches,
-/// whether `table` lists it; true when any form's answer is (for the forms, see
-/// [`returns_secret`]).
+/// True when `table` lists a form of `path`, or the row of a form says so by `from_row`
+/// (for the forms, see [`returns_secret`]). A table entry only adds: a row that a listed
+/// form also reaches cannot take it back, so a row added later under a listed subtree, such
+/// as the agent proxy's, does not lift its `--reveal`. No entry is a route a row decides
+/// today (a test samples that, each placeholder filled with one value), so the order changes
+/// no answer now; an overlap the sample misses can only add a `--reveal`.
 fn decided(
+    method: Method,
+    path: &str,
+    from_row: fn(&Endpoint) -> bool,
+    table: &[(Method, &str)],
+) -> bool {
+    decided_by(routes::row, method, path, from_row, table)
+}
+
+/// [`decided`] with the rows that `row` finds in place of the route table's, so a test can
+/// add one.
+fn decided_by<'e>(
+    row: impl Fn(Method, &str) -> Option<&'e Endpoint>,
     method: Method,
     path: &str,
     from_row: fn(&Endpoint) -> bool,
@@ -210,9 +242,11 @@ fn decided(
     };
     in_every_version(path).iter().any(|path| {
         classify(path, false, |form| {
-            routes::row(method, form)
-                .map(from_row)
-                .or_else(|| listed(form).then_some(true))
+            if listed(form) {
+                Some(true)
+            } else {
+                row(method, form).map(from_row)
+            }
         })
     })
 }
@@ -532,24 +566,29 @@ pub fn same_route(a: &str, b: &str) -> bool {
 }
 
 /// Whether `path` matches `pattern` (see [`SECRET_ROUTES`] and [`ROUTE_RULES`])
-/// segment by segment: `{n}` is one segment of ASCII digits, `{..}` as the last segment one
-/// or more non-empty segments, and any other `{name}` one non-empty segment.
+/// segment by segment: `{n}` is one segment of ASCII digits, any other `{name}` one non-empty
+/// segment, and `{..}` as the last segment the rest of the path, whatever it holds, nothing
+/// included: `/api/support/{..}/` matches `/api/support/` and every path under it. A subtree
+/// fails closed that way: no shape of the rest, an empty segment included, leaves it.
 pub(crate) fn matches_pattern(pattern: &str, path: &str) -> bool {
-    if let Some(prefix) = pattern.strip_suffix("{..}/") {
-        return path
-            .strip_prefix(prefix)
-            .and_then(|rest| rest.strip_suffix('/'))
-            .is_some_and(|rest| rest.split('/').all(|segment| !segment.is_empty()));
-    }
+    let (head, subtree) = pattern
+        .strip_suffix("/{..}/")
+        .map_or((pattern, false), |head| (head, true));
     let mut segments = path.split('/');
-    let each_matches = pattern.split('/').all(|expected| {
+    let each_matches = head.split('/').all(|expected| {
         segments.next().is_some_and(|segment| match expected {
             "{n}" => !segment.is_empty() && segment.bytes().all(|b| b.is_ascii_digit()),
             placeholder if placeholder.starts_with('{') => !segment.is_empty(),
             literal => segment == literal,
         })
     });
-    each_matches && segments.next().is_none()
+    // The rest of a subtree ends where every path the tables read ends, at its `/`.
+    let rest_matches = if subtree {
+        segments.next_back() == Some("")
+    } else {
+        segments.next().is_none()
+    };
+    each_matches && rest_matches
 }
 
 /// A PUT of one ticket: swagger's `PUT /api/support/tickets/{id}/`

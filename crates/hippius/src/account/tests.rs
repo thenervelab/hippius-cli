@@ -1,6 +1,6 @@
 use super::*;
 use crate::error::Code;
-use crate::routes::RouteFlag;
+use crate::routes::{Route, RouteFlag};
 use crate::source::Source;
 
 const ID: &str = "acct_0123456789abcdef0123";
@@ -486,7 +486,7 @@ fn a_secret_route_issues_a_secret_with_or_without_its_trailing_slash() {
     }
 }
 
-/// Each route issues its secret to one method only: the other methods on the same path
+/// Each route issues its secret to its own methods only: the other methods on the same path
 /// read, change, or delete without an answer that holds the secret.
 #[test]
 fn a_secret_route_matches_its_own_method_and_no_other() {
@@ -527,6 +527,20 @@ fn a_secret_route_matches_its_own_method_and_no_other() {
         (Method::Post, "/api/auth/sign-in-methods/step-up/verify/"),
         (Method::Post, "/api/network/infra/enroll/"),
         (Method::Post, "/api/chat/workspaces/w1/invites/"),
+        (Method::Get, "/api/agentcore/instances/vm-1/agent/v1/files/"),
+        (
+            Method::Post,
+            "/api/agentcore/instances/vm-1/agent/v1/files/",
+        ),
+        (Method::Put, "/api/agentcore/instances/vm-1/agent/v1/files/"),
+        (
+            Method::Patch,
+            "/api/agentcore/instances/vm-1/agent/v1/files/",
+        ),
+        (
+            Method::Delete,
+            "/api/agentcore/instances/vm-1/agent/v1/files/",
+        ),
     ];
     assert_eq!(
         routes.len(),
@@ -564,6 +578,137 @@ fn a_secret_route_matches_its_own_method_and_no_other() {
             assert!(!returns_secret(method, path), "{method} {path}");
         }
     }
+}
+
+/// Every request through the Agent Core agent proxy but a `HEAD` needs `--reveal`, at any
+/// depth, the agent's root included, in any letter case, under any API version, without its
+/// trailing slash, with a format suffix or a query, and whatever the rest of the path holds
+/// (#100). The client refuses a `.`, `..`, or empty segment and a percent-encoding before
+/// this check, so the server cannot route a path to the agent that the check read as
+/// another route (`client::tests`).
+#[test]
+fn every_request_through_the_agent_proxy_but_a_head_issues_a_secret() {
+    for path in [
+        "/api/agentcore/instances/vm-1/agent/",
+        "/api/agentcore/instances/vm-1/agent",
+        "/api/agentcore/instances/vm-1/agent/x/",
+        "/api/agentcore/instances/vm-1/agent/v1/files",
+        "/api/agentcore/instances/vm-1/agent/v1/files/a/b/c/d/e/",
+        "/api/agentcore/instances/vm-1/agent/v1/files.json",
+        "/api/agentcore/instances/vm-1/agent.json/",
+        "/api/agentcore/instances/vm-1/agent/v1/files/?x=1",
+        "/api/agentcore/instances/agent/agent/",
+        "/api/agentcore/instances/vm-1/agent/agent-sockets/",
+        "/api/agentcore/instances/vm-1/agent/../",
+        "/api/agentcore/instances/vm-1/agent/./x/",
+        "/api/agentcore/instances/vm-1/agent//x/",
+        "/api/agentcore/instances/vm-1/agent/x%2Fy/",
+        "/API/AgentCore/Instances/VM-1/AGENT/V1/Files/",
+        "/api/v2/agentcore/instances/vm-1/agent/v1/files/",
+    ] {
+        for method in METHODS {
+            let expected = method != Method::Head;
+            assert_eq!(returns_secret(method, path), expected, "{method} {path}");
+        }
+    }
+    // The other Agent Core routes keep their own answer: only the socket ticket's `POST` is
+    // a secret, and a route that merely starts with `agent` is no proxy.
+    for path in [
+        "/api/agentcore/",
+        "/api/agentcore/instances/",
+        "/api/agentcore/instances/vm-1/",
+        "/api/agentcore/instances/vm-1/stop/",
+        "/api/agentcore/instances/vm-1/backups/",
+        "/api/agentcore/instances/vm-1/backups/restore/",
+        "/api/agentcore/instances/vm-1/agents/x/",
+        "/api/agentcore/instances/vm-1/agent-sockets/x/",
+        "/api/agentcore/instances/agent/",
+        "/api/agentcore/instances//agent/",
+        "/api/agentcore/agent/x/",
+        "/api/agentcorex/instances/vm-1/agent/x/",
+        "/api/compute/vms/vm-1/agent/x/",
+    ] {
+        for method in METHODS {
+            assert!(!returns_secret(method, path), "{method} {path}");
+        }
+    }
+    let sockets = "/api/agentcore/instances/vm-1/agent-sockets/";
+    for method in METHODS {
+        assert_eq!(
+            returns_secret(method, sockets),
+            method == Method::Post,
+            "{method}"
+        );
+    }
+}
+
+/// A table entry wins over a row: a row added later that a path through the agent proxy
+/// reaches, here one that matches its root and does not reveal, cannot lift the proxy's
+/// `--reveal`, while it still decides every path the table does not list. A revealing row
+/// reveals with no table at all.
+#[test]
+fn a_secret_table_entry_wins_over_a_row_that_reaches_its_path() {
+    const ACTION: Route<2> = Route::get("/api/agentcore/instances/{vm_id}/{action}/").scoped();
+    const SECRET: Route<1> = Route::get("/api/agentcore/instances/{vm_id}/secret/")
+        .scoped()
+        .reveals();
+    // The router's order: the template with more literal segments first.
+    let rows = [SECRET.endpoint(), ACTION.endpoint()];
+    let row = |method: Method, form: &str| {
+        let form = with_trailing_slash(form);
+        rows.into_iter()
+            .find(|row| row.method() == method && row.matches(&form))
+    };
+    let decide = |path: &str, table| decided_by(row, Method::Get, path, Endpoint::reveals, table);
+    let root = "/api/agentcore/instances/vm-1/agent/";
+    assert!(row(Method::Get, root).is_some_and(|row| !row.reveals()));
+    assert!(decide(root, SECRET_ROUTES));
+    assert!(decide("/api/agentcore/instances/vm-1/agent", SECRET_ROUTES));
+    assert!(!decide(root, &[]), "the row decides with no table");
+    assert!(!decide(
+        "/api/agentcore/instances/vm-1/stop/",
+        SECRET_ROUTES
+    ));
+    assert!(decide("/api/agentcore/instances/vm-1/secret/", &[]));
+    assert!(!decided_by(
+        row,
+        Method::Head,
+        root,
+        Endpoint::reveals,
+        SECRET_ROUTES
+    ));
+}
+
+/// A last `{..}` is the rest of the path, nothing included, and the segments before it match
+/// as in any other pattern.
+#[test]
+fn a_subtree_pattern_matches_its_root_and_every_path_under_it() {
+    let pattern = "/api/a/{id}/b/{..}/";
+    for path in [
+        "/api/a/1/b/",
+        "/api/a/1/b/c/",
+        "/api/a/1/b/c/d/",
+        "/api/a/1/b//",
+    ] {
+        assert!(matches_pattern(pattern, path), "{path}");
+    }
+    for path in [
+        "/api/a/1/b",
+        "/api/a/1/",
+        "/api/a//b/",
+        "/api/a/1/bc/",
+        "/api/a/1/c/d/",
+        "/api/x/1/b/c/",
+        "/api/a/1/b/c",
+    ] {
+        assert!(!matches_pattern(pattern, path), "{path}");
+    }
+    assert!(matches_pattern("/api/support/{..}/", "/api/support/"));
+    assert!(matches_pattern(
+        "/api/support/{..}/",
+        "/api/support/tickets/7/"
+    ));
+    assert!(!matches_pattern("/api/support/{..}/", "/api/supportx/"));
 }
 
 const METHODS: [Method; 6] = [
@@ -1130,6 +1275,13 @@ fn the_guard_of_a_template_is_the_rule_of_its_path() {
 /// reaches only through `hipc api`.
 #[test]
 fn no_table_entry_is_a_route_a_row_decides() {
+    // No row reaches the agent proxy, so no row and table entry overlap there and the order
+    // in `decided` changes no answer today. That order, not this loop, keeps the proxy's
+    // `--reveal` if a row is added under it.
+    for row in routes::all() {
+        let path = with_trailing_slash(&filled(row.template())).to_ascii_lowercase();
+        assert!(!matches_pattern(AGENT_PROXY, &path), "{}", row.template());
+    }
     for &(method, pattern) in SECRET_ROUTES {
         let path = filled(pattern);
         assert_eq!(routes::row(method, &path), None, "{method} {pattern}");
