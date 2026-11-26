@@ -1265,13 +1265,14 @@ impl Client {
         self.note_deprecation(request.method, resolved.target.api_path(), &header);
         // The status has arrived, so it decides even when the body cannot be read: a 2xx
         // write was done (`partial`, not retryable), and a 4xx is that status's error.
-        // The limit is one byte past the cap: ureq 3.5.0 refuses a read once its limit is used
-        // up, before it sees the end of the body (`LimitReader::read` in `src/body/limit.rs`),
-        // so a limit of the cap itself would refuse a body of exactly the cap.
+        // The limit is the cap itself: since ureq 3.5.2 a body of exactly the limit is read,
+        // and only a byte past it is `BodyExceedsLimit` (the `BodyWithConfig::limit` docs).
+        // Before 3.5.2 the limit refused a body of exactly its size, so the manifest asks
+        // for 3.5.2.
         let (body, body_unread) = match response
             .body_mut()
             .with_config()
-            .limit(MAX_BODY_BYTES + 1)
+            .limit(MAX_BODY_BYTES)
             .read_to_vec()
         {
             Ok(body) => (body, None),
