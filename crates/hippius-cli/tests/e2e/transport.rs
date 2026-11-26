@@ -146,6 +146,37 @@ fn a_redirect_is_not_followed_so_the_token_stays_home() {
     assert!(elsewhere.requests().is_empty());
 }
 
+/// A redirect with neither `Content-Length` nor `Transfer-Encoding`, from a server that keeps
+/// the connection open, is refused at once: its body, which would end only when the server
+/// closes, is never read. With an hour's timeout, a read would outlast the run deadline.
+#[test]
+fn an_unframed_redirect_is_refused_without_waiting_for_its_body() {
+    let head = "HTTP/1.1 302 Found\r\nLocation: /elsewhere/\r\n\r\n";
+    let server = Server::start(vec![route(
+        "GET",
+        "/api/moved/",
+        Reply::raw(head.as_bytes()),
+    )]);
+    let error = Hipc::against(&Home::new(), &server)
+        .run(&[
+            "--request-timeout",
+            "3600",
+            "api",
+            "--reveal",
+            "GET",
+            "/moved/",
+        ])
+        .fails(1, "internal");
+    assert_eq!(error["http_status"], 302);
+    assert!(
+        error["message"].as_str().unwrap().ends_with(
+            "the API answered 302 with a redirect to `/elsewhere/`, and a redirect is never \
+             followed"
+        ),
+        "{error}"
+    );
+}
+
 /// An error answer that repeats the token `hipc` sent prints it nowhere: not in the message,
 /// the details, the request id, or a redirect target, in either mode.
 #[test]

@@ -4,6 +4,12 @@ All notable changes to `hipc`, named `hip` up to 0.14.0, are listed here. The fo
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A redirect from the API is refused as soon as its status arrives. `hipc` no longer reads a redirect's body, so a redirect without `Content-Length` or `Transfer-Encoding` from a server that keeps the connection open no longer holds the command until `--request-timeout`. The error is unchanged, except that a redirect's body no longer appears in `details`.
+
 ## [0.17.1] - 2026-11-21
 
 ### Added
