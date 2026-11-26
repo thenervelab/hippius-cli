@@ -214,7 +214,8 @@ pub(crate) fn permanent(method: Method, path: &str) -> bool {
 /// (for the forms, see [`returns_secret`]). A table entry only adds: a row that a listed
 /// form also reaches cannot take it back, so a row added later under a listed subtree, such
 /// as the agent proxy's, does not lift its `--reveal`. No entry is a route a row decides
-/// today (a test holds that), so the order changes no answer now.
+/// today (a test samples that, each placeholder filled with one value), so the order changes
+/// no answer now; an overlap the sample misses can only add a `--reveal`.
 fn decided(
     method: Method,
     path: &str,

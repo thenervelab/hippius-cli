@@ -1275,8 +1275,9 @@ fn the_guard_of_a_template_is_the_rule_of_its_path() {
 /// reaches only through `hipc api`.
 #[test]
 fn no_table_entry_is_a_route_a_row_decides() {
-    // A row decides its own route before the table, so a row under the agent proxy that
-    // did not reveal would lift the proxy's `--reveal` on its path, at any depth.
+    // No row reaches the agent proxy, so no row and table entry overlap there and the order
+    // in `decided` changes no answer today. That order, not this loop, keeps the proxy's
+    // `--reveal` if a row is added under it.
     for row in routes::all() {
         let path = with_trailing_slash(&filled(row.template())).to_ascii_lowercase();
         assert!(!matches_pattern(AGENT_PROXY, &path), "{}", row.template());
