@@ -1132,7 +1132,14 @@ impl Run {
     /// this `code`. Returns the object's `error` field.
     pub(crate) fn fails(&self, exit: i32, code: &str) -> Value {
         assert_eq!(self.code(), Some(exit), "stderr: {}", self.stderr());
-        assert_eq!(self.stdout(), "", "stdout must be empty on failure");
+        // Only the start of a stray stdout is quoted: a run that wrongly succeeds can print an
+        // answer as large as the 32 MiB body cap, and a message that size floods the test log.
+        let stdout = self.stdout();
+        assert!(
+            stdout.is_empty(),
+            "stdout must be empty on failure, got {} bytes: {stdout:.200}",
+            stdout.len()
+        );
         let stderr = self.stderr();
         assert_eq!(stderr.lines().count(), 1, "{stderr}");
         let error: Value = serde_json::from_str(stderr).expect("stderr is one JSON object");

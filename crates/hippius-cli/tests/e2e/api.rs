@@ -75,7 +75,6 @@ fn a_body_of_exactly_32_mib_is_read_and_one_byte_more_is_not() {
         Reply::json(200, &body(CAP + 1)),
     )]);
     let run = Hipc::against(&Home::new(), &server).run(&["api", "--reveal", "GET", "/big/"]);
-    assert_eq!(run.stdout(), "");
     let error = run.fails(1, "internal");
     assert!(
         error["message"]

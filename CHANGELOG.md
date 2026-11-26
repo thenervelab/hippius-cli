@@ -6,6 +6,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 
 ## [Unreleased]
 
+### Changed
+
+- The install sections of the README and `docs/getting-started.md` give Homebrew its own block: `brew trust thenervelab/tap`, then `brew install thenervelab/tap/hipc`. Homebrew 6.0.0 and later refuse a formula from a third-party tap until the tap or the formula is trusted; installing by the full name trusts that formula, and the `brew trust` line lets a short-name command such as `brew upgrade hipc` work too. The tap's `hipc` is this command since the release workflow writes it, so the docs no longer say it installs the IPFS-era `hipc` 0.0.7, and a machine that has that one moves onto this one with `brew upgrade hipc` after the trust. The curl block no longer runs `brew uninstall hipc` for an IPFS-era install; a note above it says to uninstall that one first, when Homebrew has it. The formula no longer sets a `version`, which Homebrew reads from the release URL, so it passes `brew audit --strict`.
+- `hipc` no longer reads the body of a redirect from the API, which it never follows, so that body no longer appears in `error.details`. The error's code and message are unchanged.
+
 ### Fixed
 
 - `hipc api` needs `--reveal` for every request through the Agent Core agent proxy, `/agentcore/instances/<vm_id>/agent/...`, at any depth and the agent's root `agent/` included, on every method but `HEAD`. The API passes such a request to the agent inside the VM and answers with what the agent answers, which the API does not document, so `hipc` cannot tell which answers hold a ticket, a token, or a key. Only a `GET` needed `--reveal` before, and a `POST`, `PUT`, `PATCH`, or `DELETE` printed the agent's answer without it. Without `--reveal` the request exits 2 `reveal_required` and nothing is sent, before the confirmation, in any letter case, without the trailing slash, with a format suffix or a query, and under any API version. A dry run needs neither flag and still sends nothing. A write still needs `--yes` and warns that `hipc` does not know the route. `hipc api --reveal --help` lists the proxy. The check that refuses a support write whose body holds an API token or an access key now covers a write to `/support/` itself too, not only the routes under it. (#100)

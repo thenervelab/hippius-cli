@@ -4,16 +4,22 @@ From nothing to a logged-in `hipc`. The [README](../README.md) is the short vers
 
 ## Install
 
-macOS (Apple silicon and Intel) and Linux (x86_64 and aarch64):
+macOS (Apple silicon and Intel) and Linux (x86_64 and aarch64). If Homebrew has the IPFS-era `hipc` 0.0.x (`brew list --versions hipc` shows it), run `brew uninstall hipc` first, so the old one does not come first on `PATH`, or move it onto this one with Homebrew as below.
 
 ```sh
-# first remove the IPFS-era formula (version 0.0.x) from Homebrew, if it is there, so it does not shadow this one
-brew list --versions 2>/dev/null | grep -q '^hipc 0\.0\.' && brew uninstall hipc
 curl -q --proto '=https' --tlsv1.2 -fsSL https://github.com/thenervelab/hippius-cli/releases/latest/download/install.sh | sh
 ```
 
 - The script installs to `~/.local/bin` (or `$HIPC_INSTALL_DIR`) with no root, checks `SHA256SUMS`, and checks the signature when `cosign` is on `PATH` (`HIPC_INSTALL_REQUIRE_SIGNATURE=1` makes that required). End the pipe with `sh -s -- 0.17.1` to pin a version.
-- Homebrew: `brew install thenervelab/tap/hipc` installs this `hipc` once the release can write to the tap (`HOMEBREW_TAP_TOKEN`); until then it installs the IPFS-era `hipc` 0.0.7. On a machine that still has the old formula, `brew upgrade hipc` then moves it onto this one.
+- Homebrew: trust the tap, then install by the full name:
+
+  ```sh
+  brew trust thenervelab/tap
+  brew install thenervelab/tap/hipc
+  ```
+
+  Homebrew 6.0.0 and later load a formula from a third-party tap only once the tap or the formula is trusted. Installing by the full name trusts that formula, but a command that names it by its short name, such as `brew upgrade hipc`, is refused until then, so the `brew trust` line trusts the whole tap. Homebrew before 6.0.0 does not need it, and one before 5.1.15 answers it with `Unknown command: brew trust`, which is harmless: the install line still runs. Each release updates the formula, and `brew upgrade hipc` installs it.
+- The tap's `hipc` was the IPFS-era tool of that name, version 0.0.x. On a machine that has it, `brew trust thenervelab/tap` and then `brew upgrade hipc` move it onto this one.
 - PyPI: the wheels are published as the project `hippius` and install the command `hipc` (`pip install hippius`, `uv tool install hippius`, or `pipx install hippius`) once the release's `PYPI_PUBLISH` switch is on; until then each of those installs the old Hippius Python SDK 0.2.77, not this command. Afterwards, to keep the old SDK, pin `hippius==0.2.77` in its own environment.
 - The PyPI project `hipc` is unrelated to Hippius.
 - From source: `cargo install --locked --git https://github.com/thenervelab/hippius-cli hippius-cli`.
