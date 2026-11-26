@@ -111,6 +111,14 @@ fn the_formula_is_hipc_and_installs_hipc() {
         "the crate description changed: reword the formula desc in scripts/brew-formula.sh"
     );
     assert!(FORMULA.contains("    bin.install \"hipc\"\n"), "{FORMULA}");
+    // Homebrew reads the version from the release URLs, and `brew audit --strict` refuses a
+    // `version` line that repeats it. The test block's `#{version}` is the URL's.
+    assert!(
+        !FORMULA
+            .lines()
+            .any(|line| line.trim_start().starts_with("version ")),
+        "{FORMULA}"
+    );
     assert!(
         FORMULA.contains(
             "  def caveats\n    \"This hipc is the Hippius console CLI; \

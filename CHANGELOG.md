@@ -4,6 +4,12 @@ All notable changes to `hipc`, named `hip` up to 0.14.0, are listed here. The fo
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The install sections of the README and `docs/getting-started.md` give Homebrew its own block: `brew trust thenervelab/tap`, then `brew install thenervelab/tap/hipc`. Homebrew 6.0.0 and later refuse a formula from a third-party tap until the tap or the formula is trusted; installing by the full name trusts that formula, and the `brew trust` line lets a short-name command such as `brew upgrade hipc` work too. The tap's `hipc` is this command since the release workflow writes it, so the docs no longer say it installs the IPFS-era `hipc` 0.0.7, and a machine that has that one moves onto this one with `brew upgrade hipc` after the trust. The curl block no longer runs `brew uninstall hipc` for an IPFS-era install; a note above it says to uninstall that one first, when Homebrew has it. The formula no longer sets a `version`, which Homebrew reads from the release URL, so it passes `brew audit --strict`.
+
 ## [0.17.1] - 2026-11-21
 
 ### Added

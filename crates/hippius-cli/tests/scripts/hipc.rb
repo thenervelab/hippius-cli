@@ -2,7 +2,6 @@
 class Hipc < Formula
   desc "Control plane for the Hippius console, for agents and people"
   homepage "https://github.com/thenervelab/hippius-cli"
-  version "1.2.3"
   license any_of: ["MIT", "Apache-2.0"]
 
   on_macos do
