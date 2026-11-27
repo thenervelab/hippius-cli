@@ -935,7 +935,9 @@ fn api_long_about() -> String {
          waf rate-limits update send the version they read and stop on a conflict. A route no \
          command sends (one no command of hipc schema lists in its routes) is one hipc does \
          not know: a GET of it needs --reveal, since its answer may hold a secret, and a write \
-         needs --yes, as any write does, and warns. A 2xx answer larger than 32 MiB is not \
+         needs --yes, as any write does, and warns. Every request but a HEAD through the Agent \
+         Core agent proxy (/agentcore/instances/<vm_id>/agent/...) needs --reveal, a write \
+         --yes too. A 2xx answer larger than 32 MiB is not \
          printed: it exits 1 internal. On an error status a body that large is not read: the \
          status decides the error, and its message says the body was not read.",
         api_about(),

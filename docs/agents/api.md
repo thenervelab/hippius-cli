@@ -27,6 +27,6 @@ What it never sends, whatever the flags:
 - an App Engine body that sets `secrets`;
 - a support message that holds the API token or an access key.
 
-Each of these has a command, or the console, that does it safely. A URL on another host is refused; use `curl` for that.
+Each of these has a command, or the console, that does it safely. A URL on another host is refused; use `curl` for that. So is a full URL on the API origin whose path is not under `/api/`: pass the path alone, or start it with `/api/`.
 
 `hipc api --help` and `hipc schema api` list each rule with its exact routes.

@@ -1062,7 +1062,8 @@ impl Client {
                 // A path target always goes under `/api`, where every route table is
                 // written, so a full URL's path outside it would be classified by none: the
                 // agent proxy at `/agentcore/...` would go out without `--reveal`. No API
-                // route lives there, so it is refused as a path target cannot reach it.
+                // route lives there, so it is refused, since a path target could not reach
+                // it either. The unauthenticated spec at `/openapi.json` is curl's.
                 Ok(origin) if origin == self.origin && !under_api_base(&rest) => {
                     return Err(Error::usage(
                         format!(
@@ -1093,7 +1094,7 @@ impl Client {
                     "{} is not an API path: a path starts with `/`, or is a full URL",
                     quote(without_query_values(&request.target))
                 ),
-                "pass a path such as `/compute/vms/`, or a full URL on the API origin",
+                "pass a path such as `/compute/vms/`, or a full URL under `/api/` on the API origin",
             ));
         };
         check_path(&path_and_query, &request.target)?;
@@ -1645,6 +1646,14 @@ fn split_url(url: &str) -> Result<(String, String)> {
     let (authority, tail) = rest.split_at(split);
     if authority.is_empty() {
         return Err(Error::usage(format!("{quoted} has no host"), FULL_URL_HINT));
+    }
+    // The quote drops a fragment, so `https://host#/api/x` would otherwise read as its own
+    // origin refused for not being itself.
+    if authority.contains('#') {
+        return Err(Error::usage(
+            format!("{quoted} has a fragment (`#...`) right after its host"),
+            FULL_URL_HINT,
+        ));
     }
     let tail = if tail.starts_with('/') {
         tail.to_owned()

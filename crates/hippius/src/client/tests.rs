@@ -554,6 +554,9 @@ fn issue_115_a_full_url_on_the_api_origin_outside_api_is_refused() {
         "https://api.hippius.com//api/compute/vms/",
         "HTTPS://API.HIPPIUS.COM:443/agentcore/instances/vm-1/agent/x",
         "https://api.hippius.com:443/auth/token/",
+        "https://api.hippius.com/api#/agentcore/instances/vm-1/agent/x",
+        "https://api.hippius.com/api;x/agentcore/instances/vm-1/agent/x",
+        "https://api.hippius.com/api\\agentcore/instances/vm-1/agent/x",
     ] {
         for method in [Method::Get, Method::Head, Method::Post, Method::Delete] {
             let request = Request::new(method, url);
@@ -581,6 +584,13 @@ fn issue_115_a_full_url_on_the_api_origin_outside_api_is_refused() {
             }
         }
     }
+}
+
+/// The messages of #115's refusals, and what stays as it was beside them: another origin's
+/// refusal, and a full URL under `/api/`.
+#[test]
+fn issue_115_the_refusal_names_the_target_and_leaves_api_urls_alone() {
+    let c = client(member());
     // The message quotes the target as written, with its query values hidden.
     let error = c
         .resolve(&Request::get(
@@ -591,6 +601,17 @@ fn issue_115_a_full_url_on_the_api_origin_outside_api_is_refused() {
         error.message(),
         "`https://api.hippius.com/agentcore/?key=<redacted>` is not under `/api/`, where \
          every API route is"
+    );
+    // A `#` right after the host is named, not read as the origin refusing itself.
+    let error = c
+        .resolve(&Request::get(
+            "https://api.hippius.com#/api/agentcore/instances/vm-1/agent/x",
+        ))
+        .unwrap_err();
+    assert_eq!(error.code(), Code::Usage);
+    assert_eq!(
+        error.message(),
+        "`https://api.hippius.com` has a fragment (`#...`) right after its host"
     );
     // Another origin keeps its own refusal, whatever its path.
     let error = c

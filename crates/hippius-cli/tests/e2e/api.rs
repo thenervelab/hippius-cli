@@ -1420,6 +1420,31 @@ fn a_next_link_onto_a_route_the_membership_cannot_use_is_internal() {
     assert_eq!(server.requests().len(), 1, "the drive page is never sent");
 }
 
+/// A `next` link on the API origin but outside `/api/` is not followed (#115): no route
+/// table classifies it, so `--all` stops with `internal` after the first page.
+#[test]
+fn issue_115_a_next_link_outside_api_is_internal() {
+    let server = Server::start(vec![route(
+        "GET",
+        "/api/compute/vms/",
+        Reply::json(200, r#"{"next":"{base}/compute/vms/?page=2","results":[]}"#),
+    )]);
+    let error = Hipc::against(&Home::new(), &server)
+        .run(&["api", "GET", "/compute/vms/", "--all"])
+        .fails(1, "internal");
+    let message = error["message"].as_str().expect("the message is a string");
+    assert!(
+        message.starts_with("the API's `next` link is refused: ")
+            && message.contains("is not under `/api/`"),
+        "{error}"
+    );
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "the page outside `/api/` is never sent"
+    );
+}
+
 /// An account deletion request is left to the console: `hipc api` refuses it whatever the
 /// flags, a dry run and a membership included, and sends nothing.
 #[test]
