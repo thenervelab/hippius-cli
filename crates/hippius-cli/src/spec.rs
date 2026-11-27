@@ -335,12 +335,12 @@ fn api_confirmation() -> String {
 }
 
 /// When `hipc api` needs `--reveal`: on a route whose answer `hipc` knows holds a secret, and
-/// on a `GET` of a route it does not know, whose answer may hold one (tenet 9), which takes
-/// in every request but a `HEAD` through the Agent Core agent proxy (#100).
+/// on a `GET` of a route it does not know, whose answer may hold one (tenet 9). The Agent
+/// Core agent proxy is a secret route of its own, on every method but `HEAD` (#100).
 const API_REVEAL_WHEN: &str = "the route answers with a secret, or the request is a `GET` of a \
                                route no command lists in its `routes`, whose answer may hold \
                                one, or any request but a `HEAD` through the Agent Core agent \
-                               proxy, `/api/agentcore/instances/{vm_id}/agent/...`";
+                               proxy, `/api/agentcore/instances/{vm_id}/agent/` or any path under it";
 
 /// The row for a command path such as `["auth", "status"]`, or `None` for an unknown path:
 /// each group's rows are in its own function in `spec/rows.rs`.

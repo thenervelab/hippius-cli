@@ -602,7 +602,7 @@ fn issue_115_the_refusal_names_the_target_and_leaves_api_urls_alone() {
         "`https://api.hippius.com/agentcore/?key=<redacted>` is not under `/api/`, where \
          every API route is"
     );
-    // A `#` right after the host is named, not read as the origin refusing itself.
+    // A `#` before the path is named, not read as the origin refusing itself.
     let error = c
         .resolve(&Request::get(
             "https://api.hippius.com#/api/agentcore/instances/vm-1/agent/x",
@@ -611,7 +611,7 @@ fn issue_115_the_refusal_names_the_target_and_leaves_api_urls_alone() {
     assert_eq!(error.code(), Code::Usage);
     assert_eq!(
         error.message(),
-        "`https://api.hippius.com` has a fragment (`#...`) right after its host"
+        "`https://api.hippius.com` has a fragment (`#...`) before its path"
     );
     // Another origin keeps its own refusal, whatever its path.
     let error = c

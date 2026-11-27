@@ -1644,16 +1644,16 @@ fn split_url(url: &str) -> Result<(String, String)> {
     }
     let split = rest.find(['/', '?']).unwrap_or(rest.len());
     let (authority, tail) = rest.split_at(split);
-    if authority.is_empty() {
-        return Err(Error::usage(format!("{quoted} has no host"), FULL_URL_HINT));
-    }
     // The quote drops a fragment, so `https://host#/api/x` would otherwise read as its own
     // origin refused for not being itself.
     if authority.contains('#') {
         return Err(Error::usage(
-            format!("{quoted} has a fragment (`#...`) right after its host"),
+            format!("{quoted} has a fragment (`#...`) before its path"),
             FULL_URL_HINT,
         ));
+    }
+    if authority.is_empty() {
+        return Err(Error::usage(format!("{quoted} has no host"), FULL_URL_HINT));
     }
     let tail = if tail.starts_with('/') {
         tail.to_owned()
