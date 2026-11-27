@@ -913,6 +913,8 @@ fn api_long_about() -> String {
         "{}\n\nThe request carries the same auth, account, project, and billing rules as every \
          command. It goes only to the configured API origin: a full URL on any other origin, \
          plain http to a loopback port included, exits 2 usage; use curl for another host. A \
+         full URL on the API origin must have a path under /api/, where every route is; any \
+         other path exits 2 usage, as no route rule would cover it. A \
          refusal listed for one write method (POST, PUT, PATCH, or DELETE) holds for every \
          write method of the route that has no rule of its own, and every path counts in any \
          letter case, with or without the trailing slash or a format suffix, and under any API \
@@ -933,7 +935,9 @@ fn api_long_about() -> String {
          waf rate-limits update send the version they read and stop on a conflict. A route no \
          command sends (one no command of hipc schema lists in its routes) is one hipc does \
          not know: a GET of it needs --reveal, since its answer may hold a secret, and a write \
-         needs --yes, as any write does, and warns. A 2xx answer larger than 32 MiB is not \
+         needs --yes, as any write does, and warns. Every request but a HEAD through the Agent \
+         Core agent proxy (/agentcore/instances/<vm_id>/agent/ and every path under it) needs \
+         --reveal, and a write needs --yes as well. A 2xx answer larger than 32 MiB is not \
          printed: it exits 1 internal. On an error status a body that large is not read: the \
          status decides the error, and its message says the body was not read.",
         api_about(),

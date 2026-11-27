@@ -234,6 +234,39 @@ fn a_full_url_on_the_api_origin_in_another_spelling_is_sent() {
     );
 }
 
+/// A full URL on the API origin whose path is not under `/api/` is refused before anything
+/// is sent (#115), `--yes` and `--reveal` or not: no route table would classify it, so the
+/// agent proxy would otherwise answer a write that its path target needs `--reveal` for.
+#[test]
+fn issue_115_a_full_url_on_the_api_origin_outside_api_sends_nothing() {
+    let server = Server::start(vec![]);
+    let home = Home::new();
+    let origin = server.url();
+    let agent = format!("{origin}/agentcore/instances/vm-1/agent/x");
+    let upper = agent.replace("http://", "HTTP://");
+    let root = format!("{origin}/");
+    let bare = format!("{origin}/api");
+    let lookalike = format!("{origin}/apifoo/drive/plans/");
+    let runs: [&[&str]; 7] = [
+        &["api", "POST", &agent, "--yes"],
+        &["api", "POST", &agent, "--yes", "--reveal"],
+        &["api", "PUT", &upper, "--yes", "--dry-run"],
+        &["api", "GET", &agent, "--reveal"],
+        &["api", "GET", &root],
+        &["api", "GET", &bare],
+        &["api", "GET", &lookalike, "--all"],
+    ];
+    for args in runs {
+        let error = Hipc::against(&home, &server).run(args).fails(2, "usage");
+        let message = error["message"].as_str().expect("the message is a string");
+        assert!(
+            message.ends_with("is not under `/api/`, where every API route is"),
+            "{args:?}: {message}"
+        );
+    }
+    assert!(server.requests().is_empty());
+}
+
 #[test]
 fn bad_methods_and_paths_are_usage_without_a_request() {
     let server = Server::start(vec![]);
@@ -1385,6 +1418,31 @@ fn a_next_link_onto_a_route_the_membership_cannot_use_is_internal() {
         "{error}"
     );
     assert_eq!(server.requests().len(), 1, "the drive page is never sent");
+}
+
+/// A `next` link on the API origin but outside `/api/` is not followed (#115): no route
+/// table classifies it, so `--all` stops with `internal` after the first page.
+#[test]
+fn issue_115_a_next_link_outside_api_is_internal() {
+    let server = Server::start(vec![route(
+        "GET",
+        "/api/compute/vms/",
+        Reply::json(200, r#"{"next":"{base}/compute/vms/?page=2","results":[]}"#),
+    )]);
+    let error = Hipc::against(&Home::new(), &server)
+        .run(&["api", "GET", "/compute/vms/", "--all"])
+        .fails(1, "internal");
+    let message = error["message"].as_str().expect("the message is a string");
+    assert!(
+        message.starts_with("the API's `next` link is refused: ")
+            && message.contains("is not under `/api/`"),
+        "{error}"
+    );
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "the page outside `/api/` is never sent"
+    );
 }
 
 /// An account deletion request is left to the console: `hipc api` refuses it whatever the
