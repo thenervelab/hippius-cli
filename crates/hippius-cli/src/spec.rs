@@ -310,7 +310,8 @@ fn api_refused_when() -> String {
         .to_owned(),
     );
     format!(
-        "the target is a full URL off the configured API origin, or the request is {}; a write \
+        "the target is a full URL off the configured API origin or outside its `/api/`, or the \
+         request is {}; a write \
          is `POST`, `PUT`, `PATCH`, or `DELETE`, and each path counts in any letter case, with \
          or without the trailing slash or a format suffix, and under any API version",
         hippius::phrase::join(&refused, "or")

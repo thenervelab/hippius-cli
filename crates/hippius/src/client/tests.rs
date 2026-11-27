@@ -410,11 +410,14 @@ fn paths_join_under_api_once_and_queries_are_encoded() {
             .unwrap(),
         "https://api.hippius.com/api/accounts/"
     );
-    assert_eq!(
-        c.url(&Request::get("https://api.hippius.com?x")).unwrap(),
-        "https://api.hippius.com/?x"
-    );
-    for bad in ["accounts/", "ftp://x/y", "https:///x", "nope://"] {
+    // A query right after the origin is read as the path `/`, which is not under `/api/`.
+    for bad in [
+        "accounts/",
+        "ftp://x/y",
+        "https:///x",
+        "nope://",
+        "https://api.hippius.com?x",
+    ] {
         assert_eq!(
             c.url(&Request::get(bad)).unwrap_err().code(),
             Code::Usage,
@@ -520,6 +523,107 @@ fn a_full_url_on_another_origin_is_refused() {
             "{url}"
         );
     }
+}
+
+/// A full URL on the API origin whose path is not under `/api/` is refused (#115): no route
+/// table classifies it, so the agent proxy, the token route, or a secret-issuing write
+/// would otherwise go out without `--reveal` or a route rule. The origin root, `/api` with
+/// no `/` after it, a look-alike prefix, another letter case, an encoded or `..` path, and
+/// the origin in another spelling are all refused, by every public check of the request.
+#[test]
+fn issue_115_a_full_url_on_the_api_origin_outside_api_is_refused() {
+    let c = client(member());
+    for url in [
+        "https://api.hippius.com/agentcore/instances/vm-1/agent/x",
+        "https://api.hippius.com/agentcore/instances/vm-1/agent/",
+        "https://api.hippius.com/auth/token/",
+        "https://api.hippius.com/registry/provision/",
+        "https://api.hippius.com/compute/vms/",
+        "https://api.hippius.com",
+        "https://api.hippius.com/",
+        "https://api.hippius.com?x=1",
+        "https://api.hippius.com/?x=1",
+        "https://api.hippius.com/api",
+        "https://api.hippius.com/api?x=1",
+        "https://api.hippius.com/apifoo/compute/vms/",
+        "https://api.hippius.com/api-v2/compute/vms/",
+        "https://api.hippius.com/API/agentcore/instances/vm-1/agent/x",
+        "https://api.hippius.com/%61pi/agentcore/instances/vm-1/agent/x",
+        "https://api.hippius.com/x/../api/compute/vms/",
+        "https://api.hippius.com/./api/compute/vms/",
+        "https://api.hippius.com//api/compute/vms/",
+        "HTTPS://API.HIPPIUS.COM:443/agentcore/instances/vm-1/agent/x",
+        "https://api.hippius.com:443/auth/token/",
+    ] {
+        for method in [Method::Get, Method::Head, Method::Post, Method::Delete] {
+            let request = Request::new(method, url);
+            let error = c.resolve(&request).unwrap_err();
+            assert_eq!(error.code(), Code::Usage, "{method} {url}");
+            assert_eq!(
+                error.hint(),
+                Some(
+                    "start the URL's path with `/api/`, or pass the path alone, such as \
+                     `/compute/vms/`, which `hipc` sends under `/api`"
+                ),
+                "{method} {url}"
+            );
+            for refused in [
+                c.returns_secret(&request).map(|_| ()),
+                c.provisions(&request).map(|_| ()),
+                c.is_permanent(&request).map(|_| ()),
+                c.route_flags(&request).map(|_| ()),
+                c.route_of(&request).map(|_| ()),
+                c.url(&request).map(|_| ()),
+                c.describe(&request).map(|_| ()),
+                c.send(&request).map(|_| ()),
+            ] {
+                assert_eq!(refused.unwrap_err().code(), Code::Usage, "{method} {url}");
+            }
+        }
+    }
+    // The message quotes the target as written, with its query values hidden.
+    let error = c
+        .resolve(&Request::get(
+            "https://api.hippius.com/agentcore/?key=s3cr3t",
+        ))
+        .unwrap_err();
+    assert_eq!(
+        error.message(),
+        "`https://api.hippius.com/agentcore/?key=<redacted>` is not under `/api/`, where \
+         every API route is"
+    );
+    // Another origin keeps its own refusal, whatever its path.
+    let error = c
+        .resolve(&Request::get("https://evil.example/agentcore/"))
+        .unwrap_err();
+    assert!(
+        error.message().contains("is not on the API origin"),
+        "{}",
+        error.message()
+    );
+    // Under `/api/`, the full URL is classified as its path target is, the agent proxy
+    // included, in any spelling of the origin, with a query, and at the API root.
+    for url in [
+        "https://api.hippius.com/api/agentcore/instances/vm-1/agent/x",
+        "HTTPS://API.HIPPIUS.COM:443/api/agentcore/instances/vm-1/agent/x",
+        "https://api.hippius.com/api/agentcore/instances/vm-1/agent/x?a=1",
+    ] {
+        assert!(
+            c.returns_secret(&Request::new(Method::Post, url)).unwrap(),
+            "{url}"
+        );
+    }
+    let own = client(Selection::Own);
+    assert_eq!(
+        own.url(&Request::get("https://api.hippius.com/api/"))
+            .unwrap(),
+        "https://api.hippius.com/api/"
+    );
+    assert_eq!(
+        own.url(&Request::get("https://api.hippius.com/api/?a=1"))
+            .unwrap(),
+        "https://api.hippius.com/api/?a=1"
+    );
 }
 
 /// A request through the Agent Core agent proxy issues a secret however its target is

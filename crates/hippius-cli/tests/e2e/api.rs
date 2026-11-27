@@ -234,6 +234,39 @@ fn a_full_url_on_the_api_origin_in_another_spelling_is_sent() {
     );
 }
 
+/// A full URL on the API origin whose path is not under `/api/` is refused before anything
+/// is sent (#115), `--yes` and `--reveal` or not: no route table would classify it, so the
+/// agent proxy would otherwise answer a write that its path target needs `--reveal` for.
+#[test]
+fn issue_115_a_full_url_on_the_api_origin_outside_api_sends_nothing() {
+    let server = Server::start(vec![]);
+    let home = Home::new();
+    let origin = server.url();
+    let agent = format!("{origin}/agentcore/instances/vm-1/agent/x");
+    let upper = agent.replace("http://", "HTTP://");
+    let root = format!("{origin}/");
+    let bare = format!("{origin}/api");
+    let lookalike = format!("{origin}/apifoo/drive/plans/");
+    let runs: [&[&str]; 7] = [
+        &["api", "POST", &agent, "--yes"],
+        &["api", "POST", &agent, "--yes", "--reveal"],
+        &["api", "PUT", &upper, "--yes", "--dry-run"],
+        &["api", "GET", &agent, "--reveal"],
+        &["api", "GET", &root],
+        &["api", "GET", &bare],
+        &["api", "GET", &lookalike, "--all"],
+    ];
+    for args in runs {
+        let error = Hipc::against(&home, &server).run(args).fails(2, "usage");
+        let message = error["message"].as_str().expect("the message is a string");
+        assert!(
+            message.ends_with("is not under `/api/`, where every API route is"),
+            "{args:?}: {message}"
+        );
+    }
+    assert!(server.requests().is_empty());
+}
+
 #[test]
 fn bad_methods_and_paths_are_usage_without_a_request() {
     let server = Server::start(vec![]);

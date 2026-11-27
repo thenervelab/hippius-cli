@@ -913,6 +913,8 @@ fn api_long_about() -> String {
         "{}\n\nThe request carries the same auth, account, project, and billing rules as every \
          command. It goes only to the configured API origin: a full URL on any other origin, \
          plain http to a loopback port included, exits 2 usage; use curl for another host. A \
+         full URL on the API origin must have a path under /api/, where every route is; any \
+         other path exits 2 usage, as no route rule would cover it. A \
          refusal listed for one write method (POST, PUT, PATCH, or DELETE) holds for every \
          write method of the route that has no rule of its own, and every path counts in any \
          letter case, with or without the trailing slash or a format suffix, and under any API \

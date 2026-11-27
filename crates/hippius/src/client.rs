@@ -102,7 +102,8 @@ pub struct Request {
 impl Request {
     /// A request without a body. `target` is a swagger path such as `/accounts/` (sent under
     /// [`API_BASE`], to `/api/accounts/`), a path that already starts with `/api/`, or a full
-    /// URL. A command builds its request from a route instead ([`Request::to`]).
+    /// URL on the API origin whose path starts with `/api/`. A command builds its request from
+    /// a route instead ([`Request::to`]).
     pub fn new(method: Method, target: impl Into<String>) -> Self {
         Self {
             method,
@@ -837,9 +838,9 @@ impl Client {
     /// # Errors
     ///
     /// The local refusals of the target that [`Client::send`] makes: a target that is
-    /// neither a path nor an http(s) URL, a full URL off the API origin, and an ambiguous
-    /// API path; and the `usage` of a route never sent ([`Client::route_flags`]). Never the
-    /// account refusal, `account_scope_unsupported`.
+    /// neither a path nor an http(s) URL, a full URL off the API origin or outside `/api/`,
+    /// and an ambiguous API path; and the `usage` of a route never sent
+    /// ([`Client::route_flags`]). Never the account refusal, `account_scope_unsupported`.
     pub fn returns_secret(&self, request: &Request) -> Result<bool> {
         // A route never sent is refused first, so its refusal is not hidden behind a
         // `--reveal` that would only lead to it.
@@ -1012,8 +1013,9 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// `usage` for a target that is neither a path nor an http(s) URL, and the same
-    /// local refusals [`Client::send`] makes, such as `account_scope_unsupported`.
+    /// `usage` for a target that is neither a path nor an http(s) URL, or a full URL off the
+    /// API origin or outside `/api/`, and the same local refusals [`Client::send`] makes,
+    /// such as `account_scope_unsupported`.
     pub fn url(&self, request: &Request) -> Result<String> {
         self.resolve(request).map(|r| r.target.url)
     }
@@ -1057,6 +1059,22 @@ impl Client {
             // cannot carry a body, a query, or a probe of a loopback port anywhere else, and
             // the token and the selector headers need no rule for another origin.
             match Origin::parse(&base) {
+                // A path target always goes under `/api`, where every route table is
+                // written, so a full URL's path outside it would be classified by none: the
+                // agent proxy at `/agentcore/...` would go out without `--reveal`. No API
+                // route lives there, so it is refused as a path target cannot reach it.
+                Ok(origin) if origin == self.origin && !under_api_base(&rest) => {
+                    return Err(Error::usage(
+                        format!(
+                            "{} is not under `{API_BASE}/`, where every API route is",
+                            quote(without_query_values(&request.target))
+                        ),
+                        format!(
+                            "start the URL's path with `{API_BASE}/`, or pass the path alone, \
+                             such as `/compute/vms/`, which `hipc` sends under `{API_BASE}`"
+                        ),
+                    ));
+                }
                 Ok(origin) if origin == self.origin => (origin.into_string(), rest),
                 _ => {
                     return Err(Error::usage(

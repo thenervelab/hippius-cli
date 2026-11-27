@@ -18,7 +18,7 @@ use crate::cli::reveal_long_help;
 pub(crate) struct Api {
     /// GET, HEAD, POST, PUT, PATCH, or DELETE
     pub(crate) method: String,
-    /// A path such as /accounts/ (sent under /api), or a full URL on the configured API origin
+    /// A path such as /accounts/ (sent under /api), or a full URL under /api/ on the API origin
     pub(crate) path: String,
     /// A JSON request body, from this file or - for stdin; POST, PUT, PATCH, and DELETE only
     ///
