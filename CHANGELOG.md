@@ -4,12 +4,12 @@ All notable changes to `hipc`, named `hip` up to 0.14.0, are listed here. The fo
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the version follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.17.2] - 2026-11-27
 
 ### Changed
 
-- The install sections of the README and `docs/getting-started.md` give Homebrew its own block: `brew trust thenervelab/tap`, then `brew install thenervelab/tap/hipc`. Homebrew 6.0.0 and later refuse a formula from a third-party tap until the tap or the formula is trusted; installing by the full name trusts that formula, and the `brew trust` line lets a short-name command such as `brew upgrade hipc` work too. The tap's `hipc` is this command since the release workflow writes it, so the docs no longer say it installs the IPFS-era `hipc` 0.0.7, and a machine that has that one moves onto this one with `brew upgrade hipc` after the trust. The curl block no longer runs `brew uninstall hipc` for an IPFS-era install; a note above it says to uninstall that one first, when Homebrew has it. The formula no longer sets a `version`, which Homebrew reads from the release URL, so it passes `brew audit --strict`.
-- `hipc` no longer reads the body of a redirect from the API, which it never follows, so that body no longer appears in `error.details`. The error's code and message are unchanged.
+- The install sections of the README and `docs/getting-started.md` give Homebrew its own block: `brew trust thenervelab/tap`, then `brew install thenervelab/tap/hipc`. Homebrew 6.0.0 and later refuse a formula from a third-party tap until the tap or the formula is trusted; installing by the full name trusts that formula, and the `brew trust` line lets a short-name command such as `brew upgrade hipc` work too. The tap's `hipc` is this command since the release workflow writes it, so the docs no longer say it installs the IPFS-era `hipc` 0.0.7, and a machine that has that one moves onto this one with `brew upgrade hipc` after the trust. The curl block no longer runs `brew uninstall hipc` for an IPFS-era install; a note above it says to uninstall that one first, when Homebrew has it. The formula no longer sets a `version`, which Homebrew reads from the release URL, so it passes `brew audit --strict`. (#112)
+- `hipc` no longer reads the body of a redirect from the API, which it never follows, so that body no longer appears in `error.details`. The error's code and message are unchanged. (#114)
 
 ### Fixed
 
@@ -72,7 +72,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versio
 - `hipc compute kubernetes clusters delete` names in its question, and in a text-mode note once the delete is accepted, the backup buckets it leaves: the backups guide says a cluster created with backups on keeps each bucket that holds etcd snapshots or Velero backups, billed until it is deleted. The note says how to find them (names that start with `hippius-k8s-<cluster_id>-` and end in `-etcd` or `-velero`, in `hipc s3 buckets list`) and how to remove them, as `compute databases delete` does for its backup bucket.
 - `hipc api`'s short help says a write needs `--yes`, as does a `GET` or `HEAD` of `/network/me/` or `/network/topology/`, which may create the network: the console's network types say the topology's first read creates it too, so `hipc api` now confirms a read of that route, as it does the summary's.
 - `docs/agents.md` is cut from 34 KB to under 8 KB: how to find a command, the loop, the output and error contract, the safety rules, and one example per service. What only some tasks need moves to four short pages under `docs/agents/` (accounts, secrets, Hub, `hipc api`). TENETS tenet 16 says a page never lists a command's flags or every command of a group; `--help` and `hipc schema` do, and a test holds the agent pages to a size.
-- The install sections of the README and `docs/getting-started.md` give the install script, with `brew uninstall hipc` before it for a machine that has the IPFS-era `hipc`, and say what each other channel installs until the release publishes it: `brew install thenervelab/tap/hipc` the IPFS-era `hipc` 0.0.7 until `HOMEBREW_TAP_TOKEN` is set, and `pip`, `uv tool`, or `pipx install hippius` the old Hippius Python SDK until `PYPI_PUBLISH` is on. TENETS tenet 13 says the tap holds the IPFS-era formula until then.
+- The install sections of the README and `docs/getting-started.md` give the install script, with `brew uninstall hipc` before it for a machine that has the IPFS-era `hipc`, and say what each other channel installs until the release publishes it: `brew install thenervelab/tap/hipc` the IPFS-era `hipc` 0.0.7 until `HOMEBREW_TAP_TOKEN` is set, and `pip`, `uv tool`, or `pipx install hippius` the old Hippius Python SDK until `PYPI_PUBLISH` is on. TENETS tenet 13 says the tap holds the IPFS-era formula until then. (#112)
 
 ### Removed
 
